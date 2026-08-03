@@ -5,3 +5,7 @@ pytest>=8.0
 pillow>=10.0
 spidev>=3.6; platform_machine == "armv7l" or platform_machine == "aarch64"
 gpiozero>=2.0; platform_machine == "armv7l" or platform_machine == "aarch64"
+# gpiozero's backend. Without it (in a venv that cannot see python3-lgpio)
+# gpiozero falls back to its experimental native factory, which cannot
+# claim pins on current Pi kernels: every Button() raises EINVAL.
+lgpio>=0.2; platform_machine == "armv7l" or platform_machine == "aarch64"
