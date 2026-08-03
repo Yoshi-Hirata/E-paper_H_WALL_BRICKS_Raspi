@@ -38,8 +38,15 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
 | OS | Raspbian GNU/Linux 13 (trixie) / Python 3.13.5 |
 | USB OTG | `config.txt` に `otg_mode=1` と `dtoverlay=dwc2,dr_mode=host` 設定済み |
 | 権限 | ユーザー `r2` は `dialout` グループ所属済み |
-| 導入状況 | `~/E-paper_H_WALL_BRICKS_Raspi` に配置、venv 作成・テスト24件合格・
-systemd サービス登録済み(未有効化) |
+| 導入状況 | `~/E-paper_H_WALL_BRICKS_Raspi` に配置、venv 作成・テスト24件合格 |
+
+**2026-08-04 実機動作確認済み**:
+
+- 基板は `/dev/ttyACM0`(0483:5740)として認識。`stop.py --addr 1` / `--addr 2`
+  ともに **ACK_SUCCESS**(基板 ID:2 の ACK も中継経由で正常に返る)
+- `wave_demo.py --cycles 3` で 2 枚のパネルが同期リフレッシュすることを目視確認
+- `epaper-demo.service` を有効化し、**再起動後に自動で演出が再開**することを確認
+  (電源投入から約 35 秒で 1 サイクル目を送信)
 
 ## セットアップ
 
