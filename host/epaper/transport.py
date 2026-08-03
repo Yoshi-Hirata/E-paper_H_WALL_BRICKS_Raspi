@@ -15,13 +15,25 @@ MAX_RETRIES = 3
 KNOWN_VID_PID = {(0x0483, 0x5740)}
 
 
+def _is_usb_serial(device: str) -> bool:
+    """True for USB CDC / USB-serial devices, not the Pi's built-in UART.
+
+    On a Raspberry Pi the on-board UART (/dev/ttyS0, /dev/ttyAMA0) is
+    always enumerated, so the "only one port -> use it" fallback would
+    happily pick it and then time out on every frame.
+    """
+    name = device.rsplit("/", 1)[-1]
+    return name.startswith(("ttyACM", "ttyUSB", "COM"))
+
+
 def find_port() -> str | None:
     ports = list(list_ports.comports())
     for p in ports:
         if (p.vid, p.pid) in KNOWN_VID_PID:
             return p.device
-    if len(ports) == 1:
-        return ports[0].device
+    usb = [p for p in ports if _is_usb_serial(p.device)]
+    if len(usb) == 1:
+        return usb[0].device
     return None
 
 
