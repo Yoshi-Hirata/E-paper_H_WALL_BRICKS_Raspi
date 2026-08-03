@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVICE_NAME="epaper-demo"
+SERVICES=(epaper-demo epaper-ui)
 
 echo "== apt packages =="
 sudo apt-get update
@@ -22,17 +22,28 @@ fi
 echo "== serial permission (dialout group) =="
 sudo usermod -aG dialout "$USER"
 
-echo "== systemd service =="
-sed "s|@REPO_DIR@|$REPO_DIR|g; s|@RUN_USER@|$USER|g" \
-  "$REPO_DIR/raspi/${SERVICE_NAME}.service.in" \
-  | sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null
-if [ ! -f "/etc/default/${SERVICE_NAME}" ]; then
-  sudo cp "$REPO_DIR/raspi/${SERVICE_NAME}.env" "/etc/default/${SERVICE_NAME}"
+echo "== spi (needed by the LCD HAT) =="
+if ! grep -q '^dtparam=spi=on' /boot/firmware/config.txt 2>/dev/null; then
+  echo "dtparam=spi=on" | sudo tee -a /boot/firmware/config.txt >/dev/null
+  echo "enabled SPI - reboot required before the LCD HAT will work"
 fi
+sudo usermod -aG spi,gpio "$USER" 2>/dev/null || true
+
+echo "== systemd services =="
+for name in "${SERVICES[@]}"; do
+  sed "s|@REPO_DIR@|$REPO_DIR|g; s|@RUN_USER@|$USER|g" \
+    "$REPO_DIR/raspi/${name}.service.in" \
+    | sudo tee "/etc/systemd/system/${name}.service" >/dev/null
+  if [ ! -f "/etc/default/${name}" ]; then
+    sudo cp "$REPO_DIR/raspi/${name}.env" "/etc/default/${name}"
+  fi
+done
 sudo systemctl daemon-reload
 
 echo
 echo "Setup finished."
-echo "  1) Re-login (or reboot) so the dialout group takes effect."
+echo "  1) Re-login (or reboot) so the dialout/spi/gpio groups take effect."
 echo "  2) Test manually:   .venv/bin/python host/stop.py --addr 1"
-echo "  3) Enable service:  sudo systemctl enable --now ${SERVICE_NAME}"
+echo "  3) Pick ONE service (they share the serial port):"
+echo "       sudo systemctl enable --now epaper-demo   # headless auto-demo"
+echo "       sudo systemctl enable --now epaper-ui     # LCD HAT menu"

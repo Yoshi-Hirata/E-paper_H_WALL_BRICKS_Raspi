@@ -74,6 +74,51 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
    .venv/bin/python host/wave_demo.py --cycles 3
    ```
 
+## LCD HAT の UI(Waveshare 1.3inch LCD HAT)
+
+240x240 の IPS LCD + ジョイスティック + KEY1〜3 でデモを操作する。
+
+| 操作 | 動作 |
+|---|---|
+| ジョイスティック 上下左右 | デモパターンの選択(ラップする) |
+| **KEY1** | 選択したデモを開始 / 実行中は停止・再開のトグル |
+| KEY2 | メニューに戻る(実行中のデモは停止) |
+| KEY3 | UI 終了 |
+
+実行画面には**経過タイマー(時:分:秒)**、サイクル数、直近のログが表示され、
+通信エラーは赤で強調される。
+
+選択できるパターン: `WAVE`(グラデーション+スパイラル)/ `GRADIENT` /
+`SPIRAL` / `MIRROR`(位相をずらしたグラデーションが追いかける)/
+`RANDOM` / `SOLID`(単色を順に切替)。
+
+### 起動
+
+```bash
+.venv/bin/python -m ui.main                 # HAT があれば LCD、無ければ PNG+キーボード
+.venv/bin/python -m ui.main --display png --frames /tmp/ui   # HAT 無しで動作確認
+.venv/bin/python -m ui.main --preview /tmp/ui                # 画面サンプルを書き出して終了
+```
+
+**HAT が届く前でも開発・確認できる**: `--display png` は毎フレームを
+`/tmp/ui/latest.png` に書き出し、`--input keyboard` は標準入力で操作できる
+(`w`/`s` 選択、`1`/`2`/`3` = KEY1〜3、いずれも Enter で確定)。
+
+### ピン配置(Waveshare 1.3inch LCD HAT / BCM)
+
+| 信号 | ピン | 信号 | ピン |
+|---|---|---|---|
+| LCD SPI | SPI0 (CE0) | KEY1 | GPIO21 |
+| LCD DC | GPIO25 | KEY2 | GPIO20 |
+| LCD RST | GPIO27 | KEY3 | GPIO16 |
+| LCD BL | GPIO24 | 上/下 | GPIO6 / GPIO19 |
+| | | 左/右 | GPIO5 / GPIO26 |
+| | | 中央押し | GPIO13 |
+
+SPI の有効化(`dtparam=spi=on`)は `raspi/setup.sh` が行う(要再起動)。
+画面の向きが合わない場合は `ui/display.py` の `ST7789Display(madctl=...)`
+を変更する(既定 `0x70`)。
+
 ## 常時運転(systemd)
 
 `raspi/setup.sh` が `epaper-demo.service` を登録する。既定では

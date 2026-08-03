@@ -1,0 +1,19 @@
+[Unit]
+Description=H_WALL_BRICKS LCD HAT user interface
+# Mutually exclusive with epaper-demo.service: both drive the same serial
+# port, so running them together would interleave frames on the bus.
+Conflicts=epaper-demo.service
+After=multi-user.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+WorkingDirectory=@REPO_DIR@
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/default/epaper-ui
+ExecStart=@REPO_DIR@/.venv/bin/python -m ui.main $UI_ARGS
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
