@@ -95,10 +95,34 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
 ### 起動
 
 ```bash
+.venv/bin/python -m ui.main --check         # パネル/SPI/GPIO/LCD の準備状況を診断
 .venv/bin/python -m ui.main                 # HAT があれば LCD、無ければ PNG+キーボード
 .venv/bin/python -m ui.main --display png --frames /tmp/ui   # HAT 無しで動作確認
 .venv/bin/python -m ui.main --preview /tmp/ui                # 画面サンプルを書き出して終了
 ```
+
+**HAT を挿したら、まず `--check` を実行すること。** 全項目が `ready` なら
+そのまま `python -m ui.main` で動く。`gpio pins: BUSY` と出た場合は他の
+プロセスがピンを掴んでいる(下記の HAT 競合を参照)。
+
+### ⚠️ 他の Waveshare HAT との競合
+
+このリポジトリの Pi には元々 **Waveshare 7.5inch e-Paper HAT**(気象
+ダッシュボード)が載っており、1.3inch LCD HAT と**物理的に競合する**:
+
+| 信号 | 7.5inch e-Paper HAT | 1.3inch LCD HAT |
+|---|---|---|
+| GPIO25 | DC | DC |
+| GPIO24 | BUSY | BL(バックライト) |
+| GPIO8 | CS (SPI0 CE0) | CS (SPI0 CE0) |
+
+40 ピンヘッダも 1 枚しか挿せないため**共存は不可**。本プロジェクトを
+優先する方針とし、2026-08-04 に気象ダッシュボードの cron を無効化した
+(削除ではなくコメントアウト。root の crontab を
+`/home/r2/dashboard/crontab-root.backup-*` にバックアップ済み。
+アプリ本体は `~/dashboard` に残置、git から復元も可能)。
+
+戻す場合は `sudo crontab -e` でコメントを外す。
 
 **HAT が届く前でも開発・確認できる**: `--display png` は毎フレームを
 `/tmp/ui/latest.png` に書き出し、`--input keyboard` は標準入力で操作できる
@@ -118,6 +142,23 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
 SPI の有効化(`dtparam=spi=on`)は `raspi/setup.sh` が行う(要再起動)。
 画面の向きが合わない場合は `ui/display.py` の `ST7789Display(madctl=...)`
 を変更する(既定 `0x70`)。
+
+**gpiozero には `lgpio` が必須**(requirements に含む)。無いと gpiozero が
+実験的な native factory にフォールバックし、ボタンの `Button()` が
+すべて `EINVAL` で失敗する(症状: ボタンが一切効かない)。
+
+### HAT 未着時点での検証状況(2026-08-04)
+
+LCD 本体は未接続だが、以下は実機で確認済み:
+
+- ST7789 ドライバは実 SPI/GPIO 上で init → フレーム転送 → クローズまで
+  例外なく完走(init 538ms、1 フレーム約 150ms)
+- 8 個の入力ピン + DC/RST/BL の計 11 ピンすべて確保・解放できる
+- UI からデモを起動し、**実際の電子ペーパーパネル 2 枚が 3 サイクル更新**
+  (ジョイスティック選択 → KEY1 開始 → KEY3 終了までスクリプト入力で再現)
+- `epaper-ui.service` が起動し PNG フレームを出力(HAT 無し時の自動退避)
+
+残るのは LCD の表示そのもの(向き・色・視認性)の確認のみ。
 
 ## 常時運転(systemd)
 
