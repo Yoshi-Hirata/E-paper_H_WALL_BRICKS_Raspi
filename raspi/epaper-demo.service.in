@@ -1,0 +1,17 @@
+[Unit]
+Description=H_WALL_BRICKS e-paper wave demo
+# The board enumerates as USB CDC shortly after boot; just retry until it
+# is reachable rather than ordering against a specific device unit.
+After=multi-user.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+WorkingDirectory=@REPO_DIR@
+EnvironmentFile=/etc/default/epaper-demo
+ExecStart=@REPO_DIR@/.venv/bin/python host/wave_demo.py $DEMO_ARGS
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
