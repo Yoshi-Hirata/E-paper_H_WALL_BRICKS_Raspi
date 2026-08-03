@@ -8,6 +8,10 @@ After=multi-user.target
 Type=simple
 User=@RUN_USER@
 WorkingDirectory=@REPO_DIR@
+# Without this, stdout is block-buffered when piped to the journal and
+# progress lines only appear minutes late (or never) - useless for
+# diagnosing a long-running demo.
+Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/default/epaper-demo
 ExecStart=@REPO_DIR@/.venv/bin/python host/wave_demo.py $DEMO_ARGS
 Restart=on-failure
