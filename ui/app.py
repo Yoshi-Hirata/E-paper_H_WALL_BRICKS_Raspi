@@ -33,6 +33,7 @@ class App:
         self.port_label = port_label
         self.quit = False
         self._dirty = True
+        self._drawn_key = None
 
     # ---- state transitions ----
 
@@ -85,22 +86,32 @@ class App:
     def draw(self) -> None:
         self.display.show(self.frame())
         self._dirty = False
+        self._drawn_key = self._display_key()
+
+    def _display_key(self):
+        """Everything the running screen actually shows.
+
+        Packing a frame costs ~125 ms on a Pi Zero 2 W, so redrawing on
+        every input poll would eat most of the CPU to paint identical
+        pixels - the timer only has one-second resolution.
+        """
+        if self.screen is not Screen.RUNNING:
+            return None
+        return (int(self.runner.elapsed), self.runner.cycle,
+                tuple(self.runner.recent(LOG_LINES)),
+                self.runner.error, self.runner.running)
 
     # ---- main loop ----
 
     def tick(self, wait: float = FRAME_INTERVAL_S) -> None:
-        """Drain pending events, then redraw.
-
-        The running screen redraws every tick regardless of input so the
-        elapsed timer and log stay live.
-        """
+        """Drain pending events, then redraw if anything visible changed."""
         event = self.inputs.get(timeout=wait)
         while event is not None:
             self.handle(event)
             if self.quit:
                 return
             event = self.inputs.get()
-        if self._dirty or self.screen is Screen.RUNNING:
+        if self._dirty or self._display_key() != self._drawn_key:
             self.draw()
 
     def run(self, max_ticks: int | None = None) -> None:

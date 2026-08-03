@@ -38,6 +38,9 @@ BUTTON_PINS = {
 }
 
 # --- UI behaviour ---
-FRAME_INTERVAL_S = 0.2   # redraw cadence (timer resolution on screen)
+# Input poll interval. Redraws are separate and only happen when the
+# screen content actually changes (see App._display_key), so this can be
+# short enough to feel responsive without wasting frames.
+FRAME_INTERVAL_S = 0.1
 LOG_LINES = 6            # log rows visible on the running screen
 LOG_HISTORY = 200        # lines kept in memory

@@ -112,11 +112,33 @@ def test_run_loop_processes_events_and_stops_on_quit():
     assert runner.stops >= 1      # run() always stops the demo on exit
 
 
-def test_running_screen_redraws_even_without_input():
+def test_idle_ticks_do_not_repaint_an_unchanged_screen():
+    # Packing a frame costs ~125 ms on the target Pi, so identical
+    # repaints would burn most of the CPU for nothing.
     app, _ = make_app()
     app.handle("key1")
-    display = app.display
-    before = display.frames
+    app.tick(wait=0)                       # initial paint of the run screen
+    before = app.display.frames
     app.tick(wait=0)
     app.tick(wait=0)
-    assert display.frames == before + 2   # timer must keep ticking
+    assert app.display.frames == before
+
+
+def test_running_screen_repaints_when_the_timer_advances():
+    app, runner = make_app()
+    app.handle("key1")
+    app.tick(wait=0)
+    before = app.display.frames
+    runner.elapsed = 1.0                   # one second later
+    app.tick(wait=0)
+    assert app.display.frames == before + 1
+
+
+def test_running_screen_repaints_on_a_new_cycle():
+    app, runner = make_app()
+    app.handle("key1")
+    app.tick(wait=0)
+    before = app.display.frames
+    runner.cycle = 1
+    app.tick(wait=0)
+    assert app.display.frames == before + 1
