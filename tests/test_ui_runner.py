@@ -51,6 +51,7 @@ def make_runner(bus, **kwargs):
     kwargs.setdefault("interval", 0.05)
     kwargs.setdefault("guard_delay", 0.0)
     kwargs.setdefault("port", "/dev/fake")
+    kwargs.setdefault("echo_log", False)
     return DemoRunner(open_bus=lambda port: bus, **kwargs)
 
 
@@ -136,8 +137,15 @@ def test_guard_stop_is_sent_between_refreshes():
     assert len(broadcast_stops) >= 2   # startup silence + at least one guard
 
 
-def test_log_keeps_newest_lines_only():
+def test_log_is_mirrored_to_stdout_for_journalctl(capsys):
     runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake")
+    runner.emit("cycle 1 shown")
+    assert "cycle 1 shown" in capsys.readouterr().out
+
+
+def test_log_keeps_newest_lines_only():
+    runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake",
+                        echo_log=False)
     for i in range(500):
         runner.emit(f"line {i}")
     lines = runner.recent(3)

@@ -35,7 +35,8 @@ class DemoRunner:
                  interval: float = 60.0, guard_delay: float = 12.0,
                  slot: int = TEST_SLOT, port: str | None = None,
                  palette: list[int] | None = None,
-                 open_bus=None, seed: int | None = None):
+                 open_bus=None, seed: int | None = None,
+                 echo_log: bool = True):
         self.boards = boards or list(DEFAULT_BOARDS)
         self.interval = interval
         self.guard_delay = guard_delay
@@ -44,6 +45,9 @@ class DemoRunner:
         self.palette = palette or list(DEFAULT_PALETTE)
         self._open_bus = open_bus or (lambda p: Bus(p, verbose=False))
         self._seed = seed
+        # Mirror the on-screen log to stdout so the same progress shows up
+        # in `journalctl -u epaper-ui` (the LCD is the only other view).
+        self._echo_log = echo_log
 
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
         self.pattern: Pattern | None = None
@@ -70,8 +74,11 @@ class DemoRunner:
 
     def emit(self, message: str) -> None:
         stamp = time.strftime("%H:%M:%S")
+        line = f"{stamp} {message}"
         with self._lock:
-            self.log.append(f"{stamp} {message}")
+            self.log.append(line)
+        if self._echo_log:
+            print(line, flush=True)
 
     # ---- control ----
 
