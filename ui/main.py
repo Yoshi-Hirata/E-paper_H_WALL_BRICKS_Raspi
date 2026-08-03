@@ -46,6 +46,69 @@ def preview(directory: str) -> int:
     return 0
 
 
+def check() -> int:
+    """Preflight: report whether the panels, SPI, GPIO and LCD are usable.
+
+    Written for the day the HAT is fitted - it distinguishes "not wired
+    up" from "another process owns these pins", which is the failure this
+    Pi is prone to (a second Waveshare HAT shares GPIO 24/25 and SPI0).
+    """
+    from pathlib import Path as _Path
+
+    from .config import BUTTON_PINS, PIN_BL, PIN_DC, PIN_RST
+
+    ok = True
+    port = find_port()
+    print(f"panel serial port : {port or 'NOT FOUND'}")
+    ok &= port is not None
+
+    spidevs = sorted(str(p) for p in _Path("/dev").glob("spidev*"))
+    print(f"spi devices       : {', '.join(spidevs) or 'NONE (dtparam=spi=on?)'}")
+    ok &= bool(spidevs)
+
+    try:
+        from gpiozero import Device
+        from gpiozero.pins.lgpio import LGPIOFactory
+        Device.pin_factory = LGPIOFactory()
+        print("gpio backend      : lgpio")
+    except Exception as exc:
+        print(f"gpio backend      : UNAVAILABLE ({exc})")
+        return 1
+
+    from gpiozero import Button, DigitalOutputDevice
+    busy = []
+    for name, pin in BUTTON_PINS.items():
+        try:
+            Button(pin, pull_up=True).close()
+        except Exception as exc:
+            busy.append(f"{name}(GPIO{pin}): {exc}")
+    for name, pin in (("dc", PIN_DC), ("rst", PIN_RST), ("bl", PIN_BL)):
+        try:
+            DigitalOutputDevice(pin).close()
+        except Exception as exc:
+            busy.append(f"{name}(GPIO{pin}): {exc}")
+    if busy:
+        ok = False
+        print("gpio pins         : BUSY")
+        for line in busy:
+            print(f"  {line}")
+        print("  another process holds these lines - check: sudo lsof /dev/gpiochip0")
+    else:
+        print("gpio pins         : all 11 free")
+
+    try:
+        from .display import ST7789Display
+        lcd = ST7789Display()
+        lcd.close()
+        print("lcd (ST7789)      : responds")
+    except Exception as exc:
+        ok = False
+        print(f"lcd (ST7789)      : NOT USABLE ({exc})")
+
+    print("\nresult:", "ready" if ok else "not ready")
+    return 0 if ok else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="LCD HAT UI for the e-paper demo")
     ap.add_argument("--display", default="auto",
@@ -56,6 +119,8 @@ def main() -> int:
                     help="output directory for the png display backend")
     ap.add_argument("--preview", metavar="DIR",
                     help="render sample screens to DIR and exit")
+    ap.add_argument("--check", action="store_true",
+                    help="report panel/SPI/GPIO/LCD readiness and exit")
     ap.add_argument("--port", help="serial port (default: auto-detect)")
     ap.add_argument("--boards", nargs="+", type=lambda v: int(v, 0),
                     default=[0x01, 0x02])
@@ -69,6 +134,8 @@ def main() -> int:
 
     if args.preview:
         return preview(args.preview)
+    if args.check:
+        return check()
 
     port = args.port or find_port()
     runner = DemoRunner(boards=args.boards, interval=args.interval,

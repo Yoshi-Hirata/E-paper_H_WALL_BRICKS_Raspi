@@ -75,17 +75,41 @@ class ST7789Display(Display):
         import spidev
         from gpiozero import DigitalOutputDevice
 
-        self._spi = spidev.SpiDev()
-        self._spi.open(SPI_BUS, SPI_DEVICE)
-        self._spi.max_speed_hz = spi_hz
-        self._spi.mode = 0
+        self._spi = None
+        self._dc = self._rst = self._bl = None
+        try:
+            self._spi = spidev.SpiDev()
+            self._spi.open(SPI_BUS, SPI_DEVICE)
+            self._spi.max_speed_hz = spi_hz
+            self._spi.mode = 0
 
-        self._dc = DigitalOutputDevice(PIN_DC)
-        self._rst = DigitalOutputDevice(PIN_RST)
-        self._bl = DigitalOutputDevice(PIN_BL)
-        self._madctl = madctl
-        self._init_panel()
-        self._bl.on()
+            self._dc = DigitalOutputDevice(PIN_DC)
+            self._rst = DigitalOutputDevice(PIN_RST)
+            self._bl = DigitalOutputDevice(PIN_BL)
+            self._madctl = madctl
+            self._init_panel()
+            self._bl.on()
+        except BaseException:
+            # Another process may hold these lines (a second Waveshare HAT
+            # shares GPIO 24/25 and SPI0 CE0). Release whatever we did take
+            # so the caller can fall back without leaking the SPI handle.
+            self._release()
+            raise
+
+    def _release(self) -> None:
+        for device in (self._dc, self._rst, self._bl):
+            if device is not None:
+                try:
+                    device.close()
+                except Exception:
+                    pass
+        self._dc = self._rst = self._bl = None
+        if self._spi is not None:
+            try:
+                self._spi.close()
+            except Exception:
+                pass
+            self._spi = None
 
     # ---- low level ----
 
@@ -151,10 +175,12 @@ class ST7789Display(Display):
 
     def close(self) -> None:
         try:
-            self._bl.off()
-            self._command(0x28)  # display off
+            if self._bl is not None:
+                self._bl.off()
+            if self._spi is not None:
+                self._command(0x28)  # display off
         finally:
-            self._spi.close()
+            self._release()
 
 
 # Per-channel bit twiddling for RGB888 -> big-endian RGB565, expressed as
