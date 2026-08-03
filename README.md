@@ -30,6 +30,17 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
 - パネル制御基板の電源は従来どおり専用電源から供給(USB は通信のみ)
 - 基板 ID:1 は DIP スイッチ = 1(バスマスタ)であること
 
+## 検証済みの実機環境
+
+| 項目 | 値 |
+|---|---|
+| 機体 | Raspberry Pi Zero 2 W Rev 1.0(ホスト名 `R2-RaspiZero2WH`) |
+| OS | Raspbian GNU/Linux 13 (trixie) / Python 3.13.5 |
+| USB OTG | `config.txt` に `otg_mode=1` と `dtoverlay=dwc2,dr_mode=host` 設定済み |
+| 権限 | ユーザー `r2` は `dialout` グループ所属済み |
+| 導入状況 | `~/E-paper_H_WALL_BRICKS_Raspi` に配置、venv 作成・テスト24件合格・
+systemd サービス登録済み(未有効化) |
+
 ## セットアップ
 
 1. Raspberry Pi OS Lite (64-bit) を microSD に書き込み
@@ -81,7 +92,9 @@ sudo systemctl stop epaper-demo           # 停止
 | `host/probe.py` | 疎通診断 |
 
 シリアルポートは STM32 CDC(VID:PID 0483:5740、Linux では `/dev/ttyACM0`)を
-自動検出する。手動指定は `--port /dev/ttyACM0`。
+自動検出する。手動指定は `--port /dev/ttyACM0`。Pi 内蔵 UART(`/dev/ttyS0`)は
+候補から除外されるため、基板が未接続なら「ポートが見つかりません」と
+明確に失敗する(誤って内蔵 UART を掴むことはない)。
 
 ## 運用上の注意(PC版で実証済みの制約)
 
