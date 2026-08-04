@@ -130,11 +130,23 @@ def test_starting_again_replaces_the_running_demo():
 def test_guard_stop_is_sent_between_refreshes():
     bus = FakeBus()
     runner = make_runner(bus, interval=0.2, guard_delay=0.05)
-    runner.start(BY_KEY["solid"])
+    runner.start(BY_KEY["wave"])   # no per-pattern interval override
     assert wait_until(lambda: runner.cycle >= 2)
     runner.stop()
     broadcast_stops = [f for f in bus.sent if f.cmd == 0x17 and f.dest == 0xFF]
     assert len(broadcast_stops) >= 2   # startup silence + at least one guard
+
+
+def test_pattern_interval_overrides_the_runner_default():
+    bus = FakeBus()
+    # Runner default 10 s, but the pattern asks for 0.05 s; if the override
+    # were ignored the second cycle would never arrive in time.
+    slow = make_runner(bus, interval=10.0)
+    fast = BY_KEY["solid"].__class__(
+        "fast", "FAST", "test", BY_KEY["solid"].build, interval=0.05)
+    slow.start(fast)
+    assert wait_until(lambda: slow.cycle >= 2, timeout=3.0)
+    slow.stop()
 
 
 def test_log_is_mirrored_to_stdout_for_journalctl(capsys):

@@ -146,13 +146,15 @@ class DemoRunner:
                     self.cycle += 1
                     self.emit(f"cycle {self.cycle} shown")
 
-                    if 0 < self.guard_delay < self.interval:
+                    # A pattern may ask for its own pace (see Pattern.interval).
+                    interval = self.pattern.interval or self.interval
+                    if 0 < self.guard_delay < interval:
                         if not self._sleep(self.guard_delay):
                             break
                         bus.send(stop(0xFF, groups))
-                        if not self._sleep(self.interval - self.guard_delay):
+                        if not self._sleep(interval - self.guard_delay):
                             break
-                    elif not self._sleep(self.interval):
+                    elif not self._sleep(interval):
                         break
         except Exception as exc:  # serial unplugged, permission, ...
             self.error = str(exc)

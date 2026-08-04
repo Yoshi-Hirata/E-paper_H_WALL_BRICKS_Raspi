@@ -19,6 +19,10 @@ from epaper.pattern import COLOR_NAMES, VALID_TRIANGLES
 DEFAULT_PALETTE = [COLOR_NAMES[c] for c in
                    ("white", "yellow", "red", "blue", "green", "black")]
 
+# Order the solid-colour showcase steps through.
+SOLID_SEQUENCE = [COLOR_NAMES[c] for c in
+                  ("white", "yellow", "blue", "red", "black", "green")]
+
 Frame = dict[int, dict[int, int]]  # board address -> {triangle: color}
 
 
@@ -28,6 +32,11 @@ class Pattern:
     label: str          # shown in the menu (keep <= 14 chars for the LCD)
     detail: str         # one-line description under the menu
     build: Callable[[int, list[int], list[int], random.Random], Frame]
+    # Seconds between refreshes, when this pattern wants something other
+    # than the runner's default. A full-panel repaint measures 9.8 s on
+    # the hardware (plus ~0.2 s to save), so nothing below ~11 s leaves
+    # the image visible at all.
+    interval: float | None = None
 
     def __call__(self, cycle: int, boards: list[int],
                  palette: list[int] | None = None,
@@ -63,7 +72,8 @@ def _random(cycle, boards, palette, rng) -> Frame:
 
 
 def _solid(cycle, boards, palette, rng) -> Frame:
-    color = palette[cycle % len(palette)]
+    """Both panels one colour, stepping through SOLID_SEQUENCE."""
+    color = SOLID_SEQUENCE[cycle % len(SOLID_SEQUENCE)]
     return {b: {t: color for t in sorted(VALID_TRIANGLES)} for b in boards}
 
 
@@ -73,7 +83,8 @@ PATTERNS: list[Pattern] = [
     Pattern("spiral", "SPIRAL", "clockwise inward", _spiral),
     Pattern("mirror", "MIRROR", "chasing gradients", _mirror),
     Pattern("random", "RANDOM", "random colors", _random),
-    Pattern("solid", "SOLID", "one color, cycling", _solid),
+    # 15 s: the 9.8 s repaint plus ~5 s of the colour standing still.
+    Pattern("solid", "SOLID", "W>Y>B>R>K>G, 15s", _solid, interval=15.0),
 ]
 
 BY_KEY = {p.key: p for p in PATTERNS}

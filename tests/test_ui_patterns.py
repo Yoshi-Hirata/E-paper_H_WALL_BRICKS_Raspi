@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 import pytest
 
 from epaper.effects import validate
-from epaper.pattern import VALID_TRIANGLES, build_hexagon_array
-from ui.patterns import DEFAULT_PALETTE, PATTERNS
+from epaper.pattern import COLOR_NAMES, VALID_TRIANGLES, build_hexagon_array
+from ui.patterns import BY_KEY, DEFAULT_PALETTE, PATTERNS
 
 BOARDS = [0x01, 0x02]
 
@@ -45,11 +45,29 @@ def test_wave_assigns_a_different_effect_per_board():
     assert frame[0x01] != frame[0x02]
 
 
-def test_solid_uses_one_color_and_advances_each_cycle():
-    first = PATTERNS[-1](0, BOARDS)[0x01]
-    second = PATTERNS[-1](1, BOARDS)[0x01]
+def test_solid_paints_one_color_and_advances_each_cycle():
+    solid = BY_KEY["solid"]
+    first = solid(0, BOARDS)[0x01]
+    second = solid(1, BOARDS)[0x01]
     assert len(set(first.values())) == 1
     assert set(first.values()) != set(second.values())
+
+
+def test_solid_follows_the_requested_color_order():
+    solid = BY_KEY["solid"]
+    order = ["white", "yellow", "blue", "red", "black", "green"]
+    for cycle, name in enumerate(order):
+        frame = solid(cycle, BOARDS)
+        for board in BOARDS:                 # both panels show the same color
+            assert set(frame[board].values()) == {COLOR_NAMES[name]}
+    # and it wraps back to the start
+    assert solid(6, BOARDS)[0x01] == solid(0, BOARDS)[0x01]
+
+
+def test_solid_paces_itself_above_the_measured_repaint_time():
+    # A full-panel repaint measures 9.8 s on the hardware; a shorter
+    # interval would command the next color before this one is visible.
+    assert BY_KEY["solid"].interval >= 11.0
 
 
 def test_random_is_reproducible_for_a_given_seed():
