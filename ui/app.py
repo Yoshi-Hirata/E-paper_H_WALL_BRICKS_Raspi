@@ -37,6 +37,15 @@ class App:
 
     # ---- state transitions ----
 
+    def select(self, key: str) -> None:
+        """Move the menu cursor to a pattern by key."""
+        for index, pattern in enumerate(self.patterns):
+            if pattern.key == key:
+                self.selected = index
+                self._dirty = True
+                return
+        raise KeyError(f"unknown pattern: {key}")
+
     def handle(self, event: str) -> None:
         if event == "key3":
             self.quit = True

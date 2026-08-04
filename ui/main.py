@@ -128,6 +128,10 @@ def main() -> int:
                     help="seconds between panel refreshes (default 60)")
     ap.add_argument("--guard-delay", type=float, default=12.0)
     ap.add_argument("--slot", type=int, default=TEST_SLOT)
+    ap.add_argument("--pattern", choices=[p.key for p in PATTERNS],
+                    help="start this pattern immediately instead of showing "
+                         "the menu (with --display null --input none this is "
+                         "how the headless service runs)")
     ap.add_argument("--max-ticks", type=int,
                     help="exit after N UI ticks (testing)")
     args = ap.parse_args()
@@ -146,6 +150,9 @@ def main() -> int:
     with make_display(args.display, **display_kwargs) as display, \
             make_input(args.input) as inputs:
         app = App(display, inputs, runner, port_label=port)
+        if args.pattern:
+            app.select(args.pattern)
+            app.handle("key1")
         app.run(max_ticks=args.max_ticks)
     return 0
 

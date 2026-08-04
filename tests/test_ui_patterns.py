@@ -41,7 +41,7 @@ def test_effect_patterns_never_place_same_color_side_by_side(key):
 
 
 def test_wave_assigns_a_different_effect_per_board():
-    frame = PATTERNS[0](0, BOARDS)
+    frame = BY_KEY["wave"](0, BOARDS)
     assert frame[0x01] != frame[0x02]
 
 
@@ -64,6 +64,33 @@ def test_solid_follows_the_requested_color_order():
     assert solid(6, BOARDS)[0x01] == solid(0, BOARDS)[0x01]
 
 
+def test_loop_playlist_alternates_solid_then_random():
+    loop = BY_KEY["loop"]
+    assert loop.period == 12
+    solid_cycles = [loop.resolve(c) for c in range(6)]
+    random_cycles = [loop.resolve(c) for c in range(6, 12)]
+    assert all(p.key == "solid" for p, _ in solid_cycles)
+    assert all(p.key == "random" for p, _ in random_cycles)
+    # and it wraps back into the colour sweep
+    assert loop.resolve(12)[0].key == "solid"
+
+
+def test_loop_keeps_each_step_advancing_across_rounds():
+    loop = BY_KEY["loop"]
+    # Second time through, SOLID must continue its colour order rather
+    # than replay the first colour with a stale cycle number.
+    assert loop.resolve(0)[1] == 0
+    assert loop.resolve(12)[1] == 6      # solid's own 7th cycle -> white again
+    assert loop(12, BOARDS)[0x01] == loop(0, BOARDS)[0x01]
+
+
+def test_loop_paints_solid_colors_in_the_requested_order():
+    loop = BY_KEY["loop"]
+    order = ["white", "yellow", "blue", "red", "black", "green"]
+    for cycle, name in enumerate(order):
+        assert set(loop(cycle, BOARDS)[0x01].values()) == {COLOR_NAMES[name]}
+
+
 def test_solid_paces_itself_above_the_measured_repaint_time():
     # A full-panel repaint measures 9.8 s on the hardware; a shorter
     # interval would command the next color before this one is visible.
@@ -71,8 +98,8 @@ def test_solid_paces_itself_above_the_measured_repaint_time():
 
 
 def test_random_is_reproducible_for_a_given_seed():
-    a = PATTERNS[4](0, BOARDS, DEFAULT_PALETTE, random.Random(7))
-    b = PATTERNS[4](0, BOARDS, DEFAULT_PALETTE, random.Random(7))
+    a = BY_KEY["random"](0, BOARDS, DEFAULT_PALETTE, random.Random(7))
+    b = BY_KEY["random"](0, BOARDS, DEFAULT_PALETTE, random.Random(7))
     assert a == b
 
 

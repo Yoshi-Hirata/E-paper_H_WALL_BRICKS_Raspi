@@ -44,6 +44,10 @@ class Pattern:
         return self.build(cycle, boards, palette or DEFAULT_PALETTE,
                           rng or random.Random())
 
+    def resolve(self, cycle: int) -> tuple["Pattern", int]:
+        """Which pattern draws this cycle, and its own cycle number."""
+        return self, cycle
+
 
 def _wave(cycle, boards, palette, rng) -> Frame:
     gens = (gradient_pattern, spiral_pattern)
@@ -77,14 +81,54 @@ def _solid(cycle, boards, palette, rng) -> Frame:
     return {b: {t: color for t in sorted(VALID_TRIANGLES)} for b in boards}
 
 
-PATTERNS: list[Pattern] = [
+@dataclass(frozen=True)
+class Playlist:
+    """Several patterns in rotation, looping forever.
+
+    Duck-types Pattern so the runner and the menu treat both alike; each
+    step keeps its own pacing (see Pattern.interval).
+    """
+
+    key: str
+    label: str
+    detail: str
+    steps: tuple[tuple[Pattern, int], ...]   # (pattern, cycles to spend)
+    interval: float | None = None            # steps decide; kept for parity
+
+    @property
+    def period(self) -> int:
+        return sum(count for _, count in self.steps)
+
+    def resolve(self, cycle: int) -> tuple[Pattern, int]:
+        round_no, position = divmod(cycle, self.period)
+        for pattern, count in self.steps:
+            if position < count:
+                # Keep each pattern's own cycle advancing across rounds, so
+                # animations continue instead of restarting every loop.
+                return pattern, round_no * count + position
+            position -= count
+        raise AssertionError("period does not cover the steps")
+
+    def __call__(self, cycle: int, boards: list[int],
+                 palette: list[int] | None = None,
+                 rng: random.Random | None = None) -> Frame:
+        pattern, local = self.resolve(cycle)
+        return pattern(local, boards, palette, rng)
+
+
+_SOLID = Pattern("solid", "SOLID", "W>Y>B>R>K>G, 15s", _solid, interval=15.0)
+_RANDOM = Pattern("random", "RANDOM", "random colors", _random, interval=20.0)
+
+PATTERNS: list[Pattern | Playlist] = [
+    # Default loop: one full colour sweep, then a spell of random fields.
+    Playlist("loop", "SOLID+RANDOM", "6 colors, then 6 random",
+             steps=((_SOLID, 6), (_RANDOM, 6))),
     Pattern("wave", "WAVE", "gradient + spiral", _wave),
     Pattern("gradient", "GRADIENT", "rings from center", _gradient),
     Pattern("spiral", "SPIRAL", "clockwise inward", _spiral),
     Pattern("mirror", "MIRROR", "chasing gradients", _mirror),
-    Pattern("random", "RANDOM", "random colors", _random),
-    # 15 s: the 9.8 s repaint plus ~5 s of the colour standing still.
-    Pattern("solid", "SOLID", "W>Y>B>R>K>G, 15s", _solid, interval=15.0),
+    _RANDOM,
+    _SOLID,
 ]
 
 BY_KEY = {p.key: p for p in PATTERNS}

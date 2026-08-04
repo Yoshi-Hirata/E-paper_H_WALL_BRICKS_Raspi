@@ -13,7 +13,7 @@ WorkingDirectory=@REPO_DIR@
 # diagnosing a long-running demo.
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/default/epaper-demo
-ExecStart=@REPO_DIR@/.venv/bin/python host/wave_demo.py $DEMO_ARGS
+ExecStart=@REPO_DIR@/.venv/bin/python -m ui.main $DEMO_ARGS
 Restart=on-failure
 RestartSec=15
 

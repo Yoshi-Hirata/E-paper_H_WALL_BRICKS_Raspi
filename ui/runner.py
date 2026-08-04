@@ -131,8 +131,10 @@ class DemoRunner:
                         return
 
                 while not self._stop.is_set():
-                    frame = self.pattern(self.cycle, self.boards,
-                                         self.palette, rng)
+                    # A playlist hands back whichever pattern owns this
+                    # cycle; a plain pattern hands back itself.
+                    active, local_cycle = self.pattern.resolve(self.cycle)
+                    frame = active(local_cycle, self.boards, self.palette, rng)
                     for board in self.boards:
                         if not self._request(bus, stop(board, groups),
                                              f"stop @{board:02X}"):
@@ -144,10 +146,12 @@ class DemoRunner:
                             return
                     bus.send(show_single(0xFF, self.slot, groups))
                     self.cycle += 1
-                    self.emit(f"cycle {self.cycle} shown")
+                    label = ("" if active is self.pattern
+                             else f" {active.label}")
+                    self.emit(f"cycle {self.cycle}{label} shown")
 
                     # A pattern may ask for its own pace (see Pattern.interval).
-                    interval = self.pattern.interval or self.interval
+                    interval = active.interval or self.interval
                     if 0 < self.guard_delay < interval:
                         if not self._sleep(self.guard_delay):
                             break
