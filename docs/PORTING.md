@@ -12,6 +12,9 @@
   (実装量にして約 120 行)。演出・プロトコル・UI・テストは無改造で動く
 - **USB 構成は成立する**(確認済み、5 章)。USB 3.1 Type-C をホストにして
   パネル基板を繋ぎ、USB 2.0 Type-C から給電する。Pi Zero 2 W と同じ形
+- **LCD HAT の配線互換も確認済み**(5 章)。SPI は物理ピン位置ごと Pi と
+  一致しており、HAT は挿すだけで繋がる。ボタン・DC/RST/BL も全ピンが
+  GPIO として出ている。**追加の配線・改造は不要**
 - 最大のリスクは **Allwinner A733 が 2025 年 8 月発表の新 SoC** であること。
   Radxa 公式 Debian は存在するが Armbian はコミュニティ対応中で、
   GPIO/SPI まわりのカーネル成熟度が読めない
@@ -55,9 +58,10 @@ libgpiod は Raspberry Pi でも動く(現行の lgpio/gpiozero も内部では�
 
 ```
 ui/gpio.py     ← 新規。OutputLine / InputLine(コールバック付き)の薄い抽象
+                  単位は (chip, line)。A7Z はピンが 2 chip にまたがるため
 ui/boards.py   ← 新規。ボードごとのピンプロファイル
-                  PI_ZERO_2W  : gpiochip0, BCM 番号がそのまま line 番号
-                  CUBIE_A7Z   : gpiochipN, 40 ピン物理位置 → line 番号の対応表
+                  PI_ZERO_2W  : gpiochip0 + BCM 番号
+                  CUBIE_A7Z   : ライン名("PL5" 等)で指定(5 章参照)
 ui/config.py   ← 実行時にプロファイルを選ぶ(/proc/device-tree/model で判定)
 ```
 
@@ -107,12 +111,54 @@ Pi Zero 2 W(電源用 micro-USB + OTG 用 micro-USB)と同じ使い方ができ�
   C-to-A 変換 + 既存ケーブルで接続する
 - DP Alt Mode と同じポートだが、本システムは映像出力を使わないので競合しない
 
+### 解決済み: ピン対応(2026-08-05、[Radxa 公式 GPIO 表](https://docs.radxa.com/en/cubie/a7z/hardware-use/pin-gpio)で確認)
+
+**SPI が物理ピン位置ごと一致していた。** A7Z の SPI1 は 19/21/23/24 番ピンに
+出ており、これは Raspberry Pi の SPI0 とまったく同じ位置。
+つまり **LCD HAT は挿すだけで SPI が繋がる**(デバイスノード名が
+`/dev/spidev1.x` 系になるだけで、配線上の互換性がある)。
+
+LCD HAT が使う 15 本の対応表(物理ピン番号は Pi と共通):
+
+| 物理ピン | HAT の用途 | Pi(BCM) | A7Z | gpiochip |
+|---|---|---|---|---|
+| 19 | SPI MOSI | BCM10 | PD12 | — (SPI1) |
+| 21 | SPI MISO(HAT 未使用) | BCM9 | PD13 | — (SPI1) |
+| 23 | SPI CLK | BCM11 | PD11 | — (SPI1) |
+| 24 | SPI CS | BCM8 | PD10 | — (SPI1) |
+| 22 | LCD DC | BCM25 | **PL5** | **CHIP1** |
+| 13 | LCD RST | BCM27 | **PL6** | **CHIP1** |
+| 18 | LCD BL | BCM24 | PJ25 | CHIP0 |
+| 29 | 左 | BCM5 | PB2 | CHIP0 |
+| 31 | 上 | BCM6 | PB3 | CHIP0 |
+| 35 | 下 | BCM19 | PB6 | CHIP0 |
+| 37 | 右 | BCM26 | **PM4** | **CHIP1** |
+| 33 | 中央押し | BCM13 | **PM3** | **CHIP1** |
+| 40 | KEY1 | BCM21 | PB7 | CHIP0 |
+| 38 | KEY2 | BCM20 | PB8 | CHIP0 |
+| 36 | KEY3 | BCM16 | PB4 | CHIP0 |
+
+3.3V(1/17)・5V(2/4)・GND も Pi と同位置にあり、HAT の給電要件も満たす。
+
+**実装上の注意 2 点:**
+
+1. **ピンが 2 つの gpiochip にまたがる**(DC・RST・右・中央押しが CHIP1、
+   残りが CHIP0)。gpiozero はこれを隠蔽していたが、libgpiod では
+   **両方の chip を開いて扱う**必要がある。`ui/gpio.py` の抽象は
+   `(chip, line)` を単位に設計すること
+2. **GPIO 番号は計算式ではなく名前で解決するのが安全**。公式の式は
+   `NUM + 32 × バンク番号`(例 PB7 = 7 + 32×1 = 39)だが、CHIP1 側の
+   バンク起点(L を 0 と数えるか継続番号か)が読み取れない。
+   libgpiod は**ライン名での検索**に対応しているので、`gpioinfo` で
+   実機の名前(`PB7` 等)を確認し、プロファイルには**名前を書く**。
+   計算式に依存しない分、OS 更新でのズレにも強い
+
 ### 残る確認事項
 
 | # | 確認事項 | なぜ重要か |
 |---|---|---|
-| 1 | SPI オーバーレイの有効化手順と `/dev/spidev*` の番号 | LCD HAT の必須条件 |
-| 2 | 40 ピンヘッダの gpiochip/line 対応表 | ピン定義の書き換えに必須 |
+| 1 | SPI オーバーレイの有効化手順と `/dev/spidev*` の番号 | 配線は互換だが、オーバーレイ有効化は必要 |
+| 2 | `gpioinfo` でのライン名(`PB7` 等)の有無 | 名前で解決する方針が使えるかの前提 |
 | 3 | LCD HAT の機械的干渉 | 65×30mm で Pi Zero と同寸だが、USB-C コネクタ位置やヒートシンクとの干渉は要現物確認 |
 | 4 | OS イメージの Python バージョン、`libgpiod` パッケージの有無 | Python 3.11+ と pyserial/Pillow が入ればよい |
 | 5 | 電源容量 | A733 は 8 コア。Pi Zero 2 W より消費が大きく、PD アダプタが推奨されている |
