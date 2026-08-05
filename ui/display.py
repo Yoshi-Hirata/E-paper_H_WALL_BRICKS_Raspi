@@ -20,6 +20,13 @@ class Display:
     def show(self, image: Image.Image) -> None:  # pragma: no cover - iface
         raise NotImplementedError
 
+    def sleep(self) -> None:
+        """Blank the screen but stay usable - the demo keeps running."""
+        self.asleep = True
+
+    def wake(self) -> None:
+        self.asleep = False
+
     def close(self) -> None:
         pass
 
@@ -36,6 +43,7 @@ class NullDisplay(Display):
     def __init__(self):
         self.frames = 0
         self.last: Image.Image | None = None
+        self.asleep = False
 
     def show(self, image: Image.Image) -> None:
         self.frames += 1
@@ -77,6 +85,7 @@ class ST7789Display(Display):
 
         self._spi = None
         self._dc = self._rst = self._bl = None
+        self.asleep = False
         try:
             self._spi = spidev.SpiDev()
             self._spi.open(SPI_BUS, SPI_DEVICE)
@@ -173,12 +182,23 @@ class ST7789Display(Display):
             for start in range(0, len(payload), 4096):
                 self._spi.writebytes(payload[start:start + 4096])
 
+    def sleep(self) -> None:
+        if self._bl is not None:
+            self._bl.off()
+        if self._spi is not None:
+            self._command(0x28)      # display off
+        self.asleep = True
+
+    def wake(self) -> None:
+        if self._spi is not None:
+            self._command(0x29)      # display on
+        if self._bl is not None:
+            self._bl.on()
+        self.asleep = False
+
     def close(self) -> None:
         try:
-            if self._bl is not None:
-                self._bl.off()
-            if self._spi is not None:
-                self._command(0x28)  # display off
+            self.sleep()
         finally:
             self._release()
 

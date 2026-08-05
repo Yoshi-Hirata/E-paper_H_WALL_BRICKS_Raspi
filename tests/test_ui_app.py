@@ -80,14 +80,39 @@ def test_key2_returns_to_menu_and_stops_the_demo():
     assert runner.stops == 1
 
 
-def test_key3_quits_from_either_screen():
-    app, _ = make_app()
+def test_key3_blanks_the_screen_without_stopping_the_demo():
+    # On an appliance whose only interface is this screen, no button may
+    # leave it dark and unrecoverable - KEY3 sleeps, it does not quit.
+    app, runner = make_app()
+    app.handle("key1")
     app.handle("key3")
-    assert app.quit
-    app2, _ = make_app()
-    app2.handle("key1")
-    app2.handle("key3")
-    assert app2.quit
+    assert app.blanked
+    assert app.display.asleep
+    assert not app.quit
+    assert runner.running          # the panels keep cycling
+
+
+def test_any_press_wakes_the_screen_and_is_consumed():
+    app, runner = make_app()
+    app.handle("key3")
+    before = list(runner.starts)   # copy: the runner keeps appending to its own
+    app.handle("key1")             # blind press: wakes only
+    assert not app.blanked
+    assert not app.display.asleep
+    assert runner.starts == before
+    app.handle("key1")             # now it acts
+    assert len(runner.starts) == len(before) + 1
+
+
+def test_blanked_screen_is_not_repainted():
+    app, _ = make_app()
+    app.handle("key1")
+    app.tick(wait=0)
+    app.handle("key3")
+    before = app.display.frames
+    app.tick(wait=0)
+    app.tick(wait=0)
+    assert app.display.frames == before
 
 
 def test_menu_ignores_selection_keys_while_running():
@@ -104,11 +129,10 @@ def test_frames_are_lcd_sized_on_both_screens():
     assert app.frame().size == (WIDTH, HEIGHT)
 
 
-def test_run_loop_processes_events_and_stops_on_quit():
-    app, runner = make_app(["down", "key1", "key3"])
-    app.run(max_ticks=20)
+def test_run_loop_processes_events_and_stops_the_demo_on_exit():
+    app, runner = make_app(["down", "key1"])
+    app.run(max_ticks=5)
     assert runner.starts == [PATTERNS[1].key]
-    assert app.quit
     assert runner.stops >= 1      # run() always stops the demo on exit
 
 

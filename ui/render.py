@@ -90,7 +90,7 @@ def menu_screen(patterns, selected: int, port: str | None = None) -> Image.Image
               font=FONT_S, fill=DIM)
     draw.text((8, 202), f"port {port}" if port else "port: not found",
               font=FONT_S, fill=DIM if port else ERR)
-    _hint(draw, "UP/DOWN select   KEY1 start")
+    _hint(draw, "UP/DOWN sel  KEY1 start  KEY3 off")
     return image
 
 
@@ -120,7 +120,7 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
                   font=FONT_S, fill=tint)
         y += 15
 
-    _hint(draw, "KEY1 stop   KEY2 back")
+    _hint(draw, "KEY1 stop  KEY2 back  KEY3 off")
     return image
 
 

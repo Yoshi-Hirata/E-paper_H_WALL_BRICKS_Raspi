@@ -12,7 +12,10 @@ WorkingDirectory=@REPO_DIR@
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/default/epaper-ui
 ExecStart=@REPO_DIR@/.venv/bin/python -m ui.main $UI_ARGS
-Restart=on-failure
+# always, not on-failure: if this ever exits cleanly the screen would
+# stay dark until someone SSHes in, which is not acceptable on a device
+# whose only interface is that screen.
+Restart=always
 RestartSec=15
 
 [Install]

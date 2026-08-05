@@ -4,7 +4,11 @@ Controls (Waveshare 1.3inch LCD HAT):
   joystick up/down/left/right - choose a demo pattern
   KEY1                        - start the selected demo / stop it again
   KEY2                        - back to the menu (stops a running demo)
-  KEY3                        - quit
+  KEY3                        - blank the screen; any press wakes it
+
+No button quits. This runs as a service on a headless appliance, so a
+button that ends the process would leave the screen dark until someone
+SSHes in - KEY3 sleeps the backlight instead and the demo keeps running.
 """
 
 import time
@@ -32,6 +36,7 @@ class App:
         self.screen = Screen.MENU
         self.port_label = port_label
         self.quit = False
+        self.blanked = False
         self._dirty = True
         self._drawn_key = None
 
@@ -47,9 +52,16 @@ class App:
         raise KeyError(f"unknown pattern: {key}")
 
     def handle(self, event: str) -> None:
-        if event == "key3":
-            self.quit = True
+        if self.blanked:
+            # Any press wakes the screen and is consumed doing so, so a
+            # blind press cannot also change what is running.
+            self.blanked = False
+            self.display.wake()
             self._dirty = True
+            return
+        if event == "key3":
+            self.blanked = True
+            self.display.sleep()
             return
 
         if self.screen is Screen.MENU:
@@ -93,6 +105,8 @@ class App:
         )
 
     def draw(self) -> None:
+        if self.blanked:
+            return
         self.display.show(self.frame())
         self._dirty = False
         self._drawn_key = self._display_key()
@@ -120,6 +134,8 @@ class App:
             if self.quit:
                 return
             event = self.inputs.get()
+        if self.blanked:
+            return
         if self._dirty or self._display_key() != self._drawn_key:
             self.draw()
 
