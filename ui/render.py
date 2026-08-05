@@ -8,13 +8,18 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .config import HEIGHT, LOG_LINES, WIDTH
 
-BG = (12, 14, 20)
-FG = (232, 236, 245)
-DIM = (128, 136, 152)
-ACCENT = (94, 190, 255)
-OK = (120, 220, 150)
-ERR = (255, 110, 110)
-BAR = (26, 30, 40)
+# Palette for a 240x240 IPS panel read at arm's length. Pure black gives
+# the most contrast the panel can produce; the secondary tone is kept
+# bright enough to stay legible at 12px (~10:1 against the background,
+# where the previous grey managed about 5:1).
+BG = (0, 0, 0)
+FG = (255, 255, 255)         # primary text
+DIM = (176, 186, 200)        # secondary text: labels, log, hints
+ACCENT = (120, 205, 255)     # headers
+OK = (110, 235, 140)
+ERR = (255, 105, 105)
+BAR = (30, 33, 40)           # header/hint strips, distinct from the black
+SELECT = (0, 82, 140)        # selected menu row
 
 _FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -80,7 +85,7 @@ def menu_screen(patterns, selected: int, port: str | None = None) -> Image.Image
         y = 30 + row * row_h
         chosen = index == selected
         if chosen:
-            draw.rectangle((4, y - 2, WIDTH - 4, y + row_h - 6), fill=(30, 46, 66))
+            draw.rectangle((4, y - 2, WIDTH - 4, y + row_h - 6), fill=SELECT)
             draw.rectangle((4, y - 2, 7, y + row_h - 6), fill=ACCENT)
         draw.text((14, y), patterns[index].label, font=FONT_M,
                   fill=FG if chosen else DIM)
