@@ -238,4 +238,5 @@ sudo systemctl stop epaper-demo           # 停止
 ## ドキュメント
 
 - [docs/SPECIFICATION.md](docs/SPECIFICATION.md) — 通信プロトコル・色データ・演出の仕様
+- [docs/PORTING.md](docs/PORTING.md) — 他ボードへの移植可否と手法(Radxa Cubie A7Z 検討)
 - 開発経緯・実機検証の詳細は PC 版リポジトリの docs/ を参照
