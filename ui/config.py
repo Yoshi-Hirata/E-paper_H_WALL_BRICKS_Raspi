@@ -37,6 +37,12 @@ BUTTON_PINS = {
     "key3": PIN_KEY3,
 }
 
+# Holding KEY1 this long resets the demo instead of pausing it. The hold
+# is reported as its own event and suppresses the short press, so one
+# press never does both.
+KEY1_HOLD_S = 1.0
+EVENTS = tuple(BUTTON_PINS) + ("key1_hold",)
+
 # --- UI behaviour ---
 # Input poll interval. Redraws are separate and only happen when the
 # screen content actually changes (see App._display_key), so this can be

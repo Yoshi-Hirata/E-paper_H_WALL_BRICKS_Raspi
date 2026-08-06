@@ -19,16 +19,27 @@ class FakeRunner:
         self.elapsed = 0.0
         self.error = None
         self.running = False
+        self.paused = False
         self.starts = []
         self.stops = 0
+        self.pauses = 0
 
     def start(self, pattern):
         self.pattern = pattern
         self.running = True
+        self.paused = False
         self.starts.append(pattern.key)
+
+    def pause(self):
+        self.paused = True
+        self.pauses += 1
+
+    def resume(self):
+        self.paused = False
 
     def stop(self, timeout=5.0):
         self.running = False
+        self.paused = False
         self.stops += 1
 
     def recent(self, count):
@@ -61,15 +72,17 @@ def test_key1_starts_the_selected_pattern():
     assert runner.starts == [PATTERNS[1].key]
 
 
-def test_key1_while_running_stops_then_restarts():
+def test_key1_while_running_pauses_then_resumes():
+    # Pause, not stop: the demo keeps its cycle count and timer.
+    # Full coverage of this lives in tests/test_ui_pause.py.
     app, runner = make_app()
     app.handle("key1")
     app.handle("key1")
-    assert runner.stops == 1
-    assert not runner.running
-    app.handle("key1")            # pressing again restarts the same demo
-    assert runner.running
-    assert runner.starts == [PATTERNS[0].key, PATTERNS[0].key]
+    assert runner.paused
+    assert runner.stops == 0
+    app.handle("key1")
+    assert not runner.paused
+    assert runner.starts == [PATTERNS[0].key]     # never restarted
 
 
 def test_key2_returns_to_menu_and_stops_the_demo():

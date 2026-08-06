@@ -2,7 +2,8 @@
 
 Controls (Waveshare 1.3inch LCD HAT):
   joystick up/down/left/right - choose a demo pattern
-  KEY1                        - start the selected demo / stop it again
+  KEY1                        - start; then pause; then resume
+  KEY1 held ~1 s              - reset: start again from zero
   KEY2                        - back to the menu (stops a running demo)
   KEY3                        - blank the screen now
 
@@ -111,6 +112,12 @@ class App:
             self._blank()
             return
 
+        if event == "key1_hold":
+            # Reset: back to cycle 0 with the timer at zero, wherever we
+            # were. Distinct from pause, which keeps both.
+            self._restart()
+            return
+
         if self.screen is Screen.MENU:
             if event in ("up", "left"):
                 self.selected = (self.selected - 1) % len(self.patterns)
@@ -119,21 +126,27 @@ class App:
                 self.selected = (self.selected + 1) % len(self.patterns)
                 self._dirty = True
             elif event in ("key1", "press"):
-                self.runner.start(self.patterns[self.selected])
-                self.screen = Screen.RUNNING
-                self._dirty = True
+                self._restart()
         else:  # RUNNING
             if event in ("key1", "press"):
-                # Toggle: stop a live demo, restart it once stopped.
-                if self.runner.running:
-                    self.runner.stop()
+                # Pause and resume keep the cycle count and the timer; the
+                # panels hold their image while paused.
+                if self.runner.paused:
+                    self.runner.resume()
+                elif self.runner.running:
+                    self.runner.pause()
                 else:
-                    self.runner.start(self.patterns[self.selected])
+                    self._restart()
                 self._dirty = True
             elif event == "key2":
                 self.runner.stop()
                 self.screen = Screen.MENU
                 self._dirty = True
+
+    def _restart(self) -> None:
+        self.runner.start(self.patterns[self.selected])
+        self.screen = Screen.RUNNING
+        self._dirty = True
 
     def _blank(self) -> None:
         if not self.blanked:
@@ -154,6 +167,7 @@ class App:
             self.runner.recent(LOG_LINES),
             error=self.runner.error,
             stopping=not self.runner.running and self.runner.error is None,
+            paused=self.runner.paused,
             locked=self.locked,
         )
 
@@ -175,7 +189,7 @@ class App:
             return None
         return (int(self.runner.elapsed), self.runner.cycle,
                 tuple(self.runner.recent(LOG_LINES)),
-                self.runner.error, self.runner.running)
+                self.runner.error, self.runner.running, self.runner.paused)
 
     # ---- main loop ----
 

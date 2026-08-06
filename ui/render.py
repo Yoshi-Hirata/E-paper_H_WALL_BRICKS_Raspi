@@ -106,12 +106,18 @@ def menu_screen(patterns, selected: int, port: str | None = None,
 
 def running_screen(pattern_label: str, elapsed: float, cycle: int,
                    log_lines: list[str], error: str | None = None,
-                   stopping: bool = False,
+                   stopping: bool = False, paused: bool = False,
                    locked: bool = False) -> Image.Image:
     """Live view: elapsed timer, cycle counter and the tail of the log."""
     image, draw = _blank()
-    status = "ERROR" if error else ("STOPPING" if stopping else "RUNNING")
-    color = ERR if error else (DIM if stopping else OK)
+    if error:
+        status, color = "ERROR", ERR
+    elif paused:
+        status, color = "PAUSED", ACCENT
+    elif stopping:
+        status, color = "STOPPING", DIM
+    else:
+        status, color = "RUNNING", OK
     _header(draw, _ellipsize(pattern_label, FONT_M, 150))
     draw.text((WIDTH - 8 - FONT_S.getlength(status), 6), status,
               font=FONT_S, fill=color)
@@ -132,7 +138,8 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
         y += 15
 
     _hint(draw, "buttons locked" if locked
-          else "KEY1 stop  KEY2 back  KEY3 off")
+          else ("KEY1 resume  hold=reset" if paused
+                else "KEY1 pause  hold=reset  KEY2 back"))
     return image
 
 

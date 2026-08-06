@@ -8,9 +8,7 @@ import queue
 import sys
 import threading
 
-from .config import BUTTON_PINS
-
-EVENTS = tuple(BUTTON_PINS)
+from .config import BUTTON_PINS, EVENTS, KEY1_HOLD_S
 
 
 class InputSource:
@@ -50,17 +48,41 @@ class QueueInput(InputSource):
 
 
 class GpioInput(QueueInput):
-    """Waveshare LCD HAT joystick + KEY1..3 (active low, pull-up)."""
+    """Waveshare LCD HAT joystick + KEY1..3 (active low, pull-up).
 
-    def __init__(self, bounce_s: float = 0.05):
+    KEY1 also reports a hold. The hold fires while the button is still
+    down and marks the press as consumed, so releasing afterwards does
+    not also send the short event - one press, one meaning.
+    """
+
+    def __init__(self, bounce_s: float = 0.05, hold_s: float = KEY1_HOLD_S):
         super().__init__()
         from gpiozero import Button
 
         self._buttons = []
+        self._key1_was_held = False
         for event, pin in BUTTON_PINS.items():
-            button = Button(pin, pull_up=True, bounce_time=bounce_s)
-            button.when_pressed = (lambda e=event: self.post(e))
+            if event == "key1":
+                button = Button(pin, pull_up=True, bounce_time=bounce_s,
+                                hold_time=hold_s)
+                button.when_pressed = self._key1_pressed
+                button.when_held = self._key1_held
+                button.when_released = self._key1_released
+            else:
+                button = Button(pin, pull_up=True, bounce_time=bounce_s)
+                button.when_pressed = (lambda e=event: self.post(e))
             self._buttons.append(button)
+
+    def _key1_pressed(self) -> None:
+        self._key1_was_held = False
+
+    def _key1_held(self) -> None:
+        self._key1_was_held = True
+        self.post("key1_hold")
+
+    def _key1_released(self) -> None:
+        if not self._key1_was_held:
+            self.post("key1")
 
     def close(self) -> None:
         for button in self._buttons:
@@ -82,6 +104,7 @@ class KeyboardInput(QueueInput):
         "d": "right", "l": "right",
         "": "press", "p": "press",
         "1": "key1", "2": "key2", "3": "key3", "q": "key3",
+        "!": "key1_hold",          # shift-1: the KEY1 hold (reset)
     }
 
     def __init__(self, stream=None):

@@ -90,6 +90,8 @@ class DemoRunner:
         self.error: str | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._pause = threading.Event()
+        self._elapsed_base = 0.0
         self._lock = threading.Lock()
 
     # ---- state ----
@@ -99,8 +101,15 @@ class DemoRunner:
         return self._thread is not None and self._thread.is_alive()
 
     @property
+    def paused(self) -> bool:
+        return self._pause.is_set()
+
+    @property
     def elapsed(self) -> float:
-        return 0.0 if self.started_at is None else time.monotonic() - self.started_at
+        """Time spent demoing, with paused stretches not counted."""
+        if self.started_at is None:
+            return self._elapsed_base
+        return self._elapsed_base + time.monotonic() - self.started_at
 
     def recent(self, count: int) -> list[str]:
         with self._lock:
@@ -124,6 +133,8 @@ class DemoRunner:
         self.failures = 0
         self.error = None
         self._stop.clear()
+        self._pause.clear()
+        self._elapsed_base = 0.0
         self.started_at = time.monotonic()
         self.emit(f"start {pattern.label}")
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -131,16 +142,53 @@ class DemoRunner:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
+        self._pause.clear()          # let a paused worker notice the stop
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=timeout)
         self.started_at = None
+        self._elapsed_base = 0.0
+
+    def pause(self) -> None:
+        """Hold between cycles, keeping the timer and the pattern position.
+
+        The panels simply keep whatever they are showing - nothing is
+        playing on them, so there is nothing to stop.
+        """
+        if not self.running or self.paused:
+            return
+        self._elapsed_base = self.elapsed
+        self.started_at = None       # freeze the timer
+        self._pause.set()
+        self.emit("paused")
+
+    def resume(self) -> None:
+        if not self.paused:
+            return
+        self.started_at = time.monotonic()
+        self._pause.clear()
+        self.emit("resumed")
 
     # ---- retry helpers ----
 
+    def _hold_while_paused(self) -> bool:
+        """Block until resumed; False if a stop was requested meanwhile."""
+        while self._pause.is_set():
+            if self._stop.wait(0.05):
+                return False
+        return True
+
     def _sleep(self, seconds: float) -> bool:
-        """Interruptible sleep; False if a stop was requested."""
-        return not self._stop.wait(seconds)
+        """Interruptible sleep; False if a stop was requested.
+
+        A pause is honoured before and after the wait, so the demo halts
+        between cycles rather than mid-command.
+        """
+        if not self._hold_while_paused():
+            return False
+        if self._stop.wait(seconds):
+            return False
+        return self._hold_while_paused()
 
     def _backoff(self, attempt: int) -> float:
         return self.retry_delays[min(attempt, len(self.retry_delays)) - 1]
@@ -245,6 +293,8 @@ class DemoRunner:
                     consecutive = 0
                     needs_setup = True
                     while not self._stop.is_set():
+                        if not self._hold_while_paused():
+                            break
                         if needs_setup and not self._setup(bus, groups):
                             consecutive += 1
                         elif self._cycle(bus, groups, rng):
