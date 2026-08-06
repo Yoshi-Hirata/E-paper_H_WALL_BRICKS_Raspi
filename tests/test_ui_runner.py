@@ -52,6 +52,15 @@ def make_runner(bus, **kwargs):
     kwargs.setdefault("guard_delay", 0.0)
     kwargs.setdefault("port", "/dev/fake")
     kwargs.setdefault("echo_log", False)
+    # Compress the retry timings; the real ones are sized to outwait a
+    # 9.8 s repaint and would make these tests take minutes.
+    kwargs.setdefault("command_attempts", 2)
+    kwargs.setdefault("save_attempts", 1)
+    kwargs.setdefault("retry_delays", (0.01,))
+    kwargs.setdefault("busy_delay", 0.01)
+    kwargs.setdefault("reopen_delay", 0.01)
+    kwargs.setdefault("port_wait", 0.01)
+    kwargs.setdefault("show_gap", 0.001)
     return DemoRunner(open_bus=lambda port: bus, **kwargs)
 
 
@@ -78,32 +87,39 @@ def test_first_action_silences_the_factory_autoplay():
     assert first.cmd == 0x17 and first.dest == 0xFF
 
 
-def test_missing_ack_aborts_and_is_reported():
+def test_missing_ack_is_reported_but_not_fatal():
     bus = FakeBus(nak_on=0x13)          # color save never answers
     runner = make_runner(bus)
     runner.start(BY_KEY["wave"])
     assert wait_until(lambda: runner.error is not None)
-    assert "no ACK" in runner.error
+    assert "gave up" in runner.error
     assert any("ERROR" in line for line in runner.recent(10))
-    assert wait_until(lambda: not runner.running)
+    # Reporting is not stopping: see tests/test_ui_resilience.py for the
+    # full fault matrix behind that rule.
+    assert runner.running
+    runner.stop()
 
 
-def test_nak_response_aborts_too():
+def test_nak_response_is_reported_but_not_fatal():
     bus = FakeBus(ack_cmd=0x81)         # ACK_FAIL
     runner = make_runner(bus)
     runner.start(BY_KEY["wave"])
     assert wait_until(lambda: runner.error is not None)
-    assert "NAK" in runner.error
+    assert runner.running
+    runner.stop()
 
 
-def test_missing_port_is_reported_not_raised(monkeypatch):
+def test_missing_port_is_reported_and_waited_out(monkeypatch):
     import ui.runner as runner_module
 
     monkeypatch.setattr(runner_module, "find_port", lambda: None)
-    runner = DemoRunner(open_bus=lambda port: FakeBus(), port=None)
-    runner.pattern = BY_KEY["wave"]
-    runner._run()
-    assert runner.error == "no serial port"
+    runner = make_runner(FakeBus(), port=None)
+    runner.start(BY_KEY["wave"])
+    assert wait_until(lambda: runner.error == "no serial port")
+    # It waits for the port to appear rather than ending the demo; the
+    # recovery path itself is covered in tests/test_ui_resilience.py.
+    assert runner.running
+    runner.stop()
 
 
 def test_elapsed_starts_at_zero_and_resets_on_stop():

@@ -1,9 +1,19 @@
 """Background demo runner: drives the panels and reports progress.
 
-Mirrors the sequence proven by host/wave_demo.py (broadcast stop at
-start, per-board stop -> save color with ACK check, broadcast show, guard
-stop mid-interval), but runs in a thread so the UI stays responsive and
-can show a live log and elapsed timer.
+Built for show operation, where the failure that matters is a frozen
+panel waiting for a human. Nothing here is fatal - see docs/RELIABILITY.md
+for the reasoning. The layers, outermost last:
+
+  command  exponential backoff, long enough to outwait a repaint (9.8 s
+           measured) and a busy board
+  cycle    give up on at most one cycle, re-initialise, try the next one
+  bus      close and reopen the port - via find_port, since a USB
+           re-enumeration can rename the device - and wait for it to come
+           back if it is gone
+  thread   the worker only ever exits when asked to stop
+
+The command sequence itself mirrors host/wave_demo.py, which is the one
+verified against the real boards.
 """
 
 import random
@@ -23,12 +33,16 @@ from .config import LOG_HISTORY
 from .patterns import DEFAULT_PALETTE, Pattern
 
 DEFAULT_BOARDS = [0x01, 0x02]
+ACK_SUCCESS, ACK_BUSY = 0x80, 0x82
+SHOW_REPEATS = 3          # the show frame is broadcast, so never acknowledged
+SHOW_GAP_S = 0.15
 
 
 class DemoRunner:
     """Runs one pattern in a worker thread until stopped.
 
-    `open_bus` is injectable so tests can drive a fake transport.
+    `open_bus` is injectable so tests can drive a fake transport; the
+    retry timings are parameters so they can be compressed in tests.
     """
 
     def __init__(self, boards: list[int] | None = None,
@@ -36,7 +50,14 @@ class DemoRunner:
                  slot: int = TEST_SLOT, port: str | None = None,
                  palette: list[int] | None = None,
                  open_bus=None, seed: int | None = None,
-                 echo_log: bool = True):
+                 echo_log: bool = True,
+                 command_attempts: int = 8, save_attempts: int = 3,
+                 retry_delays: tuple[float, ...] = (1, 2, 4, 8, 12),
+                 busy_delay: float = 1.0, busy_attempts: int = 5,
+                 reopen_after_failures: int = 3, reopen_delay: float = 2.0,
+                 port_wait: float = 10.0,
+                 show_repeats: int = SHOW_REPEATS,
+                 show_gap: float = SHOW_GAP_S):
         self.boards = boards or list(DEFAULT_BOARDS)
         self.interval = interval
         self.guard_delay = guard_delay
@@ -49,9 +70,22 @@ class DemoRunner:
         # in `journalctl -u epaper-ui` (the LCD is the only other view).
         self._echo_log = echo_log
 
+        self.command_attempts = command_attempts
+        # Each save retry writes the boards' flash, so it retries less.
+        self.save_attempts = save_attempts
+        self.retry_delays = retry_delays
+        self.busy_delay = busy_delay
+        self.busy_attempts = busy_attempts
+        self.reopen_after_failures = reopen_after_failures
+        self.reopen_delay = reopen_delay
+        self.port_wait = port_wait
+        self.show_repeats = show_repeats
+        self.show_gap = show_gap
+
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
         self.pattern: Pattern | None = None
         self.cycle = 0
+        self.failures = 0          # cycles abandoned since the demo started
         self.started_at: float | None = None
         self.error: str | None = None
         self._thread: threading.Thread | None = None
@@ -87,6 +121,7 @@ class DemoRunner:
             self.stop()
         self.pattern = pattern
         self.cycle = 0
+        self.failures = 0
         self.error = None
         self._stop.clear()
         self.started_at = time.monotonic()
@@ -101,79 +136,139 @@ class DemoRunner:
             thread.join(timeout=timeout)
         self.started_at = None
 
-    # ---- worker ----
+    # ---- retry helpers ----
 
     def _sleep(self, seconds: float) -> bool:
         """Interruptible sleep; False if a stop was requested."""
         return not self._stop.wait(seconds)
 
-    def _run(self) -> None:
-        port = self.port or find_port()
-        if not port:
-            self.error = "no serial port"
-            self.emit("ERROR no serial port")
-            return
-        rng = random.Random(self._seed)
-        try:
-            with self._open_bus(port) as bus:
-                self.emit(f"port {port}")
-                groups = max(len(self.boards), max(self.boards))
-                # Silence the factory autoplay before touching the slots.
-                bus.send(stop(0xFF, groups))
-                time.sleep(0.3)
-                for board in self.boards:
-                    if not self._request(bus, stop(board, groups),
-                                         f"stop @{board:02X}"):
-                        return
-                    if not self._request(
-                            bus, slot_config(board, self.slot, group_count=groups),
-                            f"cfg @{board:02X}"):
-                        return
+    def _backoff(self, attempt: int) -> float:
+        return self.retry_delays[min(attempt, len(self.retry_delays)) - 1]
 
-                while not self._stop.is_set():
-                    # A playlist hands back whichever pattern owns this
-                    # cycle; a plain pattern hands back itself.
-                    active, local_cycle = self.pattern.resolve(self.cycle)
-                    frame = active(local_cycle, self.boards, self.palette, rng)
-                    for board in self.boards:
-                        if not self._request(bus, stop(board, groups),
-                                             f"stop @{board:02X}"):
-                            return
-                        arr = build_hexagon_array(frame[board])
-                        if not self._request(
-                                bus, save_color(board, self.slot, arr, groups),
-                                f"save @{board:02X}"):
-                            return
-                    bus.send(show_single(0xFF, self.slot, groups))
-                    self.cycle += 1
-                    label = ("" if active is self.pattern
-                             else f" {active.label}")
-                    self.emit(f"cycle {self.cycle}{label} shown")
+    def _request(self, bus, frame, label: str, attempts: int | None = None) -> bool:
+        """Send until acknowledged, backing off between tries.
 
-                    # A pattern may ask for its own pace (see Pattern.interval).
-                    interval = active.interval or self.interval
-                    if 0 < self.guard_delay < interval:
-                        if not self._sleep(self.guard_delay):
-                            break
-                        bus.send(stop(0xFF, groups))
-                        if not self._sleep(interval - self.guard_delay):
-                            break
-                    elif not self._sleep(interval):
-                        break
-        except Exception as exc:  # serial unplugged, permission, ...
-            self.error = str(exc)
-            self.emit(f"ERROR {exc}")
-        finally:
-            self.emit("stopped")
+        The backoff has to be able to outwait a full repaint: a board is
+        deaf for 9.8 s while its e-paper redraws, and that is a normal
+        event, not a fault.
+        """
+        attempts = attempts or self.command_attempts
+        busy_seen = 0
+        for attempt in range(1, attempts + 1):
+            ack = bus.request(frame)
+            if ack is not None and ack.cmd == ACK_SUCCESS:
+                if attempt > 1:
+                    self.emit(f"{label} ok after {attempt} tries")
+                return True
+            if ack is not None and ack.cmd == ACK_BUSY:
+                busy_seen += 1
+                if busy_seen > self.busy_attempts:
+                    break
+                if not self._sleep(self.busy_delay):
+                    return False
+                continue
+            if attempt == 1:
+                reason = "no ACK" if ack is None else f"NAK 0x{ack.cmd:02X}"
+                self.emit(f"{label} {reason}, retrying")
+            if attempt < attempts and not self._sleep(self._backoff(attempt)):
+                return False
+        self.error = f"{label}: gave up after {attempts}"
+        self.emit(f"ERROR {label} gave up")
+        return False
 
-    def _request(self, bus, frame, label: str) -> bool:
-        ack = bus.request(frame)
-        if ack is None:
-            self.error = f"{label}: no ACK"
-            self.emit(f"ERROR {label} no ACK")
-            return False
-        if ack.cmd != 0x80:
-            self.error = f"{label}: NAK 0x{ack.cmd:02X}"
-            self.emit(f"ERROR {label} NAK 0x{ack.cmd:02X}")
-            return False
+    # ---- one cycle ----
+
+    def _setup(self, bus, groups: int) -> bool:
+        """Silence any playback and (re)configure the slot on each board."""
+        bus.send(stop(0xFF, groups))
+        time.sleep(0.3)
+        for board in self.boards:
+            if not self._request(bus, stop(board, groups), f"stop @{board:02X}"):
+                return False
+            if not self._request(bus, slot_config(board, self.slot,
+                                                  group_count=groups),
+                                 f"cfg @{board:02X}"):
+                return False
         return True
+
+    def _cycle(self, bus, groups: int, rng: random.Random) -> bool:
+        # A playlist hands back whichever pattern owns this cycle; a plain
+        # pattern hands back itself.
+        active, local_cycle = self.pattern.resolve(self.cycle)
+        frame = active(local_cycle, self.boards, self.palette, rng)
+        for board in self.boards:
+            if not self._request(bus, stop(board, groups), f"stop @{board:02X}"):
+                return False
+            arr = build_hexagon_array(frame[board])
+            if not self._request(bus, save_color(board, self.slot, arr, groups),
+                                 f"save @{board:02X}", self.save_attempts):
+                return False
+
+        # Broadcast keeps both panels in step but is unacknowledged, so a
+        # dropped frame would silently leave the old image up. Repeating is
+        # harmless: a board ignores commands while it is already repainting.
+        for _ in range(self.show_repeats):
+            bus.send(show_single(0xFF, self.slot, groups))
+            time.sleep(self.show_gap)
+
+        self.cycle += 1
+        label = "" if active is self.pattern else f" {active.label}"
+        self.emit(f"cycle {self.cycle}{label} shown")
+        return True
+
+    def _wait_next(self, bus, groups: int) -> bool:
+        active, _ = self.pattern.resolve(max(self.cycle - 1, 0))
+        interval = active.interval or self.interval
+        if 0 < self.guard_delay < interval:
+            if not self._sleep(self.guard_delay):
+                return False
+            bus.send(stop(0xFF, groups))    # suppress the factory autoplay
+            return self._sleep(interval - self.guard_delay)
+        return self._sleep(interval)
+
+    # ---- worker ----
+
+    def _run(self) -> None:
+        rng = random.Random(self._seed)
+        groups = max(len(self.boards), max(self.boards))
+        while not self._stop.is_set():
+            port = self.port or find_port()
+            if not port:
+                self.error = "no serial port"
+                self.emit("no serial port, waiting")
+                if not self._sleep(self.port_wait):
+                    break
+                continue
+            try:
+                with self._open_bus(port) as bus:
+                    self.emit(f"port {port}")
+                    consecutive = 0
+                    needs_setup = True
+                    while not self._stop.is_set():
+                        if needs_setup and not self._setup(bus, groups):
+                            consecutive += 1
+                        elif self._cycle(bus, groups, rng):
+                            consecutive = 0
+                            needs_setup = False
+                            self.error = None
+                            if not self._wait_next(bus, groups):
+                                break
+                            continue
+                        else:
+                            consecutive += 1
+                        # This cycle is lost; the panels keep the previous
+                        # image. Re-initialise next time in case a board
+                        # rebooted while it was unreachable.
+                        self.failures += 1
+                        needs_setup = True
+                        if consecutive >= self.reopen_after_failures:
+                            self.emit("reopening the bus")
+                            break
+                        if not self._sleep(self.reopen_delay):
+                            break
+            except Exception as exc:        # unplugged, permissions, ...
+                self.error = str(exc)
+                self.emit(f"ERROR bus {exc}")
+            if not self._stop.is_set() and not self._sleep(self.reopen_delay):
+                break
+        self.emit("stopped")
