@@ -117,6 +117,22 @@ def test_blanking_can_be_disabled():
     assert not app.blanked
 
 
+def test_blanking_is_off_unless_asked_for():
+    # The default has to stay off: a dark screen reads as a dead device,
+    # and an operator glancing at the panel state should not have to
+    # touch anything. Battery runs opt in with --blank-after.
+    from ui.config import BLANK_AFTER_S
+
+    assert BLANK_AFTER_S == 0
+    app, _, clock = make_app()          # no blank_after given
+    clock.advance(3600)
+    app.tick(wait=0)
+    assert not app.blanked
+    # KEY3 still blanks on demand.
+    app.handle("key3")
+    assert app.blanked
+
+
 def test_demo_keeps_running_while_blanked():
     app, runner, clock = make_app(blank_after=10.0)
     app.handle("key1")

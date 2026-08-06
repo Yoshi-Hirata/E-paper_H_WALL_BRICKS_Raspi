@@ -51,10 +51,13 @@ FRAME_INTERVAL_S = 0.1
 LOG_LINES = 6            # log rows visible on the running screen
 LOG_HISTORY = 200        # lines kept in memory
 
-# Blank the backlight after this long without a button press. The demo
-# keeps running; any press wakes the screen and does nothing else. Worth
-# roughly 20-40 mA on battery (docs/POWER.md).
-BLANK_AFTER_S = 10.0
+# Blank the backlight after this long without a button press; 0 disables
+# it. Off by default - an operator wants to glance at the panel state
+# without touching anything, and a dark screen reads as "it died". Turn
+# it on for battery work with `--blank-after 10`, worth roughly 20-40 mA
+# (docs/POWER.md). The demo keeps running either way, and any press wakes
+# the screen without changing anything else.
+BLANK_AFTER_S = 0.0
 
 # Show lock. Locked, the buttons do nothing, so a knock during a show
 # cannot stop the demo. This sequence within UNLOCK_WINDOW_S unlocks;
