@@ -1,0 +1,16 @@
+[Unit]
+Description=e-paper endurance run counters (survives a power cut)
+# Independent of epaper-ui: it only reads the journal, so it can be
+# started or stopped mid-test without disturbing a run.
+After=multi-user.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 @REPO_DIR@/raspi/runlog.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

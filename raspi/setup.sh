@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVICES=(epaper-demo epaper-ui)
+SERVICES=(epaper-demo epaper-ui epaper-runlog)
 
 echo "== apt packages =="
 sudo apt-get update
