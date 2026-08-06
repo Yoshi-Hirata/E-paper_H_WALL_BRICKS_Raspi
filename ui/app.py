@@ -4,18 +4,28 @@ Controls (Waveshare 1.3inch LCD HAT):
   joystick up/down/left/right - choose a demo pattern
   KEY1                        - start the selected demo / stop it again
   KEY2                        - back to the menu (stops a running demo)
-  KEY3                        - blank the screen; any press wakes it
+  KEY3                        - blank the screen now
+
+The screen also blanks itself after BLANK_AFTER_S without input. Any
+press wakes it and does nothing else - waking must never move the state
+machine, or a blind press in a dark room could stop a running show.
 
 No button quits. This runs as a service on a headless appliance, so a
-button that ends the process would leave the screen dark until someone
-SSHes in - KEY3 sleeps the backlight instead and the demo keeps running.
+button that ended the process would leave the screen dark until someone
+SSHed in.
+
+With `locked` set the buttons do nothing at all, except that they still
+wake the screen; the UNLOCK_SEQUENCE frees them temporarily and the lock
+returns by itself after RELOCK_AFTER_S of quiet.
 """
 
 import time
 from enum import Enum
 
-from . import render
-from .config import FRAME_INTERVAL_S, LOG_LINES
+from . import notify, render
+from .config import (BLANK_AFTER_S, FRAME_INTERVAL_S, LOG_LINES,
+                     RELOCK_AFTER_S, UNLOCK_SEQUENCE, UNLOCK_WINDOW_S,
+                     WATCHDOG_PERIOD_S)
 from .patterns import PATTERNS
 from .runner import DemoRunner
 
@@ -27,7 +37,10 @@ class Screen(Enum):
 
 class App:
     def __init__(self, display, inputs, runner: DemoRunner | None = None,
-                 patterns=None, port_label: str | None = None):
+                 patterns=None, port_label: str | None = None,
+                 locked: bool = False, blank_after: float = BLANK_AFTER_S,
+                 relock_after: float = RELOCK_AFTER_S,
+                 clock=time.monotonic):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -37,6 +50,17 @@ class App:
         self.port_label = port_label
         self.quit = False
         self.blanked = False
+        self.locked = locked
+        self.blank_after = blank_after
+        self.relock_after = relock_after
+        self._clock = clock
+        # Only a device that started locked re-locks itself; unlocking an
+        # unlocked device would be a surprise.
+        self._locks_itself = locked
+        self._unlock_progress: list[str] = []
+        self._unlock_started = 0.0
+        self._last_input = clock()
+        self._last_pet = 0.0
         self._dirty = True
         self._drawn_key = None
 
@@ -51,17 +75,40 @@ class App:
                 return
         raise KeyError(f"unknown pattern: {key}")
 
+    def _try_unlock(self, event: str) -> None:
+        now = self._clock()
+        if self._unlock_progress and now - self._unlock_started > UNLOCK_WINDOW_S:
+            self._unlock_progress.clear()
+        if not self._unlock_progress:
+            self._unlock_started = now
+        expected = UNLOCK_SEQUENCE[len(self._unlock_progress)]
+        if event == expected:
+            self._unlock_progress.append(event)
+            if len(self._unlock_progress) == len(UNLOCK_SEQUENCE):
+                self._unlock_progress.clear()
+                self.locked = False
+                self._dirty = True
+        else:
+            self._unlock_progress.clear()
+
     def handle(self, event: str) -> None:
+        now = self._clock()
         if self.blanked:
             # Any press wakes the screen and is consumed doing so, so a
             # blind press cannot also change what is running.
             self.blanked = False
             self.display.wake()
             self._dirty = True
+            self._last_input = now
             return
+        self._last_input = now
+
+        if self.locked:
+            self._try_unlock(event)
+            return
+
         if event == "key3":
-            self.blanked = True
-            self.display.sleep()
+            self._blank()
             return
 
         if self.screen is Screen.MENU:
@@ -88,12 +135,17 @@ class App:
                 self.screen = Screen.MENU
                 self._dirty = True
 
+    def _blank(self) -> None:
+        if not self.blanked:
+            self.blanked = True
+            self.display.sleep()
+
     # ---- drawing ----
 
     def frame(self):
         if self.screen is Screen.MENU:
             return render.menu_screen(self.patterns, self.selected,
-                                      self.port_label)
+                                      self.port_label, locked=self.locked)
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",
@@ -102,6 +154,7 @@ class App:
             self.runner.recent(LOG_LINES),
             error=self.runner.error,
             stopping=not self.runner.running and self.runner.error is None,
+            locked=self.locked,
         )
 
     def draw(self) -> None:
@@ -126,6 +179,20 @@ class App:
 
     # ---- main loop ----
 
+    def _idle_tasks(self) -> None:
+        now = self._clock()
+        idle = now - self._last_input
+        if not self.blanked and 0 < self.blank_after <= idle:
+            self._blank()
+        if (self._locks_itself and not self.locked
+                and 0 < self.relock_after <= idle):
+            self.locked = True
+            self._unlock_progress.clear()
+            self._dirty = True
+        if now - self._last_pet >= WATCHDOG_PERIOD_S:
+            self._last_pet = now
+            notify.alive()
+
     def tick(self, wait: float = FRAME_INTERVAL_S) -> None:
         """Drain pending events, then redraw if anything visible changed."""
         event = self.inputs.get(timeout=wait)
@@ -134,6 +201,7 @@ class App:
             if self.quit:
                 return
             event = self.inputs.get()
+        self._idle_tasks()
         if self.blanked:
             return
         if self._dirty or self._display_key() != self._drawn_key:
@@ -141,6 +209,7 @@ class App:
 
     def run(self, max_ticks: int | None = None) -> None:
         self.draw()
+        notify.ready()
         ticks = 0
         try:
             while not self.quit and (max_ticks is None or ticks < max_ticks):
@@ -148,5 +217,6 @@ class App:
                 ticks += 1
         finally:
             self.runner.stop()
-            self.display.show(render.message_screen("stopped", "KEY3 pressed"))
+            self.display.wake()
+            self.display.show(render.message_screen("stopped", "service ended"))
             time.sleep(0.2)

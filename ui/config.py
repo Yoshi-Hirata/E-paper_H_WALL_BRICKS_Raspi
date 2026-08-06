@@ -44,3 +44,19 @@ BUTTON_PINS = {
 FRAME_INTERVAL_S = 0.1
 LOG_LINES = 6            # log rows visible on the running screen
 LOG_HISTORY = 200        # lines kept in memory
+
+# Blank the backlight after this long without a button press. The demo
+# keeps running; any press wakes the screen and does nothing else. Worth
+# roughly 20-40 mA on battery (docs/POWER.md).
+BLANK_AFTER_S = 10.0
+
+# Show lock. Locked, the buttons do nothing, so a knock during a show
+# cannot stop the demo. This sequence within UNLOCK_WINDOW_S unlocks;
+# the lock comes back on its own after RELOCK_AFTER_S of no input, so an
+# operator never has to remember to re-arm it.
+UNLOCK_SEQUENCE = ("key2", "key3", "key2")
+UNLOCK_WINDOW_S = 5.0
+RELOCK_AFTER_S = 60.0
+
+# How often to pet systemd's watchdog (WatchdogSec must be well above).
+WATCHDOG_PERIOD_S = 5.0

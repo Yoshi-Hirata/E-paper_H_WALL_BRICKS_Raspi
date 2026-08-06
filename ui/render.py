@@ -71,10 +71,14 @@ def _ellipsize(text: str, font, max_width: int) -> str:
     return text + "\u2026"
 
 
-def menu_screen(patterns, selected: int, port: str | None = None) -> Image.Image:
+def menu_screen(patterns, selected: int, port: str | None = None,
+                locked: bool = False) -> Image.Image:
     """Pattern chooser. Up/Down move, KEY1 starts."""
     image, draw = _blank()
     _header(draw, "E-PAPER DEMO")
+    if locked:
+        draw.text((WIDTH - 8 - FONT_S.getlength("LOCKED"), 6), "LOCKED",
+                  font=FONT_S, fill=ACCENT)
 
     # Scroll the list so the cursor stays visible on the 240px screen.
     visible = 6
@@ -95,13 +99,15 @@ def menu_screen(patterns, selected: int, port: str | None = None) -> Image.Image
               font=FONT_S, fill=DIM)
     draw.text((8, 202), f"port {port}" if port else "port: not found",
               font=FONT_S, fill=DIM if port else ERR)
-    _hint(draw, "UP/DOWN sel  KEY1 start  KEY3 off")
+    _hint(draw, "buttons locked" if locked
+          else "UP/DOWN sel  KEY1 start  KEY3 off")
     return image
 
 
 def running_screen(pattern_label: str, elapsed: float, cycle: int,
                    log_lines: list[str], error: str | None = None,
-                   stopping: bool = False) -> Image.Image:
+                   stopping: bool = False,
+                   locked: bool = False) -> Image.Image:
     """Live view: elapsed timer, cycle counter and the tail of the log."""
     image, draw = _blank()
     status = "ERROR" if error else ("STOPPING" if stopping else "RUNNING")
@@ -125,7 +131,8 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
                   font=FONT_S, fill=tint)
         y += 15
 
-    _hint(draw, "KEY1 stop  KEY2 back  KEY3 off")
+    _hint(draw, "buttons locked" if locked
+          else "KEY1 stop  KEY2 back  KEY3 off")
     return image
 
 

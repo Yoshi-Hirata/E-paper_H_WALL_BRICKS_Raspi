@@ -6,7 +6,11 @@ Conflicts=epaper-demo.service
 After=multi-user.target
 
 [Service]
-Type=simple
+# notify + WatchdogSec: a hung process (rather than a crashed one) would
+# otherwise leave the panels frozen with nothing to notice it.
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
 User=@RUN_USER@
 WorkingDirectory=@REPO_DIR@
 Environment=PYTHONUNBUFFERED=1

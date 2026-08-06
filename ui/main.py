@@ -105,8 +105,39 @@ def check() -> int:
         ok = False
         print(f"lcd (ST7789)      : NOT USABLE ({exc})")
 
+    ok &= check_boards(port)
     print("\nresult:", "ready" if ok else "not ready")
     return 0 if ok else 1
+
+
+def check_boards(port: str | None, boards=(0x01, 0x02)) -> bool:
+    """Ask each panel board to answer, so a dead link is found before a show.
+
+    Needs the port to itself: stop the service first if it is running.
+    """
+    from epaper.commands import stop
+    from epaper.transport import Bus
+
+    if not port:
+        return False
+    try:
+        bus = Bus(port, verbose=False)
+    except Exception as exc:
+        print(f"boards            : cannot open port ({exc})")
+        print("                    stop epaper-ui/epaper-demo first")
+        return False
+    ok = True
+    with bus:
+        groups = max(len(boards), max(boards))
+        for board in boards:
+            ack = bus.request(stop(board, groups))
+            if ack is not None and ack.cmd == 0x80:
+                print(f"board 0x{board:02X}        : ACK")
+            else:
+                ok = False
+                reason = "no ACK" if ack is None else f"NAK 0x{ack.cmd:02X}"
+                print(f"board 0x{board:02X}        : {reason}")
+    return ok
 
 
 def main() -> int:
@@ -132,6 +163,13 @@ def main() -> int:
                     help="start this pattern immediately instead of showing "
                          "the menu (with --display null --input none this is "
                          "how the headless service runs)")
+    ap.add_argument("--locked", action="store_true",
+                    help="ignore the buttons so a knock during a show cannot "
+                         "stop the demo (unlock: KEY2 KEY3 KEY2; re-locks "
+                         "itself after a minute of no input)")
+    ap.add_argument("--blank-after", type=float, default=None, metavar="SEC",
+                    help="blank the backlight after this idle time "
+                         "(0 disables)")
     ap.add_argument("--max-ticks", type=int,
                     help="exit after N UI ticks (testing)")
     args = ap.parse_args()
@@ -149,7 +187,10 @@ def main() -> int:
     display_kwargs = {"directory": args.frames} if args.display in ("png", "auto") else {}
     with make_display(args.display, **display_kwargs) as display, \
             make_input(args.input) as inputs:
-        app = App(display, inputs, runner, port_label=port)
+        app_kwargs = {"port_label": port, "locked": args.locked}
+        if args.blank_after is not None:
+            app_kwargs["blank_after"] = args.blank_after
+        app = App(display, inputs, runner, **app_kwargs)
         if args.pattern:
             app.select(args.pattern)
             app.handle("key1")
