@@ -46,7 +46,9 @@ fi
 echo "== groups =="
 # dialout for the panel board's USB CDC; gpio/spidev are this image's
 # own groups for the character devices.
-sudo usermod -aG dialout,gpio,spidev "$USER"
+# adm: without it journalctl shows this user nothing, which also blinds
+# raspi/runlog.py - it reads the service log to find the cycle count.
+sudo usermod -aG dialout,gpio,spidev,adm "$USER"
 
 echo "== systemd services =="
 for name in "${SERVICES[@]}"; do
