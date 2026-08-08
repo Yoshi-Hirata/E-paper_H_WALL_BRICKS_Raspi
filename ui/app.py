@@ -66,6 +66,7 @@ class App:
         self._last_pet = 0.0
         self._dirty = True
         self._drawn_key = None
+        self._standby = False
 
     # ---- state transitions ----
 
@@ -146,6 +147,7 @@ class App:
                 self._dirty = True
 
     def _restart(self) -> None:
+        self._standby = False
         self.runner.start(self.patterns[self.selected])
         self.screen = Screen.RUNNING
         self._dirty = True
@@ -157,10 +159,34 @@ class App:
 
     # ---- drawing ----
 
+    def enter_standby(self) -> None:
+        """Silence the factory autoplay and white out the panels.
+
+        Called once the link is up, before anyone touches a button, so
+        the installation waits on white instead of on whatever vendor
+        demo frame happened to be mid-play.
+        """
+        self._standby = True
+        self.runner.standby()
+        self._dirty = True
+
+    def _standby_status(self) -> str:
+        """Menu subtitle while the panels are being blanked, else ''."""
+        if not self._standby:
+            return ""
+        if self.runner.error:
+            return f"ERROR {self.runner.error}"
+        if self.runner.standby_ready:
+            return "panels: white (standby)"
+        if self.runner.running:
+            return "panels: blanking..."
+        return ""
+
     def frame(self):
         if self.screen is Screen.MENU:
             return render.menu_screen(self.patterns, self.selected,
-                                      self.port_label, locked=self.locked)
+                                      self.port_label, locked=self.locked,
+                                      status=self._standby_status())
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",
@@ -188,7 +214,9 @@ class App:
         pixels - the timer only has one-second resolution.
         """
         if self.screen is not Screen.RUNNING:
-            return None
+            # The menu shows the standby progress, so it has to repaint
+            # when that changes.
+            return ("menu", self._standby_status())
         return (int(self.runner.elapsed), self.runner.cycle,
                 tuple(self.runner.recent(LOG_LINES)),
                 self.runner.error, self.runner.running, self.runner.paused)

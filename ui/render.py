@@ -74,7 +74,7 @@ def _ellipsize(text: str, font, max_width: int) -> str:
 
 
 def menu_screen(patterns, selected: int, port: str | None = None,
-                locked: bool = False) -> Image.Image:
+                locked: bool = False, status: str = "") -> Image.Image:
     """Pattern chooser. Up/Down move, KEY1 starts."""
     image, draw = _blank()
     _header(draw, "E-PAPER DEMO")
@@ -99,8 +99,16 @@ def menu_screen(patterns, selected: int, port: str | None = None,
     detail = patterns[selected].detail if patterns else ""
     draw.text((8, 188), _ellipsize(detail, FONT_S, WIDTH - 16),
               font=FONT_S, fill=DIM)
-    draw.text((8, 202), f"port {port}" if port else "port: not found",
-              font=FONT_S, fill=DIM if port else ERR)
+    # The standby status displaces the port line while the panels are
+    # being blanked - both are one-line context, and there is room for one.
+    if status:
+        second, tint = status, (ERR if status.startswith("ERROR") else DIM)
+    elif port:
+        second, tint = f"port {port}", DIM
+    else:
+        second, tint = "port: not found", ERR
+    draw.text((8, 202), _ellipsize(second, FONT_S, WIDTH - 16),
+              font=FONT_S, fill=tint)
     _hint(draw, "buttons locked" if locked
           else "UP/DOWN sel  KEY1 start  KEY3 off")
     return image

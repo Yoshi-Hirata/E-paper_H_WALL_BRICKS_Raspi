@@ -134,3 +134,15 @@ PATTERNS: list[Pattern | Playlist] = [
 ]
 
 BY_KEY = {p.key: p for p in PATTERNS}
+
+
+def _white(cycle, boards, palette, rng) -> Frame:
+    return {b: {t: COLOR_NAMES["white"] for t in sorted(VALID_TRIANGLES)}
+            for b in boards}
+
+
+# Not in PATTERNS: this is not something to choose, it is the state the
+# panels are put into as soon as the link comes up - the factory autoplay
+# silenced and every sector white. Anything else would leave whichever
+# vendor demo frame happened to be showing.
+STANDBY = Pattern("standby", "STANDBY", "all white", _white)

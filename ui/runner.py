@@ -86,6 +86,8 @@ class DemoRunner:
 
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
         self.pattern: Pattern | None = None
+        self._once = False
+        self.standby_ready = False
         self.cycle = 0
         self.failures = 0          # cycles abandoned since the demo started
         self.started_at: float | None = None
@@ -127,9 +129,22 @@ class DemoRunner:
 
     # ---- control ----
 
-    def start(self, pattern: Pattern) -> None:
+    def standby(self) -> None:
+        """Silence the factory autoplay and leave every panel white.
+
+        Runs as soon as the link is up, so the installation always starts
+        from a known blank state instead of whatever vendor demo frame
+        happened to be on the glass. One-shot: it paints once and the
+        worker finishes, leaving the panels holding white.
+        """
+        from .patterns import STANDBY
+
+        self.start(STANDBY, once=True)
+
+    def start(self, pattern: Pattern, once: bool = False) -> None:
         if self.running:
             self.stop()
+        self._once = once
         self.pattern = pattern
         self.cycle = 0
         self.failures = 0
@@ -137,6 +152,7 @@ class DemoRunner:
         self._stop.clear()
         self._pause.clear()
         self._elapsed_base = 0.0
+        self.standby_ready = False
         self.started_at = time.monotonic()
         self.emit(f"start {pattern.label}")
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -266,6 +282,21 @@ class DemoRunner:
         self.emit(f"cycle {self.cycle}{label} shown")
         return True
 
+    def _settle(self, bus, groups: int) -> None:
+        """Let the repaint finish, then stop playback and leave it there.
+
+        Only for the one-shot standby paint. Showing a slot starts the
+        board playing, and once its 9.8 s repaint is done it would run on
+        into the factory autoplay - which is exactly the thing standby
+        exists to silence. The looping demo gets the same treatment from
+        _wait_next after every cycle.
+        """
+        if not self._sleep(self.guard_delay):
+            return
+        bus.send(stop(0xFF, groups))
+        for board in self.boards:
+            self._request(bus, stop(board, groups), f"stop @{board:02X}")
+
     def _wait_next(self, bus, groups: int) -> bool:
         active, _ = self.pattern.resolve(max(self.cycle - 1, 0))
         interval = active.interval or self.interval
@@ -303,6 +334,11 @@ class DemoRunner:
                             consecutive = 0
                             needs_setup = False
                             self.error = None
+                            if self._once:
+                                self._settle(bus, groups)
+                                self.standby_ready = True
+                                self.emit("standby ready")
+                                return
                             if not self._wait_next(bus, groups):
                                 break
                             continue

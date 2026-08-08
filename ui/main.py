@@ -32,6 +32,9 @@ def preview(directory: str) -> int:
     render.menu_screen(PATTERNS, 0, "/dev/ttyACM0").save(out / "menu_first.png")
     render.menu_screen(PATTERNS, 3, "/dev/ttyACM0").save(out / "menu_mid.png")
     render.menu_screen(PATTERNS, 0, None).save(out / "menu_noport.png")
+    render.menu_screen(PATTERNS, 0, "/dev/ttyACM0",
+                       status="panels: white (standby)"
+                       ).save(out / "menu_standby.png")
     render.running_screen(
         "WAVE", 3725.0, 42,
         ["09:12:01 port /dev/ttyACM0", "09:12:02 start WAVE",
@@ -197,6 +200,10 @@ def main() -> int:
     ap.add_argument("--blank-after", type=float, default=None, metavar="SEC",
                     help="blank the backlight after this idle time "
                          "(0 disables)")
+    ap.add_argument("--no-standby", action="store_true",
+                    help="do not white out the panels at startup; leave "
+                         "whatever they are showing (the factory autoplay "
+                         "keeps running)")
     ap.add_argument("--max-ticks", type=int,
                     help="exit after N UI ticks (testing)")
     args = ap.parse_args()
@@ -221,6 +228,10 @@ def main() -> int:
         if args.pattern:
             app.select(args.pattern)
             app.handle("key1")
+        elif not args.no_standby:
+            # No demo asked for, so put the panels into the agreed idle
+            # state: factory autoplay stopped, every sector white.
+            app.enter_standby()
         app.run(max_ticks=args.max_ticks)
     return 0
 
