@@ -121,11 +121,19 @@ def _check_gpio_lines(board) -> "list[str]":
     return busy
 
 
-def check_boards(port: str | None, boards=(0x01, 0x02)) -> bool:
+def check_boards(port: str | None, boards=(0x01, 0x02),
+                 patience_s: float = 20.0) -> bool:
     """Ask each panel board to answer, so a dead link is found before a show.
+
+    Keeps asking for `patience_s`: a board ignores everything for the
+    9.8 s its e-paper takes to repaint, and after a power-on the factory
+    autoplay is doing exactly that. Reporting "no ACK" for a board that
+    is merely busy would be a false alarm at the worst moment.
 
     Needs the port to itself: stop the service first if it is running.
     """
+    import time
+
     from epaper.commands import stop
     from epaper.transport import Bus
 
@@ -141,13 +149,21 @@ def check_boards(port: str | None, boards=(0x01, 0x02)) -> bool:
     with bus:
         groups = max(len(boards), max(boards))
         for board in boards:
-            ack = bus.request(stop(board, groups))
-            if ack is not None and ack.cmd == 0x80:
-                print(f"board 0x{board:02X}        : ACK")
-            else:
-                ok = False
-                reason = "no ACK" if ack is None else f"NAK 0x{ack.cmd:02X}"
-                print(f"board 0x{board:02X}        : {reason}")
+            deadline = time.monotonic() + patience_s
+            reason = "no ACK"
+            while True:
+                ack = bus.request(stop(board, groups))
+                if ack is not None and ack.cmd == 0x80:
+                    print(f"board 0x{board:02X}        : ACK")
+                    break
+                if ack is not None:
+                    reason = f"NAK 0x{ack.cmd:02X}"
+                if time.monotonic() >= deadline:
+                    ok = False
+                    print(f"board 0x{board:02X}        : {reason} "
+                          f"(after {patience_s:.0f}s)")
+                    break
+                time.sleep(1.0)
     return ok
 
 
