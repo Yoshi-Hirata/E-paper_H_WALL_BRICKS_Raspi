@@ -9,6 +9,7 @@ every sector white, once, and leaves it there.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -137,3 +138,18 @@ def test_default_runner_reaches_standby_without_arguments():
     runner.standby()
     assert wait_until(lambda: runner.standby_ready, timeout=30.0)
     runner.stop()
+
+
+def test_missing_port_is_logged_once_not_every_retry(monkeypatch):
+    # Standby waits for the port from boot, so on a host with no panels
+    # a per-retry line would fill the journal for as long as it is up.
+    import ui.runner as runner_module
+
+    monkeypatch.setattr(runner_module, "find_port", lambda: None)
+    runner = make_runner(FakeBus(), port=None)
+    runner.standby()
+    assert wait_until(lambda: runner.error == "no serial port")
+    time.sleep(0.2)                              # several port_wait rounds
+    runner.stop()
+    waiting = [l for l in runner.recent(50) if "no serial port" in l]
+    assert len(waiting) == 1

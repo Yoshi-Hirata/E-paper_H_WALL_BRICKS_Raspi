@@ -315,8 +315,12 @@ class DemoRunner:
         while not self._stop.is_set():
             port = self.port or find_port()
             if not port:
+                # Say it once. Standby waits for the port from boot, so a
+                # host with no panels attached would otherwise write this
+                # line every port_wait seconds for as long as it is up.
+                if self.error != "no serial port":
+                    self.emit("no serial port, waiting")
                 self.error = "no serial port"
-                self.emit("no serial port, waiting")
                 if not self._sleep(self.port_wait):
                     break
                 continue
