@@ -53,7 +53,8 @@ for name in "${SERVICES[@]}"; do
   sed "s|@REPO_DIR@|$REPO_DIR|g; s|@RUN_USER@|$USER|g" \
     "$REPO_DIR/raspi/${name}.service.in" \
     | sudo tee "/etc/systemd/system/${name}.service" >/dev/null
-  if [ ! -f "/etc/default/${name}" ]; then
+  # Not every unit takes arguments, so an .env is optional.
+  if [ -f "$REPO_DIR/raspi/${name}.env" ] && [ ! -f "/etc/default/${name}" ]; then
     sudo cp "$REPO_DIR/raspi/${name}.env" "/etc/default/${name}"
   fi
 done
