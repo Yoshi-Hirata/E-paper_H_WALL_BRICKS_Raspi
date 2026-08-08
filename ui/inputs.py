@@ -49,6 +49,28 @@ class QueueInput(InputSource):
             return None
 
 
+class PeripheryInput(QueueInput):
+    """HAT buttons through the GPIO character device (any board).
+
+    See ui/gpio.py: gpiozero is Raspberry-Pi-only, so this is the path
+    for everything else.
+    """
+
+    def __init__(self, board=None, bounce_s: float = 0.05,
+                 hold_s: float = KEY1_HOLD_S):
+        super().__init__()
+        from .boards import BOARD
+        from .gpio import ButtonWatcher
+
+        profile = board or BOARD
+        self._watcher = ButtonWatcher(profile.buttons, self.post,
+                                      hold_events={"key1": hold_s},
+                                      bounce_s=bounce_s)
+
+    def close(self) -> None:
+        self._watcher.close()
+
+
 class GpioInput(QueueInput):
     """Waveshare LCD HAT joystick + KEY1..3 (active low, pull-up).
 
@@ -142,21 +164,26 @@ class ScriptedInput(QueueInput):
 
 
 def make_input(kind: str = "auto") -> InputSource:
-    """kind: auto | gpio | keyboard | none.
+    """kind: auto | gpio | periphery | keyboard | none.
 
-    "auto" uses the HAT buttons when gpiozero can claim them and falls
-    back to the keyboard, so the same command works with or without the
-    HAT fitted.
+    "auto" follows the board profile - gpiozero on the Pi, the character
+    device elsewhere - and falls back to the keyboard when the buttons
+    cannot be claimed, so the same command works with or without a HAT.
     """
+    from .boards import BOARD
+
     if kind == "gpio":
         return GpioInput()
+    if kind == "periphery":
+        return PeripheryInput()
     if kind == "keyboard":
         return KeyboardInput()
     if kind == "none":
         return QueueInput()
     if kind != "auto":
         raise ValueError(f"unknown input kind: {kind}")
+    preferred = GpioInput if BOARD.gpio_backend == "gpiozero" else PeripheryInput
     try:
-        return GpioInput()
+        return preferred()
     except Exception:
         return KeyboardInput()

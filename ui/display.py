@@ -73,6 +73,15 @@ class PngDisplay(Display):
         self.frames += 1
 
 
+def _output(profile, line):
+    """One driven output, through whichever backend the board uses."""
+    if profile.gpio_backend == "gpiozero":
+        from gpiozero import DigitalOutputDevice
+        return DigitalOutputDevice(line.line)     # BCM number on the Pi
+    from .gpio import OutputLine
+    return OutputLine(line)
+
+
 class ST7789Display(Display):
     """Waveshare 1.3inch LCD HAT (ST7789VW, 240x240, SPI0 + DC/RST/BL).
 
@@ -81,22 +90,24 @@ class ST7789Display(Display):
     image ends up rotated or mirrored on your unit.
     """
 
-    def __init__(self, madctl: int = 0x70, spi_hz: int = SPI_HZ):
+    def __init__(self, madctl: int = 0x70, spi_hz: int = SPI_HZ, board=None):
         import spidev
-        from gpiozero import DigitalOutputDevice
 
+        from .boards import BOARD
+
+        profile = board or BOARD
         self._spi = None
         self._dc = self._rst = self._bl = None
         self.asleep = False
         try:
             self._spi = spidev.SpiDev()
-            self._spi.open(SPI_BUS, SPI_DEVICE)
+            self._spi.open(profile.spi_bus, profile.spi_device)
             self._spi.max_speed_hz = spi_hz
             self._spi.mode = 0
 
-            self._dc = DigitalOutputDevice(PIN_DC)
-            self._rst = DigitalOutputDevice(PIN_RST)
-            self._bl = DigitalOutputDevice(PIN_BL)
+            self._dc = _output(profile, profile.dc)
+            self._rst = _output(profile, profile.rst)
+            self._bl = _output(profile, profile.bl)
             self._madctl = madctl
             self._init_panel()
             self._bl.on()

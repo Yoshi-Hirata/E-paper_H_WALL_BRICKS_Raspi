@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# One-shot setup for the Radxa Cubie A7Z (Debian 11 image).
+#
+# Differences from raspi/setup.sh, all forced by the board:
+#   - SPI is a device-tree overlay managed by rsetup, not a config.txt line
+#   - GPIO goes through the character device (python-periphery), because
+#     gpiozero only works on a Raspberry Pi
+#   - Debian 11 ships Python 3.9, so python3-venv has to be installed
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVICES=(epaper-demo epaper-ui epaper-runlog)
+SPI_OVERLAY=sun60iw2p1-spi1-spidev
+
+echo "== apt packages =="
+sudo apt-get update
+sudo apt-get install -y python3-venv python3-pip python3-dev gpiod
+
+echo "== python venv =="
+cd "$REPO_DIR"
+if [ ! -d .venv ]; then
+  python3 -m venv .venv
+fi
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+
+echo "== spi overlay (header pins 19/21/23/24 -> /dev/spidev1.0) =="
+if [ -f "/boot/dtbo/${SPI_OVERLAY}.dtbo.disabled" ]; then
+  sudo mv "/boot/dtbo/${SPI_OVERLAY}.dtbo.disabled" \
+          "/boot/dtbo/${SPI_OVERLAY}.dtbo"
+  sudo u-boot-update
+  echo "enabled ${SPI_OVERLAY} - REBOOT REQUIRED before the LCD will work"
+elif [ -f "/boot/dtbo/${SPI_OVERLAY}.dtbo" ]; then
+  echo "${SPI_OVERLAY} already enabled"
+else
+  echo "WARNING: ${SPI_OVERLAY}.dtbo not found; enable SPI1 with rsetup"
+fi
+
+echo "== groups =="
+# dialout for the panel board's USB CDC; gpio/spidev are this image's
+# own groups for the character devices.
+sudo usermod -aG dialout,gpio,spidev "$USER"
+
+echo "== systemd services =="
+for name in "${SERVICES[@]}"; do
+  sed "s|@REPO_DIR@|$REPO_DIR|g; s|@RUN_USER@|$USER|g" \
+    "$REPO_DIR/raspi/${name}.service.in" \
+    | sudo tee "/etc/systemd/system/${name}.service" >/dev/null
+  if [ ! -f "/etc/default/${name}" ]; then
+    sudo cp "$REPO_DIR/raspi/${name}.env" "/etc/default/${name}"
+  fi
+done
+sudo systemctl daemon-reload
+
+echo
+echo "Setup finished."
+echo "  1) Reboot (SPI overlay + group membership both need it)."
+echo "  2) Check readiness:  .venv/bin/python -m ui.main --check"
+echo "  3) Pick ONE service (they share the panel serial port):"
+echo "       sudo systemctl enable --now epaper-ui     # LCD HAT menu"
+echo "       sudo systemctl enable --now epaper-demo   # headless auto-demo"
