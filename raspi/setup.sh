@@ -18,6 +18,7 @@ if [ ! -d .venv ]; then
 fi
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r raspi/requirements.txt
 
 echo "== serial permission (dialout group) =="
 sudo usermod -aG dialout "$USER"

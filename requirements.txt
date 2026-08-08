@@ -1,14 +1,14 @@
+# Common to every board. Pure Python, no compilation.
 pyserial>=3.5
 pytest>=8.0
-# LCD HAT UI. spidev/gpiozero are Pi-only; the UI falls back to PNG output
-# and keyboard input when they are missing, so they stay optional.
 pillow>=10.0
-# GPIO character device: the portable path. gpiozero below is
-# Raspberry-Pi-only, so any other board needs this one.
+# GPIO through the character device - the portable path, and the only
+# one that works off a Raspberry Pi (gpiozero's factory assumes a Pi).
 python-periphery>=2.4
-spidev>=3.6; platform_machine == "armv7l" or platform_machine == "aarch64"
-gpiozero>=2.0; platform_machine == "armv7l" or platform_machine == "aarch64"
-# gpiozero's backend. Without it (in a venv that cannot see python3-lgpio)
-# gpiozero falls back to its experimental native factory, which cannot
-# claim pins on current Pi kernels: every Button() raises EINVAL.
-lgpio>=0.2; platform_machine == "armv7l" or platform_machine == "aarch64"
+
+# Board-specific extras live next to their setup script:
+#   raspi/requirements.txt   spidev, gpiozero, lgpio
+#   radxa/requirements.txt   spidev
+# They are kept apart because they compile: building lgpio - which only
+# the Pi's backend uses - on a 1 GB board running a desktop was enough to
+# stall it for ten minutes.

@@ -1,0 +1,7 @@
+# Raspberry Pi extras, on top of the shared requirements.txt.
+spidev>=3.6
+gpiozero>=2.0
+# gpiozero's backend. Without it gpiozero falls back to its experimental
+# native factory, which cannot claim pins on current Pi kernels: every
+# Button() raises EINVAL.
+lgpio>=0.2

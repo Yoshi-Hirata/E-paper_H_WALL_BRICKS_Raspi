@@ -26,7 +26,10 @@ if [ ! -x .venv/bin/pip ]; then
   python3 -m venv .venv
 fi
 .venv/bin/pip install --upgrade pip
-.venv/bin/pip install -r requirements.txt
+# --no-cache-dir: this board has 1 GB and may be running a desktop, and
+# pip's cache handling was enough to push it into swap.
+.venv/bin/pip install --no-cache-dir -r requirements.txt
+.venv/bin/pip install --no-cache-dir -r radxa/requirements.txt
 
 echo "== spi overlay (header pins 19/21/23/24 -> /dev/spidev1.0) =="
 if [ -f "/boot/dtbo/${SPI_OVERLAY}.dtbo.disabled" ]; then

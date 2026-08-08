@@ -1,0 +1,5 @@
+# Radxa Cubie A7Z extras, on top of the shared requirements.txt.
+# GPIO needs nothing here - python-periphery covers it. Only SPI does,
+# and spidev is a single C file, unlike lgpio which this board does not
+# need at all (that is the Pi's gpiozero backend).
+spidev>=3.6
