@@ -7,6 +7,8 @@
   remaining 54 indices : color code 0x00-0x05
 """
 
+from __future__ import annotations
+
 COLOR_WHITE = 0x00
 COLOR_YELLOW = 0x01
 COLOR_BLUE = 0x02

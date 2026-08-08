@@ -16,6 +16,8 @@ The command sequence itself mirrors host/wave_demo.py, which is the one
 verified against the real boards.
 """
 
+from __future__ import annotations
+
 import random
 import sys
 import threading

@@ -14,6 +14,8 @@ Usage:
     python host/demo.py --mutate 10              # change only 10 triangles/cycle
 """
 
+from __future__ import annotations
+
 import argparse
 import random
 import sys

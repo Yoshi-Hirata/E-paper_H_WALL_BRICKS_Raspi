@@ -6,6 +6,8 @@ Usage:
     python host/probe.py [--ports COM3 COM5] [--listen 1.0]
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 import time

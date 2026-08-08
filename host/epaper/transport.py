@@ -1,5 +1,7 @@
 """Serial transport: send a frame, wait for ACK with timeout/retry."""
 
+from __future__ import annotations
+
 import time
 
 import serial

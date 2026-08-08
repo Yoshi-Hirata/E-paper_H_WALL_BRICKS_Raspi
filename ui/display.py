@@ -6,6 +6,8 @@ Hardware libraries are imported lazily so this module stays importable
 anywhere.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
 from PIL import Image

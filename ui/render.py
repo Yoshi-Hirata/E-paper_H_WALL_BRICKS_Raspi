@@ -4,6 +4,8 @@ Pure drawing code with no hardware or timing dependencies, so screens can
 be snapshot-tested and previewed as PNGs long before the LCD arrives.
 """
 
+from __future__ import annotations
+
 from PIL import Image, ImageDraw, ImageFont
 
 from .config import HEIGHT, LOG_LINES, WIDTH

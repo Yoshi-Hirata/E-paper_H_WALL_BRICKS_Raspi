@@ -6,6 +6,8 @@ share a color (each triangle has at most 3 neighbours, so any palette
 of 4+ colors always admits a fix).
 """
 
+from __future__ import annotations
+
 from .geometry import ADJACENCY, POINTS_UP, RING, SPIRAL_POS
 
 

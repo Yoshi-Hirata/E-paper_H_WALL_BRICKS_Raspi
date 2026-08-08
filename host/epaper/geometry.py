@@ -9,6 +9,8 @@ Coordinates: x rightward (unit = triangle side), y downward in units of
 row height H = sqrt(3)/2. Panel center is (0, 3H).
 """
 
+from __future__ import annotations
+
 import math
 
 from .pattern import VALID_TRIANGLES

@@ -6,6 +6,8 @@ running and keeps trying - because the failure that matters is a frozen
 panel waiting for a human.
 """
 
+from __future__ import annotations
+
 import random
 import sys
 import time

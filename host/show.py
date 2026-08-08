@@ -10,6 +10,8 @@ Usage:
     python host/show.py --broadcast-show             # 0x1D to all boards
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 import time

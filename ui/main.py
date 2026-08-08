@@ -5,6 +5,8 @@
     python -m ui.main --preview /tmp/ui   # render sample screens and exit
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path

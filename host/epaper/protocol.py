@@ -8,6 +8,8 @@ CRC16 is Modbus (poly 0xA001 reflected, init 0xFFFF) computed over
 Dest .. end of Data (10 + DataLen bytes), stored low byte first.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 FRAME_HEAD = b"\xaa\x55"

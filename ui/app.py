@@ -20,6 +20,8 @@ wake the screen; the UNLOCK_SEQUENCE frees them temporarily and the lock
 returns by itself after RELOCK_AFTER_S of quiet.
 """
 
+from __future__ import annotations
+
 import time
 from enum import Enum
 

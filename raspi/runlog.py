@@ -25,6 +25,8 @@ Runs independently of the UI service - it only reads the journal - so it
 can be started and stopped mid-test without disturbing a run.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import subprocess

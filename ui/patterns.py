@@ -4,6 +4,8 @@ A pattern turns (cycle, boards) into one {triangle: color} map per board.
 Pure functions - no serial I/O - so the whole catalogue is testable.
 """
 
+from __future__ import annotations
+
 import random
 from dataclasses import dataclass
 from typing import Callable

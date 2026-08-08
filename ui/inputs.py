@@ -4,6 +4,8 @@ All backends expose the same event names as the HAT controls:
 up, down, left, right, press, key1, key2, key3.
 """
 
+from __future__ import annotations
+
 import queue
 import sys
 import threading
