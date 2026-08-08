@@ -50,6 +50,11 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
 
 ## セットアップ
 
+**Radxa Cubie A7Z を使う場合は [radxa/README.md](radxa/README.md) の
+「セットアップ手順」を参照**(SPI オーバーレイ・GPIO の叩き方・Wi-Fi の
+扱いが Pi と異なる)。以下は Raspberry Pi 向け。
+
+
 1. Raspberry Pi OS Lite (64-bit) を microSD に書き込み
    (Raspberry Pi Imager で Wi-Fi / SSH / ホスト名を事前設定しておくと楽)
 2. SSH でログインし、本リポジトリを取得:

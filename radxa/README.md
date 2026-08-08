@@ -74,15 +74,7 @@ USB-C は 2 口あるが、**片方は電源入力**として使うため、デ�
 
 デスクトップ環境が入っているため、Wi-Fi 接続が**ユーザーセッション紐付け**
 だと**ログインするまで繋がらず、再起動後にヘッドレスで見失う**。実際に
-2 回発生した。
-
-```bash
-sudo nmcli connection modify "<接続名>" connection.autoconnect yes
-sudo nmcli connection modify "<接続名>" connection.permissions ""
-```
-
-`connection.permissions ""` が要点。設定後は**ログインなしで 20 秒ほどで
-SSH に応答する**ことを確認済み。IP も静的にしておくとよい。
+2 回発生した。手順は「セットアップ手順」の 1 番。
 
 ### journal を読むには adm グループが要る
 
@@ -96,18 +88,89 @@ Debian 11 の Python は 3.9 で、`X | None` 形式の型注釈が**実行時�
 なる。全モジュールに `from __future__ import annotations` を入れて解決した
 (注釈の書き換えは不要で、Pi 側の動作にも影響しない)。
 
-## セットアップ
+## セットアップ手順(まっさらな状態から)
+
+`radxa/setup.sh` が自動化できるのは 4 番以降だけ。1〜3 は**ボードの画面と
+キーボードで行う前提作業**で、これを飛ばすと SSH で入れない・sudo が通らない
+・再起動でネットワークから消える、という順に詰まる。
+
+### 1. ネットワークを「システム全体の」接続にする
+
+デスクトップ環境つきイメージのため、Wi-Fi をデスクトップから繋いだだけだと
+**ユーザーセッション紐付け**になり、**ログインするまで接続されない**。
+ヘッドレス再起動で行方不明になるので、必ず外す。
+
+```bash
+nmcli connection show                    # 接続名を確認
+sudo nmcli connection modify "<接続名>" connection.autoconnect yes
+sudo nmcli connection modify "<接続名>" connection.permissions ""
+```
+
+IP も固定しておく(ルータの DHCP 予約でも可)。
+確認: **誰もログインしていない状態で再起動し、20 秒ほどで SSH に応答すること**。
+
+### 2. SSH 鍵を登録する
+
+作業マシンの公開鍵を追加する。以降の手順はすべてリモートから実行できる。
+
+```bash
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo '<作業マシンの ~/.ssh/id_*.pub の中身>' >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+### 3. sudo をパスワード不要にする
+
+`setup.sh` は sudo を何度も使う。非対話で通すために設定する。
+
+```bash
+sudo sh -c 'printf "radxa ALL=(ALL) NOPASSWD:ALL
+" > /etc/sudoers.d/010_radxa-nopasswd'
+sudo chmod 440 /etc/sudoers.d/010_radxa-nopasswd
+sudo visudo -c        # 全ファイルが parsed OK になること
+```
+
+**必ず `visudo -c` を確認する。** 綴り間違い(`NOPASSWD` を `NOPASSWORD`
+など)があると、そのファイルは無視され、しかも sudo のたびに警告が出る。
+構文エラーを放置すると締め出しに繋がる。
+
+### 4. リポジトリを取得してセットアップ
 
 ```bash
 git clone https://github.com/Yoshi-Hirata/E-paper_H_WALL_BRICKS_Raspi.git
 cd E-paper_H_WALL_BRICKS_Raspi
-./radxa/setup.sh      # SPI オーバーレイ有効化・依存導入・サービス登録
-sudo reboot           # オーバーレイとグループ反映のため必須
-.venv/bin/python -m ui.main --check
+./radxa/setup.sh
 ```
 
-`setup.sh` は `sudo` を多用するので、パスワード不要の sudo を設定して
-おくと通しで実行できる。
+`setup.sh` の内容: apt パッケージ(python3-venv ほか)、venv と依存の導入、
+**SPI1 オーバーレイの有効化**(`u-boot-update` まで)、グループ追加
+(`dialout` `gpio` `spidev` `adm`)、systemd ユニット 3 種の登録。
+
+### 5. 再起動
+
+```bash
+sudo reboot
+```
+
+**SPI オーバーレイとグループ追加はどちらも再起動が必要。**
+
+### 6. 配線して確認
+
+パネル基板を USB-C(データ側)に接続する。**キーボードとは同じポートを
+奪い合う**ので、スタンドアロン運用ではパネルを挿してコンソールは SSH で使う。
+
+```bash
+.venv/bin/python -m ui.main --check      # 全項目 ready になること
+```
+
+### 7. サービスを有効化
+
+排他なのでどちらか一方だけ。
+
+```bash
+sudo systemctl enable --now epaper-ui      # LCD HAT のメニュー
+# sudo systemctl enable --now epaper-demo  # 画面なしの常時デモ
+```
 
 ## Pi との差分まとめ
 
