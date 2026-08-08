@@ -18,7 +18,11 @@ sudo apt-get install -y python3-venv python3-pip python3-dev gpiod
 
 echo "== python venv =="
 cd "$REPO_DIR"
-if [ ! -d .venv ]; then
+# Test for the interpreter, not the directory: a venv created before
+# python3-venv was installed leaves a directory with no pip in it, and
+# checking `-d .venv` would silently accept that wreckage.
+if [ ! -x .venv/bin/pip ]; then
+  rm -rf .venv
   python3 -m venv .venv
 fi
 .venv/bin/pip install --upgrade pip
