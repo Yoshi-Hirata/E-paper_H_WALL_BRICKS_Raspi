@@ -14,6 +14,10 @@ for the reasoning. The layers, outermost last:
 
 The command sequence itself mirrors host/wave_demo.py, which is the one
 verified against the real boards.
+
+Standby (all-white idle) uses the same machinery, but instead of looping
+it paints once and then watches the link, repainting whenever the boards
+come back from a power cycle running their factory demo.
 """
 
 from __future__ import annotations
@@ -38,6 +42,30 @@ DEFAULT_BOARDS = [0x01, 0x02]
 ACK_SUCCESS, ACK_BUSY = 0x80, 0x82
 SHOW_REPEATS = 3          # the show frame is broadcast, so never acknowledged
 SHOW_GAP_S = 0.15
+LINK_POLL_S = 2.0         # how often standby checks the panel link
+LINK_GUARD_S = 60.0       # how often standby re-suppresses the autoplay
+
+
+def device_token(port: str):
+    """Identity of the panel's USB device node, or None if it is gone.
+
+    Unplugging the cable removes the node, and board 0x01 comes back from
+    the replug running its factory demo - the board cannot tell us, so
+    this is how it is noticed. Presence alone is not enough: a quick
+    replug can come and go between polls. A re-enumeration creates a new
+    devtmpfs node, so the inode and its creation time change even when
+    the name does not.
+
+    Names that are not POSIX device paths (COM3) have no node to look at;
+    they report a constant, and a failed command has to speak instead.
+    """
+    if not port.startswith("/dev/"):
+        return "opaque"
+    try:
+        info = Path(port).stat()
+    except OSError:
+        return None
+    return (info.st_ino, info.st_ctime_ns)
 
 
 class DemoRunner:
@@ -59,7 +87,10 @@ class DemoRunner:
                  reopen_after_failures: int = 3, reopen_delay: float = 2.0,
                  port_wait: float = 10.0,
                  show_repeats: int = SHOW_REPEATS,
-                 show_gap: float = SHOW_GAP_S):
+                 show_gap: float = SHOW_GAP_S,
+                 link_poll: float = LINK_POLL_S,
+                 link_guard: float = LINK_GUARD_S,
+                 link_token=device_token):
         self.boards = boards or list(DEFAULT_BOARDS)
         self.interval = interval
         self.guard_delay = guard_delay
@@ -83,6 +114,9 @@ class DemoRunner:
         self.port_wait = port_wait
         self.show_repeats = show_repeats
         self.show_gap = show_gap
+        self.link_poll = link_poll
+        self.link_guard = link_guard
+        self._link_token = link_token
 
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
         self.pattern: Pattern | None = None
@@ -297,6 +331,34 @@ class DemoRunner:
         for board in self.boards:
             self._request(bus, stop(board, groups), f"stop @{board:02X}")
 
+    def _watch_link(self, bus, groups: int, port: str) -> bool:
+        """Sit on white until the panel link changes. False to stop.
+
+        Standby is not a one-shot job: a board that loses power - an
+        unplugged USB cable is enough - comes back playing the factory
+        demo, and nothing on the board says so. Watching the device node
+        is the cue to paint white again once it returns. The caller
+        reopens the bus, since a replug can rename the port.
+
+        A broadcast stop goes out every link_guard seconds as well. It
+        costs one 8-byte frame and it is the backstop for a reboot this
+        cannot see - it silences an autoplay that started unnoticed,
+        which is what actually ruins the look of the wall.
+        """
+        token = self._link_token(port)
+        next_guard = time.monotonic() + self.link_guard
+        while not self._stop.is_set():
+            if not self._sleep(self.link_poll):
+                return False
+            if self._link_token(port) != token:
+                self.standby_ready = False
+                self.emit("panel link changed, will re-blank")
+                return True
+            if self.link_guard > 0 and time.monotonic() >= next_guard:
+                next_guard = time.monotonic() + self.link_guard
+                bus.send(stop(0xFF, groups))
+        return False
+
     def _wait_next(self, bus, groups: int) -> bool:
         active, _ = self.pattern.resolve(max(self.cycle - 1, 0))
         interval = active.interval or self.interval
@@ -342,7 +404,9 @@ class DemoRunner:
                                 self._settle(bus, groups)
                                 self.standby_ready = True
                                 self.emit("standby ready")
-                                return
+                                if not self._watch_link(bus, groups, port):
+                                    return          # asked to stop
+                                break               # link changed: repaint
                             if not self._wait_next(bus, groups):
                                 break
                             continue

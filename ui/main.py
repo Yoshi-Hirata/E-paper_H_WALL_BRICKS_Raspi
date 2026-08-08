@@ -214,9 +214,12 @@ def main() -> int:
         return check()
 
     port = args.port or find_port()
+    # Pass args.port, not the detected one: pinning the name found at
+    # startup would defeat the runner's re-detection, and a USB replug
+    # can bring the boards back as ttyACM1. `port` is only the label.
     runner = DemoRunner(boards=args.boards, interval=args.interval,
                         guard_delay=args.guard_delay, slot=args.slot,
-                        port=port)
+                        port=args.port)
 
     display_kwargs = {"directory": args.frames} if args.display in ("png", "auto") else {}
     with make_display(args.display, **display_kwargs) as display, \

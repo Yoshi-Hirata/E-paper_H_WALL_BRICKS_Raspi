@@ -45,19 +45,22 @@ def test_standby_is_not_offered_in_the_menu():
     assert "standby" not in BY_KEY
 
 
-def test_standby_stops_playback_saves_white_and_finishes():
+def test_standby_stops_playback_saves_white_and_holds():
     bus = FakeBus()
     runner = make_runner(bus)
     runner.standby()
     assert wait_until(lambda: runner.standby_ready)
-    assert wait_until(lambda: not runner.running)   # one-shot, not a loop
 
     # Silence first, so the autoplay is not still repainting over us.
     assert bus.sent[0].cmd == 0x17 and bus.sent[0].dest == 0xFF
     assert any(f.cmd == 0x13 for f in bus.requested)          # save color
     assert any(f.cmd == 0x1D for f in bus.sent)                # show single
-    assert runner.cycle == 1
     assert runner.error is None
+
+    # Painted once, then left alone - white does not need refreshing.
+    time.sleep(0.2)
+    assert runner.cycle == 1
+    runner.stop()
 
 
 def test_standby_stops_playback_again_after_the_repaint():
@@ -91,6 +94,74 @@ def test_standby_retries_a_board_that_is_mid_repaint():
     runner = make_runner(bus, command_attempts=8, retry_delays=(0.01,))
     runner.standby()
     assert wait_until(lambda: runner.standby_ready, timeout=10.0)
+
+
+def test_standby_repaints_after_the_usb_is_unplugged_and_back():
+    # Pulling the cable power-cycles board 0x01, and it comes back
+    # playing the factory demo - so standby has to be reapplied, not
+    # just established once at boot.
+    bus = FakeBus()
+    link = {"up": "node-1"}
+    runner = make_runner(bus, link_token=lambda port: link["up"])
+    runner.standby()
+    assert wait_until(lambda: runner.standby_ready)
+    painted = len([f for f in bus.sent if f.cmd == 0x1D])
+
+    link["up"] = None          # cable out
+    assert wait_until(lambda: not runner.standby_ready)
+    link["up"] = "node-2"      # back in, re-enumerated
+
+    assert wait_until(lambda: runner.standby_ready)
+    assert len([f for f in bus.sent if f.cmd == 0x1D]) > painted
+    assert any("re-blank" in line for line in runner.recent(20))
+    runner.stop()
+
+
+def test_standby_reconfigures_the_slot_after_a_replug():
+    # The board may have rebooted, losing whatever the slot was set to,
+    # so the repaint has to start from slot config - not just a show.
+    bus = FakeBus()
+    link = {"up": "node-1"}
+    runner = make_runner(bus, link_token=lambda port: link["up"])
+    runner.standby()
+    assert wait_until(lambda: runner.standby_ready)
+    configs = len([f for f in bus.requested if f.cmd == 0x1B])
+
+    link["up"] = None          # cable out
+    assert wait_until(lambda: not runner.standby_ready)
+    link["up"] = "node-2"      # back, new node
+    assert wait_until(lambda: runner.standby_ready)
+
+    assert len([f for f in bus.requested if f.cmd == 0x1B]) > configs
+    runner.stop()
+
+
+def test_standby_survives_a_port_that_stays_gone():
+    bus = FakeBus()
+    link = {"up": "node-1"}
+    runner = make_runner(bus, link_token=lambda port: link["up"])
+    runner.standby()
+    assert wait_until(lambda: runner.standby_ready)
+    link["up"] = None          # cable out
+    assert wait_until(lambda: not runner.standby_ready)
+    time.sleep(0.2)
+    # Still waiting, not dead: the cable may be out for a while.
+    assert runner.running
+    runner.stop()
+
+
+def test_device_token_identifies_the_node_not_just_its_presence():
+    # Presence alone would miss a replug that completes between polls;
+    # a re-enumeration makes a new node, so the token changes with it.
+    from ui.runner import device_token
+
+    assert device_token("/dev/does-not-exist") is None
+    assert device_token("COM3") == device_token("COM7")   # nothing to check
+
+    if Path("/dev/null").exists():                         # POSIX hosts only
+        token = device_token("/dev/null")
+        assert isinstance(token, tuple)                    # inode + ctime
+        assert device_token("/dev/null") == token          # stable in place
 
 
 def test_app_enters_standby_and_reports_it_on_the_menu():
