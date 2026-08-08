@@ -51,52 +51,37 @@ def preview(directory: str) -> int:
 def check() -> int:
     """Preflight: report whether the panels, SPI, GPIO and LCD are usable.
 
-    Written for the day the HAT is fitted - it distinguishes "not wired
-    up" from "another process owns these pins", which is the failure this
-    Pi is prone to (a second Waveshare HAT shares GPIO 24/25 and SPI0).
+    Written to be run before a show, and to say which part is missing
+    rather than just failing: "not wired up" and "another process owns
+    these pins" need different fixes.
     """
     from pathlib import Path as _Path
 
-    from .config import BUTTON_PINS, PIN_BL, PIN_DC, PIN_RST
+    from .boards import BOARD
 
     ok = True
+    print(f"board             : {BOARD.label} ({BOARD.key})")
+
     port = find_port()
     print(f"panel serial port : {port or 'NOT FOUND'}")
     ok &= port is not None
 
     spidevs = sorted(str(p) for p in _Path("/dev").glob("spidev*"))
-    print(f"spi devices       : {', '.join(spidevs) or 'NONE (dtparam=spi=on?)'}")
-    ok &= bool(spidevs)
+    expected = f"/dev/spidev{BOARD.spi_bus}.{BOARD.spi_device}"
+    print(f"spi devices       : {', '.join(spidevs) or 'NONE'}"
+          f"  (need {expected})")
+    ok &= expected in spidevs
 
-    try:
-        from gpiozero import Device
-        from gpiozero.pins.lgpio import LGPIOFactory
-        Device.pin_factory = LGPIOFactory()
-        print("gpio backend      : lgpio")
-    except Exception as exc:
-        print(f"gpio backend      : UNAVAILABLE ({exc})")
-        return 1
-
-    from gpiozero import Button, DigitalOutputDevice
-    busy = []
-    for name, pin in BUTTON_PINS.items():
-        try:
-            Button(pin, pull_up=True).close()
-        except Exception as exc:
-            busy.append(f"{name}(GPIO{pin}): {exc}")
-    for name, pin in (("dc", PIN_DC), ("rst", PIN_RST), ("bl", PIN_BL)):
-        try:
-            DigitalOutputDevice(pin).close()
-        except Exception as exc:
-            busy.append(f"{name}(GPIO{pin}): {exc}")
+    print(f"gpio backend      : {BOARD.gpio_backend}")
+    busy = _check_gpio_lines(BOARD)
     if busy:
         ok = False
         print("gpio pins         : BUSY")
         for line in busy:
             print(f"  {line}")
-        print("  another process holds these lines - check: sudo lsof /dev/gpiochip0")
+        print("  another process holds these lines - check: sudo lsof /dev/gpiochip*")
     else:
-        print("gpio pins         : all 11 free")
+        print(f"gpio pins         : all {len(BOARD.buttons) + 3} free")
 
     try:
         from .display import ST7789Display
@@ -110,6 +95,30 @@ def check() -> int:
     ok &= check_boards(port)
     print("\nresult:", "ready" if ok else "not ready")
     return 0 if ok else 1
+
+
+def _check_gpio_lines(board) -> "list[str]":
+    """Open and release every line the HAT uses; report the ones that fail."""
+    busy = []
+    lines = list(board.buttons.items()) + [
+        ("dc", board.dc), ("rst", board.rst), ("bl", board.bl)]
+    for name, line in lines:
+        is_input = name in board.buttons
+        try:
+            if board.gpio_backend == "gpiozero":
+                from gpiozero import Button, DigitalOutputDevice
+                device = (Button(line.line, pull_up=True) if is_input
+                          else DigitalOutputDevice(line.line))
+                device.close()
+            else:
+                from .gpio import OutputLine, _open
+                if is_input:
+                    _open(line, "in", bias="pull_up").close()
+                else:
+                    OutputLine(line).close()
+        except Exception as exc:
+            busy.append(f"{name} (chip{line.chip} line{line.line}): {exc}")
+    return busy
 
 
 def check_boards(port: str | None, boards=(0x01, 0x02)) -> bool:
