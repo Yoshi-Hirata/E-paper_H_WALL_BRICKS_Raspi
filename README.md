@@ -283,6 +283,7 @@ sudo systemctl stop epaper-demo           # 停止
 
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — 開発経緯と判断の記録(なぜそうしたか)
 - [docs/SPECIFICATION.md](docs/SPECIFICATION.md) — 通信プロトコル・色データ・演出の仕様
+- **[docs/STATUS.md](docs/STATUS.md) — 現在地と再開手順。まずここを見る**
 - [docs/PORTING.md](docs/PORTING.md) — 他ボードへの移植可否と手法(Radxa Cubie A7Z 検討)
 - [docs/POWER.md](docs/POWER.md) — 待機電力の削減手法(検討メモ、未適用)
 - [docs/RELIABILITY.md](docs/RELIABILITY.md) — 無停止化の設計(ショー運用向け、未実装)
