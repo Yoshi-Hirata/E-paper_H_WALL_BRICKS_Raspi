@@ -214,14 +214,18 @@ def test_colour_save_is_retried_less_than_other_commands():
     assert runner.save_attempts < runner.command_attempts
 
 
-def test_show_is_sent_repeatedly_because_it_is_unacknowledged():
+def test_show_is_broadcast_exactly_once_per_cycle():
+    # Boards queue commands that arrive mid-repaint and run them later,
+    # so every extra copy of the show is another full 16 s repaint -
+    # measured on the wall as the "lag between boards". One per cycle.
     bus = FaultBus()
     runner = make_runner(bus)
     runner.start(BY_KEY["wave"])
-    assert wait_until(lambda: runner.cycle >= 1)
+    assert wait_until(lambda: runner.cycle >= 2)
     runner.stop()
     shows = [f for f in bus.sent if f.cmd == CMD_SHOW]
-    assert len(shows) >= 3          # broadcast show has no ACK to check
+    # A cycle may have been stopped between its show and its counter.
+    assert runner.cycle <= len(shows) <= runner.cycle + 1
     assert all(f.dest == 0xFF for f in shows)
 
 

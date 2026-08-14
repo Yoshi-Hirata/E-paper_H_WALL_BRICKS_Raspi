@@ -44,7 +44,16 @@ from .patterns import DEFAULT_PALETTE, Pattern
 
 DEFAULT_BOARDS = list(range(1, 21))   # the production wall: board IDs 1..20
 ACK_SUCCESS, ACK_BUSY = 0x80, 0x82
-SHOW_REPEATS = 3          # the show frame is broadcast, so never acknowledged
+# The show broadcast goes out exactly once. It is unacknowledged, and it
+# is tempting to repeat it as insurance - but a board does NOT discard
+# commands that arrive during its repaint: they queue in its receive
+# buffer and run afterwards, so every extra copy is another full 16 s
+# repaint. Measured on the production boards 2026-08-14: three copies
+# made board 1 repaint twice (34 s) and board 20 finish at 35 s, while a
+# single copy had both boards repainting in step (deaf 0.7-17.1 s and
+# 1.2-17.3 s) - the whole "lag between boards" was this. A genuinely
+# lost frame costs one cycle and the next one repairs it.
+SHOW_REPEATS = 1
 SHOW_GAP_S = 0.15
 LINK_POLL_S = 2.0         # how often standby checks the panel link
 LINK_GUARD_S = 60.0       # how often standby re-suppresses the autoplay
@@ -277,8 +286,9 @@ class DemoRunner:
         """Send until acknowledged, backing off between tries.
 
         The backoff has to be able to outwait a full repaint: a board is
-        deaf for 9.8 s while its e-paper redraws, and that is a normal
-        event, not a fault.
+        deaf for ~16 s while its e-paper redraws (production boards;
+        9.8 s on the first generation), and that is a normal event, not
+        a fault.
 
         `quiet` is for probes of boards that may simply not be there:
         no per-attempt log lines and no self.error, because a socket
@@ -462,9 +472,10 @@ class DemoRunner:
         if updated == 0:
             return False
 
-        # Broadcast keeps the panels in step but is unacknowledged, so a
-        # dropped frame would silently leave the old image up. Repeating is
-        # harmless: a board ignores commands while it is already repainting.
+        # One broadcast show keeps the panels in step. Never repeat it as
+        # insurance: boards queue commands received mid-repaint and play
+        # them back afterwards, so each extra copy is another full repaint
+        # (see SHOW_REPEATS).
         for _ in range(self.show_repeats):
             bus.send(show_single(0xFF, self.slot, groups))
             time.sleep(self.show_gap)
