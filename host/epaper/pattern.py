@@ -3,7 +3,7 @@
 64-byte array, triangle number == array index (spec section 13):
   index 0  : 0x21 (COM start marker)
   index 63 : 0x21 (COM end marker)
-  missing triangle numbers 1, 18-23, 62 : 0x37 (Hi-Z)
+  missing triangle numbers 17-22, 61, 62 : 0x37 (Hi-Z)
   remaining 54 indices : color code 0x00-0x05
 """
 
@@ -28,9 +28,13 @@ COLOR_NAMES = {
 COM_MARKER = 0x21
 HI_Z = 0x37
 
-# Triangle numbers present on the panel (Address_H_WALL_BRICKS.jpg):
-# 2-17 and 24-61 -> 54 triangles. 1, 18-23, 62, 63 do not exist.
-VALID_TRIANGLES = frozenset(range(2, 18)) | frozenset(range(24, 62))
+# Triangle numbers on the production boards (2026-08): 1-16 and 23-60
+# -> 54 triangles; 17-22 and 61-63 do not exist. Address_H_WALL_BRICKS
+# .jpg shows the first-generation numbering, which is one higher
+# throughout (2-17, 24-61) - subtract 1 to read it for these boards.
+# Found on hardware: with the old numbering, each panel's segment 1
+# stayed white because nothing ever wrote index 1.
+VALID_TRIANGLES = frozenset(range(1, 17)) | frozenset(range(23, 61))
 assert len(VALID_TRIANGLES) == 54
 
 

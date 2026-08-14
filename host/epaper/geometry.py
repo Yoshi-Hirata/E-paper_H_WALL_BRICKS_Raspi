@@ -1,8 +1,10 @@
 """Panel geometry for H_WALL_BRICKS: triangle tiling of a side-3 hexagon.
 
 Rows top to bottom hold 7/9/11/11/9/7 triangles (54 total). Triangle
-numbers per row follow Address_H_WALL_BRICKS.jpg / spec 13.1, left to
-right. From the tiling we derive centroids, edge-adjacency, concentric
+numbers per row follow Address_H_WALL_BRICKS.jpg / spec 13.1 minus one,
+left to right: the drawing shows the first-generation numbering (2-61)
+and the production boards number the same layout 1-60 (see pattern.py).
+From the tiling we derive centroids, edge-adjacency, concentric
 rings (for radial effects) and a clockwise outside-in spiral order.
 
 Coordinates: x rightward (unit = triangle side), y downward in units of
@@ -19,12 +21,12 @@ H = math.sqrt(3) / 2
 N_RINGS = 5
 
 ADDRESS_ROWS = [
-    [51, 50, 44, 43, 35, 34, 24],
-    [53, 52, 46, 45, 37, 36, 26, 25, 9],
-    [55, 54, 48, 47, 39, 38, 28, 27, 11, 10, 8],
-    [56, 57, 49, 41, 40, 30, 29, 13, 12, 6, 7],
-    [58, 59, 42, 32, 31, 15, 14, 4, 5],
-    [60, 61, 33, 17, 16, 2, 3],
+    [50, 49, 43, 42, 34, 33, 23],
+    [52, 51, 45, 44, 36, 35, 25, 24, 8],
+    [54, 53, 47, 46, 38, 37, 27, 26, 10, 9, 7],
+    [55, 56, 48, 40, 39, 29, 28, 12, 11, 5, 6],
+    [57, 58, 41, 31, 30, 14, 13, 3, 4],
+    [59, 60, 32, 16, 15, 1, 2],
 ]
 
 

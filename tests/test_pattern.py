@@ -18,12 +18,14 @@ from epaper.pattern import (
 
 
 def test_valid_triangle_set_matches_spec():
-    # Spec 13.2: 54 triangles; 1, 18-23, 62, 63 do not exist.
+    # Production boards: 54 triangles numbered 1-16 and 23-60; 17-22 and
+    # 61-63 do not exist. (The first-generation boards numbered the same
+    # layout 2-61; Address_H_WALL_BRICKS.jpg shows that old numbering.)
     assert len(VALID_TRIANGLES) == 54
-    for missing in [1, 18, 19, 20, 21, 22, 23, 62, 63]:
+    for missing in [0, 17, 18, 19, 20, 21, 22, 61, 62, 63]:
         assert missing not in VALID_TRIANGLES
-    # Numbers visible on Address_H_WALL_BRICKS.jpg
-    for present in [2, 17, 24, 51, 61, 8, 56]:
+    # Address_H_WALL_BRICKS.jpg numbers, shifted down by one
+    for present in [1, 16, 23, 50, 60, 7, 55]:
         assert present in VALID_TRIANGLES
 
 
@@ -31,8 +33,8 @@ def test_all_white_array_layout():
     arr = build_hexagon_array()
     assert len(arr) == 64
     assert arr[0] == COM_MARKER and arr[63] == COM_MARKER
-    assert arr[1] == HI_Z and arr[62] == HI_Z
-    for i in range(18, 24):
+    assert arr[61] == HI_Z and arr[62] == HI_Z
+    for i in range(17, 23):
         assert arr[i] == HI_Z
     assert sum(1 for b in arr if b == COLOR_WHITE) == 54
 
@@ -46,9 +48,9 @@ def test_overrides_placed_at_index():
 
 def test_rejects_invalid_input():
     with pytest.raises(ValueError):
-        build_hexagon_array({1: COLOR_RED})       # missing triangle
+        build_hexagon_array({61: COLOR_RED})      # missing triangle
     with pytest.raises(ValueError):
-        build_hexagon_array({18: COLOR_RED})      # missing triangle
+        build_hexagon_array({17: COLOR_RED})      # missing triangle
     with pytest.raises(ValueError):
         build_hexagon_array({2: 0x37})            # not a color
     with pytest.raises(ValueError):

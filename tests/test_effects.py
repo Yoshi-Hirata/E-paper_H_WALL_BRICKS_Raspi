@@ -44,16 +44,17 @@ def test_adjacent_triangles_have_opposite_orientation():
 
 
 def test_known_neighbours():
-    # Corner triangle 51 (top-left): neighbours are 50 (right) and 52 (below).
-    assert ADJACENCY[51] == frozenset({50, 52})
-    # 40 sits mid-panel (row 3, 5th) between 41, 30 and 39 above.
-    assert ADJACENCY[40] == frozenset({41, 30, 39})
+    # Production numbering (first-generation minus one).
+    # Corner triangle 50 (top-left): neighbours are 49 (right) and 51 (below).
+    assert ADJACENCY[50] == frozenset({49, 51})
+    # 39 sits mid-panel (row 3, 5th) between 40, 29 and 38 above.
+    assert ADJACENCY[39] == frozenset({40, 29, 38})
 
 
 def test_rings_and_spiral():
-    # Center triangles (39, 40 area) sit in ring 0, corners in the last.
-    assert RING[40] == 0 and RING[39] == 0
-    assert RING[51] == max(RING.values())
+    # Center triangles (38, 39 area) sit in ring 0, corners in the last.
+    assert RING[39] == 0 and RING[38] == 0
+    assert RING[50] == max(RING.values())
     assert sorted(SPIRAL_POS.values()) == list(range(54))
     # Spiral runs outside-in: ring index never increases along the order.
     order = sorted(SPIRAL_POS, key=SPIRAL_POS.get)
