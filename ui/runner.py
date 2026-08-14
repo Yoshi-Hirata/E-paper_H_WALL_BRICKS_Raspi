@@ -204,8 +204,10 @@ class DemoRunner:
         self.cycle = 0
         self.failures = 0
         self.error = None
-        self.live = []
-        self.absent = set()
+        # live/absent survive across starts on purpose: the wall does not
+        # change because a different pattern was picked, and re-sweeping
+        # eighteen empty sockets would hold the first frame for half a
+        # minute every time KEY1 is pressed.
         self._needs_cfg = set()
         self._next_reprobe = 0.0
         self._stop.clear()
@@ -386,6 +388,7 @@ class DemoRunner:
         """
         bus.send(stop(0xFF, groups))
         time.sleep(0.3)
+        known_absent = {b for b in self.boards if b in self.absent}
         pending = list(self.boards)
         found: list[int] = []
         for sweep in range(self.probe_sweeps):
@@ -399,8 +402,12 @@ class DemoRunner:
                     found.append(board)
                 else:
                     still.append(board)
-            pending = still
-        self.absent = set(pending)
+            # The extra sweeps exist to catch a fitted board that is deaf
+            # mid-repaint. A board already known absent was not fitted a
+            # moment ago, so it gets one pass here and the periodic
+            # reprobe later - not three sweeps holding up the first frame.
+            pending = [b for b in still if b not in known_absent]
+        self.absent = set(self.boards) - set(found)
         self.live = [b for b in self.boards if b in set(found)]
         self._needs_cfg = set()
         self._next_reprobe = time.monotonic() + self.reprobe_interval

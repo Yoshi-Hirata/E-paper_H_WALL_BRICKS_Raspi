@@ -299,6 +299,25 @@ def test_board_powered_on_later_joins_the_demo():
     runner.stop()
 
 
+def test_known_absent_boards_get_one_probe_not_three_on_restart():
+    # Pressing KEY1 for a new pattern must not re-run the full discovery:
+    # eighteen empty sockets would hold the first frame for half a minute.
+    bus = PartialWallBus(dead=set(range(2, 20)))
+    runner = make_runner(bus, boards=list(range(1, 21)),
+                         reprobe_interval=999)   # isolate the setup probes
+    runner.start(BY_KEY["wave"])
+    assert wait_until(lambda: runner.cycle >= 1)
+    runner.stop()
+    first = len([f for f in bus.requested if f.dest == 5])
+    assert first == 3                  # full discovery sweeps the list thrice
+
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: runner.cycle >= 1)
+    runner.stop()
+    second = len([f for f in bus.requested if f.dest == 5]) - first
+    assert second == 1                 # known absent: one pass, no re-sweep
+
+
 def test_board_dying_mid_show_does_not_freeze_the_rest():
     bus = PartialWallBus()
     runner = make_runner(bus, boards=[1, 2, 3], command_attempts=2)
