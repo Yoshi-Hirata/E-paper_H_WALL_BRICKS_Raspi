@@ -136,6 +136,35 @@ def test_standby_reconfigures_the_slot_after_a_replug():
     runner.stop()
 
 
+def test_standby_paints_who_answers_and_recruits_late_boards():
+    # During bring-up only part of the wall is fitted. Standby must not
+    # wait for the missing boards - and one powered on later comes up
+    # playing its factory demo, so it has to be spotted and blanked.
+    class PartialBus(FakeBus):
+        def __init__(self):
+            super().__init__()
+            self.dead = {20}
+
+        def request(self, frame, retries=3):
+            if frame.dest in self.dead:
+                self.requested.append(frame)
+                return None
+            return super().request(frame, retries)
+
+    bus = PartialBus()
+    runner = make_runner(bus, boards=[1, 20])
+    runner.standby()
+    assert wait_until(lambda: runner.standby_ready)
+    assert runner.live == [1] and runner.absent == {20}
+
+    bus.dead.clear()                       # board 20 gets its power
+    assert wait_until(lambda: any(f.cmd == 0x13 and f.dest == 20
+                                  for f in bus.requested), timeout=10.0)
+    assert wait_until(lambda: runner.standby_ready)
+    assert runner.live == [1, 20]
+    runner.stop()
+
+
 def test_standby_survives_a_port_that_stays_gone():
     bus = FakeBus()
     link = {"up": "node-1"}

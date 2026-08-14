@@ -108,6 +108,8 @@ def make_runner(bus_or_factory, **kwargs):
     kwargs.setdefault("reopen_delay", 0.01)
     kwargs.setdefault("port_wait", 0.01)
     kwargs.setdefault("show_gap", 0.001)
+    kwargs.setdefault("probe_sweep_delay", 0.01)
+    kwargs.setdefault("reprobe_interval", 0.05)
     factory = (bus_or_factory if callable(bus_or_factory)
                else (lambda port: bus_or_factory))
     return DemoRunner(open_bus=factory, **kwargs)
@@ -235,15 +237,81 @@ def test_failed_cycle_does_not_advance_the_pattern():
 
 def test_recovered_cycle_reinitialises_the_slot():
     # A board may have rebooted while it was unreachable, so the slot
-    # configuration has to be sent again before trusting it.
+    # configuration has to be sent again before trusting it. The failed
+    # saves land on boards 1 and 2 in the first cycle; the second cycle
+    # must re-configure exactly those boards before saving again.
     bus = FaultBus(fail_cmd_times={CMD_SAVE: 2})
     runner = make_runner(bus, command_attempts=2, save_attempts=1)
     runner.start(BY_KEY["wave"])
-    assert wait_until(lambda: runner.cycle >= 1, timeout=20)
+    assert wait_until(lambda: runner.cycle >= 2, timeout=20)
     runner.stop()
     slot_cfgs = [f for f in bus.requested if f.cmd == CMD_SLOT]
     assert len(slot_cfgs) > len(runner.boards)   # re-sent after the failures
     assert runner.failures >= 1
+
+
+# ---- a partially-built wall ----
+#
+# The production wall is 20 boards, but it must run with whatever subset
+# is powered - during bring-up only boards 1 and 20 exist, and one board
+# failing mid-show must not freeze the other nineteen.
+
+class PartialWallBus(FaultBus):
+    """Boards whose address is in `dead` never answer; the rest ACK."""
+
+    def __init__(self, dead=(), **kwargs):
+        super().__init__(**kwargs)
+        self.dead = set(dead)
+
+    def request(self, frame, retries=3):
+        if frame.dest in self.dead:
+            self._maybe_raise()
+            self.requested.append(frame)
+            return None
+        return super().request(frame, retries)
+
+
+def test_absent_boards_are_skipped_and_the_rest_run():
+    # Only sockets 1 and 20 are fitted; 2..19 are empty on purpose.
+    bus = PartialWallBus(dead=set(range(2, 20)))
+    runner = make_runner(bus, boards=list(range(1, 21)))
+    runner.start(BY_KEY["wave"])
+    assert wait_until(lambda: runner.cycle >= 2)
+    assert runner.live == [1, 20]
+    assert runner.absent == set(range(2, 20))
+    assert runner.error is None            # empty sockets are not faults
+    saves = {f.dest for f in bus.requested if f.cmd == CMD_SAVE}
+    assert saves == {1, 20}                # no data pushed at empty sockets
+    runner.stop()
+
+
+def test_board_powered_on_later_joins_the_demo():
+    bus = PartialWallBus(dead={20})
+    runner = make_runner(bus, boards=[1, 20])
+    runner.start(BY_KEY["wave"])
+    assert wait_until(lambda: runner.cycle >= 1)
+    assert runner.live == [1]
+
+    bus.dead.clear()                       # board 20 gets its power
+    assert wait_until(lambda: runner.live == [1, 20])
+    assert wait_until(lambda: any(f.cmd == CMD_SAVE and f.dest == 20
+                                  for f in bus.requested))
+    runner.stop()
+
+
+def test_board_dying_mid_show_does_not_freeze_the_rest():
+    bus = PartialWallBus()
+    runner = make_runner(bus, boards=[1, 2, 3], command_attempts=2)
+    runner.start(BY_KEY["wave"])
+    assert wait_until(lambda: runner.cycle >= 1)
+
+    bus.dead.add(2)                        # board 2 loses power mid-show
+    assert wait_until(lambda: 2 in runner.absent, timeout=10)
+    seen = runner.cycle
+    assert wait_until(lambda: runner.cycle >= seen + 2)   # others carry on
+    assert runner.live == [1, 3]
+    assert runner.failures >= 1            # the loss is counted, not hidden
+    runner.stop()
 
 
 @pytest.mark.parametrize("fault", [

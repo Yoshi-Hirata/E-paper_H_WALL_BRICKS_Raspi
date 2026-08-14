@@ -64,6 +64,8 @@ def make_runner(bus, **kwargs):
     kwargs.setdefault("port_wait", 0.01)
     kwargs.setdefault("show_gap", 0.001)
     kwargs.setdefault("link_poll", 0.01)
+    kwargs.setdefault("probe_sweep_delay", 0.01)
+    kwargs.setdefault("reprobe_interval", 0.05)
     # The fake port has no device node, so standby would read every poll
     # as an unplug. Tests that care about that supply their own.
     kwargs.setdefault("link_token", lambda port: "up")

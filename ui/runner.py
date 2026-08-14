@@ -6,6 +6,10 @@ for the reasoning. The layers, outermost last:
 
   command  exponential backoff, long enough to outwait a repaint (9.8 s
            measured) and a busy board
+  board    a board that does not answer is skipped, not fatal: the wall
+           is built for 20 boards but must run with whatever subset is
+           powered. Absent boards are re-probed periodically and join
+           the show when they appear
   cycle    give up on at most one cycle, re-initialise, try the next one
   bus      close and reopen the port - via find_port, since a USB
            re-enumeration can rename the device - and wait for it to come
@@ -38,12 +42,15 @@ from epaper.transport import Bus, find_port
 from .config import LOG_HISTORY
 from .patterns import DEFAULT_PALETTE, Pattern
 
-DEFAULT_BOARDS = [0x01, 0x02]
+DEFAULT_BOARDS = list(range(1, 21))   # the production wall: board IDs 1..20
 ACK_SUCCESS, ACK_BUSY = 0x80, 0x82
 SHOW_REPEATS = 3          # the show frame is broadcast, so never acknowledged
 SHOW_GAP_S = 0.15
 LINK_POLL_S = 2.0         # how often standby checks the panel link
 LINK_GUARD_S = 60.0       # how often standby re-suppresses the autoplay
+PROBE_SWEEPS = 3          # setup passes over the board list
+PROBE_SWEEP_DELAY_S = 3.0 # between passes, so a repaint can finish meanwhile
+REPROBE_INTERVAL_S = 60.0 # how often absent boards get another chance
 
 
 def device_token(port: str):
@@ -90,7 +97,10 @@ class DemoRunner:
                  show_gap: float = SHOW_GAP_S,
                  link_poll: float = LINK_POLL_S,
                  link_guard: float = LINK_GUARD_S,
-                 link_token=device_token):
+                 link_token=device_token,
+                 probe_sweeps: int = PROBE_SWEEPS,
+                 probe_sweep_delay: float = PROBE_SWEEP_DELAY_S,
+                 reprobe_interval: float = REPROBE_INTERVAL_S):
         self.boards = boards or list(DEFAULT_BOARDS)
         self.interval = interval
         self.guard_delay = guard_delay
@@ -117,6 +127,17 @@ class DemoRunner:
         self.link_poll = link_poll
         self.link_guard = link_guard
         self._link_token = link_token
+        self.probe_sweeps = probe_sweeps
+        self.probe_sweep_delay = probe_sweep_delay
+        self.reprobe_interval = reprobe_interval
+
+        # Which of self.boards are actually answering. `live` keeps the
+        # bus order of self.boards; `absent` boards cost one quick probe
+        # per reprobe interval and nothing else.
+        self.live: list[int] = []
+        self.absent: set[int] = set()
+        self._needs_cfg: set[int] = set()
+        self._next_reprobe = 0.0
 
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
         self.pattern: Pattern | None = None
@@ -183,6 +204,10 @@ class DemoRunner:
         self.cycle = 0
         self.failures = 0
         self.error = None
+        self.live = []
+        self.absent = set()
+        self._needs_cfg = set()
+        self._next_reprobe = 0.0
         self._stop.clear()
         self._pause.clear()
         self._elapsed_base = 0.0
@@ -245,19 +270,27 @@ class DemoRunner:
     def _backoff(self, attempt: int) -> float:
         return self.retry_delays[min(attempt, len(self.retry_delays)) - 1]
 
-    def _request(self, bus, frame, label: str, attempts: int | None = None) -> bool:
+    def _request(self, bus, frame, label: str, attempts: int | None = None,
+                 quiet: bool = False, bus_retries: int | None = None) -> bool:
         """Send until acknowledged, backing off between tries.
 
         The backoff has to be able to outwait a full repaint: a board is
         deaf for 9.8 s while its e-paper redraws, and that is a normal
         event, not a fault.
+
+        `quiet` is for probes of boards that may simply not be there:
+        no per-attempt log lines and no self.error, because a socket
+        that is empty on purpose is bookkeeping, not a fault.
         """
         attempts = attempts or self.command_attempts
         busy_seen = 0
         for attempt in range(1, attempts + 1):
-            ack = bus.request(frame)
+            if bus_retries is None:
+                ack = bus.request(frame)
+            else:
+                ack = bus.request(frame, retries=bus_retries)
             if ack is not None and ack.cmd == ACK_SUCCESS:
-                if attempt > 1:
+                if attempt > 1 and not quiet:
                     self.emit(f"{label} ok after {attempt} tries")
                 return True
             if ack is not None and ack.cmd == ACK_BUSY:
@@ -267,44 +300,156 @@ class DemoRunner:
                 if not self._sleep(self.busy_delay):
                     return False
                 continue
-            if attempt == 1:
+            if attempt == 1 and not quiet:
                 reason = "no ACK" if ack is None else f"NAK 0x{ack.cmd:02X}"
                 self.emit(f"{label} {reason}, retrying")
             if attempt < attempts and not self._sleep(self._backoff(attempt)):
                 return False
-        self.error = f"{label}: gave up after {attempts}"
-        self.emit(f"ERROR {label} gave up")
+        if not quiet:
+            self.error = f"{label}: gave up after {attempts}"
+            self.emit(f"ERROR {label} gave up")
         return False
+
+    # ---- board bookkeeping ----
+
+    @staticmethod
+    def _fmt_boards(boards) -> str:
+        """Compress a board list for the LCD log: [2..19] -> "2-19"."""
+        boards = sorted(boards)
+        runs, start, prev = [], boards[0], boards[0]
+        for b in boards[1:] + [None]:
+            if b is not None and b == prev + 1:
+                prev = b
+                continue
+            runs.append(str(start) if start == prev else f"{start}-{prev}")
+            start = prev = b
+        return ",".join(runs)
+
+    def _probe(self, bus, board: int, groups: int) -> bool:
+        """One quick chance for a board to answer: silence it, set the slot.
+
+        A single short request, because during discovery most probes hit
+        sockets that are empty on purpose - the full backoff ladder is
+        reserved for boards that are known to be there.
+        """
+        if not self._request(bus, stop(board, groups), f"probe @{board:02d}",
+                             attempts=1, quiet=True, bus_retries=1):
+            return False
+        return self._request(bus, slot_config(board, self.slot,
+                                              group_count=groups),
+                             f"cfg @{board:02d}")
+
+    def _drop(self, board: int) -> None:
+        """Stop bothering an unreachable board until a reprobe finds it."""
+        if board in self.live:
+            self.live.remove(board)
+        self.absent.add(board)
+        self._needs_cfg.discard(board)
+        self.emit(f"board {board} dropped, will reprobe")
+
+    def _reprobe(self, bus, groups: int) -> bool:
+        """Give absent boards a quick chance to join; True if any did.
+
+        This is how a board powered on after the show started still gets
+        into it: one short probe per board per interval, so eighteen
+        empty sockets cost about nine seconds a minute and a board that
+        appears is drawing within a cycle.
+        """
+        if not self.absent or time.monotonic() < self._next_reprobe:
+            return False
+        self._next_reprobe = time.monotonic() + self.reprobe_interval
+        joined = [board for board in sorted(self.absent)
+                  if not self._stop.is_set()
+                  and self._probe(bus, board, groups)]
+        if not joined:
+            return False
+        self.absent -= set(joined)
+        keep = set(self.live) | set(joined)
+        self.live = [b for b in self.boards if b in keep]
+        self._needs_cfg -= set(joined)      # _probe just configured them
+        self.emit(f"board {self._fmt_boards(joined)} joined "
+                  f"({len(self.live)}/{len(self.boards)})")
+        return True
 
     # ---- one cycle ----
 
     def _setup(self, bus, groups: int) -> bool:
-        """Silence any playback and (re)configure the slot on each board."""
+        """Silence playback and (re)configure every board that answers.
+
+        A board that stays silent is skipped, not fatal: the wall is
+        built for 20 boards but runs with whatever subset is powered.
+        The probing sweeps the list a few times, because a present board
+        is deaf for the 9.8 s of a repaint and the factory autoplay is
+        repainting at power-on - one pass would misread it as absent.
+        Stragglers go to `absent`, where the periodic reprobe picks
+        them up if they ever appear.
+        """
         bus.send(stop(0xFF, groups))
         time.sleep(0.3)
-        for board in self.boards:
-            if not self._request(bus, stop(board, groups), f"stop @{board:02X}"):
+        pending = list(self.boards)
+        found: list[int] = []
+        for sweep in range(self.probe_sweeps):
+            if not pending:
+                break
+            if sweep and not self._sleep(self.probe_sweep_delay):
                 return False
-            if not self._request(bus, slot_config(board, self.slot,
-                                                  group_count=groups),
-                                 f"cfg @{board:02X}"):
-                return False
+            still = []
+            for board in pending:
+                if self._probe(bus, board, groups):
+                    found.append(board)
+                else:
+                    still.append(board)
+            pending = still
+        self.absent = set(pending)
+        self.live = [b for b in self.boards if b in set(found)]
+        self._needs_cfg = set()
+        self._next_reprobe = time.monotonic() + self.reprobe_interval
+        if not self.live:
+            self.error = "no boards answering"
+            self.emit("ERROR no boards answering")
+            return False
+        if pending:
+            self.emit(f"board {self._fmt_boards(pending)} absent, skipping")
+        self.emit(f"panels online: {len(self.live)}/{len(self.boards)}")
         return True
 
     def _cycle(self, bus, groups: int, rng: random.Random) -> bool:
+        self._reprobe(bus, groups)
         # A playlist hands back whichever pattern owns this cycle; a plain
         # pattern hands back itself.
         active, local_cycle = self.pattern.resolve(self.cycle)
         frame = active(local_cycle, self.boards, self.palette, rng)
-        for board in self.boards:
-            if not self._request(bus, stop(board, groups), f"stop @{board:02X}"):
+        updated = 0
+        skipped = False
+        for board in list(self.live):
+            if self._stop.is_set():
                 return False
+            if not self._request(bus, stop(board, groups), f"stop @{board:02d}"):
+                # Unreachable after the full ladder: out of the loop, so
+                # one dead board cannot freeze the other nineteen.
+                self._drop(board)
+                skipped = True
+                continue
+            if board in self._needs_cfg and not self._request(
+                    bus, slot_config(board, self.slot, group_count=groups),
+                    f"cfg @{board:02d}"):
+                self._drop(board)
+                skipped = True
+                continue
+            self._needs_cfg.discard(board)
             arr = build_hexagon_array(frame[board])
             if not self._request(bus, save_color(board, self.slot, arr, groups),
-                                 f"save @{board:02X}", self.save_attempts):
-                return False
+                                 f"save @{board:02d}", self.save_attempts):
+                # Answering but not taking data - it may have rebooted, so
+                # it needs its slot configured again before the next try.
+                self._needs_cfg.add(board)
+                skipped = True
+                continue
+            updated += 1
+        if updated == 0:
+            return False
 
-        # Broadcast keeps both panels in step but is unacknowledged, so a
+        # Broadcast keeps the panels in step but is unacknowledged, so a
         # dropped frame would silently leave the old image up. Repeating is
         # harmless: a board ignores commands while it is already repainting.
         for _ in range(self.show_repeats):
@@ -312,8 +457,11 @@ class DemoRunner:
             time.sleep(self.show_gap)
 
         self.cycle += 1
+        if skipped:
+            self.failures += 1
         label = "" if active is self.pattern else f" {active.label}"
-        self.emit(f"cycle {self.cycle}{label} shown")
+        self.emit(f"cycle {self.cycle}{label} shown "
+                  f"({updated}/{len(self.boards)})")
         return True
 
     def _settle(self, bus, groups: int) -> None:
@@ -328,8 +476,8 @@ class DemoRunner:
         if not self._sleep(self.guard_delay):
             return
         bus.send(stop(0xFF, groups))
-        for board in self.boards:
-            self._request(bus, stop(board, groups), f"stop @{board:02X}")
+        for board in list(self.live):
+            self._request(bus, stop(board, groups), f"stop @{board:02d}")
 
     def _watch_link(self, bus, groups: int, port: str) -> bool:
         """Sit on white until the panel link changes. False to stop.
@@ -344,6 +492,10 @@ class DemoRunner:
         costs one 8-byte frame and it is the backstop for a reboot this
         cannot see - it silences an autoplay that started unnoticed,
         which is what actually ruins the look of the wall.
+
+        Absent boards are reprobed on the same clock: one powered on
+        during standby comes up playing its factory demo, so finding it
+        is treated like a link change and the white gets repainted.
         """
         token = self._link_token(port)
         next_guard = time.monotonic() + self.link_guard
@@ -357,6 +509,10 @@ class DemoRunner:
             if self.link_guard > 0 and time.monotonic() >= next_guard:
                 next_guard = time.monotonic() + self.link_guard
                 bus.send(stop(0xFF, groups))
+            if self._reprobe(bus, groups):
+                self.standby_ready = False
+                self.emit("new board joined, will re-blank")
+                return True
         return False
 
     def _wait_next(self, bus, groups: int) -> bool:

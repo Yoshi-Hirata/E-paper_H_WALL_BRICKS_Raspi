@@ -20,7 +20,7 @@ from .app import App
 from .display import make_display
 from .inputs import make_input
 from .patterns import PATTERNS
-from .runner import DemoRunner
+from .runner import DEFAULT_BOARDS, DemoRunner
 
 
 def preview(directory: str) -> int:
@@ -51,7 +51,7 @@ def preview(directory: str) -> int:
     return 0
 
 
-def check() -> int:
+def check(boards=None) -> int:
     """Preflight: report whether the panels, SPI, GPIO and LCD are usable.
 
     Written to be run before a show, and to say which part is missing
@@ -95,7 +95,7 @@ def check() -> int:
         ok = False
         print(f"lcd (ST7789)      : NOT USABLE ({exc})")
 
-    ok &= check_boards(port)
+    ok &= check_boards(port, boards)
     print("\nresult:", "ready" if ok else "not ready")
     return 0 if ok else 1
 
@@ -124,14 +124,17 @@ def _check_gpio_lines(board) -> "list[str]":
     return busy
 
 
-def check_boards(port: str | None, boards=(0x01, 0x02),
+def check_boards(port: str | None, boards=None,
                  patience_s: float = 20.0) -> bool:
-    """Ask each panel board to answer, so a dead link is found before a show.
+    """Ask every board to answer, and report which ones are present.
 
-    Keeps asking for `patience_s`: a board ignores everything for the
-    9.8 s its e-paper takes to repaint, and after a power-on the factory
-    autoplay is doing exactly that. Reporting "no ACK" for a board that
-    is merely busy would be a false alarm at the worst moment.
+    A silent board is reported but does not fail the check: the wall is
+    built for 20 boards and runs with whatever subset is powered, so
+    during bring-up most sockets are empty on purpose. The whole scan
+    shares one patience budget, sweeping the list again while time is
+    left - a board ignores everything for the 9.8 s its e-paper takes
+    to repaint, and after a power-on the factory autoplay is doing
+    exactly that, so one silent pass must not misread it as missing.
 
     Needs the port to itself: stop the service first if it is running.
     """
@@ -140,6 +143,7 @@ def check_boards(port: str | None, boards=(0x01, 0x02),
     from epaper.commands import stop
     from epaper.transport import Bus
 
+    boards = list(boards or DEFAULT_BOARDS)
     if not port:
         return False
     try:
@@ -148,26 +152,25 @@ def check_boards(port: str | None, boards=(0x01, 0x02),
         print(f"boards            : cannot open port ({exc})")
         print("                    stop epaper-ui/epaper-demo first")
         return False
-    ok = True
     with bus:
         groups = max(len(boards), max(boards))
-        for board in boards:
-            deadline = time.monotonic() + patience_s
-            reason = "no ACK"
-            while True:
-                ack = bus.request(stop(board, groups))
-                if ack is not None and ack.cmd == 0x80:
-                    print(f"board 0x{board:02X}        : ACK")
-                    break
+        status = {board: "no answer" for board in boards}
+        deadline = time.monotonic() + patience_s
+        while True:
+            pending = [b for b in boards if status[b] != "ACK"]
+            if not pending or time.monotonic() >= deadline:
+                break
+            for board in pending:
+                ack = bus.request(stop(board, groups), retries=1)
                 if ack is not None:
-                    reason = f"NAK 0x{ack.cmd:02X}"
-                if time.monotonic() >= deadline:
-                    ok = False
-                    print(f"board 0x{board:02X}        : {reason} "
-                          f"(after {patience_s:.0f}s)")
-                    break
-                time.sleep(1.0)
-    return ok
+                    status[board] = ("ACK" if ack.cmd == 0x80
+                                     else f"NAK 0x{ack.cmd:02X}")
+            time.sleep(1.0)
+        for board in boards:
+            print(f"board {board:>2}          : {status[board]}")
+        answering = sum(1 for s in status.values() if s == "ACK")
+        print(f"boards            : {answering}/{len(boards)} answering")
+    return answering > 0
 
 
 def main() -> int:
@@ -184,7 +187,9 @@ def main() -> int:
                     help="report panel/SPI/GPIO/LCD readiness and exit")
     ap.add_argument("--port", help="serial port (default: auto-detect)")
     ap.add_argument("--boards", nargs="+", type=lambda v: int(v, 0),
-                    default=[0x01, 0x02])
+                    default=list(DEFAULT_BOARDS),
+                    help="board addresses to drive (default 1..20; boards "
+                         "that do not answer are skipped and re-probed)")
     ap.add_argument("--interval", type=float, default=60.0,
                     help="seconds between panel refreshes (default 60)")
     ap.add_argument("--guard-delay", type=float, default=12.0)
@@ -211,7 +216,7 @@ def main() -> int:
     if args.preview:
         return preview(args.preview)
     if args.check:
-        return check()
+        return check(args.boards)
 
     port = args.port or find_port()
     # Pass args.port, not the detected one: pinning the name found at
