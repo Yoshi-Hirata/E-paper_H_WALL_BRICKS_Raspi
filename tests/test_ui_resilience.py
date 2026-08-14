@@ -299,6 +299,26 @@ def test_board_powered_on_later_joins_the_demo():
     runner.stop()
 
 
+def test_a_late_ack_from_another_board_is_not_an_answer():
+    # Board 20's relayed ACKs can arrive seconds late, landing in the
+    # receive window of whatever was asked next - seen on hardware
+    # vouching for empty socket 5 and stalling setup on "cfg @05".
+    class StaleAckBus(FaultBus):
+        def request(self, frame, retries=3):
+            if frame.dest == 5:
+                self.requested.append(frame)
+                return Frame(dest=0, src=20, dev_type=0xFF, cmd=0x80)
+            return super().request(frame, retries)
+
+    bus = StaleAckBus()
+    runner = make_runner(bus, boards=[1, 5, 20])
+    runner.start(BY_KEY["wave"])
+    assert wait_until(lambda: runner.cycle >= 1)
+    assert runner.live == [1, 20]
+    assert runner.absent == {5}
+    runner.stop()
+
+
 def test_known_absent_boards_get_one_probe_not_three_on_restart():
     # Pressing KEY1 for a new pattern must not re-run the full discovery:
     # eighteen empty sockets would hold the first frame for half a minute.

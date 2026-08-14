@@ -162,6 +162,8 @@ def check_boards(port: str | None, boards=None,
                 break
             for board in pending:
                 ack = bus.request(stop(board, groups), retries=1)
+                if ack is not None and ack.src != board:
+                    ack = None          # a late ACK from another board
                 if ack is not None:
                     status[board] = ("ACK" if ack.cmd == 0x80
                                      else f"NAK 0x{ack.cmd:02X}")

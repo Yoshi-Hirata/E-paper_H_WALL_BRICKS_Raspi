@@ -291,6 +291,12 @@ class DemoRunner:
                 ack = bus.request(frame)
             else:
                 ack = bus.request(frame, retries=bus_retries)
+            if ack is not None and ack.src != frame.dest:
+                # Board 20's relayed ACKs can arrive many seconds late,
+                # landing in the receive window of whatever was asked
+                # next - seen on hardware vouching for an empty socket.
+                # An answer from the wrong board is no answer.
+                ack = None
             if ack is not None and ack.cmd == ACK_SUCCESS:
                 if attempt > 1 and not quiet:
                     self.emit(f"{label} ok after {attempt} tries")
