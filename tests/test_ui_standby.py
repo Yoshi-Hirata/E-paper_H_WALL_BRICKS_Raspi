@@ -39,10 +39,15 @@ def test_standby_pattern_is_every_valid_triangle_white():
         assert set(triangles.values()) == {WHITE}
 
 
-def test_standby_is_not_offered_in_the_menu():
-    # It is a state, not a choice - and picking it would loop a 9.8 s
-    # repaint of white on white forever.
-    assert "standby" not in BY_KEY
+def test_standby_leads_the_menu_as_a_one_shot():
+    # The top menu row re-runs the boot standby: all white plus a link
+    # check, reported on the menu. The App wires it to runner.standby()
+    # (one shot) - runner.start() would loop a 16 s white-on-white
+    # repaint forever (behaviour covered in tests/test_ui_app.py).
+    from ui.patterns import PATTERNS
+
+    assert PATTERNS[0].key == "standby"
+    assert BY_KEY["standby"] is STANDBY
 
 
 def test_standby_stops_playback_saves_white_and_holds():

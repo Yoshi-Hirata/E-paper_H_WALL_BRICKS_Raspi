@@ -147,6 +147,13 @@ class App:
                 self._dirty = True
 
     def _restart(self) -> None:
+        if self.patterns[self.selected].key == "standby":
+            # The top menu entry is not a looping demo. One shot of the
+            # boot standby - every sector white, every board probed -
+            # with the outcome reported on the menu.
+            self.enter_standby()
+            self.screen = Screen.MENU
+            return
         self._standby = False
         self.runner.start(self.patterns[self.selected])
         self.screen = Screen.RUNNING
@@ -171,15 +178,21 @@ class App:
         self._dirty = True
 
     def _standby_status(self) -> str:
-        """Menu subtitle while the panels are being blanked, else ''."""
+        """Menu subtitle while the panels are being blanked, else ''.
+
+        Doubles as the link-check report: standby probes every
+        configured board, so the count of boards answering - and any
+        error - is the state of the wall.
+        """
         if not self._standby:
             return ""
         if self.runner.error:
             return f"ERROR {self.runner.error}"
+        boards = f"{len(self.runner.live)}/{len(self.runner.boards)}"
         if self.runner.standby_ready:
-            return "panels: white (standby)"
+            return f"standby: white, boards {boards} OK"
         if self.runner.running:
-            return "panels: blanking..."
+            return f"standby: blanking + check {boards}..."
         return ""
 
     def frame(self):

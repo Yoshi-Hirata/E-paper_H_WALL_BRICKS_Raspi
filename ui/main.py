@@ -33,7 +33,7 @@ def preview(directory: str) -> int:
     render.menu_screen(PATTERNS, 3, "/dev/ttyACM0").save(out / "menu_mid.png")
     render.menu_screen(PATTERNS, 0, None).save(out / "menu_noport.png")
     render.menu_screen(PATTERNS, 0, "/dev/ttyACM0",
-                       status="panels: white (standby)"
+                       status="standby: white, boards 2/20 OK"
                        ).save(out / "menu_standby.png")
     render.running_screen(
         "WAVE", 3725.0, 42,

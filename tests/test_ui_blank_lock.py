@@ -25,11 +25,17 @@ class FakeRunner:
         self.running = False
         self.starts = []
         self.stops = 0
+        self.standby_ready = False
+        self.live = [1, 20]
+        self.boards = [1, 20]
 
     def start(self, pattern):
         self.pattern = pattern
         self.running = True
         self.starts.append(pattern.key)
+
+    def standby(self):
+        self.standby_ready = True
 
     def stop(self, timeout=5.0):
         self.running = False
@@ -88,6 +94,7 @@ def test_waking_press_changes_nothing_else():
     # The whole point: in a dark room you press something to see the
     # screen, and that must not start, stop or re-select anything.
     app, runner, clock = make_app(blank_after=10.0)
+    app.handle("down")
     app.handle("key1")              # demo running, menu -> running
     before = (app.screen, app.selected, list(runner.starts), runner.stops)
     clock.advance(11)
@@ -135,6 +142,7 @@ def test_blanking_is_off_unless_asked_for():
 
 def test_demo_keeps_running_while_blanked():
     app, runner, clock = make_app(blank_after=10.0)
+    app.handle("down")
     app.handle("key1")
     clock.advance(11)
     app.tick(wait=0)
@@ -158,8 +166,9 @@ def test_unlock_sequence_frees_the_buttons():
     for event in UNLOCK_SEQUENCE:
         app.handle(event)
     assert not app.locked
+    app.handle("down")
     app.handle("key1")
-    assert runner.starts == [PATTERNS[0].key]
+    assert runner.starts == [PATTERNS[1].key]
 
 
 def test_wrong_sequence_does_not_unlock():

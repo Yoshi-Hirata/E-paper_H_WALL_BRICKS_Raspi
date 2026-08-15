@@ -115,12 +115,18 @@ class FakeRunner:
         self.running = False
         self.paused = False
         self.starts, self.pauses, self.resumes, self.stops = [], 0, 0, 0
+        self.standby_ready = False
+        self.live = [1, 20]
+        self.boards = [1, 20]
 
     def start(self, pattern):
         self.pattern = pattern
         self.running = True
         self.paused = False
         self.starts.append(pattern.key)
+
+    def standby(self):
+        self.standby_ready = True
 
     def pause(self):
         self.paused = True
@@ -146,18 +152,20 @@ def make_app():
 
 def test_key1_cycles_start_pause_resume():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")                 # start
     assert app.screen is Screen.RUNNING
-    assert runner.starts == [PATTERNS[0].key]
+    assert runner.starts == [PATTERNS[1].key]
     app.handle("key1")                 # pause
     assert runner.pauses == 1 and runner.paused
     app.handle("key1")                 # resume
     assert runner.resumes == 1 and not runner.paused
-    assert runner.starts == [PATTERNS[0].key]      # never restarted
+    assert runner.starts == [PATTERNS[1].key]      # never restarted
 
 
 def test_key1_hold_resets_from_a_running_demo():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")
     runner.cycle = 42
     app.handle("key1_hold")
@@ -167,6 +175,7 @@ def test_key1_hold_resets_from_a_running_demo():
 
 def test_key1_hold_resets_from_a_paused_demo():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")
     app.handle("key1")                 # paused
     app.handle("key1_hold")
@@ -176,13 +185,15 @@ def test_key1_hold_resets_from_a_paused_demo():
 
 def test_key1_hold_starts_from_the_menu_too():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1_hold")
     assert app.screen is Screen.RUNNING
-    assert runner.starts == [PATTERNS[0].key]
+    assert runner.starts == [PATTERNS[1].key]
 
 
 def test_hold_while_blanked_only_wakes():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")
     app.blanked = True
     app.display.sleep()

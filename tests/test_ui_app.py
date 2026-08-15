@@ -23,12 +23,20 @@ class FakeRunner:
         self.starts = []
         self.stops = 0
         self.pauses = 0
+        self.standbys = 0
+        self.standby_ready = False
+        self.live = [1, 20]
+        self.boards = [1, 20]
 
     def start(self, pattern):
         self.pattern = pattern
         self.running = True
         self.paused = False
         self.starts.append(pattern.key)
+
+    def standby(self):
+        self.standbys += 1
+        self.standby_ready = True
 
     def pause(self):
         self.paused = True
@@ -72,21 +80,37 @@ def test_key1_starts_the_selected_pattern():
     assert runner.starts == [PATTERNS[1].key]
 
 
+def test_standby_tops_the_menu_and_runs_one_shot():
+    # The first menu row is the standby: all white plus a link check.
+    # It goes through runner.standby(), never start() - start() would
+    # loop a 16 s white-on-white repaint forever - and the menu stays
+    # up to show the outcome.
+    app, runner = make_app()
+    assert app.patterns[0].key == "standby"
+    app.handle("key1")                 # cursor starts on the top row
+    assert app.screen is Screen.MENU
+    assert runner.standbys == 1
+    assert runner.starts == []
+    assert "standby" in app._standby_status()
+
+
 def test_key1_while_running_pauses_then_resumes():
     # Pause, not stop: the demo keeps its cycle count and timer.
     # Full coverage of this lives in tests/test_ui_pause.py.
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")
     app.handle("key1")
     assert runner.paused
     assert runner.stops == 0
     app.handle("key1")
     assert not runner.paused
-    assert runner.starts == [PATTERNS[0].key]     # never restarted
+    assert runner.starts == [PATTERNS[1].key]     # never restarted
 
 
 def test_key2_returns_to_menu_and_stops_the_demo():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")
     app.handle("key2")
     assert app.screen is Screen.MENU
@@ -97,6 +121,7 @@ def test_key3_blanks_the_screen_without_stopping_the_demo():
     # On an appliance whose only interface is this screen, no button may
     # leave it dark and unrecoverable - KEY3 sleeps, it does not quit.
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")
     app.handle("key3")
     assert app.blanked
@@ -107,6 +132,7 @@ def test_key3_blanks_the_screen_without_stopping_the_demo():
 
 def test_any_press_wakes_the_screen_and_is_consumed():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key3")
     before = list(runner.starts)   # copy: the runner keeps appending to its own
     app.handle("key1")             # blind press: wakes only
@@ -119,6 +145,7 @@ def test_any_press_wakes_the_screen_and_is_consumed():
 
 def test_blanked_screen_is_not_repainted():
     app, _ = make_app()
+    app.handle("down")
     app.handle("key1")
     app.tick(wait=0)
     app.handle("key3")
@@ -130,14 +157,16 @@ def test_blanked_screen_is_not_repainted():
 
 def test_menu_ignores_selection_keys_while_running():
     app, _ = make_app()
+    app.handle("down")
     app.handle("key1")
     app.handle("down")
-    assert app.selected == 0      # joystick must not re-select mid-demo
+    assert app.selected == 1      # joystick must not re-select mid-demo
 
 
 def test_frames_are_lcd_sized_on_both_screens():
     app, _ = make_app()
     assert app.frame().size == (WIDTH, HEIGHT)
+    app.handle("down")
     app.handle("key1")
     assert app.frame().size == (WIDTH, HEIGHT)
 
@@ -153,6 +182,7 @@ def test_idle_ticks_do_not_repaint_an_unchanged_screen():
     # Packing a frame costs ~125 ms on the target Pi, so identical
     # repaints would burn most of the CPU for nothing.
     app, _ = make_app()
+    app.handle("down")
     app.handle("key1")
     app.tick(wait=0)                       # initial paint of the run screen
     before = app.display.frames
@@ -163,6 +193,7 @@ def test_idle_ticks_do_not_repaint_an_unchanged_screen():
 
 def test_running_screen_repaints_when_the_timer_advances():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")
     app.tick(wait=0)
     before = app.display.frames
@@ -173,6 +204,7 @@ def test_running_screen_repaints_when_the_timer_advances():
 
 def test_running_screen_repaints_on_a_new_cycle():
     app, runner = make_app()
+    app.handle("down")
     app.handle("key1")
     app.tick(wait=0)
     before = app.display.frames

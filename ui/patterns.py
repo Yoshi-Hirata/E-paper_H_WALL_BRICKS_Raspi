@@ -121,7 +121,22 @@ class Playlist:
 _SOLID = Pattern("solid", "SOLID", "W>Y>B>R>K>G, 15s", _solid, interval=15.0)
 _RANDOM = Pattern("random", "RANDOM", "random colors", _random, interval=20.0)
 
+
+def _white(cycle, boards, palette, rng) -> Frame:
+    return {b: {t: COLOR_NAMES["white"] for t in sorted(VALID_TRIANGLES)}
+            for b in boards}
+
+
+# Leads the menu, but it is a state, not a demo: every sector white,
+# every configured board probed, the result reported on the menu. The
+# App runs it through runner.standby() - one shot - because start()
+# would loop a 16 s white-on-white repaint forever. It is also what the
+# boot sequence applies as soon as the link comes up, so the wall never
+# idles on whatever vendor demo frame happened to be mid-play.
+STANDBY = Pattern("standby", "STANDBY", "white + link check", _white)
+
 PATTERNS: list[Pattern | Playlist] = [
+    STANDBY,
     # Default loop: one full colour sweep, then a spell of random fields.
     Playlist("loop", "SOLID+RANDOM", "6 colors, then 6 random",
              steps=((_SOLID, 6), (_RANDOM, 6))),
@@ -134,15 +149,3 @@ PATTERNS: list[Pattern | Playlist] = [
 ]
 
 BY_KEY = {p.key: p for p in PATTERNS}
-
-
-def _white(cycle, boards, palette, rng) -> Frame:
-    return {b: {t: COLOR_NAMES["white"] for t in sorted(VALID_TRIANGLES)}
-            for b in boards}
-
-
-# Not in PATTERNS: this is not something to choose, it is the state the
-# panels are put into as soon as the link comes up - the factory autoplay
-# silenced and every sector white. Anything else would leave whichever
-# vendor demo frame happened to be showing.
-STANDBY = Pattern("standby", "STANDBY", "all white", _white)
