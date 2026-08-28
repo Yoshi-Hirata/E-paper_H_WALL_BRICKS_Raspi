@@ -24,11 +24,12 @@ FLAG_LAST_FRAME = 0x01
 TEST_SLOT = 19  # dedicated test slot, least likely to hold user data
 
 
-def _frame(dest: int, cmd: int, data: bytes, group_count: int) -> Frame:
+def _frame(dest: int, cmd: int, data: bytes, group_count: int,
+           dev_type: int = DEV_H_WALL_BRICKS) -> Frame:
     return Frame(
         dest=dest,
         src=ADDR_PC,
-        dev_type=DEV_H_WALL_BRICKS,
+        dev_type=dev_type,
         cmd=cmd,
         group_no=dest if dest != 0xFF else 1,
         group_count=group_count,
@@ -45,16 +46,18 @@ def stop(dest: int, group_count: int = 2) -> Frame:
 def slot_config(dest: int, slot: int, mode: int = MODE_ALL_AT_ONCE,
                 direction: int = DIR_NATURAL, start_delay: int = 0,
                 switch_delay: int = 0, pipeline: int = 1,
-                group_count: int = 2) -> Frame:
+                group_count: int = 2,
+                dev_type: int = DEV_H_WALL_BRICKS) -> Frame:
     if not 0 <= slot <= 19:
         raise ValueError(f"slot {slot} out of range 0-19")
     data = struct.pack("<BBBHHB", slot, mode, direction,
                        start_delay, switch_delay, pipeline)
-    return _frame(dest, CMD_SET_SLOT_CONFIG, data, group_count)
+    return _frame(dest, CMD_SET_SLOT_CONFIG, data, group_count, dev_type)
 
 
 def save_color(dest: int, slot: int, array64: bytes,
-               group_count: int = 2) -> Frame:
+               group_count: int = 2,
+               dev_type: int = DEV_H_WALL_BRICKS) -> Frame:
     """Single-chip device: one 66-byte frame with the LAST_FRAME flag.
 
     The spec's 69-byte last-frame format (7.1.2, trailing
@@ -68,13 +71,14 @@ def save_color(dest: int, slot: int, array64: bytes,
         raise ValueError(f"color array must be 64 bytes, got {len(array64)}")
     data = bytes([slot, FLAG_LAST_FRAME]) + array64
     assert len(data) == 66
-    return _frame(dest, CMD_SAVE_COLOR, data, group_count)
+    return _frame(dest, CMD_SAVE_COLOR, data, group_count, dev_type)
 
 
-def show_single(dest: int, slot: int, group_count: int = 2) -> Frame:
+def show_single(dest: int, slot: int, group_count: int = 2,
+                dev_type: int = DEV_H_WALL_BRICKS) -> Frame:
     if not 0 <= slot <= 19:
         raise ValueError(f"slot {slot} out of range 0-19")
-    return _frame(dest, CMD_SHOW_SINGLE, bytes([slot]), group_count)
+    return _frame(dest, CMD_SHOW_SINGLE, bytes([slot]), group_count, dev_type)
 
 
 def delete_slot(dest: int, slot: int, group_count: int = 2) -> Frame:

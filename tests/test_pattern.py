@@ -12,9 +12,14 @@ from epaper.pattern import (
     COLOR_WHITE,
     COM_MARKER,
     HI_Z,
+    HI_Z_V11,
+    MARKER_V11,
+    SEGMENTS_GEN,
     VALID_TRIANGLES,
+    build_gen_array,
     build_hexagon_array,
 )
+from epaper.protocol import DEV_COMMON
 
 
 def test_valid_triangle_set_matches_spec():
@@ -55,6 +60,38 @@ def test_rejects_invalid_input():
         build_hexagon_array({2: 0x37})            # not a color
     with pytest.raises(ValueError):
         build_hexagon_array(fill=0x21)            # not a color
+
+
+def test_gen_array_layout():
+    # V1.1 / GEN: segments 1-60 are the payload, FE markers bracket the
+    # array, 61-62 stay FF padding (vendor README 2026-08-26).
+    assert SEGMENTS_GEN == frozenset(range(1, 61))
+    arr = build_gen_array({seg: (seg - 1) % 16 for seg in SEGMENTS_GEN})
+    assert len(arr) == 64
+    assert arr[0] == MARKER_V11 and arr[63] == MARKER_V11
+    assert arr[61] == HI_Z_V11 and arr[62] == HI_Z_V11
+    for seg in SEGMENTS_GEN:
+        assert arr[seg] == (seg - 1) % 16
+    assert arr[1] == 0x00 and arr[16] == 0x0F and arr[17] == 0x00
+
+
+def test_gen_array_rejects_invalid_input():
+    with pytest.raises(ValueError):
+        build_gen_array({0: 0x00})        # marker slot, not a segment
+    with pytest.raises(ValueError):
+        build_gen_array({61: 0x00})       # padding, not a segment
+    with pytest.raises(ValueError):
+        build_gen_array({1: 0x10})        # beyond the 16-color palette
+    with pytest.raises(ValueError):
+        build_gen_array(fill=0xFE)
+
+
+def test_save_color_carries_dev_type():
+    arr = build_gen_array()
+    frame = save_color(dest=0x01, slot=19, array64=arr, dev_type=DEV_COMMON)
+    assert frame.dev_type == DEV_COMMON
+    # default stays the hexagon device type for the old patterns
+    assert save_color(dest=0x01, slot=19, array64=arr).dev_type == 0x01
 
 
 def test_save_color_frame_shape():
