@@ -7,29 +7,62 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
 import pytest
 
-from epaper.effects import validate
-from epaper.pattern import COLOR_NAMES, VALID_TRIANGLES, build_hexagon_array
-from ui.patterns import BY_KEY, DEFAULT_PALETTE, PATTERNS
+from epaper.grid import validate
+from epaper.pattern import COLOR_NAMES_16, SEGMENTS_GEN
+from epaper.protocol import DEV_NUMBER_BRAND
+from ui.patterns import BY_KEY, COLORS16, DEFAULT_PALETTE, PATTERNS
 
 BOARDS = [0x01, 0x02]
 
 
 @pytest.mark.parametrize("pattern", PATTERNS, ids=lambda p: p.key)
-def test_pattern_covers_every_board_and_triangle(pattern):
+def test_pattern_covers_every_board_and_segment(pattern):
     frame = pattern(0, BOARDS, DEFAULT_PALETTE, random.Random(1))
     assert set(frame) == set(BOARDS)
     for colors in frame.values():
-        assert set(colors) == set(VALID_TRIANGLES)
-        assert all(c in DEFAULT_PALETTE for c in colors.values())
+        assert set(colors) == set(SEGMENTS_GEN)
+        assert all(0 <= c < 16 for c in colors.values())
 
 
 @pytest.mark.parametrize("pattern", PATTERNS, ids=lambda p: p.key)
 def test_pattern_output_is_encodable(pattern):
-    # build_hexagon_array is strict about triangle numbers and color codes;
+    # The array builder is strict about segment numbers and color codes;
     # a pattern that trips it would only fail once it hit the hardware.
     frame = pattern(3, BOARDS, DEFAULT_PALETTE, random.Random(2))
     for colors in frame.values():
-        assert len(build_hexagon_array(colors)) == 64
+        active, _ = pattern.resolve(3)
+        assert active.dev_type == DEV_NUMBER_BRAND
+        assert len(active.array(colors)) == 64
+
+
+def test_solid16_sweeps_the_whole_lut_and_wraps():
+    solid16 = BY_KEY["solid16"]
+    for cycle in range(16):
+        frame = solid16(cycle, BOARDS)
+        for board in BOARDS:
+            assert set(frame[board].values()) == {cycle}
+    assert solid16(16, BOARDS)[0x01] == solid16(0, BOARDS)[0x01]
+    assert solid16.interval >= 11.0     # stays above the repaint time
+
+
+def test_solid16_captions_name_the_datasheet_colors():
+    caption = BY_KEY["solid16"].caption
+    assert caption(0) == "0x00 White"
+    assert caption(5) == "0x05 Turquoise"
+    assert caption(11) == "0x0B Yellow Green"
+    assert caption(15) == "0x0F Smoke Blue"
+    assert caption(16) == "0x00 White"      # wraps with the sweep
+
+
+def test_colors16_ramps_and_repeats():
+    # Segments 1-16 sweep the palette 0x00-0x0F; 17+ repeat the sweep.
+    frame = COLORS16(0, BOARDS)
+    for colors in frame.values():
+        for seg in range(1, 17):
+            assert colors[seg] == seg - 1
+        for seg in sorted(SEGMENTS_GEN):
+            assert colors[seg] == (seg - 1) % 16
+    assert COLORS16.dev_type == DEV_NUMBER_BRAND
 
 
 @pytest.mark.parametrize("key", ["wave", "gradient", "spiral", "mirror"])
@@ -59,7 +92,7 @@ def test_solid_follows_the_requested_color_order():
     for cycle, name in enumerate(order):
         frame = solid(cycle, BOARDS)
         for board in BOARDS:                 # both panels show the same color
-            assert set(frame[board].values()) == {COLOR_NAMES[name]}
+            assert set(frame[board].values()) == {COLOR_NAMES_16[name]}
     # and it wraps back to the start
     assert solid(6, BOARDS)[0x01] == solid(0, BOARDS)[0x01]
 
@@ -88,7 +121,7 @@ def test_loop_paints_solid_colors_in_the_requested_order():
     loop = BY_KEY["loop"]
     order = ["white", "yellow", "blue", "red", "black", "green"]
     for cycle, name in enumerate(order):
-        assert set(loop(cycle, BOARDS)[0x01].values()) == {COLOR_NAMES[name]}
+        assert set(loop(cycle, BOARDS)[0x01].values()) == {COLOR_NAMES_16[name]}
 
 
 def test_solid_paces_itself_above_the_measured_repaint_time():

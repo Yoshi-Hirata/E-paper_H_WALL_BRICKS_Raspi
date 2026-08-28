@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
-from epaper.pattern import COLOR_NAMES, VALID_TRIANGLES
+from epaper.pattern import COLOR_NAMES, SEGMENTS_GEN
 from ui.app import App, Screen
 from ui.display import NullDisplay
 from ui.inputs import ScriptedInput
@@ -31,12 +31,15 @@ def make_app(runner):
                port_label="/dev/fake")
 
 
-def test_standby_pattern_is_every_valid_triangle_white():
+def test_standby_pattern_is_every_gen_segment_white():
+    # GEN format: all 60 segments, including 17-22, which the hexagon
+    # layout treats as holes - colors survived there on real hardware
+    # when standby painted the hexagon way (board 1, 2026-08-28).
     frame = STANDBY(0, [0x01, 0x02])
     assert set(frame) == {0x01, 0x02}
-    for triangles in frame.values():
-        assert set(triangles) == set(VALID_TRIANGLES)
-        assert set(triangles.values()) == {WHITE}
+    for segments in frame.values():
+        assert set(segments) == set(SEGMENTS_GEN)
+        assert set(segments.values()) == {WHITE}
 
 
 def test_standby_leads_the_menu_as_a_one_shot():

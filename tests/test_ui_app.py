@@ -16,6 +16,7 @@ class FakeRunner:
     def __init__(self):
         self.pattern = None
         self.cycle = 0
+        self.caption = None
         self.elapsed = 0.0
         self.error = None
         self.running = False

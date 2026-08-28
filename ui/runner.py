@@ -36,7 +36,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
 from epaper.commands import TEST_SLOT, save_color, show_single, slot_config, stop
-from epaper.pattern import build_hexagon_array
 from epaper.transport import Bus, find_port
 
 from .config import LOG_HISTORY
@@ -150,6 +149,7 @@ class DemoRunner:
 
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
         self.pattern: Pattern | None = None
+        self.caption: str | None = None   # what the current cycle shows
         self._once = False
         self.standby_ready = False
         self.cycle = 0
@@ -211,6 +211,7 @@ class DemoRunner:
         self._once = once
         self.pattern = pattern
         self.cycle = 0
+        self.caption = None
         self.failures = 0
         self.error = None
         # live/absent survive across starts on purpose: the wall does not
@@ -343,6 +344,11 @@ class DemoRunner:
             start = prev = b
         return ",".join(runs)
 
+    def _active_dev_type(self) -> int:
+        """Wire format of the pattern drawing this cycle (see Pattern)."""
+        active, _ = self.pattern.resolve(self.cycle)
+        return active.dev_type
+
     def _probe(self, bus, board: int, groups: int) -> bool:
         """One quick chance for a board to answer: silence it, set the slot.
 
@@ -354,7 +360,8 @@ class DemoRunner:
                              attempts=1, quiet=True, bus_retries=1):
             return False
         return self._request(bus, slot_config(board, self.slot,
-                                              group_count=groups),
+                                              group_count=groups,
+                                              dev_type=self._active_dev_type()),
                              f"cfg @{board:02d}")
 
     def _drop(self, board: int) -> None:
@@ -441,6 +448,7 @@ class DemoRunner:
         # A playlist hands back whichever pattern owns this cycle; a plain
         # pattern hands back itself.
         active, local_cycle = self.pattern.resolve(self.cycle)
+        self.caption = active.caption(local_cycle) if active.caption else None
         frame = active(local_cycle, self.boards, self.palette, rng)
         updated = 0
         skipped = False
@@ -454,14 +462,16 @@ class DemoRunner:
                 skipped = True
                 continue
             if board in self._needs_cfg and not self._request(
-                    bus, slot_config(board, self.slot, group_count=groups),
+                    bus, slot_config(board, self.slot, group_count=groups,
+                                     dev_type=active.dev_type),
                     f"cfg @{board:02d}"):
                 self._drop(board)
                 skipped = True
                 continue
             self._needs_cfg.discard(board)
-            arr = build_hexagon_array(frame[board])
-            if not self._request(bus, save_color(board, self.slot, arr, groups),
+            arr = active.array(frame[board])
+            if not self._request(bus, save_color(board, self.slot, arr, groups,
+                                                 dev_type=active.dev_type),
                                  f"save @{board:02d}", self.save_attempts):
                 # Answering but not taking data - it may have rebooted, so
                 # it needs its slot configured again before the next try.
@@ -477,14 +487,16 @@ class DemoRunner:
         # them back afterwards, so each extra copy is another full repaint
         # (see SHOW_REPEATS).
         for _ in range(self.show_repeats):
-            bus.send(show_single(0xFF, self.slot, groups))
+            bus.send(show_single(0xFF, self.slot, groups,
+                                 dev_type=active.dev_type))
             time.sleep(self.show_gap)
 
         self.cycle += 1
         if skipped:
             self.failures += 1
         label = "" if active is self.pattern else f" {active.label}"
-        self.emit(f"cycle {self.cycle}{label} shown "
+        note = f" {self.caption}" if self.caption else ""
+        self.emit(f"cycle {self.cycle}{label}{note} shown "
                   f"({updated}/{len(self.boards)})")
         return True
 

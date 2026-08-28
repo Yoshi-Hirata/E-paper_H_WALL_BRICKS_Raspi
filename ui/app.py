@@ -207,6 +207,7 @@ class App:
             self.runner.cycle,
             self.runner.recent(LOG_LINES),
             error=self.runner.error,
+            caption=self.runner.caption,
             stopping=not self.runner.running and self.runner.error is None,
             paused=self.runner.paused,
             locked=self.locked,
@@ -231,6 +232,7 @@ class App:
             # when that changes.
             return ("menu", self._standby_status())
         return (int(self.runner.elapsed), self.runner.cycle,
+                self.runner.caption,
                 tuple(self.runner.recent(LOG_LINES)),
                 self.runner.error, self.runner.running, self.runner.paused)
 

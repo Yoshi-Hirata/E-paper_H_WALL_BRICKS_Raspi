@@ -117,7 +117,8 @@ def menu_screen(patterns, selected: int, port: str | None = None,
 def running_screen(pattern_label: str, elapsed: float, cycle: int,
                    log_lines: list[str], error: str | None = None,
                    stopping: bool = False, paused: bool = False,
-                   locked: bool = False) -> Image.Image:
+                   locked: bool = False,
+                   caption: str | None = None) -> Image.Image:
     """Live view: elapsed timer, cycle counter and the tail of the log."""
     image, draw = _blank()
     if error:
@@ -135,9 +136,14 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
     timer = format_elapsed(elapsed)
     draw.text(((WIDTH - FONT_TIMER.getlength(timer)) / 2, 30), timer,
               font=FONT_TIMER, fill=FG)
+    # The pattern's caption (e.g. the color on the glass right now) earns
+    # the bright type; the cycle count stays secondary next to it.
     label = f"cycle {cycle}"
+    if caption:
+        label += f" - {caption}"
+    label = _ellipsize(label, FONT_M, WIDTH - 16)
     draw.text(((WIDTH - FONT_M.getlength(label)) / 2, 76), label,
-              font=FONT_M, fill=DIM)
+              font=FONT_M, fill=FG if caption else DIM)
 
     draw.line((8, 100, WIDTH - 8, 100), fill=BAR, width=1)
     y = 106

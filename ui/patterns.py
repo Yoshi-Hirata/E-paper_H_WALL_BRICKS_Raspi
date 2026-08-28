@@ -15,17 +15,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
-from epaper.effects import gradient_pattern, spiral_pattern
-from epaper.pattern import COLOR_NAMES, VALID_TRIANGLES
+from epaper.grid import gradient_pattern, spiral_pattern
+from epaper.pattern import (COLOR_LABELS_16, COLOR_NAMES_16, SEGMENTS_GEN,
+                            build_gen_array)
+from epaper.protocol import DEV_NUMBER_BRAND
 
-DEFAULT_PALETTE = [COLOR_NAMES[c] for c in
+# The classic six show colors, in V1.1 LUT codes (green is 0x06 now).
+DEFAULT_PALETTE = [COLOR_NAMES_16[c] for c in
                    ("white", "yellow", "red", "blue", "green", "black")]
 
 # Order the solid-colour showcase steps through.
-SOLID_SEQUENCE = [COLOR_NAMES[c] for c in
+SOLID_SEQUENCE = [COLOR_NAMES_16[c] for c in
                   ("white", "yellow", "blue", "red", "black", "green")]
 
-Frame = dict[int, dict[int, int]]  # board address -> {triangle: color}
+# The full V1.1 palette in LUT order 0x00-0x0F, for the 16-color solid
+# sweep: one full-panel color per cycle, wrapping after smoke blue.
+SOLID16_SEQUENCE = list(range(16))
+
+Frame = dict[int, dict[int, int]]  # board address -> {segment: color}
 
 
 @dataclass(frozen=True)
@@ -39,6 +46,20 @@ class Pattern:
     # the hardware (plus ~0.2 s to save), so nothing below ~11 s leaves
     # the image visible at all.
     interval: float | None = None
+    # How this pattern's frames go on the wire. Since the 2026-08-28 OTA
+    # every UI pattern sends the V1.1 64-byte array (segments 1-60,
+    # 16-color LUT, 0xFE/0xFF markers) as NUMBER_BRAND (0x03) - the mode
+    # whose index map is exactly 1-60 = P1-P60 per the vendor README.
+    # GEN (0x06) and hexagon (0x01) modes never refresh index 12 (and per
+    # spec 52) on this firmware - a spacer-position leftover, seen as a
+    # permanently stale segment 12 on board 1 (2026-08-28). The original
+    # hexagon layout (build_hexagon_array + DEV_H_WALL_BRICKS) stays
+    # available for the first-generation panels' host scripts.
+    array: Callable[[dict[int, int]], bytes] = build_gen_array
+    dev_type: int = DEV_NUMBER_BRAND
+    # Optional one-liner about the cycle being shown (e.g. the current
+    # color's name); the running screen prints it next to the cycle count.
+    caption: Callable[[int], str] | None = None
 
     def __call__(self, cycle: int, boards: list[int],
                  palette: list[int] | None = None,
@@ -73,14 +94,14 @@ def _mirror(cycle, boards, palette, rng) -> Frame:
 
 
 def _random(cycle, boards, palette, rng) -> Frame:
-    return {b: {t: rng.choice(palette) for t in sorted(VALID_TRIANGLES)}
+    return {b: {seg: rng.choice(palette) for seg in sorted(SEGMENTS_GEN)}
             for b in boards}
 
 
 def _solid(cycle, boards, palette, rng) -> Frame:
     """Both panels one colour, stepping through SOLID_SEQUENCE."""
     color = SOLID_SEQUENCE[cycle % len(SOLID_SEQUENCE)]
-    return {b: {t: color for t in sorted(VALID_TRIANGLES)} for b in boards}
+    return {b: {seg: color for seg in sorted(SEGMENTS_GEN)} for b in boards}
 
 
 @dataclass(frozen=True)
@@ -122,8 +143,40 @@ _SOLID = Pattern("solid", "SOLID", "W>Y>B>R>K>G, 15s", _solid, interval=15.0)
 _RANDOM = Pattern("random", "RANDOM", "random colors", _random, interval=20.0)
 
 
+def _solid16(cycle, boards, palette, rng) -> Frame:
+    """Both panels one colour, sweeping the whole 16-color LUT in order."""
+    color = SOLID16_SEQUENCE[cycle % len(SOLID16_SEQUENCE)]
+    return {b: {seg: color for seg in sorted(SEGMENTS_GEN)} for b in boards}
+
+
+def _colors16(cycle, boards, palette, rng) -> Frame:
+    """16-color test card: segment n shows color (n-1) % 16, so segments
+    1-16 sweep the whole V1.1 palette 0x00-0x0F and 17+ repeat it."""
+    ramp = {seg: (seg - 1) % 16 for seg in sorted(SEGMENTS_GEN)}
+    return {b: dict(ramp) for b in boards}
+
+
+# Static test card, not a demo loop: run it, read the wall against the
+# palette table (docs/SPECIFICATION), stop it. 60 s interval keeps the
+# repaint-per-cycle flash writes rare if it is left running.
+COLORS16 = Pattern("colors16", "16COLORS", "seg1-16 = 0x00-0x0F, repeat",
+                   _colors16, interval=60.0)
+
+def _solid16_caption(cycle: int) -> str:
+    code = SOLID16_SEQUENCE[cycle % len(SOLID16_SEQUENCE)]
+    return f"0x{code:02X} {COLOR_LABELS_16[code]}"
+
+
+# One full-panel color per cycle through the whole LUT, in the
+# datasheet's palette-table order; the LCD names the color on screen.
+# Same pacing note as SOLID: the panels' full repaint is the real floor,
+# so the interval mostly sets how long each color stays readable.
+SOLID16 = Pattern("solid16", "SOLID16", "0x00-0x0F sweep, 15s",
+                  _solid16, interval=15.0, caption=_solid16_caption)
+
+
 def _white(cycle, boards, palette, rng) -> Frame:
-    return {b: {t: COLOR_NAMES["white"] for t in sorted(VALID_TRIANGLES)}
+    return {b: {seg: COLOR_NAMES_16["white"] for seg in sorted(SEGMENTS_GEN)}
             for b in boards}
 
 
@@ -133,10 +186,16 @@ def _white(cycle, boards, palette, rng) -> Frame:
 # would loop a 16 s white-on-white repaint forever. It is also what the
 # boot sequence applies as soon as the link comes up, so the wall never
 # idles on whatever vendor demo frame happened to be mid-play.
+#
+# GEN covers all 60 segments, so white means white - the old hexagon
+# layout skipped 17-22 as holes and a 16COLORS card left colors sitting
+# there through standby (seen on board 1, 2026-08-28).
 STANDBY = Pattern("standby", "STANDBY", "white + link check", _white)
 
 PATTERNS: list[Pattern | Playlist] = [
     STANDBY,
+    COLORS16,
+    SOLID16,
     # Default loop: one full colour sweep, then a spell of random fields.
     Playlist("loop", "SOLID+RANDOM", "6 colors, then 6 random",
              steps=((_SOLID, 6), (_RANDOM, 6))),
