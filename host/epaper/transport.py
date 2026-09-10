@@ -11,6 +11,7 @@ from .protocol import Frame, decode, hexdump
 
 BAUDRATE = 115200
 ACK_TIMEOUT_S = 0.5
+WRITE_TIMEOUT_S = 2.0
 MAX_RETRIES = 3
 
 # STM32 USB CDC (board's virtual COM port)
@@ -41,7 +42,13 @@ def find_port() -> str | None:
 
 class Bus:
     def __init__(self, port: str, verbose: bool = True):
-        self.ser = serial.Serial(port, BAUDRATE, timeout=0.05)
+        # write_timeout: a wedged board CDC stops draining USB, and a
+        # write into that state blocks forever (frames are <100 bytes,
+        # so any real send completes in milliseconds). Fail fast with
+        # SerialTimeoutException instead of hanging the caller; the
+        # 2026-09-11 hang also preceded the host OS going down.
+        self.ser = serial.Serial(port, BAUDRATE, timeout=0.05,
+                                 write_timeout=WRITE_TIMEOUT_S)
         # USB CDC drops or corrupts bytes written immediately after open
         # (DTR toggle); settle, then send padding bytes the firmware's
         # frame parser discards, so any loss hits the padding instead of

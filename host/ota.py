@@ -21,6 +21,8 @@ import struct
 import sys
 import time
 
+import serial
+
 from epaper.protocol import (
     ACK_FAIL,
     ACK_INVALID_CMD,
@@ -40,6 +42,10 @@ CHUNK_SIZE = 60          # spec 11.2.2 recommends 60 (limit 61)
 MAX_IMAGE_SIZE = 98304   # 96 KB (spec 11.1)
 
 OTA_STATES = {0x00: "IDLE", 0x01: "RECEIVING", 0x02: "READY"}
+
+WEDGE_MSG = ("Serial write timed out: the board's CDC stopped draining "
+             "USB (wedged port). Power-cycle the board or replug USB, "
+             "then rerun; a mid-flight transfer restarts from 0x26.")
 
 
 def _frame(dest: int, cmd: int, data: bytes = b"") -> Frame:
@@ -224,8 +230,12 @@ def main() -> int:
         return 2
 
     if args.check:
-        with Bus(port, verbose=False) as bus:
-            ack = query_state(bus, args.addr)
+        try:
+            with Bus(port, verbose=False) as bus:
+                ack = query_state(bus, args.addr)
+        except serial.SerialTimeoutException:
+            print(WEDGE_MSG, file=sys.stderr)
+            return 1
         return 0 if ack is not None and ack.cmd == ACK_SUCCESS else 1
 
     if not args.bin:
@@ -242,8 +252,12 @@ def main() -> int:
         return 2
 
     print(f"Port: {port}, target board 0x{args.addr:02X}")
-    with Bus(port, verbose=False) as bus:
-        ok = flash(bus, args.addr, image)
+    try:
+        with Bus(port, verbose=False) as bus:
+            ok = flash(bus, args.addr, image)
+    except serial.SerialTimeoutException:
+        print(WEDGE_MSG, file=sys.stderr)
+        return 1
     if not ok:
         return 1
     return 0 if verify(args.addr, args.port) else 1
