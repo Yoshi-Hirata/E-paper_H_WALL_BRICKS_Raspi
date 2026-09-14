@@ -1,6 +1,6 @@
 # 現在地と再開手順
 
-最終更新: 2026-08-28
+最終更新: 2026-09-14
 
 **この文書は「次に何をするか」だけを書く。** 経緯は
 [DEVELOPMENT.md](DEVELOPMENT.md)、20 枚構成の検討は [SCALING.md](SCALING.md)、
@@ -14,9 +14,34 @@
 | Raspberry Pi Zero 2 W `r2@192.168.50.25` | 予備機。パネル未接続 | `epaper-ui` active。ポート待ちのまま待機 |
 
 - 両機とも同じコードで、差分は `ui/boards.py` のプロファイルのみ
-- テスト 150 件(Windows で全通過。Pi / Radxa は再開時に確認)
+- テスト 188 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-14)
 
 ## 2. 直近で完成したもの
+
+**LCD メニューから基板 FW を OTA アップデートできるようにした(2026-09-14、Radxa デプロイ済み)**
+
+- メニュー末尾に **`UPDATE FW`** を追加(`ui/updater.py`)。FW イメージは
+  リポジトリ同梱の `FW/FW_<yymmdd>/OTA_*.bin` のうち**最新フォルダ**を自動選択
+  (現在 `FW_260903/OTA_16c.bin`、65544 B)。Radxa への「コピー」は
+  `git pull` で完了する(a6bd425 で同梱済み、md5 一致を確認)
+- 操作: `UPDATE FW` で KEY1 → ランナー停止(ポート解放)→ 確認画面で
+  **UP/DOWN で USB 直結基板の DIP アドレス**を選ぶ(0x29 で状態を照会し
+  `IDLE …` / `no reply` / `ACK_INVALID_CMD`(旧 FW)を表示)→ KEY1 で書き込み
+  → 進捗バー + ログ → `DONE`/`FAILED`。KEY1 でもう一度、KEY2 でメニューへ
+  (**待機(白 + リンク確認)を再実行**し、再起動した基板の工場デモを止める)
+- 書き込み中はボタンを全て無視(KEY3 消灯のみ可)。中断手段は意図的に無い
+  (中断→再送がストール中の転送を殺す実測があるため)。サービス停止で
+  プロセスごと落ちても、基板側は 0x28 前ならステージングのみで無害
+- `host/ota.py` は `log`/`progress` コールバック化(CLI は従来通り)。
+  Linux で 0x28 直後に出る `SerialException: device disconnected` は
+  **成功の合図**として扱う(2026-09-11 の実測)
+- 再起動後に基板が USB 再列挙しない場合(dmesg `error -71`)は
+  **xhci-hcd を unbind/bind して自動復旧**(`usb_rebind`、`sudo -n` 前提。
+  `--no-usb-rebind` で無効化)。それでも戻らなければ `FAILED` +
+  「replug USB」
+- `python -m ui.main --preview DIR` に `update_*.png` 4 枚を追加。
+  テスト 23 件追加(計 188)。**実機での通し確認は未実施**(作業時に基板が
+  USB 未接続)。次回、基板を 1 枚 USB 直結して LCD から一度流すこと
 
 **SOLID16 デモ追加 + 新 FW はリフレッシュ中も応答する(2026-08-29)**
 
@@ -206,3 +231,10 @@ sudo systemctl start epaper-ui
 **LCD の操作**: ジョイスティックで選択 → KEY1 開始 →(KEY1 一時停止/再開、
 1 秒長押しでリセット)→ KEY2 でメニュー。KEY3 でバックライト消灯。
 自動消灯は既定オフ、`--blank-after 10` で有効化。
+
+**基板 FW のアップデート(LCD から)**: 基板の 485 ケーブルを抜き、更新する
+基板を USB 直結 → メニュー末尾 `UPDATE FW` → KEY1 → UP/DOWN でその基板の
+DIP アドレス(状態行が `IDLE …` になること)→ KEY1。約 1〜3 分で `DONE`。
+KEY2 でメニューに戻ると白待機が走る。CLI で行う場合は従来通り
+`sudo systemctl stop epaper-ui` してから `timeout 600 .venv/bin/python
+host/ota.py FW/FW_260903/OTA_16c.bin --addr N`。

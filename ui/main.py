@@ -21,6 +21,7 @@ from .display import make_display
 from .inputs import make_input
 from .patterns import PATTERNS
 from .runner import DEFAULT_BOARDS, DemoRunner
+from .updater import FirmwareUpdater, find_firmware, usb_rebind
 
 
 def preview(directory: str) -> int:
@@ -47,6 +48,28 @@ def preview(directory: str) -> int:
         error="save @02: no ACK",
     ).save(out / "running_error.png")
     render.message_screen("stopped", "KEY3 pressed").save(out / "stopped.png")
+    fw, size = "FW_260903/OTA_16c.bin", 65544
+    render.update_screen(fw, size, 1, "idle", "IDLE size=0 crc=0x0000", 0,
+                         ["10:00:00 port /dev/ttyACM0"]
+                         ).save(out / "update_confirm.png")
+    render.update_screen(fw, size, 1, "flashing", "IDLE size=0 crc=0x0000",
+                         27300,
+                         ["10:00:01 update board 01 <- " + fw,
+                          "10:00:01 Image: 65544 bytes, CRC16 0x1234",
+                          "10:00:02 OTA start (0x26) -> board 0x01",
+                          "10:00:20 chunk @ 9600: slow ACK 12.3s"]
+                         ).save(out / "update_flashing.png")
+    render.update_screen(fw, size, 1, "done", "updated", size,
+                         ["10:01:10 OTA finish (0x28)",
+                          "10:01:10 Port vanished after 0x28 -> rebooting",
+                          "10:01:25 Board 0x01 is back on new firmware",
+                          "10:01:25 board 01 updated"]
+                         ).save(out / "update_done.png")
+    render.update_screen(fw, size, 20, "failed", "no reply", 0,
+                         ["10:02:00 update board 20 <- " + fw,
+                          "10:02:31 ERROR Board 0x14 does not accept 0x26",
+                          "10:02:31 ERROR flash failed"],
+                         error="flash failed").save(out / "update_failed.png")
     print(f"wrote preview screens to {out}")
     return 0
 
@@ -211,6 +234,13 @@ def main() -> int:
                     help="do not white out the panels at startup; leave "
                          "whatever they are showing (the factory autoplay "
                          "keeps running)")
+    ap.add_argument("--firmware", metavar="BIN",
+                    help="OTA image offered by the UPDATE FW menu row "
+                         "(default: newest FW/FW_*/OTA_*.bin in the repo)")
+    ap.add_argument("--no-usb-rebind", action="store_true",
+                    help="after an update, do not cycle the xhci host "
+                         "controller (needs sudo) when the rebooted board "
+                         "fails to re-enumerate")
     ap.add_argument("--max-ticks", type=int,
                     help="exit after N UI ticks (testing)")
     args = ap.parse_args()
@@ -228,10 +258,15 @@ def main() -> int:
                         guard_delay=args.guard_delay, slot=args.slot,
                         port=args.port)
 
+    firmware = Path(args.firmware) if args.firmware else find_firmware()
+    updater = FirmwareUpdater(firmware, boards=args.boards, port=args.port,
+                              rebind=None if args.no_usb_rebind else usb_rebind)
+
     display_kwargs = {"directory": args.frames} if args.display in ("png", "auto") else {}
     with make_display(args.display, **display_kwargs) as display, \
             make_input(args.input) as inputs:
-        app_kwargs = {"port_label": port, "locked": args.locked}
+        app_kwargs = {"port_label": port, "locked": args.locked,
+                      "updater": updater}
         if args.blank_after is not None:
             app_kwargs["blank_after"] = args.blank_after
         app = App(display, inputs, runner, **app_kwargs)

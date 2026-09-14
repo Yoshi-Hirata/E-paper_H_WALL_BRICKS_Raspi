@@ -12,6 +12,10 @@ tool then re-probes with 0x29 to confirm the new firmware is alive.
 
 Point-to-point only: broadcast is forbidden for OTA (spec 11.2).
 Any mid-flight failure is recoverable by rerunning from 0x26.
+
+The flashing functions take `log` / `progress` callbacks so the LCD HAT
+UI (ui/updater.py) can run the same code and show it on the screen;
+the defaults print, which is what the CLI wants.
 """
 
 from __future__ import annotations
@@ -20,12 +24,14 @@ import argparse
 import struct
 import sys
 import time
+from typing import Callable
 
 import serial
 
 from epaper.protocol import (
     ACK_FAIL,
     ACK_INVALID_CMD,
+    ACK_NAMES,
     ACK_SUCCESS,
     ADDR_PC,
     Frame,
@@ -47,6 +53,21 @@ WEDGE_MSG = ("Serial write timed out: the board's CDC stopped draining "
              "USB (wedged port). Power-cycle the board or replug USB, "
              "then rerun; a mid-flight transfer restarts from 0x26.")
 
+Log = Callable[..., None]              # log(message, error=False)
+Progress = Callable[[int, int], None]  # progress(bytes_done, image_size)
+
+
+def print_log(message: str, error: bool = False) -> None:
+    """Default `log`: stdout for progress, stderr for failures."""
+    print(message, file=sys.stderr if error else sys.stdout, flush=True)
+
+
+def print_progress(done: int, size: int) -> None:
+    """Default `progress`: one updating line every 50 chunks."""
+    if done == size or (done // CHUNK_SIZE) % 50 == 0:
+        print(f"\r  {done}/{size} bytes ({done * 100 // size}%)",
+              end="\n" if done == size else "", flush=True)
+
 
 def _frame(dest: int, cmd: int, data: bytes = b"") -> Frame:
     # OTA commands ignore DeviceType/group/chip fields (spec 11.2).
@@ -64,34 +85,45 @@ def _ack_from(bus: Bus, dest: int, timeout: float) -> Frame | None:
 
 
 def _request(bus: Bus, frame: Frame, timeout: float,
-             retries: int = 3) -> Frame | None:
+             retries: int = 3, log: Log = print_log) -> Frame | None:
     for attempt in range(1, retries + 1):
         bus.send(frame)
         ack = _ack_from(bus, frame.dest, timeout)
         if ack:
             return ack
         if attempt < retries:
-            print(f"  timeout, retry {attempt}/{retries - 1}")
+            log(f"  timeout, retry {attempt}/{retries - 1}")
     return None
 
 
-def query_state(bus: Bus, addr: int, quiet: bool = False) -> Frame | None:
-    ack = _request(bus, _frame(addr, CMD_OTA_QUERY), timeout=0.8)
+def describe_state(ack: Frame | None) -> str:
+    """One line for a 0x29 answer: "IDLE size=0 crc=0x0000", "no reply",
+    or the ACK name (ACK_INVALID_CMD = firmware without OTA support)."""
+    if ack is None:
+        return "no reply"
+    if ack.cmd == ACK_SUCCESS and len(ack.data) >= 7:
+        state, size, crc = ack.data[0], *struct.unpack("<IH", ack.data[1:7])
+        return (f"{OTA_STATES.get(state, f'0x{state:02X}')} "
+                f"size={size} crc=0x{crc:04X}")
+    return ACK_NAMES.get(ack.cmd, f"cmd 0x{ack.cmd:02X}")
+
+
+def query_state(bus: Bus, addr: int, quiet: bool = False,
+                log: Log = print_log) -> Frame | None:
+    ack = _request(bus, _frame(addr, CMD_OTA_QUERY), timeout=0.8, log=log)
     if quiet:
         return ack
     if ack is None:
-        print(f"Board 0x{addr:02X}: no reply to OTA query (0x29).")
+        log(f"Board 0x{addr:02X}: no reply to OTA query (0x29).")
     elif ack.cmd == ACK_SUCCESS and len(ack.data) >= 7:
-        state, size, crc = ack.data[0], *struct.unpack("<IH", ack.data[1:7])
-        print(f"Board 0x{addr:02X}: OTA state "
-              f"{OTA_STATES.get(state, f'0x{state:02X}')}, "
-              f"size={size}, crc=0x{crc:04X}")
+        log(f"Board 0x{addr:02X}: OTA state {describe_state(ack)}")
     else:
-        print(f"Board 0x{addr:02X}: {ack.describe()}")
+        log(f"Board 0x{addr:02X}: {ack.describe()}")
     return ack
 
 
-def _transfer(bus: Bus, addr: int, image: bytes) -> bool:
+def _transfer(bus: Bus, addr: int, image: bytes, log: Log = print_log,
+              progress: Progress = print_progress) -> bool:
     """One 0x26 + all 0x27 chunks. False on any unrecovered chunk."""
     size = len(image)
     crc = crc16_modbus(image)
@@ -99,18 +131,18 @@ def _transfer(bus: Bus, addr: int, image: bytes) -> bool:
     # Start: device erases its staging area before acking and stops
     # draining USB meanwhile -- a resend into that window wedges the CDC
     # port (write timeout, board 2 2026-08-28). Single send, long wait.
-    print(f"OTA start (0x26) -> board 0x{addr:02X}")
+    log(f"OTA start (0x26) -> board 0x{addr:02X}")
     ack = _request(bus, _frame(addr, CMD_OTA_START,
                                struct.pack("<IH", size, crc)),
-                   timeout=30.0, retries=1)
+                   timeout=30.0, retries=1, log=log)
     if ack is None or ack.cmd == ACK_INVALID_CMD:
-        print(f"Board 0x{addr:02X} does not accept OTA start (0x26): "
-              f"{ack.describe() if ack else 'no ACK'}. Current firmware "
-              "has no OTA support -- flash via SWD with full_flash.hex.",
-              file=sys.stderr)
+        log(f"Board 0x{addr:02X} does not accept OTA start (0x26): "
+            f"{ack.describe() if ack else 'no ACK'}. Current firmware "
+            "has no OTA support -- flash via SWD with full_flash.hex.",
+            error=True)
         return False
     if ack.cmd != ACK_SUCCESS:
-        print(f"OTA start failed: {ack.describe()}", file=sys.stderr)
+        log(f"OTA start failed: {ack.describe()}", error=True)
         return False
 
     # Data: the board goes silent for 9-17s roughly every 9.6KB while it
@@ -132,81 +164,91 @@ def _transfer(bus: Bus, addr: int, image: bytes) -> bool:
             ack = _ack_from(bus, addr, timeout=45.0)
             if ack is not None:
                 if (dt := time.monotonic() - t1) > 0.5:
-                    print(f"\n  chunk @ {offset}: slow ACK {dt:.1f}s "
-                          "(staging flush)")
+                    log(f"  chunk @ {offset}: slow ACK {dt:.1f}s "
+                        "(staging flush)")
                 break
-            print(f"\n  chunk @ {offset}: 45s silence, one resend")
+            log(f"  chunk @ {offset}: 45s silence, one resend")
         if ack is None or ack.cmd != ACK_SUCCESS:
-            print(f"\nchunk @ {offset} failed: "
-                  f"{ack.describe() if ack else 'no ACK'}", file=sys.stderr)
+            log(f"chunk @ {offset} failed: "
+                f"{ack.describe() if ack else 'no ACK'}", error=True)
             return False
-        done = offset + len(chunk)
-        if done == size or (offset // CHUNK_SIZE) % 50 == 0:
-            pct = done * 100 // size
-            print(f"\r  {done}/{size} bytes ({pct}%)", end="", flush=True)
-    print(f"\nTransfer done in {time.monotonic() - t0:.1f}s")
+        progress(offset + len(chunk), size)
+    log(f"Transfer done in {time.monotonic() - t0:.1f}s")
     return True
 
 
-def flash(bus: Bus, addr: int, image: bytes) -> bool:
-    print(f"Image: {len(image)} bytes, CRC16 0x{crc16_modbus(image):04X}, "
-          f"{(len(image) + CHUNK_SIZE - 1) // CHUNK_SIZE} chunks")
+def flash(bus: Bus, addr: int, image: bytes, log: Log = print_log,
+          progress: Progress = print_progress) -> bool:
+    log(f"Image: {len(image)} bytes, CRC16 0x{crc16_modbus(image):04X}, "
+        f"{(len(image) + CHUNK_SIZE - 1) // CHUNK_SIZE} chunks")
 
     # Advisory preflight; 0x26 is the authoritative support test.
-    ack = query_state(bus, addr, quiet=True)
+    ack = query_state(bus, addr, quiet=True, log=log)
     if ack is None or ack.cmd == ACK_INVALID_CMD:
-        print(f"note: board 0x{addr:02X} ignores 0x29; "
-              "probing with 0x26 anyway.")
+        log(f"note: board 0x{addr:02X} ignores 0x29; "
+            "probing with 0x26 anyway.")
 
     # Any mid-transfer failure restarts cleanly from 0x26 (spec 11.4).
     for round_no in range(1, 4):
         if round_no > 1:
-            print(f"Restarting transfer from 0x26 (round {round_no}/3)")
+            log(f"Restarting transfer from 0x26 (round {round_no}/3)")
             time.sleep(1.0)
-        if _transfer(bus, addr, image):
+        if _transfer(bus, addr, image, log, progress):
             break
     else:
-        print("Transfer failed after 3 rounds.", file=sys.stderr)
+        log("Transfer failed after 3 rounds.", error=True)
         return False
 
     # Finish: success = device resets silently; only failures ACK.
-    print("OTA finish (0x28)")
+    log("OTA finish (0x28)")
     bus.send(_frame(addr, CMD_OTA_FINISH))
-    ack = _ack_from(bus, addr, timeout=3.0)
+    try:
+        ack = _ack_from(bus, addr, timeout=3.0)
+    except serial.SerialException as exc:
+        # Linux notices the reset: the CDC device vanishes under the
+        # open port and the read raises "device disconnected". That is
+        # the success signature (both boards, 2026-09-11), not a fault.
+        log(f"Port vanished after 0x28 ({exc}) -> board accepted image "
+            "and is rebooting.")
+        return True
     if ack is not None:
-        print(f"OTA finish rejected: {ack.describe()} -- "
-              "image incomplete or CRC mismatch; rerun from 0x26.",
-              file=sys.stderr)
+        log(f"OTA finish rejected: {ack.describe()} -- "
+            "image incomplete or CRC mismatch; rerun from 0x26.",
+            error=True)
         return False
-    print("No ACK to 0x28 -> board accepted image and is rebooting.")
+    log("No ACK to 0x28 -> board accepted image and is rebooting.")
     return True
 
 
-def verify(addr: int, port_hint: str | None, wait_s: float = 25.0) -> bool:
+def verify(addr: int, port_hint: str | None, wait_s: float = 25.0,
+           log: Log = print_log, open_bus=None, locate=find_port,
+           settle_s: float = 3.0) -> bool:
     """Re-probe after reboot. The direct USB board re-enumerates, so
     reopen the port (it may briefly disappear) until 0x29 answers."""
-    print(f"Waiting for board 0x{addr:02X} to come back...")
+    open_bus = open_bus or (lambda p: Bus(p, verbose=False))
+    log(f"Waiting for board 0x{addr:02X} to come back...")
     deadline = time.monotonic() + wait_s
-    time.sleep(3.0)  # bootloader copy + restart (spec 11.3 step 5)
+    time.sleep(settle_s)  # bootloader copy + restart (spec 11.3 step 5)
     while time.monotonic() < deadline:
-        port = port_hint or find_port()
+        port = port_hint or locate()
         if port:
             try:
-                with Bus(port, verbose=False) as bus:
-                    ack = query_state(bus, addr, quiet=True)
+                with open_bus(port) as bus:
+                    ack = query_state(bus, addr, quiet=True, log=log)
                     if ack is not None and ack.cmd == ACK_SUCCESS:
-                        print(f"Board 0x{addr:02X} is back on new firmware.")
+                        log(f"Board 0x{addr:02X} is back on new firmware "
+                            f"({describe_state(ack)}).")
                         return True
             except Exception:
                 pass  # port vanished mid-open during re-enumeration
         time.sleep(1.0)
-    print(f"Board 0x{addr:02X} did not answer within {wait_s:.0f}s. "
-          "The board resets without signalling USB disconnect, so the "
-          "host-side CDC port can wedge (open fails with 'device not "
-          "functioning'): replug the USB cable, or run as admin\n"
-          "  pnputil /restart-device <USB\\VID_0483&PID_5740\\...>\n"
-          "then re-check with: python host/ota.py --check --addr N",
-          file=sys.stderr)
+    log(f"Board 0x{addr:02X} did not answer within {wait_s:.0f}s. "
+        "The board resets without signalling USB disconnect, so the "
+        "host-side CDC port can wedge (open fails with 'device not "
+        "functioning'): replug the USB cable, or run as admin\n"
+        "  pnputil /restart-device <USB\\VID_0483&PID_5740\\...>\n"
+        "then re-check with: python host/ota.py --check --addr N",
+        error=True)
     return False
 
 

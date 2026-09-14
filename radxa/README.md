@@ -82,6 +82,30 @@ Pi のイメージと違い、このイメージのユーザは `adm` に入っ�
 入れないと `journalctl` が「No entries」を返し、`raspi/runlog.py` も
 サイクル数を拾えない。`radxa/setup.sh` が追加する。
 
+## 基板ファームウェアのアップデート(LCD メニュー)
+
+FW イメージはリポジトリに同梱している(`FW/FW_<yymmdd>/OTA_*.bin`)ので、
+Radxa への配布は `git pull` だけでよい。UI はその中の**最新フォルダ**の
+`OTA_*.bin` をメニュー末尾の `UPDATE FW` 行に出す(`.hex` は SWD 用で対象外)。
+
+1. 更新する基板の 485 ケーブルを抜き、その基板を USB-C(データ側)に直結する
+   (USB を挿した基板は自分の DIP アドレス宛だけをローカル処理し、他は
+   485 へ中継するため、点対点でやるのが確実)
+2. メニューで `UPDATE FW` を選び KEY1。ランナーが止まりポートが空く
+3. UP/DOWN で基板の DIP アドレスを選ぶ。状態行が `IDLE size=… crc=…` なら
+   OTA 対応 FW が応答している(`no reply` = 無応答、`ACK_INVALID_CMD` =
+   OTA 非対応の旧 FW → SWD で焼く)
+4. KEY1 で書き込み開始。約 1100 チャンク、1〜3 分。**途中でボタンは効かない**
+   (KEY3 の消灯のみ)。ケーブルを抜かないこと
+5. `DONE` で完了。KEY2 でメニューに戻ると白待機が走り、再起動した基板の
+   工場デモを止める。`FAILED` のときはログ行(journal にも全文)を見て
+   KEY1 でやり直す
+
+0x28 の後に基板が USB を再列挙しない(`dmesg` に `error -71`)ことがある。
+UI は 25 秒待って応答が無ければ `xhci-hcd` を unbind/bind して復旧を試みる
+(`sudo -n` が通ること = セットアップ手順 3)。不要なら `UI_ARGS` に
+`--no-usb-rebind` を足す。イメージを差し替えるときは `--firmware PATH`。
+
 ## Python 3.9 対応
 
 Debian 11 の Python は 3.9 で、`X | None` 形式の型注釈が**実行時エラー**に

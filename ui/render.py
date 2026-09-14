@@ -159,6 +159,72 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
     return image
 
 
+_UPDATE_STATUS = {
+    "idle": ("READY", ACCENT),
+    "flashing": ("FLASHING", OK),
+    "verifying": ("VERIFY", OK),
+    "done": ("DONE", OK),
+    "failed": ("FAILED", ERR),
+}
+
+
+def update_screen(firmware: str, size: int, addr: int, phase: str,
+                  board_state: str, done: int, log_lines: list[str],
+                  error: str | None = None,
+                  locked: bool = False) -> Image.Image:
+    """Firmware update: image, target board, transfer bar, log tail.
+
+    `phase` is one of ui.updater's IDLE/FLASHING/VERIFYING/DONE/FAILED.
+    """
+    image, draw = _blank()
+    status, color = _UPDATE_STATUS.get(phase, (phase.upper(), DIM))
+    _header(draw, "FW UPDATE")
+    draw.text((WIDTH - 8 - FONT_S.getlength(status), 6), status,
+              font=FONT_S, fill=color)
+
+    draw.text((8, 32), "image", font=FONT_S, fill=DIM)
+    draw.text((56, 30), _ellipsize(firmware, FONT_M, WIDTH - 64),
+              font=FONT_M, fill=FG)
+    draw.text((8, 52), "board", font=FONT_S, fill=DIM)
+    draw.text((56, 46), f"{addr:02d}", font=FONT_L, fill=FG)
+    tint = ERR if board_state.startswith(("ERROR", "no ")) else DIM
+    draw.text((92, 52), _ellipsize(board_state, FONT_S, WIDTH - 100),
+              font=FONT_S, fill=tint)
+
+    # Transfer bar: the whole image, filled as chunks are acknowledged.
+    top, bottom = 76, 90
+    draw.rectangle((8, top, WIDTH - 8, bottom), outline=DIM, width=1)
+    fill_w = int((WIDTH - 18) * (done / size)) if size else 0
+    if fill_w > 0:
+        draw.rectangle((9, top + 1, 9 + fill_w, bottom - 1),
+                       fill=ERR if phase == "failed" else OK)
+    pct = f"{done * 100 // size}%" if size else "-"
+    label = f"{done}/{size} B  {pct}"
+    draw.text((8, 92), label, font=FONT_S, fill=DIM)
+    if error:
+        draw.text((WIDTH - 8 - FONT_S.getlength("see log"), 92), "see log",
+                  font=FONT_S, fill=ERR)
+
+    draw.line((8, 108, WIDTH - 8, 108), fill=BAR, width=1)
+    y = 112
+    for line in log_lines[-LOG_LINES:]:
+        tint = ERR if "ERROR" in line else DIM
+        draw.text((8, y), _ellipsize(line, FONT_S, WIDTH - 16),
+                  font=FONT_S, fill=tint)
+        y += 15
+
+    if locked:
+        hint = "buttons locked"
+    elif phase in ("flashing", "verifying"):
+        hint = "updating - do not unplug"
+    elif phase in ("done", "failed"):
+        hint = "KEY1 again  KEY2 menu"
+    else:
+        hint = "UP/DOWN board  KEY1 flash  KEY2 back"
+    _hint(draw, hint)
+    return image
+
+
 def message_screen(title: str, body: str = "", color=FG) -> Image.Image:
     """Splash / fatal error screen."""
     image, draw = _blank()

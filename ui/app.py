@@ -7,6 +7,14 @@ Controls (Waveshare 1.3inch LCD HAT):
   KEY2                        - back to the menu (stops a running demo)
   KEY3                        - blank the screen now
 
+The last menu row, UPDATE FW, is a mode rather than a demo: it stops
+the runner to free the port, lets UP/DOWN pick the USB-attached board's
+address, and KEY1 flashes the bundled image (ui/updater.py). While the
+transfer runs every button is ignored - there is no safe "abort" of an
+OTA in flight - and afterwards KEY2 returns to the menu via the boot
+standby, which silences the factory autoplay the rebooted board wakes
+up playing.
+
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
 machine, or a blind press in a dark room could stop a running show.
@@ -36,6 +44,7 @@ from .runner import DemoRunner
 class Screen(Enum):
     MENU = "menu"
     RUNNING = "running"
+    UPDATE = "update"
 
 
 class App:
@@ -43,11 +52,16 @@ class App:
                  patterns=None, port_label: str | None = None,
                  locked: bool = False, blank_after: float = BLANK_AFTER_S,
                  relock_after: float = RELOCK_AFTER_S,
-                 clock=time.monotonic):
+                 clock=time.monotonic, updater=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
         self.patterns = list(patterns or PATTERNS)
+        # The update mode is a menu row only when an updater is wired
+        # in, so a headless or test App keeps the plain demo menu.
+        self.updater = updater
+        if updater is not None:
+            self.patterns.append(updater.menu_entry)
         self.selected = 0
         self.screen = Screen.MENU
         self.port_label = port_label
@@ -115,6 +129,10 @@ class App:
             self._blank()
             return
 
+        if self.screen is Screen.UPDATE:
+            self._handle_update(event)
+            return
+
         if event == "key1_hold":
             # Reset: back to cycle 0 with the timer at zero, wherever we
             # were. Distinct from pause, which keeps both.
@@ -146,7 +164,48 @@ class App:
                 self.screen = Screen.MENU
                 self._dirty = True
 
+    def _handle_update(self, event: str) -> None:
+        updater = self.updater
+        if updater.busy:
+            return                  # nothing interrupts a flash in flight
+        if updater.finished:
+            if event in ("key1", "press"):
+                updater.reset()     # back to the confirm screen
+                updater.probe()
+            elif event == "key2":
+                self._leave_update()
+            self._dirty = True
+            return
+        if event in ("up", "left"):
+            updater.select(-1)
+        elif event in ("down", "right"):
+            updater.select(+1)
+        elif event in ("key1", "press"):
+            updater.start()
+        elif event == "key2":
+            self._leave_update()
+        self._dirty = True
+
+    def _enter_update(self) -> None:
+        # The runner owns the serial port (standby keeps it open to
+        # watch the link), and the OTA needs it to itself.
+        self.runner.stop()
+        self._standby = False
+        self.updater.reset()
+        self.updater.probe()
+        self.screen = Screen.UPDATE
+        self._dirty = True
+
+    def _leave_update(self) -> None:
+        # A freshly flashed board reboots into its factory autoplay;
+        # the boot standby is exactly what silences that.
+        self.screen = Screen.MENU
+        self.enter_standby()
+
     def _restart(self) -> None:
+        if self.patterns[self.selected].key == "update":
+            self._enter_update()
+            return
         if self.patterns[self.selected].key == "standby":
             # The top menu entry is not a looping demo. One shot of the
             # boot standby - every sector white, every board probed -
@@ -200,6 +259,13 @@ class App:
             return render.menu_screen(self.patterns, self.selected,
                                       self.port_label, locked=self.locked,
                                       status=self._standby_status())
+        if self.screen is Screen.UPDATE:
+            updater = self.updater
+            return render.update_screen(
+                updater.firmware_label, updater.size, updater.addr,
+                updater.phase, updater.board_state, updater.done,
+                updater.recent(LOG_LINES), error=updater.error,
+                locked=self.locked)
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",
@@ -230,6 +296,12 @@ class App:
         if self.screen is not Screen.RUNNING:
             # The menu shows the standby progress, so it has to repaint
             # when that changes.
+            if self.screen is Screen.UPDATE:
+                updater = self.updater
+                return ("update", updater.phase, updater.addr,
+                        updater.board_state, updater.done, updater.size,
+                        tuple(updater.recent(LOG_LINES)), updater.error,
+                        self.locked)
             return ("menu", self._standby_status())
         return (int(self.runner.elapsed), self.runner.cycle,
                 self.runner.caption,
