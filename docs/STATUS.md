@@ -14,7 +14,7 @@
 | Raspberry Pi Zero 2 W `r2@192.168.50.25` | 予備機。パネル未接続 | `epaper-ui` active。ポート待ちのまま待機 |
 
 - 両機とも同じコードで、差分は `ui/boards.py` のプロファイルのみ
-- テスト 188 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-14)
+- テスト 195 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-14)
 
 ## 2. 直近で完成したもの
 
@@ -29,6 +29,17 @@
   `IDLE …` / `no reply` / `ACK_INVALID_CMD`(旧 FW)を表示)→ KEY1 で書き込み
   → 進捗バー + ログ → `DONE`/`FAILED`。KEY1 でもう一度、KEY2 でメニューへ
   (**待機(白 + リンク確認)を再実行**し、再起動した基板の工場デモを止める)
+- **宛先は自動スキャン**(同日追記): 確認画面に入ると 1〜20 へ 0x29 を
+  1 回ずつ送り(0.3 秒待ち、最大約 6 秒)、**応答が 1 件ならそれを自動選択**
+  して状態行に `IDLE … (auto)` と出す。UP/DOWN は上書き用に残す。複数応答
+  (485 が繋がったまま)は `boards 01,20 answer: unplug 485 or pick one`、
+  無応答は `no board answers 0x29`。CLI は `ota.py FW.bin --addr auto`
+  (`--check --addr auto` で応答一覧)
+- **実機検証済み(2026-09-14)**: LCD から 3 枚を addr 1 で更新(1093
+  チャンク 65〜70 秒、全て 0x28 後に再列挙せず → 自動 xhci 再バインドで
+  復帰 → IDLE)。**DIP 全 OFF の基板はアドレス 1 として応答する**
+  (0 は PC のアドレス。仕様外の挙動で、485 バス上では本物の ID:1 と衝突
+  するので組み込み前に DIP を設定すること)
 - 書き込み中はボタンを全て無視(KEY3 消灯のみ可)。中断手段は意図的に無い
   (中断→再送がストール中の転送を殺す実測があるため)。サービス停止で
   プロセスごと落ちても、基板側は 0x28 前ならステージングのみで無害
@@ -40,8 +51,7 @@
   `--no-usb-rebind` で無効化)。それでも戻らなければ `FAILED` +
   「replug USB」
 - `python -m ui.main --preview DIR` に `update_*.png` 4 枚を追加。
-  テスト 23 件追加(計 188)。**実機での通し確認は未実施**(作業時に基板が
-  USB 未接続)。次回、基板を 1 枚 USB 直結して LCD から一度流すこと
+  テスト 30 件追加(計 195)
 
 **SOLID16 デモ追加 + 新 FW はリフレッシュ中も応答する(2026-08-29)**
 
@@ -233,8 +243,8 @@ sudo systemctl start epaper-ui
 自動消灯は既定オフ、`--blank-after 10` で有効化。
 
 **基板 FW のアップデート(LCD から)**: 基板の 485 ケーブルを抜き、更新する
-基板を USB 直結 → メニュー末尾 `UPDATE FW` → KEY1 → UP/DOWN でその基板の
-DIP アドレス(状態行が `IDLE …` になること)→ KEY1。約 1〜3 分で `DONE`。
-KEY2 でメニューに戻ると白待機が走る。CLI で行う場合は従来通り
-`sudo systemctl stop epaper-ui` してから `timeout 600 .venv/bin/python
-host/ota.py FW/FW_260903/OTA_16c.bin --addr N`。
+基板を USB 直結 → メニュー末尾 `UPDATE FW` → KEY1 → 数秒のスキャンで
+状態行が `IDLE … (auto)` になる(複数応答なら 485 を抜くか UP/DOWN で選ぶ)
+→ KEY1。約 1〜2 分で `DONE`。KEY2 でメニューに戻ると白待機が走る。CLI で
+行う場合は `sudo systemctl stop epaper-ui` してから `timeout 600
+.venv/bin/python host/ota.py FW/FW_260903/OTA_16c.bin --addr auto`。

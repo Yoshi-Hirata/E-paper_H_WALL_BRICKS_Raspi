@@ -6,9 +6,13 @@ newest folder is what the menu offers. The flashing itself is
 host/ota.py, unchanged; this module runs it in a worker thread and turns
 its log into screen state, the way DemoRunner does for the demos.
 
-The update is point-to-point over the USB-attached board: the operator
-picks that board's DIP address on the confirm screen, the 0x29 state
-query says whether something answers there, KEY1 flashes. Nothing
+The update is point-to-point over the USB-attached board. On entering
+the confirm screen every configured address is asked its OTA state
+(0x29); if exactly one answers - the USB board's own DIP setting, with
+all DIP off reading as 1 - it becomes the target, and UP/DOWN remain
+as an override. Several answers mean the 485 cable is still plugged in
+and the relayed boards are answering too, so the screen says so rather
+than guessing. KEY1 flashes. Nothing
 interrupts a transfer once started - a half-written image is harmless
 (the board stages it and only commits on 0x28) but a button that could
 abort it mid-way invites exactly the retry-into-a-stall failure that
@@ -144,7 +148,9 @@ class FirmwareUpdater:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._probe_thread: threading.Thread | None = None
-        self._probe_pending: int | None = None
+        # Pending background query: ("scan", None) or ("probe", addr).
+        self._probe_pending: tuple[str, int | None] | None = None
+        self.found: dict[int, str] = {}   # last scan: addr -> state line
 
     # ---- facts for the screen ----
 
@@ -224,10 +230,23 @@ class FirmwareUpdater:
         current when the worker gets to it; a stale answer for a board
         no longer selected is dropped.
         """
+        self._enqueue(("probe", self.addr))
+
+    def scan(self) -> None:
+        """Find the target by asking every configured address (0x29).
+
+        The USB-attached board answers at its own DIP address; with the
+        485 cable unplugged nothing else does, so one answer picks the
+        target without the operator reading DIP switches. UP/DOWN after
+        the scan override it with a plain probe.
+        """
+        self._enqueue(("scan", None))
+
+    def _enqueue(self, job: tuple[str, int | None]) -> None:
         if self.busy:
             return
         with self._lock:
-            self._probe_pending = self.addr
+            self._probe_pending = job
             if self._probe_thread is not None and self._probe_thread.is_alive():
                 return
             self._probe_thread = threading.Thread(target=self._probe_loop,
@@ -237,28 +256,52 @@ class FirmwareUpdater:
     def _probe_loop(self) -> None:
         while True:
             with self._lock:
-                addr, self._probe_pending = self._probe_pending, None
-                if addr is None:
+                job, self._probe_pending = self._probe_pending, None
+                if job is None:
                     self._probe_thread = None
                     return
+            kind, addr = job
+            if kind == "scan":
+                self.board_state = "scanning..."
+                self._scan()
+                continue
             self.board_state = "checking..."
-            state = self._query(addr)
+            state = self._with_bus(lambda bus: ota.describe_state(
+                ota.query_state(bus, addr, quiet=True,
+                                log=lambda *a, **k: None)))
             if self.addr == addr and not self.busy:
                 self.board_state = state
 
-    def _query(self, addr: int) -> str:
+    def _scan(self) -> None:
+        result = self._with_bus(lambda bus: ota.scan(bus, self.boards))
+        if self.busy or self._probe_pending is not None:
+            return                      # superseded by a newer request
+        if isinstance(result, str):     # no port / wedged / exception
+            self.found = {}
+            self.board_state = result
+            return
+        self.found = {addr: ota.describe_state(ack)
+                      for addr, ack in result.items()}
+        chosen, reason = ota.choose_target(result)
+        if chosen is not None:
+            self.addr = chosen
+            self.board_state = f"{self.found[chosen]} (auto)"
+        else:
+            self.board_state = reason
+        self.emit(reason)
+
+    def _with_bus(self, action):
+        """Run `action(bus)` on a freshly opened port; a string on failure."""
         port = self.port or self._locate()
         if not port:
             return "no serial port"
         try:
             with self._open_bus(port) as bus:
-                ack = ota.query_state(bus, addr, quiet=True,
-                                      log=lambda *a, **k: None)
+                return action(bus)
         except serial.SerialTimeoutException:
             return "port wedged (write timeout)"
         except Exception as exc:
             return f"ERROR {exc}"
-        return ota.describe_state(ack)
 
     # ---- the update itself ----
 

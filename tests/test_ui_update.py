@@ -42,16 +42,19 @@ class FakeOtaBus:
     """
 
     def __init__(self, state: int = 0x00, nak: dict | None = None,
-                 finish: str | int = "vanish"):
+                 finish: str | int = "vanish", answers=None):
         self.state = state
         self.nak = nak or {}
         self.finish = finish
+        self.answers = None if answers is None else set(answers)
         self.sent: list[Frame] = []
         self._pending: deque = deque()
         self.closed = False
 
     def send(self, frame: Frame) -> None:
         self.sent.append(frame)
+        if self.answers is not None and frame.dest not in self.answers:
+            return                       # nobody at that address
         if frame.cmd == ota.CMD_OTA_FINISH:
             if self.finish == "vanish":
                 self._pending.append(serial.SerialException("device disconnected"))
@@ -71,6 +74,8 @@ class FakeOtaBus:
 
     def recv(self, timeout: float = 0.5):
         if not self._pending:
+            import time
+            time.sleep(min(timeout, 0.01))   # silence, without spinning
             return None
         item = self._pending.popleft()
         if isinstance(item, Exception):
@@ -260,6 +265,75 @@ def test_probe_reports_the_ota_state_of_the_chosen_board(tmp_path):
         nak={ota.CMD_OTA_QUERY: ACK_INVALID_CMD}))
     old.probe()
     assert wait_until(lambda: old.board_state == "ACK_INVALID_CMD")
+
+
+def test_scan_lists_only_the_boards_that_answer():
+    bus = FakeOtaBus(answers={7})
+    found = ota.scan(bus, [1, 7, 20], timeout=0.05)
+    assert list(found) == [7]
+    assert ota.describe_state(found[7]).startswith("IDLE")
+    assert [f.dest for f in bus.sent] == [1, 7, 20]
+
+
+def test_choose_target_wants_exactly_one_answer():
+    ack = Frame(dest=0, src=7, dev_type=0xFF, cmd=ACK_SUCCESS)
+    assert ota.choose_target({7: ack}) == (7, "board 07 found")
+    addr, reason = ota.choose_target({})
+    assert addr is None and "no board" in reason
+    addr, reason = ota.choose_target({1: ack, 20: ack})
+    assert addr is None and "01,20" in reason and "485" in reason
+
+
+def test_cli_addr_accepts_auto_and_numbers():
+    assert ota._addr("auto") == "auto"
+    assert ota._addr("AUTO") == "auto"
+    assert ota._addr("0x14") == 20 and ota._addr("7") == 7
+
+
+def test_scan_picks_the_single_answering_board(tmp_path):
+    # The USB board answers at its own DIP address; the operator does
+    # not have to read the switches.
+    image = make_image(tmp_path)
+    updater, _ = make_updater(image, bus=FakeOtaBus(answers={20}))
+    assert updater.addr == 1
+    updater.scan()
+    assert wait_until(lambda: updater.board_state.endswith("(auto)"))
+    assert updater.addr == 20
+    assert updater.board_state.startswith("IDLE")
+    assert updater.found == {20: updater.board_state[:-7]}
+    assert any("board 20 found" in line for line in updater.recent(5))
+
+
+def test_scan_refuses_to_guess_between_several_boards(tmp_path):
+    # Relayed boards answer too when the 485 cable is still plugged in.
+    image = make_image(tmp_path)
+    updater, _ = make_updater(image, bus=FakeOtaBus(answers={1, 20}))
+    updater.scan()
+    assert wait_until(lambda: "485" in updater.board_state)
+    assert updater.addr == 1                  # unchanged: operator picks
+    assert "01,20" in updater.board_state
+    assert sorted(updater.found) == [1, 20]
+
+
+def test_scan_with_no_board_says_so(tmp_path):
+    image = make_image(tmp_path)
+    updater, _ = make_updater(image, bus=FakeOtaBus(answers=set()))
+    updater.scan()
+    assert wait_until(lambda: updater.board_state == "no board answers 0x29")
+    assert updater.found == {}
+
+
+def test_entering_update_scans_and_up_down_override(tmp_path):
+    updater, _ = make_updater(make_image(tmp_path),
+                              bus=FakeOtaBus(answers={20}))
+    app, _ = make_app(updater)
+    app.select("update")
+    app.handle("key1")
+    assert wait_until(lambda: updater.addr == 20)
+    assert updater.board_state.endswith("(auto)")
+    app.handle("up")                          # override: board 1
+    assert updater.addr == 1
+    assert wait_until(lambda: updater.board_state == "no reply")
 
 
 def test_probe_without_a_port_says_so(tmp_path):

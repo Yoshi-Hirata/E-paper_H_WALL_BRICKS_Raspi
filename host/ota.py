@@ -4,6 +4,13 @@ Usage:
     python host/ota.py --check --addr 1              # query OTA state only
     python host/ota.py FW.bin --addr 1               # flash board 1
     python host/ota.py FW.bin --addr 2               # flash board 2 (via relay)
+    python host/ota.py FW.bin --addr auto            # find the one board answering
+    python host/ota.py --check --addr auto           # list every board answering
+
+`--addr auto` scans 1..20 with the 0x29 state query and uses the single
+address that answers - the USB-attached board's own DIP setting (all
+DIP off answers as 1). With the 485 cable still connected the relayed
+boards answer too, and the scan refuses to guess between them.
 
 Flow per spec 11.3: start (0x26, size+CRC) -> data (0x27, 60-byte
 chunks, ACK each) -> finish (0x28). On success the device resets
@@ -48,6 +55,9 @@ CHUNK_SIZE = 60          # spec 11.2.2 recommends 60 (limit 61)
 MAX_IMAGE_SIZE = 98304   # 96 KB (spec 11.1)
 
 OTA_STATES = {0x00: "IDLE", 0x01: "RECEIVING", 0x02: "READY"}
+
+SCAN_BOARDS = list(range(1, 21))   # the wall's address range
+SCAN_TIMEOUT_S = 0.3               # a local answer arrives within ~50 ms
 
 WEDGE_MSG = ("Serial write timed out: the board's CDC stopped draining "
              "USB (wedged port). Power-cycle the board or replug USB, "
@@ -120,6 +130,41 @@ def query_state(bus: Bus, addr: int, quiet: bool = False,
     else:
         log(f"Board 0x{addr:02X}: {ack.describe()}")
     return ack
+
+
+def scan(bus: Bus, boards=SCAN_BOARDS,
+         timeout: float = SCAN_TIMEOUT_S) -> dict[int, Frame]:
+    """Which addresses answer the 0x29 state query: {addr: ack}.
+
+    One query each, short wait: the USB-attached board answers its own
+    DIP address locally within milliseconds, and everything else is
+    relayed to the 485 bus, where a missing board is simply silence.
+    The whole range costs about `timeout` x len(boards) when only one
+    board is there.
+    """
+    found: dict[int, Frame] = {}
+    for addr in boards:
+        bus.send(_frame(addr, CMD_OTA_QUERY))
+        ack = _ack_from(bus, addr, timeout)
+        if ack is not None:
+            found[addr] = ack
+    return found
+
+
+def choose_target(found: dict) -> tuple[int | None, str]:
+    """Pick the OTA target from a scan: (addr, reason).
+
+    Exactly one answer is the point-to-point case the spec wants; none
+    or several is a wiring situation the operator has to resolve, so
+    the reason spells it out instead of guessing.
+    """
+    if len(found) == 1:
+        addr = next(iter(found))
+        return addr, f"board {addr:02d} found"
+    if not found:
+        return None, "no board answers 0x29"
+    listed = ",".join(f"{a:02d}" for a in sorted(found))
+    return None, f"boards {listed} answer: unplug 485 or pick one"
 
 
 def _transfer(bus: Bus, addr: int, image: bytes, log: Log = print_log,
@@ -252,11 +297,18 @@ def verify(addr: int, port_hint: str | None, wait_s: float = 25.0,
     return False
 
 
+def _addr(value: str):
+    if value.lower() == "auto":
+        return "auto"
+    return int(value, 0)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="OTA firmware upgrade (0x26-0x29)")
     ap.add_argument("bin", nargs="?", help="firmware .bin image")
-    ap.add_argument("--addr", type=lambda v: int(v, 0), required=True,
-                    help="target board address (point-to-point only)")
+    ap.add_argument("--addr", type=_addr, required=True,
+                    help="target board address (point-to-point only), or "
+                         "'auto' to use the one board answering 0x29")
     ap.add_argument("--port", help="serial port (default: auto-detect)")
     ap.add_argument("--check", action="store_true",
                     help="only query OTA state (0x29), no flashing")
@@ -270,6 +322,25 @@ def main() -> int:
     if not port:
         print("No serial port found. Specify with --port.", file=sys.stderr)
         return 2
+
+    if args.addr == "auto":
+        try:
+            with Bus(port, verbose=False) as bus:
+                found = scan(bus)
+        except serial.SerialTimeoutException:
+            print(WEDGE_MSG, file=sys.stderr)
+            return 1
+        for addr in sorted(found):
+            print(f"Board 0x{addr:02X}: OTA state {describe_state(found[addr])}")
+        chosen, reason = choose_target(found)
+        if args.check:
+            print(reason)
+            return 0 if found else 1
+        if chosen is None:
+            print(f"Cannot pick a target: {reason}.", file=sys.stderr)
+            return 2
+        print(reason)
+        args.addr = chosen
 
     if args.check:
         try:

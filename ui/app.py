@@ -8,8 +8,9 @@ Controls (Waveshare 1.3inch LCD HAT):
   KEY3                        - blank the screen now
 
 The last menu row, UPDATE FW, is a mode rather than a demo: it stops
-the runner to free the port, lets UP/DOWN pick the USB-attached board's
-address, and KEY1 flashes the bundled image (ui/updater.py). While the
+the runner to free the port, scans for the USB-attached board's address
+(UP/DOWN override it), and KEY1 flashes the bundled image
+(ui/updater.py). While the
 transfer runs every button is ignored - there is no safe "abort" of an
 OTA in flight - and afterwards KEY2 returns to the menu via the boot
 standby, which silences the factory autoplay the rebooted board wakes
@@ -171,7 +172,7 @@ class App:
         if updater.finished:
             if event in ("key1", "press"):
                 updater.reset()     # back to the confirm screen
-                updater.probe()
+                updater.scan()
             elif event == "key2":
                 self._leave_update()
             self._dirty = True
@@ -192,7 +193,7 @@ class App:
         self.runner.stop()
         self._standby = False
         self.updater.reset()
-        self.updater.probe()
+        self.updater.scan()         # find the USB board's address
         self.screen = Screen.UPDATE
         self._dirty = True
 

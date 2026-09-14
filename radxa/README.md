@@ -91,10 +91,14 @@ Radxa への配布は `git pull` だけでよい。UI はその中の**最新フ
 1. 更新する基板の 485 ケーブルを抜き、その基板を USB-C(データ側)に直結する
    (USB を挿した基板は自分の DIP アドレス宛だけをローカル処理し、他は
    485 へ中継するため、点対点でやるのが確実)
-2. メニューで `UPDATE FW` を選び KEY1。ランナーが止まりポートが空く
-3. UP/DOWN で基板の DIP アドレスを選ぶ。状態行が `IDLE size=… crc=…` なら
-   OTA 対応 FW が応答している(`no reply` = 無応答、`ACK_INVALID_CMD` =
-   OTA 非対応の旧 FW → SWD で焼く)
+2. メニューで `UPDATE FW` を選び KEY1。ランナーが止まりポートが空き、
+   1〜20 番へ状態照会(0x29)を送るスキャンが数秒走る
+3. 応答が 1 件ならその基板が自動で選ばれ、状態行に `IDLE size=… crc=… (auto)`
+   と出る(DIP スイッチを読む必要はない。DIP 全 OFF の基板は 1 番として
+   応答する)。`boards 01,20 answer: unplug 485 or pick one` なら 485 経由の
+   基板も答えているので、485 を抜いて KEY1 で再スキャンするか UP/DOWN で
+   選ぶ。`no board answers 0x29` は無応答、UP/DOWN で個別に当たったとき
+   `ACK_INVALID_CMD` なら OTA 非対応の旧 FW(SWD で焼く)
 4. KEY1 で書き込み開始。約 1100 チャンク、1〜3 分。**途中でボタンは効かない**
    (KEY3 の消灯のみ)。ケーブルを抜かないこと
 5. `DONE` で完了。KEY2 でメニューに戻ると白待機が走り、再起動した基板の
@@ -105,6 +109,8 @@ Radxa への配布は `git pull` だけでよい。UI はその中の**最新フ
 UI は 25 秒待って応答が無ければ `xhci-hcd` を unbind/bind して復旧を試みる
 (`sudo -n` が通ること = セットアップ手順 3)。不要なら `UI_ARGS` に
 `--no-usb-rebind` を足す。イメージを差し替えるときは `--firmware PATH`。
+CLI からは `host/ota.py FW/FW_260903/OTA_16c.bin --addr auto` で同じ
+スキャンが使える(`--check --addr auto` で応答する基板の一覧だけ出す)。
 
 ## Python 3.9 対応
 
