@@ -96,8 +96,8 @@ Radxa への配布は `git pull` だけでよい。UI はその中の**最新フ
 3. 応答が 1 件ならその基板が自動で選ばれ、状態行に `IDLE size=… crc=… (auto)`
    と出る(DIP スイッチを読む必要はない。DIP 全 OFF の基板は 1 番として
    応答する)。`boards 01,20 answer: unplug 485 or pick one` なら 485 経由の
-   基板も答えているので、485 を抜いて KEY1 で再スキャンするか UP/DOWN で
-   選ぶ。`no board answers 0x29` は無応答、UP/DOWN で個別に当たったとき
+   基板も答えているので、485 を抜いて KEY2 → `UPDATE FW` で入り直す(再
+   スキャン)か、UP/DOWN で選ぶ。`no board answers 0x29` は無応答、UP/DOWN で個別に当たったとき
    `ACK_INVALID_CMD` なら OTA 非対応の旧 FW(SWD で焼く)
 4. KEY1 で書き込み開始。約 1100 チャンク、1〜3 分。**途中でボタンは効かない**
    (KEY3 の消灯のみ)。ケーブルを抜かないこと
