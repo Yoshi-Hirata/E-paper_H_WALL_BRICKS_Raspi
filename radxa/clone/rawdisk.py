@@ -1,4 +1,4 @@
-"""Raw read/write of a Windows physical drive (needs an elevated process).
+r"""Raw read/write of a Windows physical drive (needs an elevated process).
 
     rawdisk.py read  N OUT.img LOG
         whole \\.\PhysicalDriveN -> file
@@ -23,7 +23,6 @@ import zlib
 
 CHUNK = 8 * 1024 * 1024
 SECTOR = 512
-GPT_HEADER_SIZE = 92
 
 
 def disk_size(handle_path: str) -> int:
@@ -62,8 +61,15 @@ def _crc(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
 
 
-def fix_gpt(dev, cap: int, log) -> None:
-    """Rebuild the backup GPT at the disk end from the primary header."""
+def fix_gpt(dev, cap: int, log, image_bytes=None) -> None:
+    """Rebuild the backup GPT at the disk end from the primary header.
+
+    Cards of one nominal size differ by tens of MB, so the last
+    partition (the root, spanning the golden card) is clamped to this
+    disk when it would run past the end - legal as long as the part of
+    it the image actually carries (the shrunken filesystem) still fits.
+    rsetup's resize_root then grows the filesystem to the clamped end.
+    """
     last = cap // SECTOR - 1
     dev.seek(SECTOR)
     hdr = bytearray(dev.read(SECTOR))
@@ -74,27 +80,41 @@ def fix_gpt(dev, cap: int, log) -> None:
     entries_bytes = n_entries * esize
     entries_sectors = (entries_bytes + SECTOR - 1) // SECTOR
     dev.seek(entries_lba * SECTOR)
-    entries = dev.read(entries_sectors * SECTOR)
+    entries = bytearray(dev.read(entries_sectors * SECTOR))
     if _crc(entries[:entries_bytes]) != struct.unpack_from("<I", hdr, 88)[0]:
         raise RuntimeError("primary partition entries CRC mismatch")
-    # The partitions must fit on this disk.
-    for i in range(n_entries):
-        e = entries[i * esize:(i + 1) * esize]
-        if e[:16] == b"\0" * 16:
-            continue
-        end_lba = struct.unpack_from("<Q", e, 40)[0]
-        if end_lba > last - entries_sectors - 1:
-            raise RuntimeError(f"partition {i + 1} ends at LBA {end_lba}, "
-                               f"beyond this disk (last usable "
-                               f"{last - entries_sectors - 1})")
     backup_entries_lba = last - entries_sectors
     last_usable = backup_entries_lba - 1
+
+    # The partitions must fit on this disk; only the last one may be
+    # clamped, and only down to what the image contains.
+    used = [(struct.unpack_from("<Q", entries, i * esize + 32)[0], i)
+            for i in range(n_entries)
+            if entries[i * esize:i * esize + 16] != b"\0" * 16]
+    last_index = max(used)[1] if used else -1
+    image_last_lba = (image_bytes // SECTOR - 1) if image_bytes else None
+    for start_lba, i in used:
+        off = i * esize
+        end_lba = struct.unpack_from("<Q", entries, off + 40)[0]
+        if end_lba <= last_usable:
+            continue
+        if i != last_index or start_lba > last_usable or (
+                image_last_lba is not None and image_last_lba > last_usable):
+            raise RuntimeError(f"partition {i + 1} ends at LBA {end_lba}, "
+                               f"beyond this disk (last usable {last_usable})")
+        struct.pack_into("<Q", entries, off + 40, last_usable)
+        log.write(f"GPT: partition {i + 1} clamped from LBA {end_lba} to "
+                  f"{last_usable} (card {(end_lba - last_usable) * SECTOR // 1048576}"
+                  f" MB smaller than the golden one)\n")
+    entries = bytes(entries)
+    entries_crc = _crc(entries[:entries_bytes])
 
     def finish(h: bytearray, my, alt, part_lba) -> bytes:
         struct.pack_into("<Q", h, 24, my)
         struct.pack_into("<Q", h, 32, alt)
         struct.pack_into("<Q", h, 48, last_usable)
         struct.pack_into("<Q", h, 72, part_lba)
+        struct.pack_into("<I", h, 88, entries_crc)
         struct.pack_into("<I", h, 16, 0)
         struct.pack_into("<I", h, 16, _crc(bytes(h[:hsize])))
         return bytes(h)
@@ -105,6 +125,8 @@ def fix_gpt(dev, cap: int, log) -> None:
     dev.write(entries)
     dev.seek(last * SECTOR)
     dev.write(backup)
+    dev.seek(entries_lba * SECTOR)
+    dev.write(entries)
     dev.seek(SECTOR)
     dev.write(primary)
     log.write(f"GPT: backup header at LBA {last}, entries at "
@@ -147,7 +169,7 @@ def main() -> int:
                     dev.seek(offset)
                     dev.write(data)
                     log.write(f"patched {len(data)} bytes at {offset}\n")
-                fix_gpt(dev, cap, log)
+                fix_gpt(dev, cap, log, image_bytes=total)
                 dev.flush()
                 os.fsync(dev.fileno())
             log.write(f"DONE {done}\n")
