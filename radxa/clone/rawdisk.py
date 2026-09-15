@@ -11,8 +11,15 @@ r"""Raw read/write of a Windows physical drive (needs an elevated process).
         golden card's backup header is not in it.
 
 Progress lines go to LOG; the last line is "DONE <bytes>" or "ERROR ...".
-wsl --mount cannot attach USB card readers (HCS 0x8007000f), so this is
-the read/write primitive for the golden image workflow.
+
+Access goes through the Win32 API directly (CreateFile / ReadFile /
+WriteFile), the way Win32DiskImager does it: Python's open() on a
+physical drive reads fine but its writes fail with EBADF, and Windows
+refuses writes to a disk whose volumes are mounted unless each volume
+is locked and dismounted first (a blank card comes formatted FAT32 and
+mounted as a drive letter). wsl --mount cannot attach USB card readers
+(HCS 0x8007000f), so this is the read/write primitive for the golden
+image workflow.
 """
 import ctypes
 import os
@@ -24,22 +31,148 @@ import zlib
 CHUNK = 8 * 1024 * 1024
 SECTOR = 512
 
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_READ = 0x1
+FILE_SHARE_WRITE = 0x2
+OPEN_EXISTING = 3
+FILE_BEGIN = 0
+INVALID_HANDLE = ctypes.c_void_p(-1).value
+IOCTL_DISK_GET_LENGTH_INFO = 0x7405C
+IOCTL_STORAGE_GET_DEVICE_NUMBER = 0x2D1080
+FSCTL_LOCK_VOLUME = 0x90018
+FSCTL_UNLOCK_VOLUME = 0x9001C
+FSCTL_DISMOUNT_VOLUME = 0x90020
+FILE_DEVICE_DISK = 7
 
-def disk_size(handle_path: str) -> int:
-    """IOCTL_DISK_GET_LENGTH_INFO, in bytes."""
+if sys.platform == "win32":
     import ctypes.wintypes as wt
-    h = ctypes.windll.kernel32.CreateFileW(
-        handle_path, 0x80000000, 0x3, None, 3, 0, None)
-    if h in (ctypes.c_void_p(-1).value, -1):
-        raise OSError(ctypes.get_last_error(), "CreateFile failed")
-    length = ctypes.c_longlong(0)
-    out = wt.DWORD(0)
-    ok = ctypes.windll.kernel32.DeviceIoControl(
-        h, 0x7405C, None, 0, ctypes.byref(length), 8, ctypes.byref(out), None)
-    ctypes.windll.kernel32.CloseHandle(h)
-    if not ok:
-        raise OSError("IOCTL_DISK_GET_LENGTH_INFO failed")
-    return length.value
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wt.HANDLE
+    k32.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p,
+                                wt.DWORD, wt.DWORD, wt.HANDLE]
+    k32.ReadFile.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD,
+                             ctypes.POINTER(wt.DWORD), ctypes.c_void_p]
+    k32.WriteFile.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD,
+                              ctypes.POINTER(wt.DWORD), ctypes.c_void_p]
+    k32.SetFilePointerEx.argtypes = [wt.HANDLE, ctypes.c_longlong,
+                                     ctypes.POINTER(ctypes.c_longlong), wt.DWORD]
+    k32.DeviceIoControl.argtypes = [wt.HANDLE, wt.DWORD, ctypes.c_void_p, wt.DWORD,
+                                    ctypes.c_void_p, wt.DWORD,
+                                    ctypes.POINTER(wt.DWORD), ctypes.c_void_p]
+    k32.FlushFileBuffers.argtypes = [wt.HANDLE]
+    k32.CloseHandle.argtypes = [wt.HANDLE]
+    k32.GetLogicalDrives.restype = wt.DWORD
+
+
+def _fail(what: str) -> OSError:
+    err = ctypes.get_last_error()
+    return OSError(err, f"{what}: [WinError {err}] {ctypes.FormatError(err)}")
+
+
+class RawDisk:
+    """A Win32 handle with the file-like read/seek/write the rest expects."""
+
+    def __init__(self, path: str, write: bool = False):
+        access = GENERIC_READ | (GENERIC_WRITE if write else 0)
+        self.h = k32.CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 None, OPEN_EXISTING, 0, None)
+        if self.h is None or self.h == INVALID_HANDLE:
+            raise _fail(f"open {path}")
+        self.path = path
+
+    def ioctl(self, code: int, out_len: int = 0) -> bytes:
+        out = ctypes.create_string_buffer(out_len) if out_len else None
+        got = wt.DWORD(0)
+        if not k32.DeviceIoControl(self.h, code, None, 0, out, out_len,
+                                   ctypes.byref(got), None):
+            raise _fail(f"ioctl 0x{code:X} on {self.path}")
+        return out.raw[:got.value] if out else b""
+
+    def size(self) -> int:
+        return struct.unpack("<q", self.ioctl(IOCTL_DISK_GET_LENGTH_INFO, 8))[0]
+
+    def seek(self, offset: int) -> None:
+        if not k32.SetFilePointerEx(self.h, offset, None, FILE_BEGIN):
+            raise _fail(f"seek {offset}")
+
+    def read(self, n: int) -> bytes:
+        buf = ctypes.create_string_buffer(n)
+        got = wt.DWORD(0)
+        if not k32.ReadFile(self.h, buf, n, ctypes.byref(got), None):
+            raise _fail("ReadFile")
+        return buf.raw[:got.value]
+
+    def write(self, data: bytes) -> int:
+        done = wt.DWORD(0)
+        if not k32.WriteFile(self.h, data, len(data), ctypes.byref(done), None):
+            raise _fail("WriteFile")
+        if done.value != len(data):
+            raise OSError(f"short write: {done.value} of {len(data)}")
+        return done.value
+
+    def flush(self) -> None:
+        if not k32.FlushFileBuffers(self.h):
+            raise _fail("FlushFileBuffers")
+
+    def close(self) -> None:
+        if self.h is not None:
+            k32.CloseHandle(self.h)
+            self.h = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def volumes_on_disk(number: int) -> list:
+    r"""Drive letters whose volume lives on \\.\PhysicalDrive<number>."""
+    letters = []
+    mask = k32.GetLogicalDrives()
+    for i in range(26):
+        if not mask & (1 << i):
+            continue
+        letter = chr(ord("A") + i)
+        h = k32.CreateFileW(rf"\\.\{letter}:", 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            None, OPEN_EXISTING, 0, None)
+        if h is None or h == INVALID_HANDLE:
+            continue                      # network drive, empty reader, ...
+        try:
+            out = ctypes.create_string_buffer(12)
+            got = wt.DWORD(0)
+            if k32.DeviceIoControl(h, IOCTL_STORAGE_GET_DEVICE_NUMBER, None, 0,
+                                   out, 12, ctypes.byref(got), None):
+                dev_type, dev_num, _part = struct.unpack("<III", out.raw)
+                if dev_type == FILE_DEVICE_DISK and dev_num == number:
+                    letters.append(letter)
+        finally:
+            k32.CloseHandle(h)
+    return letters
+
+
+class LockedVolumes:
+    """Lock + dismount every volume on the disk for the duration of a write."""
+
+    def __init__(self, number: int, log):
+        self.handles = []
+        self.log = log
+        for letter in volumes_on_disk(number):
+            vol = RawDisk(rf"\\.\{letter}:", write=True)
+            vol.ioctl(FSCTL_LOCK_VOLUME)
+            vol.ioctl(FSCTL_DISMOUNT_VOLUME)
+            log.write(f"locked and dismounted {letter}:\n")
+            self.handles.append(vol)
+
+    def release(self) -> None:
+        for vol in self.handles:
+            try:
+                vol.ioctl(FSCTL_UNLOCK_VOLUME)
+            except OSError:
+                pass
+            vol.close()
+        self.handles = []
 
 
 def copy(src, dst, total, log, t0):
@@ -140,38 +273,40 @@ def main() -> int:
     t0 = time.monotonic()
     try:
         if mode == "read":
-            total = disk_size(dev_path)
-            log.write(f"disk {dev_path} size {total}\n")
-            with open(dev_path, "rb", buffering=0) as src, \
-                    open(path, "wb") as dst:
+            with RawDisk(dev_path) as src, open(path, "wb") as dst:
+                total = src.size()
+                log.write(f"disk {dev_path} size {total}\n")
                 done = copy(src, dst, total, log, t0)
             log.write(f"DONE {done}\n")
         elif mode == "write":
             total = os.path.getsize(path)
-            cap = disk_size(dev_path)
-            if total > cap:
-                raise RuntimeError(f"image {total} larger than disk {cap}")
             if total % SECTOR:
                 raise RuntimeError("image is not sector aligned")
             patch = None
             if len(sys.argv) >= 7:
                 patch = (int(sys.argv[5]), sys.argv[6])
-            log.write(f"disk {dev_path} size {cap}, image {total}\n")
-            with open(dev_path, "r+b", buffering=0) as dev:
-                with open(path, "rb") as src:
-                    done = copy(src, dev, total, log, t0)
-                if patch:
-                    offset, pfile = patch
-                    with open(pfile, "rb") as pf:
-                        data = pf.read()
-                    if offset % SECTOR or len(data) % SECTOR:
-                        raise RuntimeError("patch not sector aligned")
-                    dev.seek(offset)
-                    dev.write(data)
-                    log.write(f"patched {len(data)} bytes at {offset}\n")
-                fix_gpt(dev, cap, log, image_bytes=total)
-                dev.flush()
-                os.fsync(dev.fileno())
+            locked = LockedVolumes(int(number), log)
+            try:
+                with RawDisk(dev_path, write=True) as dev:
+                    cap = dev.size()
+                    if total > cap:
+                        raise RuntimeError(f"image {total} larger than disk {cap}")
+                    log.write(f"disk {dev_path} size {cap}, image {total}\n")
+                    with open(path, "rb") as src:
+                        done = copy(src, dev, total, log, t0)
+                    if patch:
+                        offset, pfile = patch
+                        with open(pfile, "rb") as pf:
+                            data = pf.read()
+                        if offset % SECTOR or len(data) % SECTOR:
+                            raise RuntimeError("patch not sector aligned")
+                        dev.seek(offset)
+                        dev.write(data)
+                        log.write(f"patched {len(data)} bytes at {offset}\n")
+                    fix_gpt(dev, cap, log, image_bytes=total)
+                    dev.flush()
+            finally:
+                locked.release()
             log.write(f"DONE {done}\n")
         else:
             raise RuntimeError(f"unknown mode {mode}")
