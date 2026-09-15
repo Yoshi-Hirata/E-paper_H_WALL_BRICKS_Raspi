@@ -18,6 +18,16 @@
 
 ## 2. 直近で完成したもの
 
+**HDMI-CEC でシャットダウンする問題を修正(2026-09-15)**
+
+- radxa-01 にモニタを繋いだらログイン画面の後に電源が落ちた。原因は
+  HDMI-CEC: `sunxi_cec` が電源ボタンとして登録され、モニタのスタンバイ
+  信号で logind が poweroff していた(ジャーナルは 84 秒で綺麗な Power-Off)。
+  `raspi/logind-appliance.conf`(電源/サスペンド系キーを ignore)を追加し、
+  実機・ゴールデンイメージ・`setup.sh` に反映。本番はヘッドレスなので
+  影響は無いが、ブリングアップでモニタを繋ぐと再発するため恒久対処
+- ゴールデンイメージの sha256 が更新された(`D:adxa-goldenadxa-01-golden.sha256`)
+
 **Radxa 10 台複製の仕組み(2026-09-15)**
 
 - 個体差はホスト名 `radxa-NN` だけ。IP は `radxa/firstboot.sh`
@@ -27,7 +37,9 @@
   (FAT、Windows から書ける)で設定する。手順は [radxa/README.md](../radxa/README.md)
   「10 台への複製」
 - 開発機は `radxa-01` に改名済み。**ゴールデンイメージ作成済み**:
-  `D:adxa-goldenadxa-01-golden.img`(7.04 GB、sha256 は同名 .sha256)。
+  `D:
+adxa-golden
+adxa-01-golden.img`(7.04 GB、sha256 は同名 .sha256)。
   元の全体読み出し `radxa-01-full.img`(31 GB)も同じ場所
 - 書き込みは `radxa/clone/write_card.ps1 -Unit NN -Disk N`(WSL + 管理者
   Python)。Windows はカードのパーティションを見せず、`wsl --mount` は USB

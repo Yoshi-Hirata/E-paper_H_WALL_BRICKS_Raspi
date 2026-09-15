@@ -30,6 +30,11 @@ if ! grep -q '^dtparam=spi=on' /boot/firmware/config.txt 2>/dev/null; then
 fi
 sudo usermod -aG spi,gpio "$USER" 2>/dev/null || true
 
+echo "== appliance logind (ignore power/suspend keys) =="
+sudo install -d /etc/systemd/logind.conf.d
+sudo cp "$REPO_DIR/raspi/logind-appliance.conf" /etc/systemd/logind.conf.d/10-appliance.conf
+sudo systemctl restart systemd-logind || true
+
 echo "== systemd services =="
 for name in "${SERVICES[@]}"; do
   sed "s|@REPO_DIR@|$REPO_DIR|g; s|@RUN_USER@|$USER|g" \

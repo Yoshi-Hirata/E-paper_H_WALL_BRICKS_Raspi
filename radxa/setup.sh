@@ -61,6 +61,14 @@ for name in "${SERVICES[@]}"; do
   fi
 done
 
+echo "== appliance logind (ignore power/suspend keys) =="
+# An HDMI-CEC monitor connected for debugging registers as a system
+# power button and its standby command powers the board off (radxa-01,
+# 2026-09-15). Headless appliance: ignore those keys.
+sudo install -d /etc/systemd/logind.conf.d
+sudo cp "$REPO_DIR/raspi/logind-appliance.conf" /etc/systemd/logind.conf.d/10-appliance.conf
+sudo systemctl restart systemd-logind || true
+
 echo "== per-unit network identity (cloned units) =="
 # radxa-NN -> 192.168.50.(100+NN); a hostname outside that scheme is a
 # no-op, so enabling it on a one-off machine changes nothing.
