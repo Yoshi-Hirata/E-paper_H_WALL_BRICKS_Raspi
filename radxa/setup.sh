@@ -60,7 +60,14 @@ for name in "${SERVICES[@]}"; do
     sudo cp "$REPO_DIR/raspi/${name}.env" "/etc/default/${name}"
   fi
 done
+
+echo "== per-unit network identity (cloned units) =="
+# radxa-NN -> 192.168.50.(100+NN); a hostname outside that scheme is a
+# no-op, so enabling it on a one-off machine changes nothing.
+sed "s|@REPO_DIR@|$REPO_DIR|g" "$REPO_DIR/radxa/epaper-firstboot.service.in" \
+  | sudo tee /etc/systemd/system/epaper-firstboot.service >/dev/null
 sudo systemctl daemon-reload
+sudo systemctl enable epaper-firstboot.service
 
 echo
 echo "Setup finished."

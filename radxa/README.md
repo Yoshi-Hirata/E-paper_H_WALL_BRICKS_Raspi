@@ -112,6 +112,58 @@ UI は 25 秒待って応答が無ければ `xhci-hcd` を unbind/bind して復
 CLI からは `host/ota.py FW/FW_260903/OTA_16c.bin --addr auto` で同じ
 スキャンが使える(`--check --addr auto` で応答する基板の一覧だけ出す)。
 
+## 10 台への複製(ゴールデンイメージ)
+
+10 台の Radxa は **1 種類の microSD イメージ**で運用し、個体差はホスト名
+`radxa-01`〜`radxa-10` だけにする。IP はホスト名から導出する
+(`radxa-NN` → `192.168.50.(100+NN)/24`、GW/DNS `192.168.50.1`)。
+開発機が `radxa-01` = `.101`。
+
+仕組みは 2 段:
+
+1. **Radxa 純正の初回起動フック**: `rsetup.service` が毎起動時に
+   `/config/before.txt` → `config.txt` → `after.txt` を処理し、before/after は
+   処理後に削除される。`/config` は 16 MB の FAT パーティションで、
+   **イメージを書いた直後の microSD を Windows で開いて置ける**
+2. **`epaper-firstboot.service`**(`radxa/firstboot.sh`、rsetup の後に毎起動
+   実行、冪等): ホスト名が `radxa-NN` なら Wi-Fi プロファイルの IPv4 を
+   導出値に合わせる。すでに一致していれば何もしない
+
+### ゴールデンイメージの作り方(開発機で)
+
+```bash
+cd ~/E-paper_H_WALL_BRICKS_Raspi && git status      # clean であること
+systemctl is-enabled epaper-ui epaper-firstboot      # 両方 enabled
+sudo apt clean
+sudo journalctl --vacuum-size=20M
+rm -f ~/.bash_history
+sudo truncate -s0 /etc/machine-id                    # 次回起動時に再生成
+sudo poweroff
+```
+
+microSD を取り出して Windows の Win32DiskImager で読み出す。Linux/WSL が
+あれば PiShrink で縮小(ルート ext4 の使用量は約 5 GB)。
+
+### クローンの作り方(カード 1 枚ごと)
+
+1. Etcher か Win32DiskImager でイメージを書く
+2. Windows に見える FAT ドライブ(16 MB、`config.txt` と `logo.bmp` がある方)
+   に `before.txt` を作る:
+
+   ```
+   update_hostname radxa-05
+   regenerate_ssh_hostkey
+   ```
+
+3. 起動する。rsetup がホスト名と SSH ホスト鍵を設定し、`before.txt` を消す。
+   続いて `epaper-firstboot` が `192.168.50.105` を設定する。
+   `machine-id` は空にしてあるので起動時に固有値が生成される
+4. `ssh radxa@192.168.50.105` で入り、`.venv/bin/python -m ui.main --check`
+
+Wi-Fi プロファイルは MAC に束縛していない(`802-11-wireless.mac-address`
+空)ので、どの個体でもそのまま繋がる。ルート FS の UUID は全機同一に
+なるが、別々の機体なので問題ない。
+
 ## Python 3.9 対応
 
 Debian 11 の Python は 3.9 で、`X | None` 形式の型注釈が**実行時エラー**に

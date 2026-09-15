@@ -1,6 +1,6 @@
 # 現在地と再開手順
 
-最終更新: 2026-09-14
+最終更新: 2026-09-15
 
 **この文書は「次に何をするか」だけを書く。** 経緯は
 [DEVELOPMENT.md](DEVELOPMENT.md)、20 枚構成の検討は [SCALING.md](SCALING.md)、
@@ -10,13 +10,24 @@
 
 | 機体 | 役割 | 状態 |
 |---|---|---|
-| **Radxa Cubie A7Z** `radxa@192.168.50.101` | **本番機**。**本番制御基板 2 枚(ID:1, ID:20)を接続** | `epaper-ui` 有効・自動起動 |
+| **Radxa Cubie A7Z** `radxa-01` = `radxa@192.168.50.101` | **本番機**(10 台構成の 1 号機 = ゴールデンイメージ元)。**本番制御基板 2 枚(ID:1, ID:20)を接続** | `epaper-ui` 有効・自動起動 |
 | Raspberry Pi Zero 2 W `r2@192.168.50.25` | 予備機。パネル未接続 | `epaper-ui` active。ポート待ちのまま待機 |
 
 - 両機とも同じコードで、差分は `ui/boards.py` のプロファイルのみ
 - テスト 195 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-14)
 
 ## 2. 直近で完成したもの
+
+**Radxa 10 台複製の仕組み(2026-09-15)**
+
+- 個体差はホスト名 `radxa-NN` だけ。IP は `radxa/firstboot.sh`
+  (`epaper-firstboot.service`、毎起動・冪等)が `192.168.50.(100+NN)` に
+  導出して Wi-Fi プロファイルへ適用する
+- ホスト名と SSH ホスト鍵は Radxa 純正の `rsetup` が `/config/before.txt`
+  (FAT、Windows から書ける)で設定する。手順は [radxa/README.md](../radxa/README.md)
+  「10 台への複製」
+- 開発機は `radxa-01` に改名済み。ゴールデンイメージ読み出しのため
+  machine-id を空にしてシャットダウンした状態(次回起動で再生成される)
 
 **LCD メニューから基板 FW を OTA アップデートできるようにした(2026-09-14、Radxa デプロイ済み)**
 
