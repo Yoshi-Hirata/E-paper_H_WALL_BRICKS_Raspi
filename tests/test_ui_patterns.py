@@ -139,3 +139,18 @@ def test_random_is_reproducible_for_a_given_seed():
 def test_labels_fit_the_lcd_menu():
     for pattern in PATTERNS:
         assert len(pattern.label) <= 14
+
+
+def test_random16_uses_the_whole_lut_not_the_palette():
+    from epaper.pattern import SEGMENTS_GEN
+
+    frame = BY_KEY["random16"](0, BOARDS, DEFAULT_PALETTE, random.Random(3))
+    codes = {c for segs in frame.values() for c in segs.values()}
+    assert codes <= set(range(16))
+    assert not codes <= set(DEFAULT_PALETTE)      # reaches beyond the six
+    assert len(codes) > 10                        # 60 draws from 16 codes
+    for segs in frame.values():
+        assert set(segs) == set(SEGMENTS_GEN)
+    a = BY_KEY["random16"](0, BOARDS, DEFAULT_PALETTE, random.Random(7))
+    b = BY_KEY["random16"](0, BOARDS, DEFAULT_PALETTE, random.Random(7))
+    assert a == b

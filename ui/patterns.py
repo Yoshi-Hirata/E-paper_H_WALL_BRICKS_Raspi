@@ -175,6 +175,18 @@ SOLID16 = Pattern("solid16", "SOLID16", "0x00-0x0F sweep, 15s",
                   _solid16, interval=15.0, caption=_solid16_caption)
 
 
+def _random16(cycle, boards, palette, rng) -> Frame:
+    """Every segment a random code from the whole V1.1 LUT (0x00-0x0F),
+    ignoring the show palette - RANDOM restricted to the six classic
+    colors, this is the 16-color firmware's full range."""
+    return {b: {seg: rng.choice(SOLID16_SEQUENCE) for seg in sorted(SEGMENTS_GEN)}
+            for b in boards}
+
+
+RANDOM16 = Pattern("random16", "RANDOM16", "random 0x00-0x0F", _random16,
+                   interval=20.0)
+
+
 def _white(cycle, boards, palette, rng) -> Frame:
     return {b: {seg: COLOR_NAMES_16["white"] for seg in sorted(SEGMENTS_GEN)}
             for b in boards}
@@ -196,6 +208,7 @@ PATTERNS: list[Pattern | Playlist] = [
     STANDBY,
     COLORS16,
     SOLID16,
+    RANDOM16,
     # Default loop: one full colour sweep, then a spell of random fields.
     Playlist("loop", "SOLID+RANDOM", "6 colors, then 6 random",
              steps=((_SOLID, 6), (_RANDOM, 6))),
