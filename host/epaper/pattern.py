@@ -92,6 +92,28 @@ COLOR_LABELS_16 = [
     "Smoke Blue",   # 0x0F 烟雾蓝
 ]
 
+# Reference RGB per code, straight from the same table (参考色 (RGB)).
+# For previews and the LCD, not for the boards - the e-paper's real
+# pigments differ (0x06 and 0x07-0x0E render noticeably off the table).
+COLOR_RGB_16 = [
+    (255, 255, 255),  # 0x00 white
+    (255, 255, 0),    # 0x01 yellow
+    (0, 0, 255),      # 0x02 blue
+    (255, 0, 0),      # 0x03 red
+    (0, 0, 0),        # 0x04 black
+    (64, 224, 208),   # 0x05 turquoise
+    (0, 200, 0),      # 0x06 green
+    (235, 210, 180),  # 0x07 almond
+    (255, 209, 220),  # 0x08 light pink
+    (135, 206, 235),  # 0x09 sky blue
+    (255, 140, 0),    # 0x0A orange
+    (154, 205, 50),   # 0x0B yellow green
+    (112, 116, 85),   # 0x0C olive gray
+    (139, 69, 19),    # 0x0D brown
+    (92, 51, 23),     # 0x0E dark brown
+    (110, 130, 150),  # 0x0F smoke blue
+]
+
 
 def build_gen_array(colors: dict[int, int] | None = None,
                     fill: int = COLOR_WHITE) -> bytes:

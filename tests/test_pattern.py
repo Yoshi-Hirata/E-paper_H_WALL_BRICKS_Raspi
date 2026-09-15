@@ -127,3 +127,35 @@ def test_slot_range_guard():
         save_color(dest=0x01, slot=20, array64=arr)
     with pytest.raises(ValueError):
         slot_config(dest=0x01, slot=-1)
+
+
+def test_v11_palette_matches_spec_table_5_1_1():
+    # DISPLAY_Protocol V1.1 5.1.1: value, name, reference RGB. Green is
+    # 0x06 and 0x05 is turquoise on this firmware (the old 6-color table
+    # had green at 0x05).
+    from epaper.pattern import COLOR_LABELS_16, COLOR_NAMES_16, COLOR_RGB_16
+
+    spec = {
+        0x00: ("white", "White", (255, 255, 255)),
+        0x01: ("yellow", "Yellow", (255, 255, 0)),
+        0x02: ("blue", "Blue", (0, 0, 255)),
+        0x03: ("red", "Red", (255, 0, 0)),
+        0x04: ("black", "Black", (0, 0, 0)),
+        0x05: ("turquoise", "Turquoise", (64, 224, 208)),
+        0x06: ("green", "Green", (0, 200, 0)),
+        0x07: ("almond", "Almond", (235, 210, 180)),
+        0x08: ("pink", "Light Pink", (255, 209, 220)),
+        0x09: ("skyblue", "Sky Blue", (135, 206, 235)),
+        0x0A: ("orange", "Orange", (255, 140, 0)),
+        0x0B: ("yellowgreen", "Yellow Green", (154, 205, 50)),
+        0x0C: ("olivegray", "Olive Gray", (112, 116, 85)),
+        0x0D: ("brown", "Brown", (139, 69, 19)),
+        0x0E: ("darkbrown", "Dark Brown", (92, 51, 23)),
+        0x0F: ("smokeblue", "Smoke Blue", (110, 130, 150)),
+    }
+    assert len(COLOR_LABELS_16) == len(COLOR_RGB_16) == 16
+    for code, (name, label, rgb) in spec.items():
+        assert COLOR_NAMES_16[name] == code
+        assert COLOR_LABELS_16[code] == label
+        assert COLOR_RGB_16[code] == rgb
+    assert len(COLOR_NAMES_16) == 16
