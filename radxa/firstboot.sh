@@ -36,12 +36,13 @@ if [ -z "$conn" ]; then
 fi
 
 have="$(nmcli -t -f ipv4.addresses connection show "$conn" | cut -d: -f2-)"
-if [ "$have" = "$want" ]; then
+have_dns="$(nmcli -t -f ipv4.dns connection show "$conn" | cut -d: -f2-)"
+if [ "$have" = "$want" ] && [ "$have_dns" = "$DNS" ]; then
     echo "$host: $conn already at $want"
     exit 0
 fi
 
-echo "$host: setting $conn to $want (was '${have:-dhcp}')"
+echo "$host: setting $conn to $want, dns $DNS (was '${have:-dhcp}', '${have_dns:-none}')"
 nmcli connection modify "$conn" \
     ipv4.method manual ipv4.addresses "$want" \
     ipv4.gateway "$GATEWAY" ipv4.dns "$DNS"

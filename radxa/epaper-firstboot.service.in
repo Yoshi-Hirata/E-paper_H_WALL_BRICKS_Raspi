@@ -7,7 +7,7 @@ Wants=NetworkManager.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash @REPO_DIR@/radxa/firstboot.sh
+ExecStart=/bin/bash @REPO_DIR@/radxa/firstboot.sh
 
 [Install]
 WantedBy=multi-user.target
