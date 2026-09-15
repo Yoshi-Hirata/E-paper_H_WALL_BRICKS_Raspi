@@ -26,8 +26,14 @@
 - ホスト名と SSH ホスト鍵は Radxa 純正の `rsetup` が `/config/before.txt`
   (FAT、Windows から書ける)で設定する。手順は [radxa/README.md](../radxa/README.md)
   「10 台への複製」
-- 開発機は `radxa-01` に改名済み。ゴールデンイメージ読み出しのため
-  machine-id を空にしてシャットダウンした状態(次回起動で再生成される)
+- 開発機は `radxa-01` に改名済み。**ゴールデンイメージ作成済み**:
+  `D:adxa-goldenadxa-01-golden.img`(7.04 GB、sha256 は同名 .sha256)。
+  元の全体読み出し `radxa-01-full.img`(31 GB)も同じ場所
+- 書き込みは `radxa/clone/write_card.ps1 -Unit NN -Disk N`(WSL + 管理者
+  Python)。Windows はカードのパーティションを見せず、`wsl --mount` は USB
+  リーダー不可だったため、生ディスク I/O を `radxa/clone/rawdisk.py` で実装。
+  スパース 29 GB ファイルへのドライランで GPT 修復・fsck・`resize_root`
+  相当の拡張・`before.txt` 反映を確認済み。**実カードへの書き込みはこれから**
 
 **LCD メニューから基板 FW を OTA アップデートできるようにした(2026-09-14、Radxa デプロイ済み)**
 

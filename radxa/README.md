@@ -129,7 +129,9 @@ CLI からは `host/ota.py FW/FW_260903/OTA_16c.bin --addr auto` で同じ
    実行、冪等): ホスト名が `radxa-NN` なら Wi-Fi プロファイルの IPv4 を
    導出値に合わせる。すでに一致していれば何もしない
 
-### ゴールデンイメージの作り方(開発機で)
+### ゴールデンイメージの作り方
+
+開発機側(`radxa-01`)の準備:
 
 ```bash
 cd ~/E-paper_H_WALL_BRICKS_Raspi && git status      # clean であること
@@ -141,28 +143,64 @@ sudo truncate -s0 /etc/machine-id                    # 次回起動時に再生�
 sudo poweroff
 ```
 
-microSD を取り出して Windows の Win32DiskImager で読み出す。Linux/WSL が
-あれば PiShrink で縮小(ルート ext4 の使用量は約 5 GB)。
+microSD を Windows 機に挿す。**Windows からはカードのパーティションが
+見えない**(FAT の `/config` もパーティション種別 GUID が basic data でないため
+ドライブレターが付かない)し、**`wsl --mount` は USB カードリーダーを
+アタッチできない**(HCS 0x8007000f)。そのため生ディスクの読み書きは
+`radxa/clone/rawdisk.py` を管理者権限の Python で動かして行う。
+
+```powershell
+# 1. 読み出し(ディスク番号は Get-Disk で確認。28.9 GB の USB)
+Get-Disk
+Start-Process python -Verb RunAs -ArgumentList 'radxa\clone\rawdisk.py','read','2','D:\radxa-golden\radxa-01-full.img','D:\radxa-golden\read.log'
+Get-Content D:\radxa-golden\read.log -Tail 1     # DONE まで約 16 分(33 MB/s)
+
+# 2. 縮小(WSL Ubuntu、root。gdisk が必要。loop デバイスは /mnt/d 上の
+#    ファイルでは使えないので、出力は WSL 内に置いてから D: へコピーする)
+wsl -d Ubuntu -u root -- bash radxa/clone/shrink.sh /mnt/d/radxa-golden/radxa-01-full.img /root/golden/radxa-01-golden.img
+wsl -d Ubuntu -u root -- cp /root/golden/radxa-01-golden.img /mnt/d/radxa-golden/
+```
+
+`shrink.sh` はルート ext4 を `resize2fs -M` で最小化し、その直後でファイルを
+切り詰める(約 5 GB)。**GPT のパーティション表は触らない**: パーティション 3
+はカード全体(28.5 GB)のままなので、クローン側は初回起動の `resize_root`
+(rsetup、`resize2fs`)でファイルシステムを広げるだけでよい。切り詰めで
+失われる末尾のバックアップ GPT ヘッダは、書き込み時に `rawdisk.py` が
+ディスク末尾に作り直す。
 
 ### クローンの作り方(カード 1 枚ごと)
 
-1. Etcher か Win32DiskImager でイメージを書く
-2. Windows に見える FAT ドライブ(16 MB、`config.txt` と `logo.bmp` がある方)
-   に `before.txt` を作る:
+```powershell
+.\radxa\clone\write_card.ps1 -Unit 5 -Disk 2     # radxa-05 = 192.168.50.105
+```
 
-   ```
-   update_hostname radxa-05
-   regenerate_ssh_hostkey
-   ```
+やること: ディスクが USB でカードサイズであることを確認 → `YES` の入力 →
+WSL の `mkconfig.sh` がゴールデンイメージから 16 MB の `/config`
+パーティションを取り出し `before.txt` を書く:
 
-3. 起動する。rsetup がホスト名と SSH ホスト鍵を設定し、`before.txt` を消す。
-   続いて `epaper-firstboot` が `192.168.50.105` を設定する。
-   `machine-id` は空にしてあるので起動時に固有値が生成される
-4. `ssh radxa@192.168.50.105` で入り、`.venv/bin/python -m ui.main --check`
+```
+update_hostname radxa-05
+regenerate_ssh_hostkey
+resize_root
+```
+
+→ 管理者権限(UAC)の `rawdisk.py write` がイメージ本体、`/config`
+パッチ、ディスク末尾のバックアップ GPT を順に書く(5 GB で数分)。
+
+起動すると rsetup がホスト名・SSH ホスト鍵・ルート FS 拡張を行い
+`before.txt` を消す。続いて `epaper-firstboot` が `192.168.50.105` を設定する。
+`machine-id` は空にしてあるので起動時に固有値が生成される。確認:
+
+```bash
+ssh radxa@192.168.50.105
+hostname; df -h /; systemctl is-active epaper-ui
+```
 
 Wi-Fi プロファイルは MAC に束縛していない(`802-11-wireless.mac-address`
-空)ので、どの個体でもそのまま繋がる。ルート FS の UUID は全機同一に
-なるが、別々の機体なので問題ない。
+空)ので、どの個体でもそのまま繋がる。ルート FS の UUID とディスク GUID は
+全機同一になるが、別々の機体なので問題ない。カードは同じ容量(28.9 GB)の
+ものを使うこと。小さいカードにはパーティション 3 が収まらず `rawdisk.py`
+が拒否する。
 
 ## Python 3.9 対応
 
