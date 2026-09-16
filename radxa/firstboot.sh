@@ -19,6 +19,16 @@ PREFIX=24
 GATEWAY="${SUBNET}.1"
 DNS="${SUBNET}.1"
 
+# rsetup.service is a plain (non-oneshot) unit, so After=rsetup.service
+# only orders us behind its *start*: on radxa-02's first boot this ran
+# while rsetup was still renaming the host and derived .101 from the
+# golden image's name. Wait for rsetup to finish (it exits in a few
+# seconds; a minute is generous).
+for _ in $(seq 1 60); do
+    systemctl is-active --quiet rsetup.service || break
+    sleep 1
+done
+
 host="$(hostname)"
 if [[ ! "$host" =~ ^radxa-([0-9]{2})$ ]]; then
     echo "hostname '$host' is not radxa-NN; leaving the network alone"
