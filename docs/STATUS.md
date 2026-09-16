@@ -1,6 +1,6 @@
 # 現在地と再開手順
 
-最終更新: 2026-09-15
+最終更新: 2026-09-16
 
 **この文書は「次に何をするか」だけを書く。** 経緯は
 [DEVELOPMENT.md](DEVELOPMENT.md)、20 枚構成の検討は [SCALING.md](SCALING.md)、
@@ -18,7 +18,20 @@
 
 ## 2. 直近で完成したもの
 
-**HDMI-CEC でシャットダウンする問題を修正(2026-09-15)**
+**radxa-02 をクローンから起動、初回起動の競合を修正(2026-09-16)**
+
+- `write_card.ps1 -Unit 2 -Disk 2` で書いたカードで radxa-02 が起動。
+  ホスト名 `radxa-02`、SSH 鍵と machine-id は新規、ルート FS 28 GB、
+  HDMI 接続のまま安定(CEC 対策が効いている)
+- ただし IP が `.101` のままだった: `epaper-firstboot` が rsetup の
+  ホスト名変更より先に走っていた(`rsetup.service` は oneshot ではないので
+  `After=` は開始しか待たない)。`radxa/firstboot.sh` が rsetup の終了を
+  待つよう修正(e489b84)。radxa-02 は手動再実行で `.102` に移行済み
+- ゴールデンイメージ内のリポジトリを e489b84 へ fast-forward
+  (WSL でループマウントして `git pull`)。sha256 は `62a49726…f14b`。
+  **以降のクローンは修正版で初回起動する**。radxa-03 以降は
+  `write_card.ps1 -Unit N -Disk 2` を繰り返すだけ
+
 
 - radxa-01 にモニタを繋いだらログイン画面の後に電源が落ちた。原因は
   HDMI-CEC: `sunxi_cec` が電源ボタンとして登録され、モニタのスタンバイ
@@ -26,7 +39,9 @@
   `raspi/logind-appliance.conf`(電源/サスペンド系キーを ignore)を追加し、
   実機・ゴールデンイメージ・`setup.sh` に反映。本番はヘッドレスなので
   影響は無いが、ブリングアップでモニタを繋ぐと再発するため恒久対処
-- ゴールデンイメージの sha256 が更新された(`D:adxa-goldenadxa-01-golden.sha256`)
+- ゴールデンイメージの sha256 が更新された(`D:
+adxa-golden
+adxa-01-golden.sha256`)
 
 **Radxa 10 台複製の仕組み(2026-09-15)**
 
