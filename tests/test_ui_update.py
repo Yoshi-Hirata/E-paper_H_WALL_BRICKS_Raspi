@@ -2,7 +2,7 @@
 
 The flashing itself is host/ota.py; here it is driven through fakes so
 the flow - stop the runner, pick a board, flash, wait for the reboot,
-fall back to a USB rebind, return via standby - is covered without a
+fall back to a USB rebind, return to the menu - is covered without a
 board on the bench.
 """
 
@@ -424,7 +424,7 @@ def test_entering_update_stops_the_runner_and_frees_the_port(tmp_path):
     assert updater.phase == IDLE
 
 
-def test_up_down_pick_the_board_and_key2_leaves_via_standby(tmp_path):
+def test_up_down_pick_the_board_and_key2_leaves_without_repainting(tmp_path):
     updater, _ = make_updater(make_image(tmp_path))
     app, runner = make_app(updater)
     app.select("update")
@@ -435,9 +435,10 @@ def test_up_down_pick_the_board_and_key2_leaves_via_standby(tmp_path):
     assert updater.addr == 1
     app.handle("key2")
     assert app.screen is Screen.MENU
-    # The flashed board reboots into its factory autoplay; standby is
-    # what silences it and repaints white.
-    assert runner.standbys == 1
+    # No white repaint on the way out: the panels keep what the
+    # rebooted board shows until the operator picks something.
+    assert runner.standbys == 0
+    assert runner.starts == []
 
 
 def test_key1_flashes_and_buttons_are_ignored_meanwhile(tmp_path):

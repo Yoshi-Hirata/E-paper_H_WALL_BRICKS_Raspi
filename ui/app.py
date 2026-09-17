@@ -12,9 +12,10 @@ the runner to free the port, scans for the USB-attached board's address
 (UP/DOWN override it), and KEY1 flashes the bundled image
 (ui/updater.py). While the
 transfer runs every button is ignored - there is no safe "abort" of an
-OTA in flight - and afterwards KEY2 returns to the menu via the boot
-standby, which silences the factory autoplay the rebooted board wakes
-up playing.
+OTA in flight - and afterwards KEY2 simply returns to the menu: no
+white repaint on the way out (removed 2026-09-17 at the operator's
+request), so the rebooted board keeps playing whatever it wakes up
+with until a demo is started or STANDBY is chosen.
 
 FW VERSION asks every configured address its OTA state (0x29) and
 lists what each answering board runs (ui/versions.py) - the runner is
@@ -279,10 +280,13 @@ class App:
         self._dirty = True
 
     def _leave_update(self) -> None:
-        # A freshly flashed board reboots into its factory autoplay;
-        # the boot standby is exactly what silences that.
+        # Straight back to the menu. The runner stays stopped and the
+        # panels keep whatever the rebooted board is showing; the
+        # operator picks STANDBY or a demo when ready. (The white
+        # repaint that used to run here was dropped 2026-09-17: a full
+        # e-paper refresh just to leave the screen was unwanted.)
         self.screen = Screen.MENU
-        self.enter_standby()
+        self._dirty = True
 
     def _restart(self) -> None:
         if self.patterns[self.selected].key == "update":
