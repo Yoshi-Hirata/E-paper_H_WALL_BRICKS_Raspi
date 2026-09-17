@@ -45,6 +45,7 @@ from epaper.protocol import (
     Frame,
     crc16_modbus,
 )
+from epaper.commands import stop as stop_frame
 from epaper.transport import Bus, find_port
 
 CMD_OTA_START = 0x26
@@ -177,28 +178,60 @@ def query_state(bus: Bus, addr: int, quiet: bool = False,
     return ack
 
 
-def scan(bus: Bus, boards=SCAN_BOARDS,
-         timeout: float = SCAN_TIMEOUT_S,
-         progress: Callable[[int, Frame | None], None] | None = None
-         ) -> dict[int, Frame]:
-    """Which addresses answer the 0x29 state query: {addr: ack}.
+def find_boards(bus: Bus, boards=SCAN_BOARDS,
+                timeout: float = SCAN_TIMEOUT_S,
+                progress: Callable[[int, Frame | None], None] | None = None
+                ) -> dict[int, Frame]:
+    """Which addresses answer at all: {addr: ack to PLAY_STOP (0x17)}.
 
-    One query each, short wait: the USB-attached board answers its own
-    DIP address locally within milliseconds, and everything else is
-    relayed to the 485 bus, where a missing board is simply silence.
-    The whole range costs about `timeout` x len(boards) when only one
-    board is there. `progress(addr, ack)` is called after every address,
-    answer or not, so a screen can fill in as the scan runs.
+    PLAY_STOP is the relay-safe probe (it is what the demo runner uses):
+    the USB-attached board answers its own DIP address locally, and the
+    485 master relays everything else, where a missing board is simply
+    silence and a present one answers within ~50 ms. Stopping the
+    factory autoplay is a side effect nobody minds. `progress(addr, ack)`
+    is called after every address, answer or not.
     """
     found: dict[int, Frame] = {}
     for addr in boards:
-        bus.send(_frame(addr, CMD_OTA_QUERY))
+        bus.send(stop_frame(addr, group_count=len(boards)))
         ack = _ack_from(bus, addr, timeout)
         if ack is not None:
             found[addr] = ack
         if progress is not None:
             progress(addr, ack)
     return found
+
+
+def scan(bus: Bus, boards=SCAN_BOARDS,
+         timeout: float = SCAN_TIMEOUT_S,
+         progress: Callable[[int, Frame | None], None] | None = None
+         ) -> dict[int, Frame | None]:
+    """Find the boards, then ask the OTA state (0x29) of the one that is
+    alone: {addr: 0x29 ack, or None when it was not asked}.
+
+    0x29 must never be relayed. Measured 2026-09-17 on radxa-01 with
+    ID 1 on USB and ID 2 on the 485: ID 2 answers PLAY_STOP through the
+    relay in 50 ms, but a relayed 0x29 gets no answer and from then on
+    ID 1's CDC stops draining USB (write timeout) until it is
+    power-cycled. So the state query goes only to a board that is
+    certainly local - the single board answering the presence sweep.
+    Several answers mean the 485 cable is in; they are reported as
+    present (None) and the caller tells the operator to unplug it.
+    """
+    present = find_boards(bus, boards, timeout, progress)
+    if len(present) != 1:
+        return {addr: None for addr in present}
+    addr = next(iter(present))
+    bus.send(_frame(addr, CMD_OTA_QUERY))
+    return {addr: _ack_from(bus, addr, max(timeout, 0.8))}
+
+
+def describe_found(ack: Frame | None) -> str:
+    """One line for a scan() value: the 0x29 state, or the fact that the
+    board was only seen on the bus and deliberately not asked."""
+    if ack is None:
+        return "on 485 bus (0x29 not sent)"
+    return describe_state(ack)
 
 
 def choose_target(found: dict) -> tuple[int | None, str]:
@@ -212,9 +245,9 @@ def choose_target(found: dict) -> tuple[int | None, str]:
         addr = next(iter(found))
         return addr, f"board {addr:02d} found"
     if not found:
-        return None, "no board answers 0x29"
+        return None, "no board answers"
     listed = ",".join(f"{a:02d}" for a in sorted(found))
-    return None, f"boards {listed} answer: unplug 485 or pick one"
+    return None, f"boards {listed} answer: unplug 485 and rescan"
 
 
 def _transfer(bus: Bus, addr: int, image: bytes, log: Log = print_log,
@@ -381,7 +414,7 @@ def main() -> int:
             print(WEDGE_MSG, file=sys.stderr)
             return 1
         for addr in sorted(found):
-            print(f"Board 0x{addr:02X}: OTA state {describe_state(found[addr])}")
+            print(f"Board 0x{addr:02X}: {describe_found(found[addr])}")
         chosen, reason = choose_target(found)
         if args.check:
             print(reason)

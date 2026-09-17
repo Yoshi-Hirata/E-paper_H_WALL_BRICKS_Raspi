@@ -208,12 +208,21 @@ class FirmwareUpdater:
 
     # ---- board choice + state query ----
 
+    @property
+    def bus_shared(self) -> bool:
+        """True when the last scan saw several boards: the 485 cable is
+        in, so no 0x29 may go out (a relayed one wedges the USB board)."""
+        return len(self.found) > 1
+
     def select(self, step: int) -> None:
         """Move the target address through the configured boards."""
         if self.busy:
             return
         index = self.boards.index(self.addr) if self.addr in self.boards else 0
         self.addr = self.boards[(index + step) % len(self.boards)]
+        if self.bus_shared:
+            self.board_state = "485 connected: unplug it, KEY1 rescans"
+            return
         self.probe()
 
     def reset(self) -> None:
@@ -283,7 +292,7 @@ class FirmwareUpdater:
             self.found = {}
             self.board_state = result
             return
-        self.found = {addr: ota.describe_state(ack)
+        self.found = {addr: ota.describe_found(ack)
                       for addr, ack in result.items()}
         chosen, reason = ota.choose_target(result)
         if chosen is not None:
@@ -315,6 +324,14 @@ class FirmwareUpdater:
             self.phase = FAILED
             self.error = "no firmware image"
             self.emit("no firmware image in FW/", error=True)
+            return
+        if self.bus_shared:
+            # KEY1 on the result screen rescans, which is the way back
+            # once the cable is out.
+            self.phase = FAILED
+            self.error = "unplug the 485 cable first"
+            self.emit("485 connected: OTA is point-to-point, unplug it "
+                      "and press KEY1 to rescan", error=True)
             return
         with self._lock:
             # A probe still in flight must not overwrite the flashing

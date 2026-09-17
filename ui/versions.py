@@ -1,12 +1,18 @@
 """Firmware version check: the FW VERSION menu row.
 
-The protocol has no "what version are you" command, so the OTA state
-query (0x29) is the fingerprint, exactly as host/ota.py's scan uses it
-to find the update target: V1.0 firmware rejects it, V1.1 answers with
-the size and CRC of the image it was last given, and those name the
-bundled FW_<yymmdd> folder when they match (ota.identify). Every
-configured address is asked, so with the 485 cable in this is a
-one-screen inventory of the whole wall.
+The protocol has no working "what version are you" command (0x02 from
+the V1.0 spec answers ACK_FAIL 0x0A on V1.1 firmware too, every data
+variant tried 2026-09-17), so the OTA state query (0x29) is the
+fingerprint: V1.0 firmware rejects it, V1.1 answers it. The size/CRC in
+that answer would name the bundled image (ota.identify), but the boards
+report 0 after their post-OTA reset, so in practice the answer is only
+"V1.0" or "V1.1".
+
+0x29 may only go to the USB-attached board: relayed over the 485 it is
+never answered and wedges the USB board's CDC (ota.scan explains). So
+the scan is a relay-safe presence sweep first, and 0x29 only when one
+board answers - with the 485 cable in, the screen lists who is on the
+bus and says to unplug it to identify them one at a time.
 
 Like UPDATE FW this stops the runner first: the scan needs the port to
 itself, and standby on the way out hands it back and repaints white.
@@ -119,13 +125,17 @@ class BoardVersions:
         if thread is not None:
             thread.join(timeout)
 
+    ON_BUS = "on 485 bus - unplug 485 to identify"
+
     def _progress(self, addr: int, ack) -> None:
+        """Presence sweep progress: list who answers, identify later."""
         self.asked += 1
         if ack is not None:
-            label = ota.identify(ack, self.catalog)
-            self.rows.append((addr, label))
-            self.emit(f"board {addr:02d}: {label}")
+            self.rows.append((addr, "answers..."))
         self.status = f"scanning {self.asked}/{len(self.boards)}..."
+
+    def _label(self, ack) -> str:
+        return self.ON_BUS if ack is None else ota.identify(ack, self.catalog)
 
     def _run(self) -> None:
         port = self.port or self._locate()
@@ -137,9 +147,17 @@ class BoardVersions:
         try:
             with self._open_bus(port) as bus:
                 found = self._scan(bus, self.boards, progress=self._progress)
+            self.rows = [(addr, self._label(ack)) for addr, ack in found.items()]
+            for addr, label in self.rows:
+                self.emit(f"board {addr:02d}: {label}")
             answering = len(found)
-            self.status = (f"{answering}/{len(self.boards)} boards answer"
-                           if answering else "no board answers 0x29")
+            if not answering:
+                self.status = "no board answers"
+            elif answering == 1:
+                self.status = f"1/{len(self.boards)} board answers"
+            else:
+                self.status = (f"{answering}/{len(self.boards)} on bus: "
+                               "unplug 485 to identify")
         except serial.SerialTimeoutException:
             self.status = "port wedged (write timeout)"
             self.emit(ota.WEDGE_MSG, error=True)

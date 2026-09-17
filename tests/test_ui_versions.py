@@ -59,10 +59,16 @@ def make_app(versions):
 
 
 def wall(tmp_path):
-    """Four boards on three firmwares, plus silence at every other addr."""
-    new, old = ota.image_fingerprint(NEW), ota.image_fingerprint(OLD)
-    return FakeOtaBus(answers={1, 2, 7, 20},
-                      per_addr={1: new, 2: old, 7: ACK_INVALID_CMD})
+    """Four boards on the 485, plus silence at every other address."""
+    return FakeOtaBus(answers={1, 2, 7, 20})
+
+
+def alone(addr, firmware=None, v10=False):
+    """One board on USB, 485 unplugged: the only case 0x29 is sent."""
+    special = ACK_INVALID_CMD if v10 else (
+        ota.image_fingerprint(firmware) if firmware else None)
+    return FakeOtaBus(answers={addr},
+                      per_addr={addr: special} if special else {})
 
 
 # ---- host/ota.py ----
@@ -109,25 +115,37 @@ def test_scan_reports_progress_per_address():
 
 # ---- the worker ----
 
-def test_scan_lists_every_answering_board_with_its_firmware(tmp_path):
-    versions = make_versions(tmp_path, bus=wall(tmp_path))
-    assert versions.phase == IDLE
+def test_lone_usb_board_is_identified(tmp_path):
+    for bus, label in ((alone(2, firmware=NEW), "FW_260917"),
+                       (alone(2, firmware=OLD), "FW_260903"),
+                       (alone(2), "V1.1 16-color, build unknown"),
+                       (alone(2, v10=True), "V1.0 6-color (no OTA)")):
+        versions = make_versions(tmp_path, bus=bus)
+        assert versions.phase == IDLE
+        versions.scan()
+        assert wait_until(lambda: versions.phase == DONE)
+        assert versions.rows == [(2, label)]
+        assert versions.status == "1/4 board answers"
+        assert versions.asked == 4
+        assert any(f"board 02: {label}" in line for line in versions.recent(10))
+    assert versions.bundled == "FW_260917"
+
+
+def test_a_shared_bus_is_listed_but_nobody_is_asked_0x29(tmp_path):
+    bus = wall(tmp_path)
+    versions = make_versions(tmp_path, bus=bus)
     versions.scan()
     assert wait_until(lambda: versions.phase == DONE)
-    assert versions.rows == [(1, "FW_260917"), (2, "FW_260903"),
-                             (7, "V1.0 6-color (no OTA)"),
-                             (20, "V1.1 16-color, build unknown")]
-    assert versions.status == "4/4 boards answer"
-    assert versions.asked == 4
-    assert versions.bundled == "FW_260917"
-    assert any("board 07: V1.0" in line for line in versions.recent(10))
+    assert versions.rows == [(addr, BoardVersions.ON_BUS) for addr in (1, 2, 7, 20)]
+    assert versions.status == "4/4 on bus: unplug 485 to identify"
+    assert all(f.cmd != ota.CMD_OTA_QUERY for f in bus.sent)
 
 
 def test_silent_wall_and_missing_port_are_said_on_screen(tmp_path):
     quiet = make_versions(tmp_path, bus=FakeOtaBus(answers=set()))
     quiet.scan()
     assert wait_until(lambda: quiet.phase == DONE)
-    assert quiet.rows == [] and quiet.status == "no board answers 0x29"
+    assert quiet.rows == [] and quiet.status == "no board answers"
     unplugged = make_versions(tmp_path, locate=lambda: None)
     unplugged.scan()
     assert wait_until(lambda: unplugged.phase == DONE)

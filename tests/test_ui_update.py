@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 import serial
 
 import ota
-from epaper.protocol import ACK_FAIL, ACK_INVALID_CMD, ACK_SUCCESS, Frame
+from epaper.protocol import (ACK_FAIL, ACK_INVALID_CMD, ACK_SUCCESS,
+                             CMD_PLAY_STOP, Frame)
 from ui import render, updater as updater_mod
 from ui.app import App, Screen
 from ui.config import HEIGHT, WIDTH
@@ -292,12 +293,26 @@ def test_probe_reports_the_ota_state_of_the_chosen_board(tmp_path):
     assert wait_until(lambda: old.board_state == "ACK_INVALID_CMD")
 
 
-def test_scan_lists_only_the_boards_that_answer():
+def test_scan_probes_with_play_stop_and_asks_0x29_only_of_a_lone_board():
     bus = FakeOtaBus(answers={7})
     found = ota.scan(bus, [1, 7, 20], timeout=0.05)
     assert list(found) == [7]
-    assert ota.describe_state(found[7]).startswith("IDLE")
-    assert [f.dest for f in bus.sent] == [1, 7, 20]
+    assert ota.describe_found(found[7]).startswith("IDLE")
+    # The presence sweep is PLAY_STOP to every address (relay-safe, the
+    # runner's own probe); 0x29 goes out once, to the board that answered.
+    assert [(f.dest, f.cmd) for f in bus.sent] == [
+        (1, CMD_PLAY_STOP), (7, CMD_PLAY_STOP), (20, CMD_PLAY_STOP),
+        (7, ota.CMD_OTA_QUERY)]
+
+
+def test_scan_never_relays_0x29_when_several_boards_are_on_the_bus():
+    # Measured 2026-09-17: a relayed 0x29 is unanswered and wedges the
+    # USB board's CDC, so with the 485 in nobody gets asked.
+    bus = FakeOtaBus(answers={1, 2})
+    found = ota.scan(bus, [1, 2, 3], timeout=0.05)
+    assert found == {1: None, 2: None}
+    assert all(f.cmd == CMD_PLAY_STOP for f in bus.sent)
+    assert ota.describe_found(None) == "on 485 bus (0x29 not sent)"
 
 
 def test_choose_target_wants_exactly_one_answer():
@@ -305,7 +320,7 @@ def test_choose_target_wants_exactly_one_answer():
     assert ota.choose_target({7: ack}) == (7, "board 07 found")
     addr, reason = ota.choose_target({})
     assert addr is None and "no board" in reason
-    addr, reason = ota.choose_target({1: ack, 20: ack})
+    addr, reason = ota.choose_target({1: None, 20: None})
     assert addr is None and "01,20" in reason and "485" in reason
 
 
@@ -332,19 +347,30 @@ def test_scan_picks_the_single_answering_board(tmp_path):
 def test_scan_refuses_to_guess_between_several_boards(tmp_path):
     # Relayed boards answer too when the 485 cable is still plugged in.
     image = make_image(tmp_path)
-    updater, _ = make_updater(image, bus=FakeOtaBus(answers={1, 20}))
+    bus = FakeOtaBus(answers={1, 20})
+    updater, _ = make_updater(image, bus=bus)
     updater.scan()
     assert wait_until(lambda: "485" in updater.board_state)
-    assert updater.addr == 1                  # unchanged: operator picks
+    assert updater.addr == 1
     assert "01,20" in updater.board_state
-    assert sorted(updater.found) == [1, 20]
+    assert updater.found == {1: "on 485 bus (0x29 not sent)",
+                             20: "on 485 bus (0x29 not sent)"}
+    # Nothing may send 0x29 while the bus is shared: UP/DOWN only move
+    # the address, KEY1 refuses and points at the cable.
+    sent_before = len(bus.sent)
+    updater.select(+1)
+    assert updater.addr == 20
+    assert "unplug" in updater.board_state
+    updater.start()
+    assert updater.phase == FAILED and "485" in updater.error
+    assert all(f.cmd != ota.CMD_OTA_QUERY for f in bus.sent[sent_before:])
 
 
 def test_scan_with_no_board_says_so(tmp_path):
     image = make_image(tmp_path)
     updater, _ = make_updater(image, bus=FakeOtaBus(answers=set()))
     updater.scan()
-    assert wait_until(lambda: updater.board_state == "no board answers 0x29")
+    assert wait_until(lambda: updater.board_state == "no board answers")
     assert updater.found == {}
 
 
