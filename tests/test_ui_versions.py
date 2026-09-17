@@ -118,7 +118,7 @@ def test_scan_reports_progress_per_address():
 def test_lone_usb_board_is_identified(tmp_path):
     for bus, label in ((alone(2, firmware=NEW), "FW_260917"),
                        (alone(2, firmware=OLD), "FW_260903"),
-                       (alone(2), "V1.1 16-color, build unknown"),
+                       (alone(2), "V1.1, no flash record here"),
                        (alone(2, v10=True), "V1.0 6-color (no OTA)")):
         versions = make_versions(tmp_path, bus=bus)
         assert versions.phase == IDLE

@@ -41,8 +41,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 import serial
 
 import ota
-from epaper.transport import Bus, find_port
+from epaper.transport import Bus, find_port, port_serial
 
+from . import flashlog
 from .config import LOG_HISTORY
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -128,8 +129,12 @@ class FirmwareUpdater:
                  boards: list[int] | None = None, port: str | None = None,
                  open_bus=None, flash=ota.flash, verify=ota.verify,
                  rebind=usb_rebind, locate=find_port,
-                 verify_wait: float = VERIFY_WAIT_S, echo_log: bool = True):
+                 verify_wait: float = VERIFY_WAIT_S, echo_log: bool = True,
+                 serial_of=port_serial,
+                 flash_log: Path = flashlog.DEFAULT_PATH):
         self.firmware = Path(firmware) if firmware else None
+        self._serial_of = serial_of
+        self.flash_log = Path(flash_log)
         self.boards = list(boards) if boards else list(range(1, 21))
         self.port = port
         self._open_bus = open_bus or (lambda p: Bus(p, verbose=False))
@@ -352,6 +357,21 @@ class FirmwareUpdater:
     def _progress(self, done: int, size: int) -> None:
         self.done, self.size = done, size
 
+    def _record(self, serial_no: str | None, addr: int, image: bytes) -> None:
+        """Note the accepted image against the board's USB serial, which
+        is the only durable way to know later what a board runs."""
+        if not serial_no:
+            self.emit("no USB serial for this port: flash not recorded")
+            return
+        size, crc = ota.image_fingerprint(image)
+        try:
+            flashlog.record(serial_no, addr, self.firmware_label, size, crc,
+                            path=self.flash_log)
+        except OSError as exc:
+            self.emit(f"flash record not written: {exc}", error=True)
+            return
+        self.emit(f"recorded {self.firmware.parent.name} for {serial_no}")
+
     def _run(self) -> None:
         addr = self.addr
         try:
@@ -363,6 +383,7 @@ class FirmwareUpdater:
             if not port:
                 raise RuntimeError("no serial port")
             self.emit(f"port {port}")
+            serial_no = self._serial_of(port)
             with self._open_bus(port) as bus:
                 ok = self._flash(bus, addr, image, log=self.emit,
                                  progress=self._progress)
@@ -384,6 +405,7 @@ class FirmwareUpdater:
             self.board_state = "updated"
             self.phase = DONE
             self.emit(f"board {addr:02d} updated")
+            self._record(serial_no, addr, image)
         except serial.SerialTimeoutException:
             self.error = "port wedged: replug USB / power-cycle board"
             self.emit(ota.WEDGE_MSG, error=True)

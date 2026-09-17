@@ -14,6 +14,10 @@ the scan is a relay-safe presence sweep first, and 0x29 only when one
 board answers - with the 485 cable in, the screen lists who is on the
 bus and says to unplug it to identify them one at a time.
 
+What the lone USB board was last flashed with comes from this unit's
+own flash record (ui/flashlog.py), keyed by the USB serial number, so
+the row reads e.g. "V1.1, flashed FW_260917 09-17 17:19".
+
 Like UPDATE FW this stops the runner first: the scan needs the port to
 itself, and standby on the way out hands it back and repaints white.
 """
@@ -28,8 +32,9 @@ from pathlib import Path
 import serial
 
 import ota
-from epaper.transport import Bus, find_port
+from epaper.transport import Bus, find_port, port_serial
 
+from . import flashlog
 from .config import LOG_HISTORY
 from .updater import FIRMWARE_DIR, MenuEntry
 
@@ -48,8 +53,13 @@ class BoardVersions:
     def __init__(self, boards: list[int] | None = None,
                  port: str | None = None, open_bus=None, locate=find_port,
                  scan=ota.scan, catalog: dict | None = None,
-                 firmware_dir: Path = FIRMWARE_DIR, echo_log: bool = True):
+                 firmware_dir: Path = FIRMWARE_DIR, echo_log: bool = True,
+                 serial_of=port_serial,
+                 flash_log: Path = flashlog.DEFAULT_PATH):
         self.boards = list(boards) if boards else list(range(1, 21))
+        self._serial_of = serial_of
+        self.flash_log = Path(flash_log)
+        self.usb_serial: str | None = None
         self.port = port
         self._open_bus = open_bus or (lambda p: Bus(p, verbose=False))
         self._locate = locate
@@ -135,7 +145,14 @@ class BoardVersions:
         self.status = f"scanning {self.asked}/{len(self.boards)}..."
 
     def _label(self, ack) -> str:
-        return self.ON_BUS if ack is None else ota.identify(ack, self.catalog)
+        if ack is None:
+            return self.ON_BUS
+        label = ota.identify(ack, self.catalog)
+        if label.startswith("V1.1") and "build unknown" in label:
+            # The board cannot say which build; the flash record can.
+            label = "V1.1, " + flashlog.describe(
+                flashlog.lookup(self.usb_serial, self.flash_log))
+        return label
 
     def _run(self) -> None:
         port = self.port or self._locate()
@@ -145,6 +162,7 @@ class BoardVersions:
             self.phase = DONE
             return
         try:
+            self.usb_serial = self._serial_of(port)
             with self._open_bus(port) as bus:
                 found = self._scan(bus, self.boards, progress=self._progress)
             self.rows = [(addr, self._label(ack)) for addr, ack in found.items()]
@@ -154,7 +172,8 @@ class BoardVersions:
             if not answering:
                 self.status = "no board answers"
             elif answering == 1:
-                self.status = f"1/{len(self.boards)} board answers"
+                self.status = (f"USB {self.usb_serial}" if self.usb_serial
+                               else f"1/{len(self.boards)} board answers")
             else:
                 self.status = (f"{answering}/{len(self.boards)} on bus: "
                                "unplug 485 to identify")

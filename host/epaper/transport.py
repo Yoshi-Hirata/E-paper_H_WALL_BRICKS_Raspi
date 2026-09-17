@@ -29,6 +29,17 @@ def _is_usb_serial(device: str) -> bool:
     return name.startswith(("ttyACM", "ttyUSB", "COM"))
 
 
+def port_serial(device: str | None) -> str | None:
+    """USB serial number of the board behind `device` (the STM32 unique
+    ID, e.g. 48EC7570324C), or None for an unknown or non-USB port."""
+    if not device:
+        return None
+    for p in list_ports.comports():
+        if p.device == device:
+            return p.serial_number or None
+    return None
+
+
 def find_port() -> str | None:
     ports = list(list_ports.comports())
     for p in ports:
