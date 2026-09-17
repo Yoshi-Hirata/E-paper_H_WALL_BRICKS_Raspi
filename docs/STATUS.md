@@ -14,7 +14,7 @@
 | Raspberry Pi Zero 2 W `r2@192.168.50.25` | 予備機。パネル未接続 | `epaper-ui` active。ポート待ちのまま待機 |
 
 - 両機とも同じコードで、差分は `ui/boards.py` のプロファイルのみ
-- テスト 216 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-17)
+- テスト 216 件(Windows で全通過。Radxa の Python 3.9 では 195 件時点まで確認、216 件は未実行)
 
 ## 2. 直近で完成したもの
 
@@ -30,6 +30,9 @@
   行が出ない)。テスト 216 件
 - 運用: 以後の配布は「PC から push → 各機体で `GIT PULL` → KEY1 再起動」。
   `requirements.txt` が変わる更新だけは SSH が要る
+- **未デプロイ**: この機能を各機体に入れる最初の 1 回だけは SSH で
+  `git pull && sudo systemctl restart epaper-ui`(2026-09-17 夕方、PC の有線
+  LAN が切れて radxa-01 に届かず未実施)。Radxa 実機でのテスト実行も未了
 
 **メーカー更新 FW `FW_260917` を同梱、`UPDATE FW` が自動で選ぶ(2026-09-17)**
 
