@@ -16,7 +16,11 @@ OTA in flight - and afterwards KEY2 returns to the menu via the boot
 standby, which silences the factory autoplay the rebooted board wakes
 up playing.
 
-GIT PULL, the row after it, updates the checkout itself: `git pull
+FW VERSION asks every configured address its OTA state (0x29) and
+lists what each answering board runs (ui/versions.py) - the runner is
+stopped for the scan and standby restores it on the way out.
+
+GIT PULL, the last row, updates the checkout itself: `git pull
 --ff-only` in the repo the service runs from (ui/puller.py), and when
 the commit moved KEY1 exits the process - the service is Restart=always,
 so systemd brings the UI back on the new code. Ten identical units
@@ -52,6 +56,7 @@ class Screen(Enum):
     MENU = "menu"
     RUNNING = "running"
     UPDATE = "update"
+    VERSIONS = "versions"
     PULL = "pull"
 
 
@@ -61,7 +66,7 @@ class App:
                  locked: bool = False, blank_after: float = BLANK_AFTER_S,
                  relock_after: float = RELOCK_AFTER_S,
                  clock=time.monotonic, updater=None, puller=None,
-                 host: str | None = None):
+                 host: str | None = None, versions=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -72,6 +77,9 @@ class App:
         self.updater = updater
         if updater is not None:
             self.patterns.append(updater.menu_entry)
+        self.versions = versions
+        if versions is not None:
+            self.patterns.append(versions.menu_entry)
         self.puller = puller
         if puller is not None:
             self.patterns.append(puller.menu_entry)
@@ -152,6 +160,9 @@ class App:
         if self.screen is Screen.PULL:
             self._handle_pull(event)
             return
+        if self.screen is Screen.VERSIONS:
+            self._handle_versions(event)
+            return
 
         if event == "key1_hold":
             # Reset: back to cycle 0 with the timer at zero, wherever we
@@ -226,6 +237,30 @@ class App:
             self.screen = Screen.MENU
         self._dirty = True
 
+    def _handle_versions(self, event: str) -> None:
+        versions = self.versions
+        if versions.busy:
+            return                  # the scan holds the port; let it finish
+        if event in ("up", "left"):
+            versions.scroll(-1, render.VERSION_ROWS)
+        elif event in ("down", "right"):
+            versions.scroll(+1, render.VERSION_ROWS)
+        elif event in ("key1", "press"):
+            versions.scan()
+        elif event == "key2":
+            # Same exit as UPDATE FW: the runner gets the port back and
+            # the wall goes white.
+            self.screen = Screen.MENU
+            self.enter_standby()
+        self._dirty = True
+
+    def _enter_versions(self) -> None:
+        self.runner.stop()
+        self._standby = False
+        self.versions.scan()
+        self.screen = Screen.VERSIONS
+        self._dirty = True
+
     def _enter_pull(self) -> None:
         # The runner keeps the port: a pull touches only the checkout,
         # and the restart that applies it stops everything anyway.
@@ -255,6 +290,9 @@ class App:
             return
         if self.patterns[self.selected].key == "pull":
             self._enter_pull()
+            return
+        if self.patterns[self.selected].key == "versions":
+            self._enter_versions()
             return
         if self.patterns[self.selected].key == "standby":
             # The top menu entry is not a looping demo. One shot of the
@@ -317,6 +355,12 @@ class App:
                 updater.phase, updater.board_state, updater.done,
                 updater.recent(LOG_LINES), error=updater.error,
                 locked=self.locked, host=self.host)
+        if self.screen is Screen.VERSIONS:
+            versions = self.versions
+            return render.versions_screen(
+                versions.rows, versions.status, versions.phase,
+                versions.bundled, offset=versions.offset, locked=self.locked,
+                host=self.host)
         if self.screen is Screen.PULL:
             puller = self.puller
             return render.pull_screen(
@@ -361,6 +405,10 @@ class App:
                         updater.board_state, updater.done, updater.size,
                         tuple(updater.recent(LOG_LINES)), updater.error,
                         self.locked)
+            if self.screen is Screen.VERSIONS:
+                versions = self.versions
+                return ("versions", versions.phase, tuple(versions.rows),
+                        versions.status, versions.offset, self.locked)
             if self.screen is Screen.PULL:
                 puller = self.puller
                 return ("pull", puller.phase, puller.before, puller.after,

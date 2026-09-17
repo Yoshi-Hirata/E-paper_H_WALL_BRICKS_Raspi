@@ -14,9 +14,22 @@
 | Raspberry Pi Zero 2 W `r2@192.168.50.25` | 予備機。パネル未接続 | `epaper-ui` active。ポート待ちのまま待機 |
 
 - 両機とも同じコードで、差分は `ui/boards.py` のプロファイルのみ
-- テスト 216 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-17)
+- テスト 230 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-17)
 
 ## 2. 直近で完成したもの
+
+**LCD に `FW VERSION`(基板 FW の一覧)を追加(2026-09-17、radxa-01 反映済み)**
+
+- メニュー行 `FW VERSION`(`ui/versions.py`): ランナーを止めて 1〜20 に
+  0x29 を送り、応答した基板を `01  FW_260917` のように列挙。判定は
+  `host/ota.py` の `identify()`: 同梱イメージ(`FW_*/*.bin`)の size/CRC16 と
+  一致すればフォルダ名、size=0 なら `V1.1 16-color, build unknown`、
+  ACK_INVALID_CMD なら `V1.0 6-color (no OTA)`
+- **前提が未確認**: 0x29 の size/crc を基板が再起動後も保持するか。保持
+  しなければ 16 色版は全部 `build unknown` になる → 基板を USB に挿して
+  `FW VERSION` を一度走らせ、結果次第でメーカーにバージョン照会コマンドを
+  依頼する
+- テスト 230 件
 
 **LCD にホスト名表示 + `GIT PULL` メニューを追加(2026-09-17)**
 

@@ -24,6 +24,7 @@ from .patterns import PATTERNS
 from .puller import RepoPuller
 from .runner import DEFAULT_BOARDS, DemoRunner
 from .updater import FirmwareUpdater, find_firmware, usb_rebind
+from .versions import BoardVersions
 
 
 def preview(directory: str) -> int:
@@ -100,6 +101,15 @@ def preview(directory: str) -> int:
                        ).save(out / "pull_failed.png")
     render.message_screen("restarting", "now at c0ffee1, UI back in ~15 s",
                           host="radxa-01").save(out / "restarting.png")
+    rows = [(1, "FW_260917"), (2, "FW_260903"), (7, "V1.0 6-color (no OTA)"),
+            (20, "V1.1 16-color, build unknown")]
+    render.versions_screen(rows[:1], "scanning 3/20...", "scanning",
+                           "FW_260917", host="radxa-01"
+                           ).save(out / "versions_scanning.png")
+    render.versions_screen(rows, "4/20 boards answer", "done", "FW_260917",
+                           host="radxa-01").save(out / "versions_done.png")
+    render.versions_screen([], "no serial port", "done", "FW_260917",
+                           host="radxa-01").save(out / "versions_noport.png")
     print(f"wrote preview screens to {out}")
     return 0
 
@@ -292,13 +302,15 @@ def main() -> int:
     updater = FirmwareUpdater(firmware, boards=args.boards, port=args.port,
                               rebind=None if args.no_usb_rebind else usb_rebind)
     puller = RepoPuller()
+    versions = BoardVersions(boards=args.boards, port=args.port)
     host = socket.gethostname() or None
 
     display_kwargs = {"directory": args.frames} if args.display in ("png", "auto") else {}
     with make_display(args.display, **display_kwargs) as display, \
             make_input(args.input) as inputs:
         app_kwargs = {"port_label": port, "locked": args.locked,
-                      "updater": updater, "puller": puller, "host": host}
+                      "updater": updater, "puller": puller, "host": host,
+                      "versions": versions}
         if args.blank_after is not None:
             app_kwargs["blank_after"] = args.blank_after
         app = App(display, inputs, runner, **app_kwargs)

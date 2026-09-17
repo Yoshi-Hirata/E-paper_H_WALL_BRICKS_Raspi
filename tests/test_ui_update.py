@@ -42,8 +42,13 @@ class FakeOtaBus:
     """
 
     def __init__(self, state: int = 0x00, nak: dict | None = None,
-                 finish: str | int = "vanish", answers=None):
+                 finish: str | int = "vanish", answers=None,
+                 size: int = 0, crc: int = 0, per_addr: dict | None = None):
         self.state = state
+        self.size, self.crc = size, crc
+        # per_addr: addr -> (size, crc) or an ACK code, for a wall of
+        # boards on different firmware (FW VERSION tests).
+        self.per_addr = per_addr or {}
         self.nak = nak or {}
         self.finish = finish
         self.answers = None if answers is None else set(answers)
@@ -63,8 +68,14 @@ class FakeOtaBus:
             return
         cmd = self.nak.get(frame.cmd, ACK_SUCCESS)
         data = b""
+        size, crc = self.size, self.crc
+        special = self.per_addr.get(frame.dest)
+        if frame.cmd == ota.CMD_OTA_QUERY and isinstance(special, int):
+            cmd = special
+        elif isinstance(special, tuple):
+            size, crc = special
         if frame.cmd == ota.CMD_OTA_QUERY and cmd == ACK_SUCCESS:
-            data = bytes([self.state]) + struct.pack("<IH", 0, 0)
+            data = bytes([self.state]) + struct.pack("<IH", size, crc)
         self._pending.append(self._ack(frame, cmd, data))
 
     @staticmethod

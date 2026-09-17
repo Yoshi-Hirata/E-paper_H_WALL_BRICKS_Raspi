@@ -298,6 +298,58 @@ def pull_screen(before: str, after: str | None, phase: str,
     return image
 
 
+VERSION_ROWS = 10        # board rows visible on the FW VERSION screen
+
+
+def versions_screen(rows: list[tuple[int, str]], status: str, phase: str,
+                    bundled: str, offset: int = 0, locked: bool = False,
+                    host: str | None = None) -> Image.Image:
+    """Firmware inventory: one row per answering board, addr + label.
+
+    `phase` is one of ui.versions' IDLE/SCANNING/DONE; `rows` beyond
+    VERSION_ROWS scroll with `offset`.
+    """
+    image, draw = _blank()
+    if phase == "scanning":
+        word, color = "SCANNING", OK
+    elif phase == "done":
+        word, color = "DONE", DIM
+    else:
+        word, color = "READY", ACCENT
+    _header(draw, "FW VERSION", status=word, status_color=color, host=host)
+
+    tint = ERR if status.startswith(("ERROR", "no ", "port ")) else DIM
+    draw.text((8, 30), _ellipsize(status, FONT_S, WIDTH - 16),
+              font=FONT_S, fill=tint)
+    draw.text((8, 44), _ellipsize(f"bundled: {bundled}", FONT_S, WIDTH - 16),
+              font=FONT_S, fill=DIM)
+    draw.line((8, 60, WIDTH - 8, 60), fill=BAR, width=1)
+
+    y = 64
+    shown = rows[offset:offset + VERSION_ROWS]
+    for addr, label in shown:
+        draw.text((8, y), f"{addr:02d}", font=FONT_S, fill=FG)
+        # A board on the bundled image is the good case; anything else
+        # (older build, V1.0, unknown) is what the operator is looking for.
+        fill = OK if label == bundled else FG
+        draw.text((34, y), _ellipsize(label, FONT_S, WIDTH - 42),
+                  font=FONT_S, fill=fill)
+        y += 15
+    if len(rows) > VERSION_ROWS:
+        more = f"rows {offset + 1}-{offset + len(shown)} of {len(rows)}"
+        draw.text((WIDTH - 8 - FONT_S.getlength(more), HEIGHT - 34), more,
+                  font=FONT_S, fill=DIM)
+
+    if locked:
+        hint = "buttons locked"
+    elif phase == "scanning":
+        hint = "scanning - please wait"
+    else:
+        hint = "UP/DOWN scroll  KEY1 rescan  KEY2 menu"
+    _hint(draw, hint)
+    return image
+
+
 def message_screen(title: str, body: str = "", color=FG,
                    host: str | None = None) -> Image.Image:
     """Splash / fatal error screen."""

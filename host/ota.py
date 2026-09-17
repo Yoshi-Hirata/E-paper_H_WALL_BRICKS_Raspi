@@ -31,6 +31,7 @@ import argparse
 import struct
 import sys
 import time
+from pathlib import Path
 from typing import Callable
 
 import serial
@@ -118,6 +119,50 @@ def describe_state(ack: Frame | None) -> str:
     return ACK_NAMES.get(ack.cmd, f"cmd 0x{ack.cmd:02X}")
 
 
+def image_fingerprint(image: bytes) -> tuple[int, int]:
+    """(size, Modbus CRC16) - what 0x26 sends and 0x29 echoes back."""
+    return len(image), crc16_modbus(image)
+
+
+def bundled_images(directory: Path) -> dict[tuple[int, int], str]:
+    """{(size, crc): folder name} for every FW_<yymmdd>/*.bin in the repo,
+    so a board's 0x29 answer can be named after the image it was flashed
+    with. A folder with several .bin files contributes all of them."""
+    catalog: dict[tuple[int, int], str] = {}
+    for path in sorted(Path(directory).glob("FW_*/*.bin")):
+        try:
+            catalog[image_fingerprint(path.read_bytes())] = path.parent.name
+        except OSError:
+            continue
+    return catalog
+
+
+def identify(ack: Frame | None, catalog: dict[tuple[int, int], str]) -> str:
+    """Firmware label from a 0x29 answer, one short line for the LCD.
+
+    The protocol has no version command, so the answer to the OTA state
+    query is the fingerprint: V1.0 firmware rejects it (ACK_INVALID_CMD),
+    V1.1 reports the size and CRC it was given at the last 0x26, which
+    names the bundled image when it matches. A V1.1 board that reports
+    size 0 (never OTA'd, or a build that clears the record on boot) is
+    only "V1.1".
+    """
+    if ack is None:
+        return "no reply"
+    if ack.cmd == ACK_INVALID_CMD:
+        return "V1.0 6-color (no OTA)"
+    if ack.cmd == ACK_SUCCESS and len(ack.data) >= 7:
+        state, size, crc = ack.data[0], *struct.unpack("<IH", ack.data[1:7])
+        name = catalog.get((size, crc))
+        busy = "" if state == 0x00 else f" {OTA_STATES.get(state, f'0x{state:02X}')}"
+        if name:
+            return f"{name}{busy}"
+        if size == 0 and crc == 0:
+            return f"V1.1 16-color, build unknown{busy}"
+        return f"V1.1 size={size} crc=0x{crc:04X}{busy}"
+    return ACK_NAMES.get(ack.cmd, f"cmd 0x{ack.cmd:02X}")
+
+
 def query_state(bus: Bus, addr: int, quiet: bool = False,
                 log: Log = print_log) -> Frame | None:
     ack = _request(bus, _frame(addr, CMD_OTA_QUERY), timeout=0.8, log=log)
@@ -133,14 +178,17 @@ def query_state(bus: Bus, addr: int, quiet: bool = False,
 
 
 def scan(bus: Bus, boards=SCAN_BOARDS,
-         timeout: float = SCAN_TIMEOUT_S) -> dict[int, Frame]:
+         timeout: float = SCAN_TIMEOUT_S,
+         progress: Callable[[int, Frame | None], None] | None = None
+         ) -> dict[int, Frame]:
     """Which addresses answer the 0x29 state query: {addr: ack}.
 
     One query each, short wait: the USB-attached board answers its own
     DIP address locally within milliseconds, and everything else is
     relayed to the 485 bus, where a missing board is simply silence.
     The whole range costs about `timeout` x len(boards) when only one
-    board is there.
+    board is there. `progress(addr, ack)` is called after every address,
+    answer or not, so a screen can fill in as the scan runs.
     """
     found: dict[int, Frame] = {}
     for addr in boards:
@@ -148,6 +196,8 @@ def scan(bus: Bus, boards=SCAN_BOARDS,
         ack = _ack_from(bus, addr, timeout)
         if ack is not None:
             found[addr] = ack
+        if progress is not None:
+            progress(addr, ack)
     return found
 
 
