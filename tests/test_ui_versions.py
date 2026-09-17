@@ -244,3 +244,33 @@ def test_versions_screen_renders_every_phase_and_scrolls():
     assert top.tobytes() != down.tobytes()
     empty = render.versions_screen([], "no serial port", "done", "none")
     assert empty.size == (WIDTH, HEIGHT)
+
+
+def test_a_result_landing_mid_paint_is_still_painted(tmp_path, monkeypatch):
+    # The scan thread finished while the UI thread was rendering the
+    # "01 answers..." frame; the key taken after the paint already held
+    # the final rows, so nothing ever repainted (radxa-01, 2026-09-17).
+    versions = make_versions(tmp_path)
+    versions.phase = SCANNING
+    versions.rows = [(1, "answers...")]
+    versions.status = "scanning 3/20..."
+    app, _ = make_app(versions)
+    app.screen = Screen.VERSIONS
+
+    real = render.versions_screen
+
+    def slow_paint(rows, status, phase, *args, **kwargs):
+        image = real(rows, status, phase, *args, **kwargs)
+        if versions.phase == SCANNING:          # the worker lands now
+            versions.rows = [(1, "V1.1 16-color, build unknown")]
+            versions.status = "1/20 board answers"
+            versions.phase = DONE
+        return image
+
+    monkeypatch.setattr(render, "versions_screen", slow_paint)
+    app.draw()                                 # painted "answers..."
+    before = app.display.frames
+    app.tick(wait=0.0)
+    assert app.display.frames == before + 1    # the result gets its paint
+    app.tick(wait=0.0)
+    assert app.display.frames == before + 1    # and then it is stable

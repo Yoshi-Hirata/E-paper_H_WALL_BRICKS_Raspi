@@ -385,9 +385,15 @@ class App:
     def draw(self) -> None:
         if self.blanked:
             return
+        # Key first, then paint: a worker thread (scan, flash, pull) that
+        # lands its result while the frame is being rendered must show
+        # up on the next tick. Keying after the paint recorded that
+        # newer state as "drawn" and the screen stayed on the old frame
+        # (FW VERSION stuck on "01 answers...", radxa-01 2026-09-17).
+        key = self._display_key()
         self.display.show(self.frame())
         self._dirty = False
-        self._drawn_key = self._display_key()
+        self._drawn_key = key
 
     def _display_key(self):
         """Everything the running screen actually shows.
