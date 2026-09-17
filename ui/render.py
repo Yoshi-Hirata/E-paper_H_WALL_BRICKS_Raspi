@@ -75,8 +75,12 @@ def _header(draw: ImageDraw.ImageDraw, text: str, color=ACCENT,
 
 
 def _hint(draw: ImageDraw.ImageDraw, text: str) -> None:
+    """Bottom strip. Hints are written to fit the Radxa's DejaVu 12px
+    (wider than the Windows preview font); one that still does not fit
+    is ellipsized rather than clipped at the edge."""
     draw.rectangle((0, HEIGHT - 20, WIDTH, HEIGHT), fill=BAR)
-    draw.text((8, HEIGHT - 18), text, font=FONT_S, fill=DIM)
+    draw.text((8, HEIGHT - 18), _ellipsize(text, FONT_S, WIDTH - 16),
+              font=FONT_S, fill=DIM)
 
 
 def _ellipsize(text: str, font, max_width: int) -> str:
@@ -261,7 +265,7 @@ def update_screen(firmware: str, size: int, addr: int, phase: str,
     elif phase in ("done", "failed"):
         hint = "KEY1 again  KEY2 menu"
     else:
-        hint = "UP/DOWN board  KEY1 flash  KEY2 back"
+        hint = "UP/DOWN  KEY1 flash  KEY2 back"
     _hint(draw, hint)
     return image
 
@@ -388,7 +392,7 @@ def versions_screen(rows: list[tuple[int, str]], status: str, phase: str,
     elif phase == "scanning":
         hint = "scanning - please wait"
     else:
-        hint = "UP/DOWN scroll  KEY1 rescan  KEY2 menu"
+        hint = "UP/DOWN  KEY1 rescan  KEY2 menu"
     _hint(draw, hint)
     return image
 
