@@ -1,6 +1,6 @@
 """Firmware update mode: flash the bundled OTA image from the LCD HAT.
 
-The images live in the repo (FW/FW_<yymmdd>/OTA_*.bin), so a `git pull`
+The images live in the repo (FW/FW_<yymmdd>/*.bin), so a `git pull`
 on the appliance is the whole "copy the firmware over" step, and the
 newest folder is what the menu offers. The flashing itself is
 host/ota.py, unchanged; this module runs it in a worker thread and turns
@@ -70,12 +70,15 @@ class MenuEntry:
 
 
 def find_firmware(directory: Path = FIRMWARE_DIR) -> Path | None:
-    """Newest OTA image in the repo: FW/FW_<yymmdd>/OTA_*.bin.
+    """Newest OTA image in the repo: the .bin in the last FW_<yymmdd> folder.
 
-    Folders are date-named, so the last one in sort order is the newest;
-    the .hex beside it is for SWD burning and is never offered.
+    Folders are date-named, so the last one in sort order is the newest.
+    The vendor's file names are kept as delivered (OTA_16c.bin in
+    FW_260903, MCB_e16_2029.09.17.bin in FW_260917), so any .bin counts;
+    the .hex beside it is for SWD burning and is never offered. Should a
+    folder ever hold several .bin files, the last in sort order wins.
     """
-    candidates = sorted(directory.glob("FW_*/OTA_*.bin"))
+    candidates = sorted(directory.glob("FW_*/*.bin"))
     return candidates[-1] if candidates else None
 
 

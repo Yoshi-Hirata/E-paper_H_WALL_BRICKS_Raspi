@@ -1,6 +1,6 @@
 # 現在地と再開手順
 
-最終更新: 2026-09-16
+最終更新: 2026-09-17
 
 **この文書は「次に何をするか」だけを書く。** 経緯は
 [DEVELOPMENT.md](DEVELOPMENT.md)、20 枚構成の検討は [SCALING.md](SCALING.md)、
@@ -18,13 +18,27 @@
 
 ## 2. 直近で完成したもの
 
+**メーカー更新 FW `FW_260917` を同梱、`UPDATE FW` が自動で選ぶ(2026-09-17)**
+
+- 16 色の発色修正版(0x06/0x07/0x08 の乖離を報告した後の版)。ファイルは
+  `FW/FW_260917/` にメーカー配布名のまま(`MCB_e16_2029.09.17.bin` 64188 B、
+  同名 `.hex` は SWD 用、色見本 xlsx と写真 `image/` も同梱)
+- `ui/updater.py` の探索を `FW_*/OTA_*.bin` から `FW_*/*.bin` に広げ、
+  ファイル名に関係なく**最新フォルダの .bin** を出すようにした。テストは
+  この構成(旧 OTA_16c.bin と新メーカー名の共存)を固定
+- Radxa への配布は従来通り `git pull`。radxa-01 に反映済み(md5 一致、
+  `epaper-ui` 再起動)。**基板への書き込みはこれから**: LCD の
+  `UPDATE FW` で 1 枚ずつ、書き込み後に `SOLID16` で 0x06/0x07/0x08 を目視
+
 **Radxa 10 台のクローン完了(2026-09-16)**
 
 - radxa-02〜10 を `radxa/clone/write_card.ps1 -Unit N -Disk 2` で 1 枚ずつ
   書き込み、各機の起動を確認(ユーザー確認。03 以降は初回起動だけで
   ホスト名・SSH 鍵・machine-id・ルート FS 拡張・IP `.1NN` が自動で揃う)
 - 台数分の作業はすべて同じ手順で、個体差はホスト名 `radxa-NN` だけ。
-  ゴールデンイメージは `D:adxa-goldenadxa-01-golden.img`
+  ゴールデンイメージは `D:
+adxa-golden
+adxa-01-golden.img`
   (sha256 `62a49726…f14b`、リポジトリ e489b84 同梱)。追加・交換時も
   同じコマンドで作れる
 - 全台を同時に起動しても IP は分かれる。SSH は `radxa@192.168.50.1NN`
@@ -77,8 +91,8 @@ adxa-01-golden.img`(7.04 GB、sha256 は同名 .sha256)。
 **LCD メニューから基板 FW を OTA アップデートできるようにした(2026-09-14、Radxa デプロイ済み)**
 
 - メニュー末尾に **`UPDATE FW`** を追加(`ui/updater.py`)。FW イメージは
-  リポジトリ同梱の `FW/FW_<yymmdd>/OTA_*.bin` のうち**最新フォルダ**を自動選択
-  (現在 `FW_260903/OTA_16c.bin`、65544 B)。Radxa への「コピー」は
+  リポジトリ同梱の `FW/FW_<yymmdd>/*.bin` のうち**最新フォルダ**を自動選択
+  (当時 `FW_260903/OTA_16c.bin`、65544 B。現在は FW_260917)。Radxa への「コピー」は
   `git pull` で完了する(a6bd425 で同梱済み、md5 一致を確認)
 - 操作: `UPDATE FW` で KEY1 → ランナー停止(ポート解放)→ 確認画面で
   **UP/DOWN で USB 直結基板の DIP アドレス**を選ぶ(0x29 で状態を照会し
@@ -303,4 +317,4 @@ sudo systemctl start epaper-ui
 状態行が `IDLE … (auto)` になる(複数応答なら 485 を抜くか UP/DOWN で選ぶ)
 → KEY1。約 1〜2 分で `DONE`。KEY2 でメニューに戻ると白待機が走る。CLI で
 行う場合は `sudo systemctl stop epaper-ui` してから `timeout 600
-.venv/bin/python host/ota.py FW/FW_260903/OTA_16c.bin --addr auto`。
+.venv/bin/python host/ota.py FW/FW_260917/MCB_e16_2029.09.17.bin --addr auto`。

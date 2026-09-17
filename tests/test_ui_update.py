@@ -145,12 +145,26 @@ def test_newest_ota_image_is_offered_and_hex_is_not(tmp_path):
     assert updater_mod.find_firmware(tmp_path / "missing") is None
 
 
-def test_repo_ships_the_fw_260903_image():
+def test_vendor_named_image_in_a_newer_folder_wins(tmp_path):
+    # FW_260917 came with the vendor's own file names, kept as delivered;
+    # the folder date decides, not the file name.
+    (tmp_path / "FW_260903").mkdir()
+    (tmp_path / "FW_260903" / "OTA_16c.bin").write_bytes(b"old")
+    (tmp_path / "FW_260917").mkdir()
+    (tmp_path / "FW_260917" / "MCB_e16_2029.09.17.bin").write_bytes(b"new")
+    (tmp_path / "FW_260917" / "MCB_e16_2029.09.17.hex").write_bytes(b":00")
+    (tmp_path / "FW_260917" / "16_Color_Chart.xlsx").write_bytes(b"PK")
+    image = updater_mod.find_firmware(tmp_path)
+    assert image.parent.name == "FW_260917"
+    assert image.name == "MCB_e16_2029.09.17.bin"
+
+
+def test_repo_ships_the_fw_260917_image():
     # The whole "copy the firmware to the appliance" step is git pull,
     # which only works if the image is in the tree.
     image = updater_mod.find_firmware()
     assert image is not None
-    assert image.parent.name >= "FW_260903"
+    assert image.parent.name >= "FW_260917"
     assert 0 < image.stat().st_size <= ota.MAX_IMAGE_SIZE
 
 

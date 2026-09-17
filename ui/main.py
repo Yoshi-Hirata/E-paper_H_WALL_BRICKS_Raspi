@@ -236,7 +236,7 @@ def main() -> int:
                          "keeps running)")
     ap.add_argument("--firmware", metavar="BIN",
                     help="OTA image offered by the UPDATE FW menu row "
-                         "(default: newest FW/FW_*/OTA_*.bin in the repo)")
+                         "(default: the .bin in the newest FW/FW_* folder)")
     ap.add_argument("--no-usb-rebind", action="store_true",
                     help="after an update, do not cycle the xhci host "
                          "controller (needs sudo) when the rebooted board "
