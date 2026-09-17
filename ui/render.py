@@ -87,6 +87,32 @@ def _ellipsize(text: str, font, max_width: int) -> str:
     return text + "\u2026"
 
 
+def _wrap(text: str, font, max_width: int) -> list[str]:
+    """Break `text` into lines that fit `max_width`, at spaces where
+    possible; a single word wider than the line is cut mid-word rather
+    than lost. The result reads in full where _ellipsize would end in
+    an ellipsis."""
+    lines: list[str] = []
+    for paragraph in text.split("\n"):
+        current = ""
+        for word in paragraph.split(" "):
+            candidate = f"{current} {word}" if current else word
+            if font.getlength(candidate) <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+            while word and font.getlength(word) > max_width:
+                cut = len(word)
+                while cut > 1 and font.getlength(word[:cut]) > max_width:
+                    cut -= 1
+                lines.append(word[:cut])
+                word = word[cut:]
+            current = word
+        lines.append(current)
+    return lines or [""]
+
+
 def menu_screen(patterns, selected: int, port: str | None = None,
                 locked: bool = False, status: str = "",
                 host: str | None = None) -> Image.Image:
@@ -298,7 +324,11 @@ def pull_screen(before: str, after: str | None, phase: str,
     return image
 
 
-VERSION_ROWS = 10        # board rows visible on the FW VERSION screen
+# Scroll step floor for the FW VERSION list: the fewest board rows that
+# fit a page when every label wraps onto two lines. One-line labels fit
+# ten, so the last page simply shows more.
+VERSION_ROWS = 5
+_VERSION_LINE_H = 15
 
 
 def versions_screen(rows: list[tuple[int, str]], status: str, phase: str,
@@ -318,27 +348,40 @@ def versions_screen(rows: list[tuple[int, str]], status: str, phase: str,
         word, color = "READY", ACCENT
     _header(draw, "FW VERSION", status=word, status_color=color, host=host)
 
+    # Everything below flows: the status and every row wrap onto as
+    # many lines as they need, so the verdict is readable in full.
     tint = ERR if status.startswith(("ERROR", "no ", "port ")) else DIM
-    draw.text((8, 30), _ellipsize(status, FONT_S, WIDTH - 16),
-              font=FONT_S, fill=tint)
-    draw.text((8, 44), _ellipsize(f"bundled: {bundled}", FONT_S, WIDTH - 16),
+    y = 30
+    for line in _wrap(status, FONT_S, WIDTH - 16)[:2]:
+        draw.text((8, y), line, font=FONT_S, fill=tint)
+        y += 14
+    draw.text((8, y), _ellipsize(f"bundled: {bundled}", FONT_S, WIDTH - 16),
               font=FONT_S, fill=DIM)
-    draw.line((8, 60, WIDTH - 8, 60), fill=BAR, width=1)
+    y += 16
+    draw.line((8, y, WIDTH - 8, y), fill=BAR, width=1)
+    y += 4
 
-    y = 64
-    shown = rows[offset:offset + VERSION_ROWS]
-    for addr, label in shown:
+    footer_h = 14
+    bottom = HEIGHT - 22 - footer_h
+    shown = 0
+    for addr, label in rows[offset:]:
+        lines = _wrap(label, FONT_S, WIDTH - 42)
+        if y + _VERSION_LINE_H * len(lines) > bottom:
+            break
         draw.text((8, y), f"{addr:02d}", font=FONT_S, fill=FG)
-        # A board on the bundled image is the good case; anything else
-        # (older build, V1.0, unknown) is what the operator is looking for.
-        fill = OK if label == bundled else FG
-        draw.text((34, y), _ellipsize(label, FONT_S, WIDTH - 42),
-                  font=FONT_S, fill=fill)
-        y += 15
-    if len(rows) > VERSION_ROWS:
-        more = f"rows {offset + 1}-{offset + len(shown)} of {len(rows)}"
-        draw.text((WIDTH - 8 - FONT_S.getlength(more), HEIGHT - 34), more,
-                  font=FONT_S, fill=DIM)
+        # A board on the bundled image (or recorded as flashed with it)
+        # is the good case; anything else is what the operator wants
+        # to see.
+        fill = OK if bundled in label else FG
+        for line in lines:
+            draw.text((34, y), line, font=FONT_S, fill=fill)
+            y += _VERSION_LINE_H
+        y += 2
+        shown += 1
+    if offset > 0 or offset + shown < len(rows):
+        more = f"rows {offset + 1}-{offset + shown} of {len(rows)}"
+        draw.text((WIDTH - 8 - FONT_S.getlength(more), HEIGHT - 22 - footer_h),
+                  more, font=FONT_S, fill=DIM)
 
     if locked:
         hint = "buttons locked"

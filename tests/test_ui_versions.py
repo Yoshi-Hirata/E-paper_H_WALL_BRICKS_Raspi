@@ -274,3 +274,30 @@ def test_a_result_landing_mid_paint_is_still_painted(tmp_path, monkeypatch):
     assert app.display.frames == before + 1    # the result gets its paint
     app.tick(wait=0.0)
     assert app.display.frames == before + 1    # and then it is stable
+
+
+def test_wrap_keeps_every_word_within_the_width():
+    from ui.render import FONT_S, _wrap
+    text = "V1.1, flashed FW_260917 09-17 08:19 on 485 bus - unplug 485 to identify"
+    lines = _wrap(text, FONT_S, 198)
+    assert len(lines) >= 2
+    assert all(FONT_S.getlength(line) <= 198 for line in lines)
+    assert " ".join(lines) == text                 # nothing dropped
+    assert _wrap("", FONT_S, 198) == [""]
+    long_word = "x" * 120
+    pieces = _wrap(long_word, FONT_S, 60)
+    assert "".join(pieces) == long_word            # cut, not lost
+    assert all(FONT_S.getlength(piece) <= 60 for piece in pieces)
+
+
+def test_long_labels_wrap_on_the_versions_screen_and_page():
+    rows = [(n, "V1.1, flashed FW_260917 09-17 08:19") for n in range(1, 21)]
+    image = render.versions_screen(rows, "USB 48EC7570324C", "done",
+                                   "FW_260917", host="radxa-01")
+    assert image.size == (WIDTH, HEIGHT)
+    # Two-line rows fit fewer per page than one-liners, and the scroll
+    # step floor is sized for that worst case.
+    assert render.VERSION_ROWS <= 5
+    later = render.versions_screen(rows, "USB 48EC7570324C", "done",
+                                   "FW_260917", offset=render.VERSION_ROWS)
+    assert later.tobytes() != image.tobytes()
