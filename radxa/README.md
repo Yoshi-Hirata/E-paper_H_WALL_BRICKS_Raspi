@@ -97,8 +97,24 @@ Pi のイメージと違い、このイメージのユーザは `adm` に入っ�
 
 FW イメージはリポジトリに同梱している(`FW/FW_<yymmdd>/*.bin`、ファイル名は
 メーカー配布のまま)ので、Radxa への配布は `git pull` だけでよい。UI はその中の
-**最新フォルダ**の `.bin` をメニュー末尾の `UPDATE FW` 行に出す(`.hex` は
-SWD 用で対象外)。
+**最新フォルダ**の `.bin` をメニューの `UPDATE FW` 行に出す(`.hex` は
+SWD 用で対象外)。その `git pull` 自体もメニュー末尾の **`GIT PULL`** 行で
+LCD から実行できる(下記)。
+
+### GIT PULL(LCD からリポジトリを更新)
+
+各画面の上部バーに**ホスト名**(`radxa-01`〜`radxa-10`)が出るので、どの機体を
+操作しているかは画面で分かる。コードや同梱 FW を配った後は、各機体で:
+
+1. メニュー末尾 `GIT PULL` → KEY1。画面に現在のコミット(`now`)が出る
+2. KEY1 で `git pull --ff-only` を実行(ネットワーク待ちは最長 180 秒)。
+   `new` に取り込んだコミットが出て、状態が `UPDATED` になる
+   (変化なしなら `UP TO DATE`、失敗なら `FAILED` とログの赤い行)
+3. `UPDATED` なら KEY1 で **UI を再起動**(プロセスが終了し、systemd の
+   `Restart=always` で約 15 秒後に新コードで立ち上がる)。KEY2 はメニューへ
+
+fast-forward できない状態(機体側で編集した等)や `requirements.txt` の変更は
+対象外なので、その時は SSH で `git pull` / `pip install -r requirements.txt`。
 
 1. 更新する基板の 485 ケーブルを抜き、その基板を USB-C(データ側)に直結する
    (USB を挿した基板は自分の DIP アドレス宛だけをローカル処理し、他は

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from .app import App
 from .display import make_display
 from .inputs import make_input
 from .patterns import PATTERNS
+from .puller import RepoPuller
 from .runner import DEFAULT_BOARDS, DemoRunner
 from .updater import FirmwareUpdater, find_firmware, usb_rebind
 
@@ -30,7 +32,8 @@ def preview(directory: str) -> int:
 
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
-    render.menu_screen(PATTERNS, 0, "/dev/ttyACM0").save(out / "menu_first.png")
+    render.menu_screen(PATTERNS, 0, "/dev/ttyACM0",
+                       host="radxa-01").save(out / "menu_first.png")
     render.menu_screen(PATTERNS, 3, "/dev/ttyACM0").save(out / "menu_mid.png")
     render.menu_screen(PATTERNS, 0, None).save(out / "menu_noport.png")
     render.menu_screen(PATTERNS, 0, "/dev/ttyACM0",
@@ -41,6 +44,7 @@ def preview(directory: str) -> int:
         ["09:12:01 port /dev/ttyACM0", "09:12:02 start WAVE",
          "09:12:14 cycle 1 shown", "09:13:14 cycle 2 shown",
          "09:14:14 cycle 3 shown", "09:15:14 cycle 4 shown"],
+        host="radxa-01",
     ).save(out / "running.png")
     render.running_screen(
         "RANDOM", 62.0, 1,
@@ -70,6 +74,32 @@ def preview(directory: str) -> int:
                           "10:02:31 ERROR Board 0x14 does not accept 0x26",
                           "10:02:31 ERROR flash failed"],
                          error="flash failed").save(out / "update_failed.png")
+    old = "b5706ee Bundle FW_260917 and let UPDATE FW pick any .bin"
+    new = "c0ffee1 Show the hostname on every screen, add GIT PULL"
+    render.pull_screen(old, None, "idle", [], host="radxa-01"
+                       ).save(out / "pull_confirm.png")
+    render.pull_screen(old, None, "pulling",
+                       ["11:00:00 git pull --ff-only (main) at b5706ee"],
+                       host="radxa-01").save(out / "pull_pulling.png")
+    render.pull_screen(old, new, "done", changed=True, host="radxa-01",
+                       log_lines=["11:00:00 git pull --ff-only (main) at b5706ee",
+                                  "11:00:03 Updating b5706ee..c0ffee1",
+                                  "11:00:03 Fast-forward",
+                                  "11:00:03  ui/app.py | 40 ++++--",
+                                  "11:00:03 b5706ee -> c0ffee1: restart to apply"]
+                       ).save(out / "pull_done.png")
+    render.pull_screen(old, old, "done", ["11:05:00 Already up to date.",
+                                          "11:05:00 up to date at b5706ee"],
+                       host="radxa-01").save(out / "pull_uptodate.png")
+    render.pull_screen(old, None, "failed",
+                       ["11:06:00 git pull --ff-only (main) at b5706ee",
+                        "11:06:20 ERROR fatal: unable to access "
+                        "'https://github.com/...': Could not resolve host",
+                        "11:06:20 ERROR git pull failed (exit 1)"],
+                       error="git pull failed (exit 1)", host="radxa-01"
+                       ).save(out / "pull_failed.png")
+    render.message_screen("restarting", "now at c0ffee1, UI back in ~15 s",
+                          host="radxa-01").save(out / "restarting.png")
     print(f"wrote preview screens to {out}")
     return 0
 
@@ -261,12 +291,14 @@ def main() -> int:
     firmware = Path(args.firmware) if args.firmware else find_firmware()
     updater = FirmwareUpdater(firmware, boards=args.boards, port=args.port,
                               rebind=None if args.no_usb_rebind else usb_rebind)
+    puller = RepoPuller()
+    host = socket.gethostname() or None
 
     display_kwargs = {"directory": args.frames} if args.display in ("png", "auto") else {}
     with make_display(args.display, **display_kwargs) as display, \
             make_input(args.input) as inputs:
         app_kwargs = {"port_label": port, "locked": args.locked,
-                      "updater": updater}
+                      "updater": updater, "puller": puller, "host": host}
         if args.blank_after is not None:
             app_kwargs["blank_after"] = args.blank_after
         app = App(display, inputs, runner, **app_kwargs)

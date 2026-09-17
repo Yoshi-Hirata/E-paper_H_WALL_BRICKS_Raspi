@@ -55,9 +55,23 @@ def _blank() -> tuple[Image.Image, ImageDraw.ImageDraw]:
     return image, ImageDraw.Draw(image)
 
 
-def _header(draw: ImageDraw.ImageDraw, text: str, color=ACCENT) -> None:
+def _header(draw: ImageDraw.ImageDraw, text: str, color=ACCENT,
+            status: str | None = None, status_color=DIM,
+            host: str | None = None) -> None:
+    """Top strip: title left; on the right the status word and, before
+    it, the unit's hostname so ten identical appliances tell apart."""
     draw.rectangle((0, 0, WIDTH, 24), fill=BAR)
-    draw.text((8, 4), text, font=FONT_M, fill=color)
+    right = WIDTH - 8
+    if status:
+        right -= FONT_S.getlength(status)
+        draw.text((right, 6), status, font=FONT_S, fill=status_color)
+        right -= 10
+    if host:
+        right -= FONT_S.getlength(host)
+        draw.text((right, 6), host, font=FONT_S, fill=DIM)
+        right -= 10
+    draw.text((8, 4), _ellipsize(text, FONT_M, right - 8), font=FONT_M,
+              fill=color)
 
 
 def _hint(draw: ImageDraw.ImageDraw, text: str) -> None:
@@ -74,13 +88,15 @@ def _ellipsize(text: str, font, max_width: int) -> str:
 
 
 def menu_screen(patterns, selected: int, port: str | None = None,
-                locked: bool = False, status: str = "") -> Image.Image:
-    """Pattern chooser. Up/Down move, KEY1 starts."""
+                locked: bool = False, status: str = "",
+                host: str | None = None) -> Image.Image:
+    """Pattern chooser. Up/Down move, KEY1 starts.
+
+    The hostname is the title: on a wall of ten units it is the one
+    thing an operator needs to read off the menu."""
     image, draw = _blank()
-    _header(draw, "E-PAPER DEMO")
-    if locked:
-        draw.text((WIDTH - 8 - FONT_S.getlength("LOCKED"), 6), "LOCKED",
-                  font=FONT_S, fill=ACCENT)
+    _header(draw, host or "E-PAPER DEMO",
+            status="LOCKED" if locked else None, status_color=ACCENT)
 
     # Scroll the list so the cursor stays visible on the 240px screen.
     visible = 6
@@ -118,7 +134,8 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
                    log_lines: list[str], error: str | None = None,
                    stopping: bool = False, paused: bool = False,
                    locked: bool = False,
-                   caption: str | None = None) -> Image.Image:
+                   caption: str | None = None,
+                   host: str | None = None) -> Image.Image:
     """Live view: elapsed timer, cycle counter and the tail of the log."""
     image, draw = _blank()
     if error:
@@ -129,9 +146,8 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
         status, color = "STOPPING", DIM
     else:
         status, color = "RUNNING", OK
-    _header(draw, _ellipsize(pattern_label, FONT_M, 150))
-    draw.text((WIDTH - 8 - FONT_S.getlength(status), 6), status,
-              font=FONT_S, fill=color)
+    _header(draw, pattern_label, status=status, status_color=color,
+            host=host)
 
     timer = format_elapsed(elapsed)
     draw.text(((WIDTH - FONT_TIMER.getlength(timer)) / 2, 30), timer,
@@ -171,16 +187,15 @@ _UPDATE_STATUS = {
 def update_screen(firmware: str, size: int, addr: int, phase: str,
                   board_state: str, done: int, log_lines: list[str],
                   error: str | None = None,
-                  locked: bool = False) -> Image.Image:
+                  locked: bool = False,
+                  host: str | None = None) -> Image.Image:
     """Firmware update: image, target board, transfer bar, log tail.
 
     `phase` is one of ui.updater's IDLE/FLASHING/VERIFYING/DONE/FAILED.
     """
     image, draw = _blank()
     status, color = _UPDATE_STATUS.get(phase, (phase.upper(), DIM))
-    _header(draw, "FW UPDATE")
-    draw.text((WIDTH - 8 - FONT_S.getlength(status), 6), status,
-              font=FONT_S, fill=color)
+    _header(draw, "FW UPDATE", status=status, status_color=color, host=host)
 
     draw.text((8, 32), "image", font=FONT_S, fill=DIM)
     draw.text((56, 30), _ellipsize(firmware, FONT_M, WIDTH - 64),
@@ -225,10 +240,69 @@ def update_screen(firmware: str, size: int, addr: int, phase: str,
     return image
 
 
-def message_screen(title: str, body: str = "", color=FG) -> Image.Image:
+_PULL_STATUS = {
+    "idle": ("READY", ACCENT),
+    "pulling": ("PULLING", OK),
+    "failed": ("FAILED", ERR),
+}
+
+
+def pull_screen(before: str, after: str | None, phase: str,
+                log_lines: list[str], error: str | None = None,
+                changed: bool = False, locked: bool = False,
+                host: str | None = None) -> Image.Image:
+    """Repo update: the commit now, the commit after the pull, log tail.
+
+    `phase` is one of ui.puller's IDLE/PULLING/DONE/FAILED; `changed`
+    says whether the DONE pull moved HEAD (then KEY1 restarts the UI).
+    """
+    image, draw = _blank()
+    if phase == "done":
+        status, color = ("UPDATED", OK) if changed else ("UP TO DATE", DIM)
+    else:
+        status, color = _PULL_STATUS.get(phase, (phase.upper(), DIM))
+    _header(draw, "GIT PULL", status=status, status_color=color, host=host)
+
+    draw.text((8, 32), "now", font=FONT_S, fill=DIM)
+    draw.text((44, 30), _ellipsize(before, FONT_M, WIDTH - 52),
+              font=FONT_M, fill=FG)
+    draw.text((8, 54), "new", font=FONT_S, fill=DIM)
+    draw.text((44, 52), _ellipsize(after or "-", FONT_M, WIDTH - 52),
+              font=FONT_M, fill=OK if changed else DIM)
+    if error:
+        draw.text((8, 76), _ellipsize(f"ERROR {error}", FONT_S, WIDTH - 16),
+                  font=FONT_S, fill=ERR)
+    elif changed:
+        draw.text((8, 76), "restart the UI to run the new code",
+                  font=FONT_S, fill=OK)
+
+    draw.line((8, 94, WIDTH - 8, 94), fill=BAR, width=1)
+    y = 98
+    for line in log_lines[-LOG_LINES:]:
+        tint = ERR if "ERROR" in line else DIM
+        draw.text((8, y), _ellipsize(line, FONT_S, WIDTH - 16),
+                  font=FONT_S, fill=tint)
+        y += 15
+
+    if locked:
+        hint = "buttons locked"
+    elif phase == "pulling":
+        hint = "pulling - please wait"
+    elif phase == "done" and changed:
+        hint = "KEY1 restart UI  KEY2 menu"
+    elif phase in ("done", "failed"):
+        hint = "KEY1 pull again  KEY2 menu"
+    else:
+        hint = "KEY1 pull  KEY2 back"
+    _hint(draw, hint)
+    return image
+
+
+def message_screen(title: str, body: str = "", color=FG,
+                   host: str | None = None) -> Image.Image:
     """Splash / fatal error screen."""
     image, draw = _blank()
-    _header(draw, "E-PAPER DEMO")
+    _header(draw, host or "E-PAPER DEMO")
     draw.text((8, 90), _ellipsize(title, FONT_L, WIDTH - 16),
               font=FONT_L, fill=color)
     if body:

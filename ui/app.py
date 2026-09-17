@@ -16,6 +16,12 @@ OTA in flight - and afterwards KEY2 returns to the menu via the boot
 standby, which silences the factory autoplay the rebooted board wakes
 up playing.
 
+GIT PULL, the row after it, updates the checkout itself: `git pull
+--ff-only` in the repo the service runs from (ui/puller.py), and when
+the commit moved KEY1 exits the process - the service is Restart=always,
+so systemd brings the UI back on the new code. Ten identical units
+tell apart by the hostname in the top strip of every screen.
+
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
 machine, or a blind press in a dark room could stop a running show.
@@ -46,6 +52,7 @@ class Screen(Enum):
     MENU = "menu"
     RUNNING = "running"
     UPDATE = "update"
+    PULL = "pull"
 
 
 class App:
@@ -53,20 +60,29 @@ class App:
                  patterns=None, port_label: str | None = None,
                  locked: bool = False, blank_after: float = BLANK_AFTER_S,
                  relock_after: float = RELOCK_AFTER_S,
-                 clock=time.monotonic, updater=None):
+                 clock=time.monotonic, updater=None, puller=None,
+                 host: str | None = None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
         self.patterns = list(patterns or PATTERNS)
-        # The update mode is a menu row only when an updater is wired
-        # in, so a headless or test App keeps the plain demo menu.
+        # The update and pull modes are menu rows only when their
+        # workers are wired in, so a headless or test App keeps the
+        # plain demo menu.
         self.updater = updater
         if updater is not None:
             self.patterns.append(updater.menu_entry)
+        self.puller = puller
+        if puller is not None:
+            self.patterns.append(puller.menu_entry)
+        self.host = host
         self.selected = 0
         self.screen = Screen.MENU
         self.port_label = port_label
         self.quit = False
+        # What the screen says once run() ends; a restart asked for from
+        # the GIT PULL screen replaces the default "service ended".
+        self.exit_message = ("stopped", "service ended")
         self.blanked = False
         self.locked = locked
         self.blank_after = blank_after
@@ -133,6 +149,9 @@ class App:
         if self.screen is Screen.UPDATE:
             self._handle_update(event)
             return
+        if self.screen is Screen.PULL:
+            self._handle_pull(event)
+            return
 
         if event == "key1_hold":
             # Reset: back to cycle 0 with the timer at zero, wherever we
@@ -187,6 +206,33 @@ class App:
             self._leave_update()
         self._dirty = True
 
+    def _handle_pull(self, event: str) -> None:
+        puller = self.puller
+        if puller.busy:
+            return                  # a pull in flight is left alone
+        if event in ("key1", "press"):
+            if puller.changed:
+                # The new code only runs in a new process; systemd
+                # restarts the service when this one exits.
+                self.exit_message = ("restarting",
+                                     f"now at {puller.after.commit}, "
+                                     "UI back in ~15 s")
+                self.quit = True
+            elif puller.finished:
+                puller.reset()
+            else:
+                puller.start()
+        elif event == "key2":
+            self.screen = Screen.MENU
+        self._dirty = True
+
+    def _enter_pull(self) -> None:
+        # The runner keeps the port: a pull touches only the checkout,
+        # and the restart that applies it stops everything anyway.
+        self.puller.reset()
+        self.screen = Screen.PULL
+        self._dirty = True
+
     def _enter_update(self) -> None:
         # The runner owns the serial port (standby keeps it open to
         # watch the link), and the OTA needs it to itself.
@@ -206,6 +252,9 @@ class App:
     def _restart(self) -> None:
         if self.patterns[self.selected].key == "update":
             self._enter_update()
+            return
+        if self.patterns[self.selected].key == "pull":
+            self._enter_pull()
             return
         if self.patterns[self.selected].key == "standby":
             # The top menu entry is not a looping demo. One shot of the
@@ -259,14 +308,22 @@ class App:
         if self.screen is Screen.MENU:
             return render.menu_screen(self.patterns, self.selected,
                                       self.port_label, locked=self.locked,
-                                      status=self._standby_status())
+                                      status=self._standby_status(),
+                                      host=self.host)
         if self.screen is Screen.UPDATE:
             updater = self.updater
             return render.update_screen(
                 updater.firmware_label, updater.size, updater.addr,
                 updater.phase, updater.board_state, updater.done,
                 updater.recent(LOG_LINES), error=updater.error,
-                locked=self.locked)
+                locked=self.locked, host=self.host)
+        if self.screen is Screen.PULL:
+            puller = self.puller
+            return render.pull_screen(
+                puller.before.label,
+                puller.after.label if puller.after else None,
+                puller.phase, puller.recent(LOG_LINES), error=puller.error,
+                changed=puller.changed, locked=self.locked, host=self.host)
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",
@@ -278,6 +335,7 @@ class App:
             stopping=not self.runner.running and self.runner.error is None,
             paused=self.runner.paused,
             locked=self.locked,
+            host=self.host,
         )
 
     def draw(self) -> None:
@@ -302,6 +360,11 @@ class App:
                 return ("update", updater.phase, updater.addr,
                         updater.board_state, updater.done, updater.size,
                         tuple(updater.recent(LOG_LINES)), updater.error,
+                        self.locked)
+            if self.screen is Screen.PULL:
+                puller = self.puller
+                return ("pull", puller.phase, puller.before, puller.after,
+                        tuple(puller.recent(LOG_LINES)), puller.error,
                         self.locked)
             return ("menu", self._standby_status())
         return (int(self.runner.elapsed), self.runner.cycle,
@@ -350,5 +413,6 @@ class App:
         finally:
             self.runner.stop()
             self.display.wake()
-            self.display.show(render.message_screen("stopped", "service ended"))
+            self.display.show(render.message_screen(*self.exit_message,
+                                                    host=self.host))
             time.sleep(0.2)

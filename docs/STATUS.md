@@ -14,9 +14,22 @@
 | Raspberry Pi Zero 2 W `r2@192.168.50.25` | 予備機。パネル未接続 | `epaper-ui` active。ポート待ちのまま待機 |
 
 - 両機とも同じコードで、差分は `ui/boards.py` のプロファイルのみ
-- テスト 195 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-14)
+- テスト 216 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-17)
 
 ## 2. 直近で完成したもの
+
+**LCD にホスト名表示 + `GIT PULL` メニューを追加(2026-09-17)**
+
+- 全画面の上部バーに `socket.gethostname()`(`radxa-01`〜`10`)を表示。
+  メニューではタイトル位置、実行中/FW UPDATE/GIT PULL 画面では状態語の左
+- メニュー末尾 **`GIT PULL`**(`ui/puller.py`): `git pull --ff-only` を
+  ワーカースレッドで実行し、`now`/`new` のコミットとログを表示。HEAD が
+  動いたら KEY1 で UI を再起動(プロセス終了 → `Restart=always` で復帰、
+  sudo 不要)。`GIT_TERMINAL_PROMPT=0` と 180 秒タイムアウトで固まらない
+- `--pattern` の headless 運用や `App` 単体には影響なし(puller 未接続なら
+  行が出ない)。テスト 216 件
+- 運用: 以後の配布は「PC から push → 各機体で `GIT PULL` → KEY1 再起動」。
+  `requirements.txt` が変わる更新だけは SSH が要る
 
 **メーカー更新 FW `FW_260917` を同梱、`UPDATE FW` が自動で選ぶ(2026-09-17)**
 
