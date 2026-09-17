@@ -19,7 +19,7 @@ with until a demo is started or STANDBY is chosen.
 
 FW VERSION asks every configured address its OTA state (0x29) and
 lists what each answering board runs (ui/versions.py) - the runner is
-stopped for the scan and standby restores it on the way out.
+stopped for the scan and stays stopped on the way out, no repaint.
 
 GIT PULL, the last row, updates the checkout itself: `git pull
 --ff-only` in the repo the service runs from (ui/puller.py), and when
@@ -249,10 +249,10 @@ class App:
         elif event in ("key1", "press"):
             versions.scan()
         elif event == "key2":
-            # Same exit as UPDATE FW: the runner gets the port back and
-            # the wall goes white.
+            # Same exit as UPDATE FW: straight back to the menu, no
+            # white repaint (the scan only sent PLAY_STOP and 0x29, the
+            # panels still hold whatever they showed before).
             self.screen = Screen.MENU
-            self.enter_standby()
         self._dirty = True
 
     def _enter_versions(self) -> None:

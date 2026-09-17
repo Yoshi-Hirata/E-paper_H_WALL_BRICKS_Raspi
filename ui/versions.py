@@ -19,7 +19,8 @@ own flash record (ui/flashlog.py), keyed by the USB serial number, so
 the row reads e.g. "V1.1, flashed FW_260917 09-17 17:19".
 
 Like UPDATE FW this stops the runner first: the scan needs the port to
-itself, and standby on the way out hands it back and repaints white.
+itself. KEY2 returns to the menu without repainting; the panels keep
+what they showed, and the operator picks STANDBY or a demo when ready.
 """
 
 from __future__ import annotations

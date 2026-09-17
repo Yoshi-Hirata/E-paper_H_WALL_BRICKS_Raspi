@@ -179,7 +179,7 @@ def test_versions_row_exists_only_with_a_worker(tmp_path):
     assert app.patterns[-1].key == "versions"
 
 
-def test_entering_stops_the_runner_scans_and_key2_leaves_via_standby(tmp_path):
+def test_entering_stops_the_runner_scans_and_key2_leaves_without_repaint(tmp_path):
     versions = make_versions(tmp_path, bus=wall(tmp_path))
     app, runner = make_app(versions)
     app.select("versions")
@@ -190,7 +190,7 @@ def test_entering_stops_the_runner_scans_and_key2_leaves_via_standby(tmp_path):
     assert len(versions.rows) == 4
     app.handle("key2")
     assert app.screen is Screen.MENU
-    assert runner.standbys == 1
+    assert runner.standbys == 0 and runner.starts == []
 
 
 def test_buttons_wait_for_the_scan_then_key1_rescans(tmp_path):
