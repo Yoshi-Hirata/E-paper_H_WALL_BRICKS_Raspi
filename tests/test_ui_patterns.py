@@ -154,3 +154,48 @@ def test_random16_uses_the_whole_lut_not_the_palette():
     a = BY_KEY["random16"](0, BOARDS, DEFAULT_PALETTE, random.Random(7))
     b = BY_KEY["random16"](0, BOARDS, DEFAULT_PALETTE, random.Random(7))
     assert a == b
+
+
+def test_random16_never_places_the_same_color_side_by_side():
+    for seed in range(20):
+        frame = BY_KEY["random16"](seed, BOARDS, DEFAULT_PALETTE,
+                                   random.Random(seed))
+        for segs in frame.values():
+            assert validate(segs)
+            assert set(segs.values()) <= set(range(16))
+
+
+def test_solid16random_is_one_color_per_cycle_and_never_repeats_in_a_row():
+    from ui.patterns import solid16_random_color
+
+    pattern = BY_KEY["solid16random"]
+    seen = set()
+    previous = None
+    for cycle in range(40):
+        frame = pattern(cycle, BOARDS, DEFAULT_PALETTE, random.Random(cycle))
+        colors = {c for segs in frame.values() for c in segs.values()}
+        assert len(colors) == 1                      # the whole wall, one code
+        code = colors.pop()
+        assert code in range(16)
+        assert code != previous                      # no back-to-back repeat
+        assert pattern.caption(cycle) == f"0x{code:02X} " +             __import__("epaper.pattern", fromlist=["x"]).COLOR_LABELS_16[code]
+        seen.add(code)
+        previous = code
+    assert len(seen) >= 12                           # it does roam the LUT
+    # The choice depends on the cycle and the process seed only, not on
+    # the runner's RNG stream, so the caption cannot drift from the panels.
+    assert solid16_random_color(5, seed=1) == solid16_random_color(5, seed=1)
+    assert [solid16_random_color(c, seed=1) for c in range(10)] !=         [solid16_random_color(c, seed=2) for c in range(10)]
+
+
+def test_loop16_alternates_a_random_field_with_a_random_solid():
+    loop = BY_KEY["loop16"]
+    assert loop.period == 2
+    assert [loop.resolve(c)[0].key for c in range(4)] ==         ["random16", "solid16random", "random16", "solid16random"]
+    assert loop.resolve(2)[1] == 1                   # each step keeps counting
+    field = loop(0, BOARDS, DEFAULT_PALETTE, random.Random(1))
+    solid = loop(1, BOARDS, DEFAULT_PALETTE, random.Random(1))
+    assert len({c for segs in field.values() for c in segs.values()}) > 5
+    assert len({c for segs in solid.values() for c in segs.values()}) == 1
+    assert loop.resolve(1)[0].interval == 15.0
+    assert loop.resolve(0)[0].interval == 20.0

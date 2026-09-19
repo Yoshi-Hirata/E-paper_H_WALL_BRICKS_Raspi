@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
-from epaper.grid import gradient_pattern, spiral_pattern
+from epaper.grid import gradient_pattern, repair, spiral_pattern
 from epaper.pattern import (COLOR_LABELS_16, COLOR_NAMES_16, SEGMENTS_GEN,
                             build_gen_array)
 from epaper.protocol import DEV_NUMBER_BRAND
@@ -178,13 +178,54 @@ SOLID16 = Pattern("solid16", "SOLID16", "0x00-0x0F sweep, 15s",
 def _random16(cycle, boards, palette, rng) -> Frame:
     """Every segment a random code from the whole V1.1 LUT (0x00-0x0F),
     ignoring the show palette - RANDOM restricted to the six classic
-    colors, this is the 16-color firmware's full range."""
-    return {b: {seg: rng.choice(SOLID16_SEQUENCE) for seg in sorted(SEGMENTS_GEN)}
+    colors, this is the 16-color firmware's full range. No two
+    edge-adjacent segments share a color (grid.repair), so the field
+    reads as 60 tiles rather than blotches."""
+    return {b: repair({seg: rng.choice(SOLID16_SEQUENCE)
+                       for seg in sorted(SEGMENTS_GEN)}, SOLID16_SEQUENCE)
             for b in boards}
 
 
-RANDOM16 = Pattern("random16", "RANDOM16", "random 0x00-0x0F", _random16,
-                   interval=20.0)
+RANDOM16 = Pattern("random16", "RANDOM16", "random 0x00-0x0F, no same nbrs",
+                   _random16, interval=20.0)
+
+# SOLID16RANDOM picks its color from the cycle number, not from the
+# runner's RNG stream, so the caption (which only gets the cycle) names
+# the same color the panels show. The seed is drawn once per process so
+# the sequence differs from one service start to the next.
+_SOLID16_RANDOM_SEED = random.SystemRandom().getrandbits(32)
+
+
+def solid16_random_color(cycle: int, seed: int | None = None) -> int:
+    """The LUT code SOLID16RANDOM shows on `cycle`: any of the 16, never
+    the same as the previous cycle (a repeat would look like a stall)."""
+    seed = _SOLID16_RANDOM_SEED if seed is None else seed
+    previous = (solid16_random_color(cycle - 1, seed) if cycle > 0 else None)
+    choices = [c for c in SOLID16_SEQUENCE if c != previous]
+    return random.Random(f"{seed}:{cycle}").choice(choices)
+
+
+def _solid16_random(cycle, boards, palette, rng) -> Frame:
+    """Every panel one and the same color, chosen at random per cycle."""
+    color = solid16_random_color(cycle)
+    return {b: {seg: color for seg in sorted(SEGMENTS_GEN)} for b in boards}
+
+
+def _solid16_random_caption(cycle: int) -> str:
+    code = solid16_random_color(cycle)
+    return f"0x{code:02X} {COLOR_LABELS_16[code]}"
+
+
+SOLID16RANDOM = Pattern("solid16random", "SOLID16RANDOM", "one random color",
+                        _solid16_random, interval=15.0,
+                        caption=_solid16_random_caption)
+
+# Alternates a 16-color random field with a wall of one random color:
+# one cycle each, so the contrast between the two is what the viewer
+# sees. Change the counts to dwell longer on either.
+LOOP16 = Playlist("loop16", "RND16+SOLID16",
+                  "random field, then one random solid",
+                  steps=((RANDOM16, 1), (SOLID16RANDOM, 1)))
 
 
 def _white(cycle, boards, palette, rng) -> Frame:
@@ -209,6 +250,8 @@ PATTERNS: list[Pattern | Playlist] = [
     COLORS16,
     SOLID16,
     RANDOM16,
+    LOOP16,
+    SOLID16RANDOM,
     # Default loop: one full colour sweep, then a spell of random fields.
     Playlist("loop", "SOLID+RANDOM", "6 colors, then 6 random",
              steps=((_SOLID, 6), (_RANDOM, 6))),
