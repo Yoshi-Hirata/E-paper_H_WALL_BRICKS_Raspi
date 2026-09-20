@@ -49,17 +49,19 @@ HI_Z_V11 = 0xFF
 COLOR_COUNT_16 = 16
 SEGMENTS_GEN = frozenset(range(1, 61))
 
-# V1.1 LUT (spec 5.1.1). Note the shift against the old 6-color table:
-# 0x05 is now turquoise and green moved to 0x06 - anything still sending
-# the old COLOR_NAMES["green"] to a new-firmware board shows turquoise.
+# 16-color LUT as of FW_260917 - FW/FW_260917/260917_16_Color_Chart_
+# changed.xlsx, the chart the garment designers work from. The V1.1
+# datasheet (5.1.1) and FW_260903 had turquoise at 0x05 and green at
+# 0x06; FW_260917 swapped the two back, so green is 0x05 again as in the
+# old 6-color table. A board still on FW_260903 shows these two swapped.
 COLOR_NAMES_16 = {
     "white": 0x00,
     "yellow": 0x01,
     "blue": 0x02,
     "red": 0x03,
     "black": 0x04,
-    "turquoise": 0x05,
-    "green": 0x06,
+    "green": 0x05,
+    "turquoise": 0x06,
     "almond": 0x07,
     "pink": 0x08,
     "skyblue": 0x09,
@@ -79,8 +81,8 @@ COLOR_LABELS_16 = [
     "Blue",         # 0x02 蓝色
     "Red",          # 0x03 红色
     "Black",        # 0x04 黑色
-    "Turquoise",    # 0x05 青绿色
-    "Green",        # 0x06 绿色
+    "Green",        # 0x05 绿色
+    "Turquoise",    # 0x06 青绿色
     "Almond",       # 0x07 杏仁色
     "Light Pink",   # 0x08 浅粉色
     "Sky Blue",     # 0x09 天蓝色
@@ -101,8 +103,8 @@ COLOR_RGB_16 = [
     (0, 0, 255),      # 0x02 blue
     (255, 0, 0),      # 0x03 red
     (0, 0, 0),        # 0x04 black
-    (64, 224, 208),   # 0x05 turquoise
-    (0, 200, 0),      # 0x06 green
+    (0, 200, 0),      # 0x05 green
+    (64, 224, 208),   # 0x06 turquoise
     (235, 210, 180),  # 0x07 almond
     (255, 209, 220),  # 0x08 light pink
     (135, 206, 235),  # 0x09 sky blue

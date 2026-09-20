@@ -20,7 +20,7 @@ from epaper.pattern import (COLOR_LABELS_16, COLOR_NAMES_16, SEGMENTS_GEN,
                             build_gen_array)
 from epaper.protocol import DEV_NUMBER_BRAND
 
-# The classic six show colors, in V1.1 LUT codes (green is 0x06 now).
+# The classic six show colors, in FW_260917 LUT codes (green is 0x05).
 DEFAULT_PALETTE = [COLOR_NAMES_16[c] for c in
                    ("white", "yellow", "red", "blue", "green", "black")]
 

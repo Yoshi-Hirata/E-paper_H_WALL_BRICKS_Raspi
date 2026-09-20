@@ -129,10 +129,10 @@ def test_slot_range_guard():
         slot_config(dest=0x01, slot=-1)
 
 
-def test_v11_palette_matches_spec_table_5_1_1():
-    # DISPLAY_Protocol V1.1 5.1.1: value, name, reference RGB. Green is
-    # 0x06 and 0x05 is turquoise on this firmware (the old 6-color table
-    # had green at 0x05).
+def test_palette_matches_the_fw_260917_color_chart():
+    # FW/FW_260917/260917_16_Color_Chart_ changed.xlsx: value, name,
+    # reference RGB. Green is 0x05 and turquoise 0x06 - the V1.1
+    # datasheet table (and FW_260903) had those two the other way round.
     from epaper.pattern import COLOR_LABELS_16, COLOR_NAMES_16, COLOR_RGB_16
 
     spec = {
@@ -141,8 +141,8 @@ def test_v11_palette_matches_spec_table_5_1_1():
         0x02: ("blue", "Blue", (0, 0, 255)),
         0x03: ("red", "Red", (255, 0, 0)),
         0x04: ("black", "Black", (0, 0, 0)),
-        0x05: ("turquoise", "Turquoise", (64, 224, 208)),
-        0x06: ("green", "Green", (0, 200, 0)),
+        0x05: ("green", "Green", (0, 200, 0)),
+        0x06: ("turquoise", "Turquoise", (64, 224, 208)),
         0x07: ("almond", "Almond", (235, 210, 180)),
         0x08: ("pink", "Light Pink", (255, 209, 220)),
         0x09: ("skyblue", "Sky Blue", (135, 206, 235)),

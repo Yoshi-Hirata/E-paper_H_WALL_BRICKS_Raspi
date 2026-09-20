@@ -48,7 +48,7 @@ def test_solid16_sweeps_the_whole_lut_and_wraps():
 def test_solid16_captions_name_the_datasheet_colors():
     caption = BY_KEY["solid16"].caption
     assert caption(0) == "0x00 White"
-    assert caption(5) == "0x05 Turquoise"
+    assert caption(5) == "0x05 Green"
     assert caption(11) == "0x0B Yellow Green"
     assert caption(15) == "0x0F Smoke Blue"
     assert caption(16) == "0x00 White"      # wraps with the sweep
