@@ -290,3 +290,172 @@ def test_refusals(rig):
     with pytest.raises(RemoteError):
         player.run(time.monotonic())
     assert bus.log == []
+
+
+# ---- found in review (2026-09-21) ----
+
+class SlowBus:
+    """A FakeBus whose saves take a while, so a cue can be caught loading."""
+
+    def __new__(cls, delay):
+        from tests.test_ui_runner import FakeBus
+
+        bus = FakeBus()
+        request = bus.request
+
+        def slow(frame, retries=3):
+            if frame.cmd == SAVE:
+                time.sleep(delay)
+            return request(frame, retries)
+        bus.request = slow
+        return bus
+
+
+def make_rig(tmp_path, bus):
+    session, runner, bus = make_session(bus)
+    player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0, retry_s=0.2)
+    return player, session, runner, bus
+
+
+def test_hold_while_the_boards_are_still_loading_does_not_fire(tmp_path):
+    # The cue already carries its fire time while it loads; HOLD has to
+    # take it off, or the show goes out in the middle of the hold.
+    player, session, runner, bus = make_rig(tmp_path, SlowBus(0.4))
+    try:
+        player.load(make_show(sents=(-REFRESH, 5.0, 9.0), duration=30))
+        player.run(time.monotonic() - 4.5)          # q01 is due in 0.5 s
+        assert wait_until(lambda: session.phase == "preparing"
+                          and session.cue_id.endswith("q01+"))
+        player.hold()
+        assert session.fire_at is None
+        time.sleep(1.5)                             # past the instant
+        assert [f for f in bus.sent if f.cmd == SHOW] == []
+        assert session.phase == "ready"
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_board_that_misses_a_change_gets_the_whole_picture(tmp_path):
+    from tests.test_ui_remote import PickyBus
+
+    bus = PickyBus(set())
+    player, session, runner, bus = make_rig(tmp_path, bus)
+    sent_arrays = []
+    request = bus.request
+
+    def spy(frame, retries=3):
+        if frame.cmd == SAVE:
+            sent_arrays.append((frame.dest, frame.data[3], frame.data[2 + 60]))
+        return request(frame, retries)
+    bus.request = spy
+    try:
+        player.load(make_show(sents=(-REFRESH, 0.8, 4.0), duration=30))
+        player.preset()
+        assert wait_until(lambda: player.applied == "q00")
+        bus.silent = {2}                            # board 2 drops out...
+        player.run(time.monotonic() + 0.2)
+        assert wait_until(lambda: player.applied == "q01")
+        assert player.dirty and "board 2 missed q01" in player.status()["note"]
+        mark = len(sent_arrays)
+        bus.silent = set()                          # ...and comes back
+        runner._next_reprobe = 0.0
+        # Healed at the next chance: by a whole repaint of q01 if the
+        # reprobe finds the board first, else by q02 going out whole
+        # instead of as a change. Either way board 2 is written the full
+        # picture (its colour is 2 in both) and the garment ends clean.
+        assert wait_until(lambda: player.applied == "q02" and not player.dirty,
+                          timeout=8)
+        assert (2, 2, 2) in sent_arrays[mark:]
+        assert player.status()["note"] == ""
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_board_that_stays_dead_does_not_repaint_the_garment_for_ever(tmp_path):
+    from tests.test_ui_remote import PickyBus
+
+    player, session, runner, bus = make_rig(tmp_path, PickyBus(set()))
+    try:
+        player.load(make_show(sents=(-REFRESH, 0.6, 30.0), duration=60))
+        player.preset()
+        assert wait_until(lambda: player.applied == "q00")
+        bus.silent = {2}
+        player.run(time.monotonic() + 0.2)
+        assert wait_until(lambda: player.applied == "q01")
+        time.sleep(3.0)
+        shows = [f for f in bus.sent if f.cmd == SHOW]
+        assert len(shows) == 3          # preset, q01, ONE whole repaint
+        assert player.dirty             # still said, on /status and the LCD
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_show_files_missing_what_the_player_needs_are_refused(rig):
+    player, *_ = rig
+    good = make_show()
+    for broken in ({k: v for k, v in good.items() if k != "refresh_s"},
+                   {k: v for k, v in good.items() if k != "duration"},
+                   dict(good, id=""), dict(good, cues=["q00"]), []):
+        with pytest.raises(RemoteError):
+            player.load(broken)
+    assert player.show is None
+
+
+def test_a_restored_t0_in_the_future_is_not_trusted(rig):
+    player, session, runner, bus, store = rig
+    player.load(make_show(duration=60))
+    player.run(time.monotonic() + 5)
+    player.close()
+    session2, runner2, _ = make_session()
+    # The wall clock came up an hour behind (no RTC): T0 looks an hour away.
+    reborn = ShowPlayer(session2, store=store, tick_s=0.02,
+                        wall=lambda: time.time() - 3600)
+    try:
+        reborn.restore()
+        assert reborn.state == LOADED and reborn.t0 is None
+        assert "future" in reborn.status()["note"]
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
+def test_the_show_file_is_written_once_and_never_half(rig):
+    player, session, runner, bus, store = rig
+    player.load(make_show(duration=60))
+    stamp = (store / "show.json").stat().st_mtime_ns
+    player.run(time.monotonic() + 5)
+    player.hold()
+    player.stop()
+    assert (store / "show.json").stat().st_mtime_ns == stamp
+    assert not list(store.glob("*.tmp"))
+
+
+def test_status_answers_while_the_first_cue_takes_the_port(tmp_path):
+    # start_remote() can wait seconds for the previous worker; the PC's
+    # poll and the LCD read status() meanwhile.
+    player, session, runner, bus = make_rig(tmp_path, SlowBus(0.0))
+    started = runner.start_remote
+
+    def slow_start(sess):
+        time.sleep(1.0)
+        return started(sess)
+    runner.start_remote = slow_start
+    try:
+        player.load(make_show(duration=30))
+        player.preset_thread = None
+        import threading
+        worker = threading.Thread(target=player.preset)
+        worker.start()
+        time.sleep(0.2)
+        began = time.monotonic()
+        assert player.status()["state"] == LOADED
+        assert time.monotonic() - began < 0.3
+        worker.join()
+    finally:
+        player.close()
+        runner.stop()

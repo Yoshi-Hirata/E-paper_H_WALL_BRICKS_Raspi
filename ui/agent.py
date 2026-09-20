@@ -67,6 +67,11 @@ class _Handler(BaseHTTPRequestHandler):
     # clock measurement cannot see (it cost ~30 ms of offset error).
     wbufsize = 64 * 1024
     disable_nagle_algorithm = True
+    # A PC that walks out of Wi-Fi range leaves its kept-alive connection
+    # half open; without a timeout its handler thread would wait for the
+    # next request for ever, one leaked thread per drop. The PC polls
+    # every 2 s, so 20 s of silence is a dead peer.
+    timeout = 20
 
     def log_message(self, fmt, *args):  # the journal is for the panels
         pass
@@ -157,8 +162,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._answer(404, {"error": "not found"})
         except RemoteError as exc:
             return self._answer(409, {"error": str(exc)})
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
             return self._answer(400, {"error": f"bad request: {exc}"})
+        except Exception as exc:        # noqa: BLE001 - answer, never die
+            return self._answer(500, {"error": f"{exc.__class__.__name__}: "
+                                               f"{exc}"})
         payload = self.agent.status()
         payload["clock"] = _clock()
         self._answer(200, payload)

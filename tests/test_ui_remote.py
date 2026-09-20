@@ -389,3 +389,73 @@ def test_remote_screen_renders_every_phase():
         image = render.remote_screen(status, ["13:00:00 x"], now=10.0,
                                      host="radxa-03")
         assert image.size == (WIDTH, HEIGHT)
+
+
+# ---- found in review (2026-09-21) ----
+
+def test_a_worker_that_will_not_stop_is_never_joined_by_a_second_one(monkeypatch):
+    """Two workers on one bus would each send the broadcast show."""
+    import threading
+
+    from ui import runner as runner_mod
+
+    monkeypatch.setattr(runner_mod, "OLD_WORKER_PATIENCE_S", 0.3)
+    bus = FakeBus()
+    release, entered = threading.Event(), threading.Event()
+    request = bus.request
+
+    def wedged(frame, retries=3):
+        if frame.cmd == SAVE and not release.is_set():
+            entered.set()
+            release.wait(5.0)               # a CDC that stopped draining
+        return request(frame, retries)
+    bus.request = wedged
+    session, runner, _ = make_session(bus)
+    session.prepare("c1", {1: array(1)})
+    assert entered.wait(5.0)
+    runner.stop(timeout=0.2)                # gives up waiting for it
+    assert runner._lingering is not None and runner._lingering.is_alive()
+    assert runner._stop.is_set()
+
+    session.prepare("c2", {1: array(2)})    # must not start a second worker
+    assert session.phase == FAILED and "bus busy" in session.status()["error"]
+    assert runner._stop.is_set() and not runner.running
+
+    release.set()                           # the old worker gets its answer...
+    assert wait_until(lambda: not runner._lingering.is_alive())
+    session.prepare("c3", {1: array(3)})    # ...and now the bus is free
+    assert wait_until(lambda: session.phase == READY)
+    session.fire("c3", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED)
+    assert len(shows(bus)) == 1
+    runner.stop()
+
+
+def test_standby_and_prepare_at_the_same_time_leave_one_worker():
+    import threading
+
+    session, runner, bus = make_session()
+    for _ in range(5):
+        a = threading.Thread(target=session.standby)
+        b = threading.Thread(target=session.prepare,
+                             args=("c1", {1: array(1)}))
+        a.start(); b.start(); a.join(); b.join()
+        assert wait_until(lambda: runner.running)
+        # Whichever came last owns the port, and it is a consistent state.
+        assert (runner.remote is session) == (runner.pattern is None)
+    runner.stop()
+    assert runner.error is None or "AttributeError" not in runner.error
+
+
+def test_agent_answers_a_malformed_body_instead_of_dying(agent):
+    agent, session, runner, bus = agent
+    assert call(agent, "/prepare", {"cue": "x", "boards": ["aa"]})[0] == 400
+    assert call(agent, "/show/load", {"id": "s", "cues": ["q"], "refresh_s": 7,
+                                      "duration": 60})[0] in (400, 409)
+    assert call(agent, "/status")[0] == 200
+
+
+def test_agent_connections_time_out_instead_of_leaking_threads():
+    from ui.agent import _Handler
+
+    assert _Handler.timeout and _Handler.timeout <= 30

@@ -89,8 +89,8 @@ class RemoteSession:
             self.fire_at = self.fired_at = self.prepare_s = None
             self._job = {"cue_id": self.cue_id, "boards": dict(boards),
                          "dev_type": dev_type}
-        if not self.runner.remote:
-            self.runner.start_remote(self)
+        if not self.runner.remote and self.runner.start_remote(self) is False:
+            self.failed_with("bus busy: the previous worker has not finished")
         self._wake.set()
 
     def fire(self, cue_id: str, at: float) -> None:

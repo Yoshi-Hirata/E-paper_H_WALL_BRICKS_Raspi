@@ -61,6 +61,10 @@ PROBE_SWEEPS = 3          # setup passes over the board list
 PROBE_SWEEP_DELAY_S = 3.0 # between passes, so a repaint can finish meanwhile
 REPROBE_INTERVAL_S = 60.0 # how often absent boards get another chance
 FIRE_SPIN_S = 0.02        # the last stretch before a timed show is polled
+# How long a new start waits for a worker that did not end within stop()'s
+# timeout. One request into a wedged CDC can block for ~7.5 s (three
+# tries of 2 s write timeout + 0.5 s read), and a save retries that.
+OLD_WORKER_PATIENCE_S = 12.0
 
 
 def device_token(port: str):
@@ -163,6 +167,11 @@ class DemoRunner:
         self.started_at: float | None = None
         self.error: str | None = None
         self._thread: threading.Thread | None = None
+        # A worker that outlived stop()'s join. While it lives the stop
+        # flag stays set and nothing new is started: two workers on one
+        # bus means two broadcast shows for one cue.
+        self._lingering: threading.Thread | None = None
+        self._control = threading.RLock()   # start / start_remote / stop
         self._stop = threading.Event()
         self._pause = threading.Event()
         self._elapsed_base = 0.0
@@ -211,15 +220,34 @@ class DemoRunner:
 
         self.start(STANDBY, once=True)
 
-    def start_remote(self, session) -> None:
+    def _old_worker_gone(self) -> bool:
+        """True once no earlier worker can touch the bus any more."""
+        old = self._lingering
+        if old is not None and old.is_alive():
+            old.join(timeout=OLD_WORKER_PATIENCE_S)
+        if old is not None and old.is_alive():
+            self.error = "bus busy: the previous worker has not finished"
+            self.emit("ERROR previous worker still on the bus, not starting")
+            return False
+        self._lingering = None
+        return True
+
+    def start_remote(self, session) -> bool:
         """Hand the port to the show PC's cues (ui/remote.py).
 
         Same worker thread, different loop: instead of drawing a pattern
         every interval it saves what the session hands it and sends the
-        show at the instant the session names.
+        show at the instant the session names. False if the bus is still
+        held by a worker that would not stop.
         """
+        with self._control:
+            return self._start_remote(session)
+
+    def _start_remote(self, session) -> bool:
         if self.running:
             self.stop()
+        if not self._old_worker_gone():
+            return False
         self.pattern = None
         self.remote = session
         self.cycle = 0
@@ -237,10 +265,17 @@ class DemoRunner:
         self._thread = threading.Thread(target=self._run_remote,
                                         args=(session,), daemon=True)
         self._thread.start()
+        return True
 
-    def start(self, pattern: Pattern, once: bool = False) -> None:
+    def start(self, pattern: Pattern, once: bool = False) -> bool:
+        with self._control:
+            return self._start(pattern, once)
+
+    def _start(self, pattern: Pattern, once: bool = False) -> bool:
         if self.running:
             self.stop()
+        if not self._old_worker_gone():
+            return False
         self.remote = None
         self._once = once
         self.pattern = pattern
@@ -262,8 +297,13 @@ class DemoRunner:
         self.emit(f"start {pattern.label}")
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        return True
 
     def stop(self, timeout: float = 5.0) -> None:
+        with self._control:
+            self._stop_locked(timeout)
+
+    def _stop_locked(self, timeout: float) -> None:
         self._stop.set()
         self._pause.clear()          # let a paused worker notice the stop
         if self.remote is not None:
@@ -271,6 +311,11 @@ class DemoRunner:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=timeout)
+            if thread.is_alive():
+                # Still inside a bus request. It will see the stop flag
+                # when that returns - as long as nobody clears the flag,
+                # which is what _old_worker_gone() guards.
+                self._lingering = thread
         self.remote = None
         self.started_at = None
         self._elapsed_base = 0.0
