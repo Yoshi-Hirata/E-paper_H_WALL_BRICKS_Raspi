@@ -138,6 +138,21 @@ def test_a_different_garment_re_probes_its_own_boards():
     runner.stop()
 
 
+def test_sockets_already_known_empty_get_one_probe_not_three():
+    bus = PickyBus({2, 3})
+    session, runner, _ = make_session(bus)
+    session.prepare("c1", {1: array(1), 2: array(1), 3: array(1)})
+    assert wait_until(lambda: session.phase == READY)
+    first = len([f for f in bus.requested if f.dest == 2 and f.cmd == STOP])
+    assert first == 3                               # unknown: every sweep
+    session.prepare("c2", {1: array(2), 2: array(2)})     # a different list
+    assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
+    again = len([f for f in bus.requested if f.dest == 2 and f.cmd == STOP])
+    assert again - first == 1                       # known empty: one look
+    assert session.status()["saved"] == [1] and session.status()["failed"] == [2]
+    runner.stop()
+
+
 # ---- faults ----
 
 class PickyBus(FakeBus):

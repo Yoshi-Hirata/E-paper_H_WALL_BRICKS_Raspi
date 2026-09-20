@@ -689,8 +689,17 @@ class DemoRunner:
                             self._remote_dev_type = job["dev_type"]
                             wanted = sorted(job["boards"])
                             if wanted != sorted(self.boards):
+                                # Another garment, another board list - but
+                                # what is already known about a socket stays
+                                # known: a board the standby sweep found
+                                # empty gets one probe here, not three
+                                # (29 s for 15 empty sockets on the bench,
+                                # 2026-09-21).
+                                self.absent = {b for b in wanted
+                                               if b in self.absent}
+                                self.live = [b for b in self.live
+                                             if b in wanted]
                                 self.boards = wanted
-                                self.live, self.absent = [], set()
                                 needs_setup = True
                             groups = max(len(self.boards), max(self.boards))
                             began = time.monotonic()
