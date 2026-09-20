@@ -356,7 +356,11 @@ class Fleet:
                 why = why or "put on hold"
         else:
             expected = run["t0"] + link.offset
-            if (why or unit.get("state") != "running" or unit.get("t0") is None
+            # "ended" is a unit that ran the show to its last cue on this
+            # T0 - done, not stopped (seen on radxa-01, 2026-09-21: the
+            # finished unit was restarted every few seconds).
+            if (why or unit.get("state") not in ("running", "ended")
+                    or unit.get("t0") is None
                     or abs(unit["t0"] - expected) > T0_TOLERANCE_S):
                 if now - run["t0"] > float(show.get("duration", 0)) + 30:
                     return                  # the show is over; leave it be

@@ -157,8 +157,8 @@ def stage(tmp_path):
         unit.close()
 
 
-def timeline(ws, second_at=4):
-    ws.set_timeline(30, [
+def timeline(ws, second_at=4, duration=30):
+    ws.set_timeline(duration, [
         cue("a", "Look22", 0, "Look22_color_pattern01_grid.csv"),
         cue("b", "Look20-Top", 0, P1), cue("c", "Look20-Skirt", 0, S1),
         cue("d", "Look22", second_at, "Look22_color_pattern02_grid.csv",
@@ -194,6 +194,20 @@ def test_upload_preset_start_and_both_units_fire_together(stage):
     snap = fleet.snapshot()
     assert snap["run"]["state"] == "running" and snap["run"]["now"] > 5
     assert snap["corrections"] == []
+
+
+def test_a_finished_show_is_left_alone(stage):
+    ws, fleet, units, _ = stage
+    fleet.upload(timeline(ws, second_at=6, duration=6))
+    fleet.simple(list(units), "/show/preset")
+    assert wait_until(lambda: all(u.player.applied == "q00"
+                                  for u in units.values()))
+    fleet.start_show(lead_s=0.3)
+    assert wait_until(lambda: all(u.player.state == "ended"
+                                  for u in units.values()), timeout=10)
+    time.sleep(3.5)                     # longer than the supervision's pause
+    assert fleet.snapshot()["corrections"] == []
+    assert all(u.player.state == "ended" for u in units.values())
 
 
 def test_hold_resume_and_next_move_every_unit_alike(stage):
