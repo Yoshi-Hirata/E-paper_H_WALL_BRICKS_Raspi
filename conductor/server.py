@@ -33,7 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import timeline
+from . import showfile, timeline
 from .fleet import DEFAULT_LEAD_S, Fleet, default_units
 from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, unit_board_ids)
@@ -248,6 +248,46 @@ class Workspace:
             payload["boards"].update({str(address): array.hex()
                                       for address, array in arrays.items()})
         return payloads, problems
+
+    def compile_show(self) -> "tuple[dict[str, dict], list[str]]":
+        """The whole timeline -> ({unit: show file}, problems)."""
+        with self._lock:
+            paths = sorted(self.files.glob("*.csv"))
+            show = self._load_show()
+        assigned = show.get("units", {})
+        maps: "dict[str, LookMap]" = {}
+        facts: "dict[str, dict]" = {}
+        for path in paths:
+            if self.kind(path.name) != "map":
+                continue
+            try:
+                look_map = LookMap.from_csv(path)
+            except LookError:
+                continue
+            maps[(look_map.item or path.stem).lower()] = look_map
+        designs: "dict[str, Design]" = {}
+        for path in paths:
+            if self.kind(path.name) == "grid":
+                try:
+                    designs[path.name] = Design.from_csv(path)
+                except LookError:
+                    pass
+        for key, look_map in maps.items():
+            mine = {name: d for name, d in designs.items()
+                    if (d.item or "").lower() == key}
+            facts[key] = {
+                "item": look_map.item, "unit": assigned.get(look_map.item),
+                "boards": len(look_map.board_nos),
+                "designs": {name: {"full": not check(look_map, d),
+                                   "partial": not check(look_map, d, True)}
+                            for name, d in mine.items()}}
+        refresh = float(show.get("refresh_s", timeline.REFRESH_S))
+        duration = float(show.get("duration", timeline.DEFAULT_DURATION_S))
+        cues = timeline.clean(show.get("cues"))
+        cue_problems, _ = timeline.validate(cues, facts, duration, refresh)
+        return showfile.build(maps, assigned, lambda name: designs[name],
+                              cues, refresh, duration, cue_problems,
+                              name=self.root.name)
 
     # ---- the state the page draws ----
 
@@ -465,8 +505,30 @@ class Handler(BaseHTTPRequestHandler):
             if not 0.5 <= lead <= 60:
                 raise ValueError("lead time is 0.5-60 s")
             return self._json({"units": fleet.fire(cues, lead), "lead_s": lead})
+        if command == "upload":
+            shows, problems = self.workspace.compile_show()
+            results = fleet.upload(shows) if shows else {}
+            return self._json({"units": results, "problems": problems,
+                               "shows": {u: s["id"] for u, s in shows.items()}})
+        if command == "preset":
+            return self._json({"units": fleet.simple(fleet._targets(),
+                                                     "/show/preset")})
+        if command in ("start", "next"):
+            lead = float(body.get("lead_s", DEFAULT_LEAD_S))
+            if not 0.5 <= lead <= 60:
+                raise ValueError("lead time is 0.5-60 s")
+            action = fleet.start_show if command == "start" else fleet.next_cue
+            return self._json({"units": action(lead), "lead_s": lead})
+        if command == "hold":
+            return self._json({"units": fleet.hold()})
+        if command == "resume":
+            return self._json({"units": fleet.resume()})
+        if command == "stop":
+            return self._json({"units": fleet.stop_show()})
         if command in ("cancel", "standby", "release"):
             units = body.get("units") or list(fleet.links)
+            if command == "standby":
+                fleet.stop_show()           # a running show would refuse it
             if command != "cancel":
                 for unit in units:
                     self.prepared.pop(unit, None)

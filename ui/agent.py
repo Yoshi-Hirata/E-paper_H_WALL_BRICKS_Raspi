@@ -14,6 +14,13 @@ a show.
     POST /standby    white out the panels, keep the unit under remote
     POST /release    back to the unit's own menu
 
+    POST /show/load    the unit's whole show file (conductor/showfile.py)
+    POST /show/preset  put the first cue's picture up, before the start
+    POST /show/run     {"t0", "show"}  second 0 of the show, in this
+                       unit's monotonic clock - also RESUME and NEXT,
+                       which are only a moved T0 (ui/showplay.py)
+    POST /show/hold    stop scheduling; POST /show/stop ends the run
+
 The PC polls; the unit never calls out. A unit that walks out of Wi-Fi
 range simply stops answering for a while, and nothing here minds.
 
@@ -40,7 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .remote import DEV_NUMBER_BRAND, RemoteError, RemoteSession
 
 DEFAULT_PORT = 8787
-MAX_BODY = 256 * 1024          # 60 boards x 128 hex chars is ~10 kB
+MAX_BODY = 4 * 1024 * 1024      # a show: cues x boards x 2 x 128 hex chars
 API_VERSION = 1
 
 
@@ -113,7 +120,26 @@ class _Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise RemoteError("the body must be a JSON object")
             session = self.agent.session
-            if self.path == "/prepare":
+            player = self.agent.player
+            if self.path.startswith("/show/"):
+                if player is None:
+                    raise RemoteError("this unit has no show player")
+                if self.path == "/show/load":
+                    player.load(body)
+                elif self.path == "/show/preset":
+                    player.preset()
+                elif self.path == "/show/run":
+                    player.run(float(body["t0"]), body.get("show"))
+                elif self.path == "/show/hold":
+                    player.hold()
+                elif self.path == "/show/stop":
+                    player.stop()
+                else:
+                    return self._answer(404, {"error": "not found"})
+            elif (player is not None and player.running
+                  and self.path in ("/prepare", "/fire", "/standby")):
+                raise RemoteError("a show is running - stop it first")
+            elif self.path == "/prepare":
                 boards = {int(address): bytes.fromhex(array)
                           for address, array in body["boards"].items()}
                 session.prepare(body["cue"], boards,
@@ -141,8 +167,9 @@ class _Handler(BaseHTTPRequestHandler):
 class Agent:
     def __init__(self, session: RemoteSession, port: int = DEFAULT_PORT,
                  token: "str | None" = None, host: str = "0.0.0.0",
-                 commit: str = "?", name: "str | None" = None):
+                 commit: str = "?", name: "str | None" = None, player=None):
         self.session = session
+        self.player = player
         self.port = port
         self.token = token or None
         self.bind = host
@@ -156,7 +183,9 @@ class Agent:
         payload.update({"api": API_VERSION, "host": self.name,
                         "commit": self.commit,
                         "uptime_s": round(time.monotonic() - self._started),
-                        "log": self.session.runner.recent(6)})
+                        "log": self.session.runner.recent(6),
+                        "show": (self.player.status() if self.player
+                                 else None)})
         return payload
 
     def start(self) -> int:

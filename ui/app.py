@@ -103,6 +103,7 @@ class App:
         # The show PC's session (ui/remote.py). It may not take the port
         # while something that must not be interrupted holds the unit.
         self.remote = remote
+        self.show_status = None        # set by main: the show player's status
         if remote is not None:
             remote.busy = lambda: any(
                 worker is not None and worker.busy
@@ -429,7 +430,7 @@ class App:
                 puller.phase, puller.recent(LOG_LINES), error=puller.error,
                 changed=puller.changed, locked=self.locked, host=self.host)
         if self.screen is Screen.REMOTE:
-            status = self.remote.status()
+            status = self._remote_status()
             return render.remote_screen(
                 status, self.runner.recent(LOG_LINES), now=self._mono(),
                 locked=self.locked, host=self.host)
@@ -491,8 +492,9 @@ class App:
                         tuple(puller.recent(LOG_LINES)), puller.error,
                         self.locked)
             if self.screen is Screen.REMOTE:
-                status = self.remote.status()
+                status = self._remote_status()
                 fire_at = status["fire_at"]
+                show = status.get("show") or {}
                 # The countdown repaints once a second, not every poll.
                 left = (None if fire_at is None or status["fired_at"]
                         else int(max(0.0, fire_at - self._mono())))
@@ -500,6 +502,8 @@ class App:
                         status["label"], len(status["saved"]),
                         len(status["failed"]), len(status["live"]),
                         status["error"], status["late_ms"], left,
+                        show.get("state"), show.get("synced"),
+                        None if show.get("now") is None else int(show["now"]),
                         tuple(self.runner.recent(LOG_LINES)), self.locked)
             if self.screen is Screen.REBOOT:
                 rebooter = self.rebooter
@@ -513,6 +517,11 @@ class App:
                 self.runner.error, self.runner.running, self.runner.paused)
 
     # ---- main loop ----
+
+    def _remote_status(self) -> dict:
+        status = self.remote.status()
+        status["show"] = self.show_status() if self.show_status else None
+        return status
 
     @staticmethod
     def _mono() -> float:

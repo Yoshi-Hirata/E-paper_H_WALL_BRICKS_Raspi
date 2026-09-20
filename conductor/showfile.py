@@ -1,0 +1,143 @@
+"""The timeline, compiled into what one unit needs to run it alone.
+
+A unit is handed its whole show before the start and then keeps its own
+time (ui/showplay.py): the Wi-Fi behind a stage is not something a cue
+may depend on. So everything is resolved here, on the PC - designs to
+arrays, board numbers to bus addresses, "complete at 2:00" to "send at
+1:53" - and the unit's file is just a list of
+
+    {"id", "at", "sent", "label", "boards": {addr: hex}, "state": {addr: hex}}
+
+in the order they are sent. `sent` is seconds from the start (the preset,
+loaded before START, has a negative one).
+
+One unit cue is one broadcast, so items that share a unit (Look 20's top
+and skirt) and change at the same instant are one cue. Every cue writes
+ALL the unit's boards: the ones it does not touch get an array of 0xFF,
+"refresh nothing", because the show command is a broadcast and a board
+left with an older array in its slot would repaint that.
+
+`boards` is the change, `state` is the picture after it - the change
+laid over everything before. A unit that comes late to a cue (rebooted,
+started mid-show, jumped by NEXT) sends `state` instead and is right
+again in one refresh, whatever it missed.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+
+from . import timeline
+from .look import (ARRAY_LEN, MARKER, NO_REFRESH, Design, LookError, LookMap,
+                   compile_design, unit_board_ids)
+
+NUMBER_BRAND = 0x03
+
+
+def blank() -> bytearray:
+    """An array that refreshes nothing."""
+    array = bytearray([NO_REFRESH] * ARRAY_LEN)
+    array[0] = array[-1] = MARKER
+    return array
+
+
+def lay_over(state: bytearray, change: bytes) -> None:
+    for index in range(1, ARRAY_LEN - 1):
+        if change[index] != NO_REFRESH:
+            state[index] = change[index]
+
+
+def design_label(look_map: LookMap, design: Design, partial: bool) -> str:
+    name = (f"P{design.pattern:02d}" if design.pattern is not None
+            else design.name)
+    return f"{look_map.item} {name}" + ("*" if partial else "")
+
+
+def build_unit_show(unit: str, maps: "list[LookMap]",
+                    designs: "dict[tuple[str, str], Design]",
+                    cues: "list[dict]", refresh: float, duration: float,
+                    name: str = "show") -> dict:
+    """One unit's show file. `designs` is keyed (item lower-cased, file);
+    `cues` are the timeline's cues for the items in `maps`."""
+    ids = unit_board_ids(maps)
+    by_item = {(m.item or m.name).lower(): m for m in maps}
+    addresses = sorted(ids.values())
+
+    moments: "dict[float, list[dict]]" = {}
+    for cue in cues:
+        sent, _ = timeline.times(cue, refresh)
+        moments.setdefault(sent, []).append(cue)
+
+    state = {address: blank() for address in addresses}
+    unit_cues = []
+    for number, sent in enumerate(sorted(moments)):
+        change = {address: blank() for address in addresses}
+        labels = []
+        for cue in sorted(moments[sent], key=lambda c: c["item"].lower()):
+            look_map = by_item[cue["item"].lower()]
+            design = designs[(cue["item"].lower(), cue["design"])]
+            arrays = compile_design(look_map, design, partial=cue["partial"],
+                                    ids=ids)
+            for address, array in arrays.items():
+                change[address] = bytearray(array)
+            labels.append(design_label(look_map, design, cue["partial"]))
+        for address in addresses:
+            lay_over(state[address], change[address])
+        unit_cues.append({
+            "id": f"q{number:02d}",
+            "at": min(float(c["at"]) for c in moments[sent]),
+            "sent": round(sent, 3),
+            "label": " + ".join(labels),
+            "boards": {str(a): bytes(change[a]).hex() for a in addresses},
+            "state": {str(a): bytes(state[a]).hex() for a in addresses},
+        })
+
+    show = {"name": name, "unit": unit, "dev_type": NUMBER_BRAND,
+            "refresh_s": refresh, "duration": duration,
+            "boards": addresses, "cues": unit_cues}
+    digest = hashlib.sha1(json.dumps(show, sort_keys=True).encode()).hexdigest()
+    show["id"] = digest[:10]
+    return show
+
+
+def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
+          load_design, cues: "list[dict]", refresh: float, duration: float,
+          cue_problems: "dict[str, list[str]]", name: str = "show"
+          ) -> "tuple[dict[str, dict], list[str]]":
+    """({unit: show file}, problems). Nothing is built while the
+    timeline still has a problem: a show goes out whole or not at all."""
+    problems: "list[str]" = []
+    for cue in cues:
+        for problem in cue_problems.get(cue["id"], []):
+            problems.append(f"{timeline.format_clock(cue['at'])} "
+                            f"{cue['item']}: {problem}")
+    used = {cue["item"].lower() for cue in cues}
+    for key in sorted(used):
+        look_map = maps.get(key)
+        if look_map is not None and not assigned.get(look_map.item):
+            problems.append(f"{look_map.item}: 機体が未割当です")
+    if not cues:
+        problems.append("タイムラインにキューがありません")
+    if problems:
+        return {}, problems
+
+    by_unit: "dict[str, list[LookMap]]" = {}
+    for key, look_map in maps.items():
+        unit = assigned.get(look_map.item)
+        if unit:
+            by_unit.setdefault(unit, []).append(look_map)
+    shows = {}
+    for unit, unit_maps in sorted(by_unit.items()):
+        keys = {(m.item or m.name).lower() for m in unit_maps}
+        unit_cues = [c for c in cues if c["item"].lower() in keys]
+        if not unit_cues:
+            continue
+        try:
+            designs = {(c["item"].lower(), c["design"]):
+                       load_design(c["design"]) for c in unit_cues}
+            shows[unit] = build_unit_show(unit, unit_maps, designs, unit_cues,
+                                          refresh, duration, name)
+        except (OSError, LookError) as exc:
+            problems.append(f"{unit}: {exc}")
+    return (shows, problems) if not problems else ({}, problems)

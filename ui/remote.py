@@ -51,6 +51,7 @@ class RemoteSession:
         # unit - a cue must not pull the port from under a flash.
         self.busy = busy or (lambda: False)
 
+        self.on_release = None         # set by the show player's owner
         self.active = False            # the unit is under remote control
         self.phase = LOCAL
         self.cue_id: str | None = None
@@ -125,6 +126,8 @@ class RemoteSession:
 
     def release(self) -> None:
         """Back to the unit's own menu (KEY2 on the REMOTE screen)."""
+        if self.on_release is not None:
+            self.on_release()           # a running show ends with it
         with self._lock:
             self.active = False
             self.phase = LOCAL

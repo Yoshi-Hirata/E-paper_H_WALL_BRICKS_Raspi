@@ -25,6 +25,7 @@ from .patterns import PATTERNS
 from .puller import RepoPuller
 from .rebooter import Rebooter
 from .remote import RemoteSession
+from .showplay import ShowPlayer
 from .runner import DEFAULT_BOARDS, DemoRunner
 from .updater import FirmwareUpdater, find_firmware, usb_rebind
 from .versions import BoardVersions
@@ -346,8 +347,10 @@ def main() -> int:
     remote = agent = None
     if not args.no_remote:
         remote = RemoteSession(runner)
+        player = ShowPlayer(remote)
+        remote.on_release = player.stop
         agent = Agent(remote, port=args.remote_port, token=args.remote_token,
-                      commit=puller.before.commit, name=host)
+                      commit=puller.before.commit, name=host, player=player)
         try:
             print(f"remote agent on port {agent.start()}", flush=True)
         except OSError as exc:
@@ -355,6 +358,12 @@ def main() -> int:
             # from its own buttons, which matters more than the agent.
             print(f"remote agent not started: {exc}", flush=True)
             remote = agent = None
+        else:
+            # A unit that restarted in the middle of a show rejoins it.
+            player.restore()
+            if player.running:
+                args.no_standby = True      # not white: the show's picture
+                print("show restored after restart", flush=True)
 
     display_kwargs = {"directory": args.frames} if args.display in ("png", "auto") else {}
     with make_display(args.display, **display_kwargs) as display, \
@@ -366,6 +375,8 @@ def main() -> int:
         if args.blank_after is not None:
             app_kwargs["blank_after"] = args.blank_after
         app = App(display, inputs, runner, **app_kwargs)
+        if remote is not None:
+            app.show_status = player.status
         if args.pattern:
             app.select(args.pattern)
             app.handle("key1")

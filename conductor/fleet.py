@@ -18,6 +18,14 @@ the network does to the delivery of that message no longer matters, as
 long as it arrives before T; a unit that gets it late fires at once and
 reports by how much.
 
+Running the show is the same idea once more. Every unit holds its whole
+show file and keeps its own time (ui/showplay.py); all it needs from
+here is T0, second 0 of the show, in its own clock. HOLD, RESUME and
+NEXT only move T0. And because each poll reports the T0 a unit is
+running on, this side can see a unit that is wrong - restarted, missed
+the START, holds an old show - and put it right without being asked:
+the supervision in _supervise().
+
 Monotonic clocks restart with the machine. A unit that rebooted shows
 up as an offset that jumped by more than any drift could explain, and
 its measurements start over.
@@ -39,6 +47,8 @@ SAMPLES = 8                # polls the best round trip is chosen from
 STALE_S = 6.0              # no answer this long: shown as offline
 JUMP_S = 0.5               # an offset moving more than this = a reboot
 DEFAULT_LEAD_S = 3.0
+T0_TOLERANCE_S = 0.05      # a unit's T0 further off than this is corrected
+SUPERVISE_EVERY_S = 3.0    # at most one correction per unit in this time
 
 # The PC's reference clock. Not time.monotonic(): on Windows that ticks
 # every 15.6 ms (measured 2026-09-21: round trips of exactly 0, 15 or
@@ -181,6 +191,7 @@ class UnitLink:
                 "late_ms": status.get("late_ms"),
                 "unit_error": status.get("error"),
                 "log": status.get("log", []),
+                "show": status.get("show"),
             }
 
 
@@ -195,6 +206,13 @@ class Fleet:
         self._stop = threading.Event()
         self._threads: "list[threading.Thread]" = []
         self.last_fire: "dict | None" = None
+        # The show: what each unit was given, and the run's T0 on the
+        # PC's clock ({"t0", "state": running|holding, "held_at"}).
+        self.shows: "dict[str, dict]" = {}
+        self.run: "dict | None" = None
+        self._run_lock = threading.Lock()
+        self._corrected: "dict[str, float]" = {}
+        self.corrections: "list[str]" = []
 
     # ---- polling ----
 
@@ -212,12 +230,161 @@ class Fleet:
 
     def _poll_loop(self, link: UnitLink) -> None:
         while not self._stop.is_set():
-            link.poll()
+            if link.poll():
+                try:
+                    self._supervise(link)
+                except Exception as exc:    # noqa: BLE001 - next poll retries
+                    link.error = f"supervise: {exc}"
             self._stop.wait(self.poll_s)
 
     def snapshot(self) -> dict:
+        self._adopt()
+        with self._run_lock:
+            run = dict(self.run) if self.run else None
+        if run:
+            mark = run["held_at"] if run["state"] == "holding" else self._clock()
+            run["now"] = round(mark - run["t0"], 2)
         return {"units": [link.snapshot() for link in self.links.values()],
-                "last_fire": self.last_fire}
+                "last_fire": self.last_fire, "run": run,
+                "shows": {unit: {"id": show["id"], "cues": len(show["cues"])}
+                          for unit, show in self.shows.items()},
+                "corrections": self.corrections[-5:]}
+
+    # ---- the show ----
+
+    def upload(self, shows: "dict[str, dict]") -> "dict[str, dict]":
+        def action(link):
+            status = link.post("/show/load", shows[link.name])
+            return {"show": (status.get("show") or {}).get("id")}
+        results = self._each(list(shows), action)
+        self.shows = dict(shows)
+        return results
+
+    def _send_run(self, names) -> "dict[str, dict]":
+        with self._run_lock:
+            t0 = self.run["t0"]
+        # The polls already in flight still show the old T0; give this
+        # one time to land before the supervision second-guesses it.
+        for name in names:
+            self._corrected[name] = self._clock()
+
+        def action(link):
+            offset = link.offset
+            if offset is None:
+                raise RuntimeError("clock not measured yet")
+            show = self.shows.get(link.name)
+            link.post("/show/run", {"t0": t0 + offset,
+                                    "show": show["id"] if show else None})
+            return {}
+        return self._each(list(names), action)
+
+    def _targets(self) -> "list[str]":
+        return list(self.shows) or [
+            name for name, link in self.links.items()
+            if (link.status or {}).get("show")]
+
+    def start_show(self, lead_s: float = DEFAULT_LEAD_S) -> "dict[str, dict]":
+        with self._run_lock:
+            self.run = {"t0": self._clock() + lead_s, "state": "running",
+                        "held_at": None}
+        return self._send_run(self._targets())
+
+    def hold(self) -> "dict[str, dict]":
+        with self._run_lock:
+            if not self.run or self.run["state"] != "running":
+                return {}
+            self.run.update(state="holding", held_at=self._clock())
+        return self.simple(self._targets(), "/show/hold")
+
+    def resume(self) -> "dict[str, dict]":
+        with self._run_lock:
+            if not self.run or self.run["state"] != "holding":
+                return {}
+            self.run["t0"] += self._clock() - self.run["held_at"]
+            self.run.update(state="running", held_at=None)
+        return self._send_run(self._targets())
+
+    def next_cue(self, lead_s: float = DEFAULT_LEAD_S) -> "dict[str, dict]":
+        """Bring the earliest upcoming cue of any unit to `lead_s` from now
+        by moving T0 earlier - for every unit alike, so they stay in step."""
+        with self._run_lock:
+            if not self.run:
+                return {}
+            mark = (self.run["held_at"] if self.run["state"] == "holding"
+                    else self._clock())
+            now = mark - self.run["t0"]
+            ahead = [cue["sent"] - now for show in self.shows.values()
+                     for cue in show["cues"] if cue["sent"] > now]
+            if not ahead:
+                for link in self.links.values():
+                    nxt = ((link.status or {}).get("show") or {}).get("next")
+                    if nxt:
+                        ahead.append(nxt["in_s"])
+            if not ahead or min(ahead) <= lead_s:
+                return {}
+            self.run["t0"] -= min(ahead) - lead_s
+            if self.run["state"] == "holding":  # NEXT also lets go of a hold
+                self.run["t0"] += self._clock() - self.run["held_at"]
+                self.run.update(state="running", held_at=None)
+        return self._send_run(self._targets())
+
+    def stop_show(self) -> "dict[str, dict]":
+        targets = self._targets()
+        with self._run_lock:
+            self.run = None
+        return self.simple(targets, "/show/stop")
+
+    def _supervise(self, link: UnitLink) -> None:
+        """After every poll: is this unit running what it should, on the
+        T0 it should? If not, tell it - nobody has to notice first."""
+        with self._run_lock:
+            run = dict(self.run) if self.run else None
+        show = self.shows.get(link.name)
+        if run is None or show is None or link.offset is None:
+            return
+        now = self._clock()
+        if now - self._corrected.get(link.name, -1e9) < SUPERVISE_EVERY_S:
+            return
+        unit = (link.status or {}).get("show") or {}
+        why = None
+        if unit.get("id") != show["id"]:
+            why = "show reloaded"
+            link.post("/show/load", show)
+        if run["state"] == "holding":
+            if why or unit.get("state") == "running":
+                link.post("/show/hold", {})
+                why = why or "put on hold"
+        else:
+            expected = run["t0"] + link.offset
+            if (why or unit.get("state") != "running" or unit.get("t0") is None
+                    or abs(unit["t0"] - expected) > T0_TOLERANCE_S):
+                if now - run["t0"] > float(show.get("duration", 0)) + 30:
+                    return                  # the show is over; leave it be
+                link.post("/show/run", {"t0": expected, "show": show["id"]})
+                why = why or ("T0 corrected" if unit.get("t0") is not None
+                              else "started late")
+        if why:
+            self._corrected[link.name] = now
+            self.corrections.append(
+                f"{time.strftime('%H:%M:%S')} {link.name}: {why}")
+            del self.corrections[:-20]
+
+    def _adopt(self) -> None:
+        """A conductor restarted mid-show finds the run on the units."""
+        with self._run_lock:
+            if self.run is not None:
+                return
+            found = []
+            for link in self.links.values():
+                unit = (link.status or {}).get("show") or {}
+                if (link.online and unit.get("state") == "running"
+                        and unit.get("synced") and unit.get("t0") is not None
+                        and link.offset is not None):
+                    found.append(unit["t0"] - link.offset)
+            if found:
+                found.sort()
+                self.run = {"t0": found[len(found) // 2], "state": "running",
+                            "held_at": None, "adopted": True}
 
     # ---- commands, to many units at once ----
 

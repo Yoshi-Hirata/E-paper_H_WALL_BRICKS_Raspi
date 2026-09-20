@@ -355,6 +355,22 @@ def remote_screen(status: dict, log_lines: list[str], now: float = 0.0,
     label = status["label"] or status["cue"] or "waiting for a cue"
     draw.text((8, 30), _ellipsize(label, FONT_L, WIDTH - 16), font=FONT_L,
               fill=FG)
+    show = status.get("show")
+    if show:
+        # The show's own clock and what comes next - what an operator
+        # backstage wants to read off a garment at a glance.
+        if show["state"] == "running" and show["now"] is not None:
+            clock = format_elapsed(show["now"])[3:] if show["now"] >= 0 \
+                else f"-{format_elapsed(-show['now'])[3:]}"
+            line = f"SHOW {clock}"
+            if show["next"]:
+                line += f"  next in {show['next']['in_s']:.0f} s"
+            if not show["synced"]:
+                line += "  (unsynced)"
+        else:
+            line = f"SHOW {show['state'].upper()}  {show['cues']} cues"
+        draw.text((8, 100), _ellipsize(line, FONT_S, WIDTH - 16),
+                  font=FONT_S, fill=ACCENT)
 
     wanted = len(status["boards"])
     if status["phase"] == "standby":
@@ -380,11 +396,11 @@ def remote_screen(status: dict, log_lines: list[str], now: float = 0.0,
         when, tint = "no fire time yet", DIM
     draw.text((8, 80), when, font=FONT_M, fill=tint)
     if status["error"]:
-        draw.text((8, 100), _ellipsize(f"ERROR {status['error']}", FONT_S,
+        draw.text((8, 114), _ellipsize(f"ERROR {status['error']}", FONT_S,
                                        WIDTH - 16), font=FONT_S, fill=ERR)
 
-    draw.line((8, 118, WIDTH - 8, 118), fill=BAR, width=1)
-    y = 122
+    draw.line((8, 130, WIDTH - 8, 130), fill=BAR, width=1)
+    y = 134
     for line in log_lines[-LOG_LINES:]:
         tint = ERR if "ERROR" in line else DIM
         draw.text((8, y), _ellipsize(line, FONT_S, WIDTH - 16),

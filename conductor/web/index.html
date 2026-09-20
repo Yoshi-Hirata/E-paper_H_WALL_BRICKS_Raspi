@@ -140,6 +140,14 @@ input[type=range] { width: 100%; }
 .picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 16px; }
 .picks label { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 .picks label span { min-width: 120px; } .picks select { flex: 1; min-width: 0; }
+.showbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
+.showclock { font-size: 40px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; min-width: 150px; }
+.showclock small { display: block; font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
+.showclock.running small { color: var(--ok); } .showclock.holding small { color: var(--warn); }
+.shownext { font-size: 13px; color: var(--dim); min-width: 220px; }
+.shownext b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
+.go button.hold { background: var(--warn); border-color: var(--warn); color: #fff; }
+.go button.stop:hover { border-color: var(--err); color: var(--err); }
 </style>
 </head>
 <body>
@@ -171,7 +179,7 @@ input[type=range] { width: 100%; }
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
-             board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "" };
+             board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "" };
 let fleet = null;
 let state = null;
 const PITCH = 0.78, MARGIN = 1.2;
@@ -491,7 +499,27 @@ function renderFleet() {
   for (const item of items)
     if (!item.designs.some(d => d.name === ui.choices[item.item])) ui.choices[item.item] = item.designs[0].name;
   const loose = trackItems().filter(i => !i.unit).map(i => i.item);
+  const cueCount = state.show.cues.length, cueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
   $("#content").innerHTML = `
+    <div class="card"><h2>ショーの進行 — タイムライン(キュー ${cueCount}${cueBad ? ` · <span style="color:var(--err)">問題 ${cueBad}</span>` : ""})を各機体へ配布し、機体が自分の時計で実行します</h2>
+      <div class="showbar">
+        <div class="showclock" id="show-clock"><small>—</small>0:00</div>
+        <div class="shownext" id="show-next"></div>
+      </div>
+      <div class="go">
+        <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"}>① 配布</button>
+        <button class="big" id="show-preset">② プリセットを表示(0:00 の姿)</button>
+        <button class="big fire" id="show-start">③ START</button>
+        <label class="meta">START / NEXT から <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> 秒後</label>
+        <span style="flex:1"></span>
+        <button class="big hold" id="show-hold">HOLD</button>
+        <button class="big" id="show-resume">RESUME</button>
+        <button class="big" id="show-next-cue">NEXT ▶</button>
+        <button class="big stop" id="show-stop">STOP(表示はそのまま)</button>
+      </div>
+      <div class="meta" id="show-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.showLog || "")}</div>
+      <div class="meta" id="show-fix"></div>
+    </div>
     <div class="card"><h2>手動の一斉表示(同期の確認用)</h2>
       ${items.length ? `<div class="picks">${items.map(item => `<label><span><b>${esc(item.item)}</b> → ${esc(item.unit)}</span>
         <select data-choice="${esc(item.item)}">${item.designs.filter(d => designState(d) !== "bad").map(d =>
@@ -499,9 +527,9 @@ function renderFleet() {
         : `<div class="meta">機体に割り当てたアイテムがありません(「デザイン確認」の左の一覧で割り当てます)。</div>`}
       ${loose.length ? `<div class="warn" style="margin-top:6px">機体未割当: ${esc(loose.join(", "))}</div>` : ""}
       <div class="go">
-        <button class="big" id="fleet-prepare" ${items.length ? "" : "disabled"}>① 準備 — 基板へ書き込む</button>
-        <button class="big fire" id="fleet-fire">② GO — 一斉に表示</button>
-        <label class="meta">GO から <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> 秒後に全機体が同時に送信</label>
+        <button class="big" id="fleet-prepare" ${items.length ? "" : "disabled"}>準備 — 基板へ書き込む</button>
+        <button class="big fire" id="fleet-fire">GO — 一斉に表示</button>
+        <span class="meta">(上の秒数後に全機体が同時に送信。ショーの実行中は使えません)</span>
         <button id="fleet-cancel">発火を取り消す</button>
         <span style="flex:1"></span>
         <button id="fleet-standby">全機体 STANDBY(白)</button>
@@ -512,7 +540,32 @@ function renderFleet() {
     <div class="card"><h2>機体 — 2 秒ごとに問い合わせ、その往復で時計のずれも測っています</h2><div class="tiles" id="tiles"></div></div>`;
   renderTiles();
 }
+function showClockText() {
+  const box = $("#show-clock");
+  if (!box || !fleet) return;
+  const run = fleet.run;
+  let now = null, word = "未開始";
+  if (run) {
+    now = run.state === "holding" ? run.now : run.now + (performance.now() - fleet.at) / 1000;
+    word = run.state === "holding" ? "HOLD 中" : now < 0 ? "開始まで" : "実行中" + (run.adopted ? "(機体から復元)" : "");
+    if (run.state === "running" && now > state.show.duration) word = "終了";
+  }
+  box.className = "showclock " + (run ? run.state : "");
+  box.innerHTML = `<small>${word}</small>${now === null ? "0:00" : clock(now)}`;
+  const upcoming = fleet.units.filter(u => u.online && u.show && u.show.next).map(u => ({ unit: u.name, ...u.show.next }))
+    .sort((a, b) => a.in_s - b.in_s);
+  const loaded = fleet.units.filter(u => u.online && u.show && fleet.shows[u.name] && u.show.id === fleet.shows[u.name].id).length;
+  const want = Object.keys(fleet.shows).length;
+  $("#show-next").innerHTML = (run && run.state === "running" && upcoming.length
+      ? `<b>次: ${esc(upcoming[0].label || upcoming[0].id)}</b>${esc(upcoming[0].unit)} が約 ${Math.max(0, Math.round(upcoming[0].in_s - (performance.now() - fleet.at) / 1000))} 秒後に送信`
+      : `<b>${run ? (run.state === "holding" ? "保留中" : "次のキューなし") : "—"}</b>`)
+    + `<br>配布済み ${loaded} / ${want} 機体`;
+  $("#show-fix").innerHTML = fleet.corrections.length
+    ? "自動修復: " + fleet.corrections.map(esc).join(" · ") : "";
+}
+setInterval(showClockText, 250);
 function renderTiles() {
+  showClockText();
   const box = $("#tiles");
   if (!box || !fleet) return;
   const carried = {};
@@ -528,6 +581,7 @@ function renderTiles() {
       <div class="row"><span>時計の精度 · 往復</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>ロード</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? `(${u.prepare_s.toFixed(1)} 秒)` : "") : "—"}</b></div>
       <div class="row"><span>発火の遅れ</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
+      <div class="row"><span>ショー</span><b>${u.show ? `${fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ 旧版") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? "(未同期)" : ""} · ${u.show.applied || "—"} / ${u.show.cues}` : "—"}</b></div>
       <div class="row"><span>コミット</span><b>${esc(u.commit || "?")}</b></div>
       ${u.failed.length ? `<div class="e">保存できなかった基板: ${u.failed.join(", ")}</div>` : ""}
       ${u.unit_error ? `<div class="e">${esc(u.unit_error)}</div>` : ""}
@@ -537,7 +591,7 @@ function renderTiles() {
 }
 async function pollFleet() {
   if (ui.tab === "fleet" && !document.hidden) {
-    try { fleet = await api("/api/fleet"); renderTiles(); } catch (err) { /* the server is restarting */ }
+    try { fleet = await api("/api/fleet"); fleet.at = performance.now(); renderTiles(); } catch (err) { /* the server is restarting */ }
   }
   setTimeout(pollFleet, 1000);
 }
@@ -545,12 +599,13 @@ function unitReport(result) {
   const lines = Object.entries(result.units || {}).sort().map(([unit, r]) => `${unit}: ${r.ok ? "OK" : "失敗 — " + r.error}`);
   return [...(result.problems || []), ...lines].join("\n") || (result.error || "対象の機体がありません");
 }
-async function fleetCommand(command, body, title) {
-  ui.goLog = title + " …"; if ($("#go-log")) $("#go-log").textContent = ui.goLog;
+async function fleetCommand(command, body, title, slot = "go") {
+  const key = slot === "go" ? "goLog" : "showLog", box = () => $("#" + slot + "-log");
+  ui[key] = title + " …"; if (box()) box().textContent = ui[key];
   const result = await api("/api/fleet/" + command, body);
-  ui.goLog = `${title}(${new Date().toLocaleTimeString()})\n` + unitReport(result);
-  if ($("#go-log")) $("#go-log").textContent = ui.goLog;
-  fleet = await api("/api/fleet"); renderTiles();
+  ui[key] = `${title}(${new Date().toLocaleTimeString()})\n` + unitReport(result);
+  if (box()) box().textContent = ui[key];
+  fleet = await api("/api/fleet"); fleet.at = performance.now(); renderTiles();
 }
 
 // ---- events ----
@@ -573,6 +628,18 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
+  const showButtons = { "show-upload": ["upload", "① 配布"], "show-preset": ["preset", "② プリセットを表示"],
+    "show-hold": ["hold", "HOLD"], "show-resume": ["resume", "RESUME"] };
+  if (showButtons[e.target.id]) { const [command, title] = showButtons[e.target.id]; await fleetCommand(command, {}, title, "show"); return; }
+  if (e.target.id === "show-start") {
+    if (fleet?.run && !confirm("ショーは実行中です。最初からやり直しますか?")) return;
+    await fleetCommand("start", { lead_s: ui.lead }, `③ START(${ui.lead} 秒後)`, "show"); return;
+  }
+  if (e.target.id === "show-next-cue") { await fleetCommand("next", { lead_s: ui.lead }, `NEXT(${ui.lead} 秒後に次のキュー)`, "show"); return; }
+  if (e.target.id === "show-stop") {
+    if (confirm("ショーの進行を止めます(パネルの表示はそのまま残ります)。よろしいですか?")) await fleetCommand("stop", {}, "STOP", "show");
+    return;
+  }
   if (e.target.id === "fleet-prepare") {
     const choices = Object.fromEntries(assignedItems().map(i => [i.item, ui.choices[i.item]]));
     await fleetCommand("prepare", { choices }, "① 準備を送信"); return;
