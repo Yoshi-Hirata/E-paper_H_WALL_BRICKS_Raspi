@@ -231,9 +231,7 @@
   書き込み、各機の起動を確認(ユーザー確認。03 以降は初回起動だけで
   ホスト名・SSH 鍵・machine-id・ルート FS 拡張・IP `.1NN` が自動で揃う)
 - 台数分の作業はすべて同じ手順で、個体差はホスト名 `radxa-NN` だけ。
-  ゴールデンイメージは `D:
-adxa-golden
-adxa-01-golden.img`
+  ゴールデンイメージは `D:\radxa-golden\radxa-01-golden.img`
   (sha256 `62a49726…f14b`、リポジトリ e489b84 同梱)。追加・交換時も
   同じコマンドで作れる
 - 全台を同時に起動しても IP は分かれる。SSH は `radxa@192.168.50.1NN`
@@ -260,9 +258,7 @@ adxa-01-golden.img`
   `raspi/logind-appliance.conf`(電源/サスペンド系キーを ignore)を追加し、
   実機・ゴールデンイメージ・`setup.sh` に反映。本番はヘッドレスなので
   影響は無いが、ブリングアップでモニタを繋ぐと再発するため恒久対処
-- ゴールデンイメージの sha256 が更新された(`D:
-adxa-golden
-adxa-01-golden.sha256`)
+- ゴールデンイメージの sha256 が更新された(`D:\radxa-golden\radxa-01-golden.sha256`)
 
 **Radxa 10 台複製の仕組み(2026-09-15)**
 
@@ -273,9 +269,7 @@ adxa-01-golden.sha256`)
   (FAT、Windows から書ける)で設定する。手順は [radxa/README.md](../radxa/README.md)
   「10 台への複製」
 - 開発機は `radxa-01` に改名済み。**ゴールデンイメージ作成済み**:
-  `D:
-adxa-golden
-adxa-01-golden.img`(7.04 GB、sha256 は同名 .sha256)。
+  `D:\radxa-golden\radxa-01-golden.img`(7.04 GB、sha256 は同名 .sha256)。
   元の全体読み出し `radxa-01-full.img`(31 GB)も同じ場所
 - 書き込みは `radxa/clone/write_card.ps1 -Unit NN -Disk N`(WSL + 管理者
   Python)。Windows はカードのパーティションを見せず、`wsl --mount` は USB
@@ -489,9 +483,12 @@ ID:1 と ID:20 は **0.5 秒以内の同時リフレッシュ**(deaf 窓 0.7-17.
 
 ```bash
 # 手元
-cd c:\Users\yhira\Claude\e-paper_v01\E-paper_H_WALL_BRICKS_Raspi
+cd <このリポジトリ>
 git pull
-python -m pytest tests/ -q            # 150 passed を確認
+python -m pytest tests/ -q            # 全件 passed を確認(2026-09-21 時点で 371 件。pytest / pyserial / pillow が要る)
+
+# ショー用 PC の UI を起動(ブラウザが開く。二重に起動してもページを開くだけ)
+"Start Conductor.bat"                 # = python -m conductor serve --open
 
 # 本番機(パネル接続側)
 ssh radxa@192.168.50.101
