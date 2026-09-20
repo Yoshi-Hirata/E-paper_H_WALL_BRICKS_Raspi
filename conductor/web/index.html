@@ -574,13 +574,19 @@ function showClockText() {
   $("#show-fix").innerHTML = fleet.corrections.length
     ? "Corrected automatically: " + fleet.corrections.map(esc).join(" · ") : "";
   const running = !!run && run.state === "running", holding = !!run && run.state === "holding";
-  const able = { "show-preset": want > 0 && !run, "show-start": want > 0,
+  // Units can be running a show this conductor knows nothing of yet (it was
+  // restarted; the run is adopted a poll or two later, or never if the units
+  // themselves came back unsynced). STOP must work then more than ever.
+  const unitsBusy = fleet.units.some(u => u.online && u.show && ["running", "holding"].includes(u.show.state));
+  const able = { "show-preset": want > 0 && !run && !unitsBusy, "show-start": want > 0,
                  "show-hold": running, "show-resume": holding,
-                 "show-next-cue": (running && upcoming.length > 0) || holding, "show-stop": !!run,
-                 "fleet-prepare": !run && assignedItems().length > 0, "fleet-fire": !run };
+                 "show-next-cue": (running && upcoming.length > 0) || holding, "show-stop": !!run || unitsBusy,
+                 "fleet-prepare": !run && !unitsBusy && assignedItems().length > 0, "fleet-fire": !run && !unitsBusy };
   for (const [id, on] of Object.entries(able)) { const b = $("#" + id); if (b) b.disabled = !on; }
   const hint = $("#show-hint");
-  if (hint) hint.textContent = !want ? "Upload the show first." : loaded < want
+  if (hint) hint.textContent = !want ? (unitsBusy
+      ? "Units are running a show this conductor did not upload (it was restarted). STOP works; Upload again to take the show over."
+      : "Upload the show first.") : loaded < want
     ? `${want - loaded} unit(s) do not hold this show yet - they are corrected automatically once they answer.` : "";
 }
 setInterval(showClockText, 250);
@@ -657,6 +663,7 @@ document.addEventListener("keydown", e => {
   step(key === "y" || e.shiftKey ? "redo" : "undo");
 });
 document.addEventListener("click", async e => {
+  if (Date.now() - draggedAt < 400) return;   // the tail of a drag, not a click
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
   const showButtons = { "show-upload": ["upload", "① Upload"], "show-preset": ["preset", "② Show preset"],
     "show-hold": ["hold", "HOLD"], "show-resume": ["resume", "RESUME"] };
@@ -830,9 +837,11 @@ document.addEventListener("pointermove", e => {
   drag.at = at; drag.block.title = clock(at);
   const label = $("#ph-label"); if (label) label.textContent = clock(at) + " (moving)";
 });
+let draggedAt = 0;
 document.addEventListener("pointerup", async () => {
   const done = drag; drag = null;
   if (!done || !done.moved) return;
+  draggedAt = Date.now();                     // the click that follows is part of the drag
   ui.cue = done.cue.id;
   if (done.at === undefined || done.at === done.cue.at) { renderTimeline(); return; }
   ui.playhead = done.at;

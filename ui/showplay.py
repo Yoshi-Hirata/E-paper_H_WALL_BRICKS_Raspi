@@ -94,6 +94,12 @@ class ShowPlayer:
         self._counted: "str | None" = None     # session key already tallied
         self._retry_at = 0.0
         self._not_before = 0.0
+        # Bumped by every command. _send() runs without the lock (it may
+        # wait for the port), so what _plan() decided can be overtaken by
+        # a HOLD, a STOP or a new show; the epoch is how it notices, and
+        # a cue is only ever armed under the lock in an unchanged epoch.
+        self._epoch = 0
+        self._run_no = 0               # part of the session key, see run()
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._quit = threading.Event()
@@ -119,6 +125,7 @@ class ShowPlayer:
                 if key not in cue:
                     raise RemoteError(f"cue without {key}")
         with self._lock:
+            self._epoch += 1
             self._disarm()
             self.show = show
             self.state, self.t0, self.synced = LOADED, None, False
@@ -137,9 +144,21 @@ class ShowPlayer:
             if self.session.busy():
                 raise RemoteError("unit is busy (firmware update, scan "
                                   "or reboot)")
+            self._epoch += 1
             self.t0, self.synced = float(t0), True
             self.state, self.note = RUNNING, ""
             self._not_before = 0.0
+            if self._clock() < self.t0:
+                # T0 ahead of now is a start from the top (RESUME and NEXT
+                # land inside the show). A new run gets new session keys,
+                # so nothing left in the session from the last run can
+                # pass for this run's cue, and the garment is only taken
+                # as known if it is cleanly showing the preset.
+                self._run_no += 1
+                first = self.show["cues"][0]["id"]
+                if self.applied != first or self.dirty:
+                    self._forget_garment()
+                self._healed_for = self._latched = None
             self._persist()
         self._wake.set()
 
@@ -157,14 +176,18 @@ class ShowPlayer:
             if self.session.busy():
                 raise RemoteError("unit is busy (firmware update, scan "
                                   "or reboot)")
+            self._epoch += 1
+            self._run_no += 1
             show, first = self.show, self.show["cues"][0]
             self._forget_garment()
             fire_at = self._clock() + self._lead(first) + CATCH_UP_LEAD_S
-        self._send(show, first, True, fire_at)      # may take the port: no lock
+            epoch = self._epoch
+        self._send(show, first, True, fire_at, epoch)   # may take the port
         self._wake.set()
 
     def hold(self) -> None:
         with self._lock:
+            self._epoch += 1
             if self.state == RUNNING:
                 self.state = HOLDING
                 self._disarm()
@@ -173,6 +196,7 @@ class ShowPlayer:
 
     def stop(self) -> None:
         with self._lock:
+            self._epoch += 1
             if self.state in (RUNNING, HOLDING):
                 self._disarm()
             if self.show is not None:
@@ -279,35 +303,47 @@ class ShowPlayer:
         return bool(self.show) and str(cue_id or "").startswith(
             self.show["id"] + ":")
 
-    @staticmethod
-    def _key(show: dict, cue: dict, whole: bool) -> str:
-        return f"{show['id']}:{cue['id']}" + ("+" if whole else "")
+    def _key(self, show: dict, cue: dict, whole: bool) -> str:
+        return (f"{show['id']}:{self._run_no}:{cue['id']}"
+                + ("+" if whole else ""))
 
     @staticmethod
     def _parse(key: str) -> "tuple[str, bool]":
         """session key -> (cue id, was it the whole picture)."""
-        cue_id = key.split(":", 1)[1]
+        cue_id = key.rsplit(":", 1)[1]
         return (cue_id[:-1], True) if cue_id.endswith("+") else (cue_id, False)
 
-    def _send(self, show: dict, cue: dict, whole: bool, fire_at: float) -> None:
+    def _send(self, show: dict, cue: dict, whole: bool, fire_at: float,
+              epoch: int) -> None:
         """Make the session hold this cue, timed for `fire_at`.
 
         Called WITHOUT the player's lock: the first prepare takes the
         serial port, which can wait seconds for the previous worker, and
         /status (the PC's poll, the LCD) must keep answering meanwhile.
+        Writing the boards changes nothing on the glass, so that part may
+        be overtaken by a HOLD or a STOP; giving the cue its time may
+        not, and happens under the lock, in the epoch it was decided in.
         """
         session = self.session
         key = self._key(show, cue, whole)
         if session.cue_id != key or session.phase == FAILED:
             source = cue["state"] if whole else cue["boards"]
+            label = cue.get("label", "") + (" [whole]" if whole
+                                            and cue is not show["cues"][0]
+                                            else "")
             session.prepare(key, {int(a): bytes.fromhex(h)
                                   for a, h in source.items()},
-                            int(show.get("dev_type", 3)), cue.get("label", ""))
-            session.fire(key, fire_at)
-        elif session.phase in (PREPARING, READY) or (
-                session.phase == ARMED and session.fire_at is not None
-                and abs(session.fire_at - fire_at) > 0.001):
-            session.fire(key, fire_at)      # (re)timed: HOLD/RESUME, NEXT
+                            int(show.get("dev_type", 3)), label)
+        with self._lock:
+            if epoch != self._epoch:
+                if session.cue_id == key:
+                    session.cancel()        # decided before the command
+                return
+            if session.cue_id == key and (
+                    session.phase in (PREPARING, READY) or (
+                        session.phase == ARMED and session.fire_at is not None
+                        and abs(session.fire_at - fire_at) > 0.001)):
+                session.fire(key, fire_at)  # timed, or (re)timed: T0 moved
 
     def _tally(self) -> None:
         """What the session last fired is what is on the garment - noted
@@ -352,13 +388,24 @@ class ShowPlayer:
             nxt = ahead[0] if ahead else None
             in_flight = (self._owns(session.cue_id)
                          and session.phase in (PREPARING, READY, ARMED))
+            duration = float(show["duration"])
+            if nxt is None and now > duration + END_SLACK_S:
+                # Over on the clock - even if the last cue never made it
+                # onto a dead board and would be retried for ever.
+                self._disarm()
+                self.state = ENDED
+                self._persist()
+                return self.tick_s, None
             if (session.phase == FAILED and self._owns(session.cue_id)
                     and now_mono < self._retry_at):
                 return self.tick_s, None        # not a tight re-prepare loop
 
             action = None
-            # 1. The next cue, once it is time to write the boards.
-            if nxt is not None and nxt["sent"] - now <= self._lead(nxt):
+            # 1. The next cue, once it is time to write the boards - unless
+            #    it is on the garment already (the preset, shown before a
+            #    START whose T0 is still ahead).
+            if (nxt is not None and nxt["sent"] - now <= self._lead(nxt)
+                    and not (self.applied == nxt["id"] and not self.dirty)):
                 index = cues.index(nxt)
                 before = cues[index - 1]["id"] if index else None
                 if self._latched is None or self._latched[0] != nxt["id"]:
@@ -384,16 +431,14 @@ class ShowPlayer:
                     action = (show, current, True,
                               now_mono + self._lead(current) + CATCH_UP_LEAD_S)
 
-            duration = float(show["duration"])
-            if nxt is None and action is None and not in_flight and (
-                    (current is not None and self.applied == current["id"]
-                     and now > duration)
-                    or now > duration + END_SLACK_S):
+            if (nxt is None and action is None and not in_flight
+                    and current is not None and self.applied == current["id"]
+                    and now > duration):
                 self.state = ENDED
                 self._persist()
             if action is not None and session.phase == FAILED:
                 self._retry_at = now_mono + self.retry_s
-            return self.tick_s, action
+            return self.tick_s, (action + (self._epoch,) if action else None)
 
     def _loop(self) -> None:
         while not self._quit.is_set():

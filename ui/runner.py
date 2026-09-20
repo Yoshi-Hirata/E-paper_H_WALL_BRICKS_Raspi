@@ -274,6 +274,7 @@ class DemoRunner:
     def _start(self, pattern: Pattern, once: bool = False) -> bool:
         if self.running:
             self.stop()
+        self.pattern = pattern          # what the screen names, either way
         if not self._old_worker_gone():
             return False
         self.remote = None

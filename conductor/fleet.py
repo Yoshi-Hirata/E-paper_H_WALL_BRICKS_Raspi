@@ -228,6 +228,7 @@ class Fleet:
         # STOP, a unit still running is a unit that missed it.
         self._may_adopt = True
         self._stopped = False
+        self._stop_told: "set[str]" = set()    # told once; not a tug of war
         self._corrected: "dict[str, float]" = {}
         self.corrections: "list[str]" = []
 
@@ -350,6 +351,7 @@ class Fleet:
         targets = self._targets()
         with self._run_lock:
             self._may_adopt, self._stopped = False, True
+            self._stop_told = set()
             self.run = None
         return self.simple(targets, "/show/stop")
 
@@ -366,7 +368,11 @@ class Fleet:
         if run is None:
             # The operator stopped the show; a unit that was out of reach
             # then and still runs it has to be told now.
-            if stopped and unit.get("state") in ("running", "holding"):
+            if (stopped and unit.get("state") in ("running", "holding")
+                    and link.name not in self._stop_told):
+                # Once per unit and STOP: a unit that missed it. One that
+                # runs again after that was started by someone, on purpose.
+                self._stop_told.add(link.name)
                 link.post("/show/stop", {})
                 self._corrected[link.name] = now
                 self.corrections.append(f"{time.strftime('%H:%M:%S')} "
@@ -389,14 +395,20 @@ class Fleet:
             # "ended" is a unit that ran the show to its last cue on this
             # T0 - done, not stopped (seen on radxa-01, 2026-09-21: the
             # finished unit was restarted every few seconds).
+            # `synced` false is a unit running on the T0 it restored from
+            # disk: even when that is close enough, say so, so it knows
+            # (and shows) that the PC has confirmed it.
             if (why or unit.get("state") not in ("running", "ended")
                     or unit.get("t0") is None
+                    or unit.get("synced") is False
                     or abs(unit["t0"] - expected) > T0_TOLERANCE_S):
                 if now - run["t0"] > float(show.get("duration", 0)) + 30:
                     return                  # the show is over; leave it be
                 link.post("/show/run", {"t0": expected, "show": show["id"]})
-                why = why or ("T0 corrected" if unit.get("t0") is not None
-                              else "started late")
+                why = why or ("started late" if unit.get("t0") is None
+                              else "T0 confirmed after its restart"
+                              if abs(unit["t0"] - expected) <= T0_TOLERANCE_S
+                              else "T0 corrected")
         if why:
             self._corrected[link.name] = now
             self.corrections.append(

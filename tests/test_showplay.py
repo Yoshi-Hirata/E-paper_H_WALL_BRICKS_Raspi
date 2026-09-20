@@ -459,3 +459,77 @@ def test_status_answers_while_the_first_cue_takes_the_port(tmp_path):
     finally:
         player.close()
         runner.stop()
+
+
+# ---- found in the second review pass ----
+
+def test_a_send_decided_before_hold_does_not_arm_the_cue_after_it(rig):
+    # _send() runs without the lock; a HOLD can land between the decision
+    # and the arming. The boards may be written - the time must not be set.
+    player, session, runner, bus, _ = rig
+    player.load(make_show(sents=(-REFRESH, 5.0, 9.0), duration=30))
+    player.run(time.monotonic() - 1.0)
+    assert wait_until(lambda: player.applied == "q00")
+    show, cue = player.show, player.show["cues"][1]
+    stale = player._epoch
+    player.hold()                                   # ...the operator was faster
+    player._send(show, cue, False, time.monotonic() + 0.3, stale)
+    assert wait_until(lambda: session.phase == "ready")
+    assert session.fire_at is None
+    time.sleep(0.6)
+    assert len(show_times(bus)) == 1                # only the preset ever fired
+
+
+def test_the_same_goes_for_stop_and_for_a_new_show(rig):
+    player, session, runner, bus, _ = rig
+    player.load(make_show(duration=30))
+    show, cue = player.show, player.show["cues"][1]
+    for command in (player.stop, lambda: player.load(make_show(duration=31))):
+        stale = player._epoch
+        command()
+        player._send(show, cue, True, time.monotonic() + 0.2, stale)
+        time.sleep(0.5)
+        assert session.fire_at is None
+    assert show_times(bus) == []
+
+
+def test_the_show_ends_on_the_clock_even_if_the_last_cue_never_lands(tmp_path):
+    from tests.test_ui_remote import PickyBus
+
+    player, session, runner, bus = make_rig(tmp_path, PickyBus({1, 2}))
+    try:
+        import ui.showplay as showplay
+
+        player.load(make_show(sents=(-REFRESH, 0.3, 0.6), duration=1))
+        old, showplay.END_SLACK_S = showplay.END_SLACK_S, 1.0
+        try:
+            player.run(time.monotonic() - 0.2)
+            assert wait_until(lambda: player.state == ENDED, timeout=8)
+        finally:
+            showplay.END_SLACK_S = old
+        assert player.applied is None and show_times(bus) == []
+        assert session.fire_at is None              # nothing left armed
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_starting_again_from_the_top_runs_every_cue_again(rig):
+    player, session, runner, bus, _ = rig
+    player.load(make_show())
+    player.preset()
+    assert wait_until(lambda: player.applied == "q00")
+    player.run(time.monotonic() + 0.3)
+    assert wait_until(lambda: player.state == ENDED, timeout=6)
+    first_run = len(show_times(bus))
+    assert first_run == 3
+    # START again (the page asks, the server sends force): same show, new T0.
+    t0 = time.monotonic() + 0.6
+    player.run(t0)
+    assert player.state == RUNNING
+    assert wait_until(lambda: player.state == ENDED, timeout=8)
+    # The garment showed q02, not the preset: all three go out again, the
+    # preset as a whole picture, and nothing is mistaken for already sent.
+    assert len(show_times(bus)) == first_run + 3
+    assert player.applied == "q02"
+    assert 0 <= show_times(bus)[-2] - (t0 + 0.8) < 0.05

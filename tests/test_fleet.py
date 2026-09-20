@@ -299,3 +299,33 @@ def test_a_fresh_conductor_adopts_a_running_show_once():
     assert abs(run["t0"] - 1000.0) < 1e-6           # unit T0 - its offset
     fleet.stop_show()
     assert fleet.snapshot()["run"] is None          # and never again
+
+
+def test_a_unit_that_missed_the_stop_is_told_once_not_fought():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-02", "running")
+    fleet.links = {"radxa-02": link}
+    fleet.shows = {"radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.start_show(lead_s=1.0)
+    fleet.stop_show()
+    link.posted.clear()
+    for _ in range(3):
+        fleet._corrected.clear()
+        fleet._supervise(link)
+    assert link.posted == [("/show/stop", {})]      # once; then it is theirs
+
+
+def test_a_restored_unit_is_told_its_t0_even_when_it_is_close_enough():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-02", "running")
+    link.status["show"]["synced"] = False           # running on its disk's T0
+    fleet.links = {"radxa-02": link}
+    fleet.shows = {"radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 1000.0, "state": "running", "held_at": None}
+    fleet._supervise(link)
+    assert link.posted == [("/show/run", {"t0": 1005.0, "show": "showA"})]
+    assert "confirmed" in fleet.corrections[-1]
+    link.status["show"]["synced"] = True
+    link.posted.clear(); fleet._corrected.clear()
+    fleet._supervise(link)
+    assert link.posted == []
