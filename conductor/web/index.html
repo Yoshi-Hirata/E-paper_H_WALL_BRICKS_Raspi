@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -154,24 +154,24 @@ input[type=range] { width: 100%; }
 <header>
   <h1>E-PAPER SHOW CONDUCTOR</h1>
   <div class="tabs">
-    <button data-tab="items">デザイン確認</button><button data-tab="timeline">タイムライン</button><button data-tab="fleet">機体</button>
+    <button data-tab="items">Designs</button><button data-tab="timeline">Timeline</button><button data-tab="fleet">Units</button>
   </div>
   <div class="tabs">
-    <button id="undo" title="元に戻す (Ctrl+Z)">↶ 元に戻す</button><button id="redo" title="やり直す (Ctrl+Y / Ctrl+Shift+Z)">やり直す ↷</button>
+    <button id="undo" title="Undo (Ctrl+Z)">↶ Undo</button><button id="redo" title="Redo (Ctrl+Y / Ctrl+Shift+Z)">Redo ↷</button>
   </div>
-  <label class="filebtn">CSV を追加<input id="pick" type="file" accept=".csv" multiple></label>
-  <span class="meta">または画面に CSV をドロップ(複数可)</span>
+  <label class="filebtn">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
+  <span class="meta">or drop CSV files anywhere on the page</span>
   <span class="ws" id="ws"></span>
 </header>
 <main id="main">
   <aside>
-    <h2>アイテム(ルック / バッグ)</h2>
+    <h2>ITEMS (LOOKS / BAGS)</h2>
     <div id="items"></div>
     <div id="orphans"></div>
   </aside>
   <div id="content"></div>
 </main>
-<div id="drop">ここに CSV をドロップ</div>
+<div id="drop">Drop the CSV files here</div>
 <div id="toast"></div>
 
 <script>
@@ -222,8 +222,8 @@ function render() {
 // partial cue) or bad (wrong even as a partial cue).
 const designState = d => !d.problems.length ? "ok" : !d.partial_problems.length ? "partial" : "bad";
 const designBadge = d => ({ ok: `<span class="okline">OK</span>`,
-  partial: `<span class="warn">一部更新用</span>`,
-  bad: `<span style="color:var(--err)">問題 ${d.partial_problems.length}</span>` }[designState(d)]);
+  partial: `<span class="warn">partial only</span>`,
+  bad: `<span style="color:var(--err)">${d.partial_problems.length} problems</span>` }[designState(d)]);
 function problemsOf(item) {
   return item.problems.length + item.designs.reduce((n, d) => n + d.partial_problems.length, 0);
 }
@@ -231,21 +231,21 @@ function problemsOf(item) {
 function renderSidebar() {
   let html = "", unit;
   for (const item of state.items) {
-    if (item.unit !== unit) { unit = item.unit; html += `<div class="unit">${unit ? esc(unit) : "未割当"}</div>`; }
+    if (item.unit !== unit) { unit = item.unit; html += `<div class="unit">${unit ? esc(unit) : "Unassigned"}</div>`; }
     const bad = problemsOf(item);
     const dot = !item.map ? "none" : bad ? "err" : "ok";
     html += `<div class="item ${item.item === ui.item ? "sel" : ""}" data-item="${esc(item.item)}">
       <div class="name"><span class="dot ${dot}"></span>${esc(item.item)}</div>
-      <div class="meta">${item.map ? `鱗 ${item.map.scales.length} / 基板 ${item.boards.length} / デザイン ${item.designs.length}` : "map がありません"}
-        ${bad ? ` · <span style="color:var(--err)">問題 ${bad}</span>` : ""}</div>
+      <div class="meta">${item.map ? `${item.map.scales.length} scales / ${item.boards.length} boards / ${item.designs.length} designs` : "no map CSV"}
+        ${bad ? ` · <span style="color:var(--err)">${bad} problems</span>` : ""}</div>
       <select data-assign="${esc(item.item)}">
-        <option value="">機体: 未割当</option>
+        <option value="">Unit: unassigned</option>
         ${state.units.map(u => `<option ${u === item.unit ? "selected" : ""}>${u}</option>`).join("")}
       </select></div>`;
   }
-  $("#items").innerHTML = html || `<div class="meta">まだありません</div>`;
+  $("#items").innerHTML = html || `<div class="meta">Nothing yet</div>`;
   $("#orphans").innerHTML = state.orphans.length
-    ? `<h2>MAP 待ちのデザイン</h2>` + state.orphans.map(o =>
+    ? `<h2>DESIGNS WAITING FOR A MAP</h2>` + state.orphans.map(o =>
         `<div class="files"><span>${esc(o.name)} <button data-del="${esc(o.name)}">×</button></span></div>`).join("")
     : "";
 }
@@ -276,7 +276,7 @@ function renderGarment(item, opts) {
   sides.forEach((side, index) => {
     const x0 = index * sideW;
     if (opts.labels) {
-      const label = { front: "FRONT 前", back: "BACK 後ろ" }[side] || side.toUpperCase();
+      const label = { front: "FRONT", back: "BACK" }[side] || side.toUpperCase();
       svg += `<text x="${x0 + margin * cell}" y="17" font-size="12" fill="var(--dim)">${esc(label)}</text>`;
     }
     const here = scales.filter(s => s[0] === side).sort((a, b) => a[1] - b[1] || a[2] - b[2]);
@@ -305,10 +305,10 @@ function renderGarment(item, opts) {
 function renderContent() {
   const item = state.items.find(i => i.item === ui.item);
   const root = $("#content");
-  if (!item) { root.innerHTML = `<div class="empty">map と grid の CSV を追加してください(1 アイテムにデザインは何枚でも追加できます)。</div>`; return; }
+  if (!item) { root.innerHTML = `<div class="empty">Add the map and grid CSV files (an item can have any number of designs).</div>`; return; }
   if (!item.map || !item.map.scales.length) {
     root.innerHTML = `<div class="card"><h2>${esc(item.item)}</h2>
-      <ul class="problems">${item.problems.map(p => `<li>${esc(p)}</li>`).join("") || "<li>map CSV がありません</li>"}</ul>${fileList(item)}</div>`;
+      <ul class="problems">${item.problems.map(p => `<li>${esc(p)}</li>`).join("") || "<li>no map CSV</li>"}</ul>${fileList(item)}</div>`;
     return;
   }
   if (!item.designs.some(d => d.name === ui.design)) ui.design = item.designs[0]?.name ?? null;
@@ -324,55 +324,55 @@ function renderContent() {
 
   root.innerHTML = `
     <div class="toolbar">
-      <div class="group"><span>デザイン</span>
+      <div class="group"><span>Design</span>
         <select id="design">${item.designs.map(d =>
           `<option value="${esc(d.name)}" ${d.name === ui.design ? "selected" : ""}>${d.pattern !== null ? "pattern " + String(d.pattern).padStart(2, "0") + " · " : ""}${esc(d.name)}${designState(d) === "bad" ? " ⚠" : ""}</option>`).join("")
-          || "<option>(デザイン CSV なし)</option>"}</select></div>
-      <div class="group"><span>表示</span>${btn("mode", "design", "仕上がり")}${btn("mode", "wiring", "配線")}</div>
-      <div class="group"><span>向き</span>${btn("view", "outside", "外側(客席から)")}${btn("view", "inside", "内側(CSV の向き)")}</div>
+          || "<option>(no design CSV)</option>"}</select></div>
+      <div class="group"><span>View</span>${btn("mode", "design", "Finished")}${btn("mode", "wiring", "Wiring")}</div>
+      <div class="group"><span>Seen from</span>${btn("view", "outside", "Outside (audience)")}${btn("view", "inside", "Inside (as in the CSV)")}</div>
     </div>
     <div id="stage">${renderGarment(item, { cell: 22, mode, labels: true, colors: design?.colors || {},
                                           undecided: design?.undecided, shifts: design?.shifts })}</div>
-    <div id="info">鱗にカーソルを合わせると、位置・基板・ソケット・色を表示します。</div>
+    <div id="info">Hover a scale for its position, board, socket and colour.</div>
     <div class="cols">
       <div>
-        <div class="card"><h2>検証</h2>
+        <div class="card"><h2>CHECK</h2>
           ${problems.length
             ? `<ul class="problems">${problems.slice(0, 60).map(p => `<li>${esc(p)}</li>`).join("")}
-               ${problems.length > 60 ? `<li>… ほか ${problems.length - 60} 件</li>` : ""}</ul>`
-            : `<div class="okline">✓ 問題なし — map ${item.map.scales.length} 枚${design ? ` / デザイン ${Object.keys(design.colors).length} 枚` : ""}</div>`}
-          ${kind === "partial" ? `<div class="warn">一部更新用のデザインです: 色未指定(-)または色なしの鱗 ${design.problems.length} 枚は、直前の表示のまま残ります。タイムラインでは「一部更新」のキューとして使ってください。</div>` : ""}
+               ${problems.length > 60 ? `<li>… and ${problems.length - 60} more</li>` : ""}</ul>`
+            : `<div class="okline">✓ No problems — map ${item.map.scales.length} scales${design ? ` / design ${Object.keys(design.colors).length} scales` : ""}</div>`}
+          ${kind === "partial" ? `<div class="warn">A partial design: ${design.problems.length} scales are undecided (-) or uncoloured and keep what they show. Use it as a partial cue on the timeline.</div>` : ""}
           ${(item.map.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
         </div>
-        <div class="card"><h2>このアイテムのデザイン(${item.designs.length})</h2>
+        <div class="card"><h2>DESIGNS OF THIS ITEM (${item.designs.length})</h2>
           <table><tbody>${item.designs.map(d => {
             const at = used.filter(c => c.design === d.name).map(c => clock(c.at));
             return `<tr class="pick ${d.name === ui.design ? "hl" : ""}" data-design="${esc(d.name)}">
               <td><b>${esc(designLabel(d))}</b></td><td>${esc(d.name)}</td>
               <td>${designBadge(d)}</td>
-              <td class="meta">${at.length ? "タイムライン: " + at.join(", ") : "未使用"}</td>
-              <td><button data-del="${esc(d.name)}" title="ワークスペースから削除">×</button></td></tr>`; }).join("")
-            || `<tr><td class="meta">デザイン CSV(*_color_patternNN_grid.csv)を追加してください</td></tr>`}</tbody></table>
+              <td class="meta">${at.length ? "timeline: " + at.join(", ") : "unused"}</td>
+              <td><button data-del="${esc(d.name)}" title="Delete from the workspace">×</button></td></tr>`; }).join("")
+            || `<tr><td class="meta">Add design CSV files (*_color_patternNN_grid.csv)</td></tr>`}</tbody></table>
         </div>
-        ${design ? `<div class="card"><h2>使用色</h2><table><tbody>
-          ${Object.keys(usage).sort((a, b) => a - b).map(c => `<tr><td><span class="sw" style="background:${rgb(c)}"></span>${hex(c)} ${esc(state.palette[c].name)}</td><td>${usage[c]} 枚</td></tr>`).join("")}
-          ${design.undecided.length ? `<tr><td>- 色未指定</td><td>${design.undecided.length} 枚</td></tr>` : ""}
+        ${design ? `<div class="card"><h2>COLOURS USED</h2><table><tbody>
+          ${Object.keys(usage).sort((a, b) => a - b).map(c => `<tr><td><span class="sw" style="background:${rgb(c)}"></span>${hex(c)} ${esc(state.palette[c].name)}</td><td>${usage[c]}</td></tr>`).join("")}
+          ${design.undecided.length ? `<tr><td>- undecided</td><td>${design.undecided.length}</td></tr>` : ""}
           </tbody></table></div>` : ""}
-        <div class="card"><h2>MAP ファイル</h2>${fileList(item)}</div>
+        <div class="card"><h2>MAP FILE</h2>${fileList(item)}</div>
       </div>
       <div class="card">
-        <h2>基板と DIP スイッチ ${item.unit ? "— " + esc(item.unit) + " のバス" : "(機体未割当: このアイテム単独で採番)"}</h2>
-        <table><thead><tr><th>基板 No.</th><th>DIP ID</th><th>ON にするスイッチ</th><th>鱗</th></tr></thead><tbody>
+        <h2>BOARDS AND DIP SWITCHES ${item.unit ? "— THE BUS OF " + esc(item.unit) : "(NO UNIT YET: NUMBERED FOR THIS ITEM ALONE)"}</h2>
+        <table><thead><tr><th>BOARD NO.</th><th>DIP ID</th><th>SWITCHES ON</th><th>SCALES</th></tr></thead><tbody>
         ${item.boards.map((b, i) => `<tr data-board="${b.board_no}" class="pick ${ui.board === b.board_no ? "hl" : ""}">
           <td><span class="sw" style="background:${tint(i, item.boards.length)}"></span>${String(b.board_no).padStart(3, "0")}</td>
           <td><b>${b.dip_id}</b></td><td>${esc(b.switches_on)}</td><td>${b.scales}</td></tr>`).join("")}
         </tbody></table>
-        <div class="meta" style="margin-top:6px">行をクリックすると、その基板の鱗だけを強調します。</div>
+        <div class="meta" style="margin-top:6px">Click a row to highlight that board's scales.</div>
       </div>
     </div>`;
 }
 function fileList(item) {
-  return item.map ? `<div class="files"><span>${esc(item.map.name)} <button data-del="${esc(item.map.name)}" title="ワークスペースから削除">×</button></span></div>` : "";
+  return item.map ? `<div class="files"><span>${esc(item.map.name)} <button data-del="${esc(item.map.name)}" title="Delete from the workspace">×</button></span></div>` : "";
 }
 
 // ---- tab 2: the timeline ----
@@ -380,13 +380,13 @@ function trackItems() { return state.items.filter(i => i.map && i.map.scales.len
 function cuesOf(item) { return state.show.cues.filter(c => c.item === item.item).sort((a, b) => a.sent - b.sent); }
 function wornAt(item, t) {
   // Designs complete by t, in order: a full cue replaces, a partial one overlays.
-  let colors = {}, shifts = null, label = "(開始前の表示のまま)", changing = false;
+  let colors = {}, shifts = null, label = "(as before the show)", changing = false;
   for (const cue of cuesOf(item)) {
     const design = item.designs.find(d => d.name === cue.design);
     if (cue.sent <= t && t < cue.complete) changing = true;
     if (cue.complete > t || !design) continue;
     colors = cue.partial ? { ...colors, ...design.colors } : { ...design.colors };
-    shifts = design.shifts; label = designLabel(design) + (cue.partial ? "(一部)" : "");
+    shifts = design.shifts; label = designLabel(design) + (cue.partial ? " (partial)" : "");
   }
   return { colors, shifts, label, changing };
 }
@@ -399,7 +399,7 @@ async function saveShow(cues, duration, refresh) {
 }
 function renderTimeline() {
   const root = $("#content"), show = state.show, D = show.duration, items = trackItems();
-  if (!items.length) { root.innerHTML = `<div class="empty">先に「デザイン確認」で map とデザインの CSV を追加してください。</div>`; return; }
+  if (!items.length) { root.innerHTML = `<div class="empty">Add the map and design CSV files on the Designs tab first.</div>`; return; }
   const pct = t => (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
   const step = D <= 180 ? 10 : D <= 900 ? 30 : 60;
   let ruler = "";
@@ -415,13 +415,13 @@ function renderTimeline() {
       const sel = cue.id === ui.cue ? " sel" : "";
       const chips = design ? [...new Set(Object.values(design.colors))].sort((a, b) => a - b).slice(0, 8)
         .map(c => `<b style="background:${rgb(c)}"></b>`).join("") : "";
-      if (cue.at > 0) blocks += `<div class="cue-band${sel}" data-cue="${cue.id}" title="書き換え中 ${clock(cue.sent)} → ${clock(cue.complete)}"
+      if (cue.at > 0) blocks += `<div class="cue-band${sel}" data-cue="${cue.id}" title="refreshing ${clock(cue.sent)} → ${clock(cue.complete)}"
         style="left:${pct(cue.sent)};width:calc(${pct(cue.complete)} - ${pct(cue.sent)})"></div>`;
       blocks += `<div class="cue-hold${sel}${cue.problems.length ? " bad" : ""}" data-cue="${cue.id}"
         title="${esc(cue.design)}" style="left:${pct(cue.complete)};width:calc(${pct(until)} - ${pct(cue.complete)})">
-        <span class="chips">${chips}</span>${cue.problems.length ? "⚠ " : ""}${esc(design ? designLabel(design) : "?")}${cue.partial ? "(一部)" : ""}</div>`;
+        <span class="chips">${chips}</span>${cue.problems.length ? "⚠ " : ""}${esc(design ? designLabel(design) : "?")}${cue.partial ? " (partial)" : ""}</div>`;
     });
-    rows += `<div class="tl-row"><div class="tl-name">${esc(item.item)}<small>${esc(item.unit || "機体未割当")} · 基板 ${item.boards.length}</small></div>
+    rows += `<div class="tl-row"><div class="tl-name">${esc(item.item)}<small>${esc(item.unit || "no unit")} · ${item.boards.length} boards</small></div>
       <div class="tl-track" data-track="${esc(item.item)}">${blocks}</div></div>`;
   }
 
@@ -432,11 +432,11 @@ function renderTimeline() {
 
   root.innerHTML = `
     <div class="toolbar">
-      <div class="group"><span>ショーの長さ</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
-      <div class="group"><span>書き換え時間</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
-        title="送信から絵が完成するまでの秒数。FW によって変わる(最新 FW で約 7 秒、旧 FW は 16 秒)"><span>秒</span></div>
-      <div class="meta">トラックの空いている所をクリック → その時刻にキューを追加 · キューをクリック → 下で編集 ·
-        斜線 = 書き換え中(${show.refresh_s} 秒)</div>
+      <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
+      <div class="group"><span>Refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
+        title="Seconds from the command to the finished image. Depends on the firmware (about 7 s on the latest, 16 s on older ones)"><span>s</span></div>
+      <div class="meta">Click an empty spot on a track to add a cue there · click a cue to edit it below ·
+        hatched = refreshing (${show.refresh_s} s)</div>
     </div>
     <div class="card">
       <div class="tl-wrap">
@@ -445,38 +445,38 @@ function renderTimeline() {
         <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"></div></div>
       </div>
     </div>
-    <div class="card"><h2>キューの編集</h2>
+    <div class="card"><h2>EDIT CUE</h2>
       ${cue ? `<div class="editor">
         <b>${esc(cue.item)}</b>
-        <label>時刻 <input type="text" id="cue-at" value="${clock(cue.at)}"></label>
-        <label>デザイン <select id="cue-design">${(cueItem?.designs || []).map(d =>
+        <label>Time <input type="text" id="cue-at" value="${clock(cue.at)}"></label>
+        <label>Design <select id="cue-design">${(cueItem?.designs || []).map(d =>
           `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}</option>`).join("")}</select></label>
-        <label>時刻の意味 <select id="cue-align" ${cue.at <= 0 ? "disabled" : ""}>
-          <option value="done" ${cue.align === "done" ? "selected" : ""}>この時刻に完成(${show.refresh_s} 秒前に送信)</option>
-          <option value="start" ${cue.align === "start" ? "selected" : ""}>この時刻に変化を開始</option></select></label>
-        <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> 一部更新</label>
-        <button id="cue-show">デザインを見る</button>
-        <button id="cue-del" class="danger">削除</button>
-        <span class="meta">${cue.at <= 0 ? "プリセット: START の前に表示しておく" : `送信 ${clock(cue.sent)} → 完成 ${clock(cue.complete)}`}</span>
+        <label>The time means <select id="cue-align" ${cue.at <= 0 ? "disabled" : ""}>
+          <option value="done" ${cue.align === "done" ? "selected" : ""}>complete at this time (sent ${show.refresh_s} s earlier)</option>
+          <option value="start" ${cue.align === "start" ? "selected" : ""}>the change starts at this time</option></select></label>
+        <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label>
+        <button id="cue-show">View design</button>
+        <button id="cue-del" class="danger">Delete</button>
+        <span class="meta">${cue.at <= 0 ? "Preset: shown before START" : `sent ${clock(cue.sent)} → complete ${clock(cue.complete)}`}</span>
       </div>
       ${cue.problems.length ? `<ul class="problems" style="margin-top:8px">${cue.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}`
-      : `<div class="meta">キューを選ぶか、トラックをクリックして追加してください。</div>`}
+      : `<div class="meta">Select a cue, or click a track to add one.</div>`}
     </div>
-    <div class="card"><h2>この時刻の見え方 — <span id="ph-label"></span></h2>
+    <div class="card"><h2>THE LOOKS AT — <span id="ph-label"></span></h2>
       <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
       <div class="thumbs" id="thumbs" style="margin-top:8px"></div>
     </div>
-    <div class="card"><h2>キュー一覧(${all.length}) ${bad ? `<span style="color:var(--err)">— 問題 ${bad}</span>` : all.length ? `<span class="okline">— ✓ 問題なし</span>` : ""}</h2>
+    <div class="card"><h2>CUES (${all.length}) ${bad ? `<span style="color:var(--err)">— ${bad} PROBLEMS</span>` : all.length ? `<span class="okline">— ✓ NO PROBLEMS</span>` : ""}</h2>
       ${show.warnings.map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
-      <table><thead><tr><th>時刻</th><th>アイテム</th><th>機体</th><th>デザイン</th><th>送信 → 完成</th><th>状態</th></tr></thead><tbody>
+      <table><thead><tr><th>TIME</th><th>ITEM</th><th>UNIT</th><th>DESIGN</th><th>SENT → COMPLETE</th><th>STATUS</th></tr></thead><tbody>
       ${all.map(c => { const it = state.items.find(i => i.item === c.item); const d = it?.designs.find(x => x.name === c.design);
         return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}"><td><b>${clock(c.at)}</b></td><td>${esc(c.item)}</td>
-        <td>${esc(it?.unit || "-")}</td><td>${esc(d ? designLabel(d) : c.design)}${c.partial ? "(一部)" : ""}</td>
-        <td>${c.at <= 0 ? "プリセット" : clock(c.sent) + " → " + clock(c.complete)}</td>
+        <td>${esc(it?.unit || "-")}</td><td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}</td>
+        <td>${c.at <= 0 ? "preset" : clock(c.sent) + " → " + clock(c.complete)}</td>
         <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
-        || `<tr><td class="meta" colspan="6">まだキューがありません</td></tr>`}
+        || `<tr><td class="meta" colspan="6">No cues yet</td></tr>`}
       </tbody></table>
-      <div class="meta" style="margin-top:6px">機体ごとの最短間隔(送信から次の送信まで): ${Object.entries(show.min_interval).map(([u, s]) => `${esc(u)} ${Math.ceil(s)} 秒`).join(" · ")}</div>
+      <div class="meta" style="margin-top:6px">Shortest interval per unit (one send to the next): ${Object.entries(show.min_interval).map(([u, s]) => `${esc(u)} ${Math.ceil(s)} s`).join(" · ")}</div>
     </div>`;
   renderThumbs();
 }
@@ -487,7 +487,7 @@ function renderThumbs() {
   $("#thumbs").innerHTML = trackItems().map(item => {
     const worn = wornAt(item, t);
     return `<div class="thumb"><div class="t">${esc(item.item)} <span>${esc(worn.label)}</span>
-      ${worn.changing ? `<span class="chg">書き換え中…</span>` : ""}</div>
+      ${worn.changing ? `<span class="chg">refreshing…</span>` : ""}</div>
       ${renderGarment(item, { cell: 8, mode: "design", labels: false, colors: worn.colors, shifts: worn.shifts })}</div>`;
   }).join("");
 }
@@ -501,54 +501,54 @@ function renderFleet() {
   const loose = trackItems().filter(i => !i.unit).map(i => i.item);
   const cueCount = state.show.cues.length, cueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
   $("#content").innerHTML = `
-    <div class="card"><h2>ショーの進行 — タイムライン(キュー ${cueCount}${cueBad ? ` · <span style="color:var(--err)">問題 ${cueBad}</span>` : ""})を各機体へ配布し、機体が自分の時計で実行します</h2>
+    <div class="card"><h2>THE SHOW — THE TIMELINE (${cueCount} CUES${cueBad ? ` · <span style="color:var(--err)">${cueBad} PROBLEMS</span>` : ""}) IS UPLOADED TO THE UNITS, WHICH RUN IT ON THEIR OWN CLOCKS</h2>
       <div class="showbar">
         <div class="showclock" id="show-clock"><small>—</small>0:00</div>
         <div class="shownext" id="show-next"></div>
       </div>
       <div class="go">
-        <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"}>① 配布</button>
-        <button class="big" id="show-preset">② プリセットを表示(0:00 の姿)</button>
+        <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"}>① Upload</button>
+        <button class="big" id="show-preset">② Show preset (the 0:00 look)</button>
         <button class="big fire" id="show-start">③ START</button>
-        <label class="meta">START / NEXT から <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> 秒後</label>
+        <label class="meta">START / NEXT take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
         <span style="flex:1"></span>
         <button class="big hold" id="show-hold">HOLD</button>
         <button class="big" id="show-resume">RESUME</button>
         <button class="big" id="show-next-cue">NEXT ▶</button>
-        <button class="big stop" id="show-stop">STOP(表示はそのまま)</button>
+        <button class="big stop" id="show-stop">STOP (panels keep their image)</button>
       </div>
       <div class="meta" id="show-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.showLog || "")}</div>
       <div class="meta" id="show-fix"></div>
     </div>
-    <div class="card"><h2>手動の一斉表示(同期の確認用)</h2>
+    <div class="card"><h2>MANUAL CUE (FOR CHECKING THE SYNC)</h2>
       ${items.length ? `<div class="picks">${items.map(item => `<label><span><b>${esc(item.item)}</b> → ${esc(item.unit)}</span>
         <select data-choice="${esc(item.item)}">${item.designs.filter(d => designState(d) !== "bad").map(d =>
-          `<option value="${esc(d.name)}" ${d.name === ui.choices[item.item] ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}${designState(d) === "partial" ? "(一部更新)" : ""}</option>`).join("")}</select></label>`).join("")}</div>`
-        : `<div class="meta">機体に割り当てたアイテムがありません(「デザイン確認」の左の一覧で割り当てます)。</div>`}
-      ${loose.length ? `<div class="warn" style="margin-top:6px">機体未割当: ${esc(loose.join(", "))}</div>` : ""}
+          `<option value="${esc(d.name)}" ${d.name === ui.choices[item.item] ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}${designState(d) === "partial" ? " (partial)" : ""}</option>`).join("")}</select></label>`).join("")}</div>`
+        : `<div class="meta">No item is assigned to a unit yet (assign them in the list on the Designs tab).</div>`}
+      ${loose.length ? `<div class="warn" style="margin-top:6px">No unit: ${esc(loose.join(", "))}</div>` : ""}
       <div class="go">
-        <button class="big" id="fleet-prepare" ${items.length ? "" : "disabled"}>準備 — 基板へ書き込む</button>
-        <button class="big fire" id="fleet-fire">GO — 一斉に表示</button>
-        <span class="meta">(上の秒数後に全機体が同時に送信。ショーの実行中は使えません)</span>
-        <button id="fleet-cancel">発火を取り消す</button>
+        <button class="big" id="fleet-prepare" ${items.length ? "" : "disabled"}>Prepare — write the boards</button>
+        <button class="big fire" id="fleet-fire">GO — show together</button>
+        <span class="meta">(all units send together after the seconds above; not available while a show runs)</span>
+        <button id="fleet-cancel">Cancel the fire</button>
         <span style="flex:1"></span>
-        <button id="fleet-standby">全機体 STANDBY(白)</button>
-        <button id="fleet-release">全機体を本体メニューへ戻す</button>
+        <button id="fleet-standby">All units STANDBY (white)</button>
+        <button id="fleet-release">Release all units to their own menu</button>
       </div>
       <div class="meta" id="go-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.goLog)}</div>
     </div>
-    <div class="card"><h2>機体 — 2 秒ごとに問い合わせ、その往復で時計のずれも測っています</h2><div class="tiles" id="tiles"></div></div>`;
+    <div class="card"><h2>UNITS — POLLED EVERY 2 S; EACH ROUND TRIP ALSO MEASURES THE CLOCK OFFSET</h2><div class="tiles" id="tiles"></div></div>`;
   renderTiles();
 }
 function showClockText() {
   const box = $("#show-clock");
   if (!box || !fleet) return;
   const run = fleet.run;
-  let now = null, word = "未開始";
+  let now = null, word = "NOT STARTED";
   if (run) {
     now = run.state === "holding" ? run.now : run.now + (performance.now() - fleet.at) / 1000;
-    word = run.state === "holding" ? "HOLD 中" : now < 0 ? "開始まで" : "実行中" + (run.adopted ? "(機体から復元)" : "");
-    if (run.state === "running" && now > state.show.duration) word = "終了";
+    word = run.state === "holding" ? "ON HOLD" : now < 0 ? "STARTS IN" : "RUNNING" + (run.adopted ? " (RECOVERED FROM THE UNITS)" : "");
+    if (run.state === "running" && now > state.show.duration) word = "ENDED";
   }
   box.className = "showclock " + (run ? run.state : "");
   box.innerHTML = `<small>${word}</small>${now === null ? "0:00" : clock(now)}`;
@@ -557,11 +557,11 @@ function showClockText() {
   const loaded = fleet.units.filter(u => u.online && u.show && fleet.shows[u.name] && u.show.id === fleet.shows[u.name].id).length;
   const want = Object.keys(fleet.shows).length;
   $("#show-next").innerHTML = (run && run.state === "running" && upcoming.length
-      ? `<b>次: ${esc(upcoming[0].label || upcoming[0].id)}</b>${esc(upcoming[0].unit)} が約 ${Math.max(0, Math.round(upcoming[0].in_s - (performance.now() - fleet.at) / 1000))} 秒後に送信`
-      : `<b>${run ? (run.state === "holding" ? "保留中" : "次のキューなし") : "—"}</b>`)
-    + `<br>配布済み ${loaded} / ${want} 機体`;
+      ? `<b>Next: ${esc(upcoming[0].label || upcoming[0].id)}</b>${esc(upcoming[0].unit)} sends it in about ${Math.max(0, Math.round(upcoming[0].in_s - (performance.now() - fleet.at) / 1000))} s`
+      : `<b>${run ? (run.state === "holding" ? "On hold" : "No cue ahead") : "—"}</b>`)
+    + `<br>uploaded to ${loaded} / ${want} units`;
   $("#show-fix").innerHTML = fleet.corrections.length
-    ? "自動修復: " + fleet.corrections.map(esc).join(" · ") : "";
+    ? "Corrected automatically: " + fleet.corrections.map(esc).join(" · ") : "";
 }
 setInterval(showClockText, 250);
 function renderTiles() {
@@ -575,18 +575,18 @@ function renderTiles() {
     const phase = u.online ? (u.phase || "?") : "offline";
     return `<div class="tile ${u.online ? "" : "off"}">
       <div class="n"><span class="dot ${u.online ? "ok" : "none"}"></span>${esc(u.name)}<span class="ph ${esc(phase)}">${esc(phase)}</span></div>
-      <div class="row"><span>アイテム</span><b>${esc(items.map(i => i.item).join(" + ") || "—")}</b></div>
+      <div class="row"><span>Item</span><b>${esc(items.map(i => i.item).join(" + ") || "—")}</b></div>
       ${u.online ? `
-      <div class="row"><span>基板(応答 / 想定)</span><b>${u.live} / ${expected || u.boards || "?"}</b></div>
-      <div class="row"><span>時計の精度 · 往復</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
-      <div class="row"><span>ロード</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? `(${u.prepare_s.toFixed(1)} 秒)` : "") : "—"}</b></div>
-      <div class="row"><span>発火の遅れ</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
-      <div class="row"><span>ショー</span><b>${u.show ? `${fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ 旧版") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? "(未同期)" : ""} · ${u.show.applied || "—"} / ${u.show.cues}` : "—"}</b></div>
-      <div class="row"><span>コミット</span><b>${esc(u.commit || "?")}</b></div>
-      ${u.failed.length ? `<div class="e">保存できなかった基板: ${u.failed.join(", ")}</div>` : ""}
+      <div class="row"><span>Boards (answering / expected)</span><b>${u.live} / ${expected || u.boards || "?"}</b></div>
+      <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
+      <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
+      <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
+      <div class="row"><span>Show</span><b>${u.show ? `${fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${u.show.applied || "—"} / ${u.show.cues}` : "—"}</b></div>
+      <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
+      ${u.failed.length ? `<div class="e">Boards not written: ${u.failed.join(", ")}</div>` : ""}
       ${u.unit_error ? `<div class="e">${esc(u.unit_error)}</div>` : ""}
       <div class="l" title="${esc(u.log.join("\n"))}">${esc(u.log[u.log.length - 1] || "")}</div>`
-      : `<div class="row"><span>${esc(u.address)}</span></div><div class="l">${esc(u.error || "応答なし")}</div>`}
+      : `<div class="row"><span>${esc(u.address)}</span></div><div class="l">${esc(u.error || "no answer")}</div>`}
     </div>`; }).join("");
 }
 async function pollFleet() {
@@ -596,8 +596,8 @@ async function pollFleet() {
   setTimeout(pollFleet, 1000);
 }
 function unitReport(result) {
-  const lines = Object.entries(result.units || {}).sort().map(([unit, r]) => `${unit}: ${r.ok ? "OK" : "失敗 — " + r.error}`);
-  return [...(result.problems || []), ...lines].join("\n") || (result.error || "対象の機体がありません");
+  const lines = Object.entries(result.units || {}).sort().map(([unit, r]) => `${unit}: ${r.ok ? "OK" : "FAILED — " + r.error}`);
+  return [...(result.problems || []), ...lines].join("\n") || (result.error || "No unit to send to");
 }
 async function fleetCommand(command, body, title, slot = "go") {
   const key = slot === "go" ? "goLog" : "showLog", box = () => $("#" + slot + "-log");
@@ -612,7 +612,7 @@ async function fleetCommand(command, body, title, slot = "go") {
 // Undo covers the show (timeline, length, unit assignments); the server keeps the history.
 async function step(which) {
   const result = await api("/api/" + which, {});
-  if (!result.ok) { toast(which === "undo" ? "これ以上戻せません" : "やり直す操作がありません"); return; }
+  if (!result.ok) { toast(which === "undo" ? "Nothing to undo" : "Nothing to redo"); return; }
   await refresh();
   if (!state.show.cues.some(c => c.id === ui.cue)) ui.cue = null;
   render();
@@ -628,34 +628,34 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
-  const showButtons = { "show-upload": ["upload", "① 配布"], "show-preset": ["preset", "② プリセットを表示"],
+  const showButtons = { "show-upload": ["upload", "① Upload"], "show-preset": ["preset", "② Show preset"],
     "show-hold": ["hold", "HOLD"], "show-resume": ["resume", "RESUME"] };
   if (showButtons[e.target.id]) { const [command, title] = showButtons[e.target.id]; await fleetCommand(command, {}, title, "show"); return; }
   if (e.target.id === "show-start") {
-    if (fleet?.run && !confirm("ショーは実行中です。最初からやり直しますか?")) return;
-    await fleetCommand("start", { lead_s: ui.lead }, `③ START(${ui.lead} 秒後)`, "show"); return;
+    if (fleet?.run && !confirm("The show is running. Start it again from 0:00?")) return;
+    await fleetCommand("start", { lead_s: ui.lead }, `③ START (in ${ui.lead} s)`, "show"); return;
   }
-  if (e.target.id === "show-next-cue") { await fleetCommand("next", { lead_s: ui.lead }, `NEXT(${ui.lead} 秒後に次のキュー)`, "show"); return; }
+  if (e.target.id === "show-next-cue") { await fleetCommand("next", { lead_s: ui.lead }, `NEXT (next cue in ${ui.lead} s)`, "show"); return; }
   if (e.target.id === "show-stop") {
-    if (confirm("ショーの進行を止めます(パネルの表示はそのまま残ります)。よろしいですか?")) await fleetCommand("stop", {}, "STOP", "show");
+    if (confirm("Stop the show? The panels keep what they are showing.")) await fleetCommand("stop", {}, "STOP", "show");
     return;
   }
   if (e.target.id === "fleet-prepare") {
     const choices = Object.fromEntries(assignedItems().map(i => [i.item, ui.choices[i.item]]));
-    await fleetCommand("prepare", { choices }, "① 準備を送信"); return;
+    await fleetCommand("prepare", { choices }, "Prepare"); return;
   }
-  if (e.target.id === "fleet-fire") { await fleetCommand("fire", { lead_s: ui.lead }, `② GO(${ui.lead} 秒後)`); return; }
-  if (e.target.id === "fleet-cancel") { await fleetCommand("cancel", {}, "発火の取り消し"); return; }
+  if (e.target.id === "fleet-fire") { await fleetCommand("fire", { lead_s: ui.lead }, `GO (in ${ui.lead} s)`); return; }
+  if (e.target.id === "fleet-cancel") { await fleetCommand("cancel", {}, "Cancel the fire"); return; }
   if (e.target.id === "fleet-standby") {
-    if (confirm("応答している全機体のパネルを白(STANDBY)にします。よろしいですか?")) await fleetCommand("standby", {}, "全機体 STANDBY");
+    if (confirm("Turn the panels of every answering unit white (STANDBY)?")) await fleetCommand("standby", {}, "All units STANDBY");
     return;
   }
-  if (e.target.id === "fleet-release") { await fleetCommand("release", {}, "本体メニューへ戻す"); return; }
+  if (e.target.id === "fleet-release") { await fleetCommand("release", {}, "Release to the units' own menu"); return; }
   const tab = e.target.closest("[data-tab]");
   if (tab) { ui.tab = tab.dataset.tab; render(); return; }
   const del = e.target.closest("[data-del]");
   if (del) {
-    if (confirm(del.dataset.del + " をワークスペースから削除しますか?")) { await api("/api/delete", { name: del.dataset.del }); refresh(); }
+    if (confirm("Delete " + del.dataset.del + " from the workspace?")) { await api("/api/delete", { name: del.dataset.del }); refresh(); }
     return;
   }
   const set = e.target.closest("[data-set]");
@@ -680,7 +680,7 @@ document.addEventListener("click", async e => {
   const track = e.target.closest("[data-track]");
   if (track) {
     const item = state.items.find(i => i.item === track.dataset.track);
-    if (!item.designs.length) { toast(item.item + " にはデザイン CSV がまだありません"); return; }
+    if (!item.designs.length) { toast(item.item + " has no design CSV yet"); return; }
     const box = track.getBoundingClientRect();
     let at = Math.round((e.clientX - box.left) / box.width * state.show.duration / 5) * 5;
     if (at < state.show.refresh_s) at = 0;                     // too early to finish a refresh: the preset
@@ -707,25 +707,25 @@ document.addEventListener("change", async e => {
   if (e.target.dataset.choice !== undefined) { ui.choices[e.target.dataset.choice] = e.target.value; return; }
   if (id === "fleet-lead") {
     const seconds = Number(e.target.value);
-    if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("0.5〜60 秒で入力してください"); e.target.value = ui.lead; }
+    if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
     return;
   }
   if (id === "design") { ui.design = e.target.value; renderContent(); }
   else if (id === "pick") { upload(e.target.files); e.target.value = ""; }
   else if (id === "duration") {
     const seconds = parseClock(e.target.value);
-    if (seconds === null || seconds < 1) { toast("長さは m:ss で入力してください"); renderTimeline(); return; }
+    if (seconds === null || seconds < 1) { toast("Enter the length as m:ss"); renderTimeline(); return; }
     ui.playhead = Math.min(ui.playhead, seconds); await saveShow(state.show.cues, seconds);
   } else if (id === "refresh") {
     const seconds = Number(e.target.value);
-    if (!(seconds >= 1 && seconds <= 60)) { toast("書き換え時間は 1〜60 秒で入力してください"); renderTimeline(); return; }
+    if (!(seconds >= 1 && seconds <= 60)) { toast("Enter a refresh time of 1 to 60 seconds"); renderTimeline(); return; }
     await saveShow(state.show.cues, undefined, seconds);
   } else if (id.startsWith("cue-")) {
     const cues = state.show.cues.map(c => ({ ...c })), cue = cues.find(c => c.id === ui.cue);
     if (!cue) return;
     if (id === "cue-at") {
       const seconds = parseClock(e.target.value);
-      if (seconds === null) { toast("時刻は m:ss で入力してください(例 3:20)"); renderTimeline(); return; }
+      if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
       cue.at = seconds;
     } else if (id === "cue-design") {
       cue.design = e.target.value;                          // a design with "-" holes can only be a partial cue
@@ -749,9 +749,9 @@ document.addEventListener("mouseover", e => {
   const board = item.boards.find(b => b.board_no === Number(g.dataset.b));
   const code = design?.colors[g.dataset.k];
   const label = String(g.dataset.b).padStart(3, "0") + "-" + String(g.dataset.s).padStart(2, "0");
-  $("#info").innerHTML = `<b>${esc(side)}</b> row ${row} / col ${col} · ケーブル <b>${label}</b>
-    (基板 ${String(g.dataset.b).padStart(3, "0")} = DIP ID <b>${board ? board.dip_id : "?"}</b>、ソケット P${g.dataset.s})` +
-    (design ? ` · 色 <b>${code !== undefined ? hex(code) + " " + esc(state.palette[code].name) : "未指定"}</b>` : "");
+  $("#info").innerHTML = `<b>${esc(side)}</b> row ${row} / col ${col} · cable <b>${label}</b>
+    (board ${String(g.dataset.b).padStart(3, "0")} = DIP ID <b>${board ? board.dip_id : "?"}</b>, socket P${g.dataset.s})` +
+    (design ? ` · colour <b>${code !== undefined ? hex(code) + " " + esc(state.palette[code].name) : "undecided"}</b>` : "");
 });
 
 async function upload(fileList) {
@@ -760,8 +760,8 @@ async function upload(fileList) {
   if (!files.length) return;
   const result = await api("/api/files", { files });
   const parts = [];
-  if (result.saved?.length) parts.push(`${result.saved.length} 件を取り込みました`);
-  if (result.refused?.length) parts.push("取り込めません: " + result.refused.join(" / "));
+  if (result.saved?.length) parts.push(`${result.saved.length} file(s) imported`);
+  if (result.refused?.length) parts.push("Not imported: " + result.refused.join(" / "));
   toast(parts.join(" · ") || result.error || "");
   refresh();
 }

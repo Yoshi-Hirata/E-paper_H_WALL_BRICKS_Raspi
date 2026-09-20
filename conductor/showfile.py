@@ -116,9 +116,9 @@ def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
     for key in sorted(used):
         look_map = maps.get(key)
         if look_map is not None and not assigned.get(look_map.item):
-            problems.append(f"{look_map.item}: 機体が未割当です")
+            problems.append(f"{look_map.item}: not assigned to a unit")
     if not cues:
-        problems.append("タイムラインにキューがありません")
+        problems.append("the timeline has no cues")
     if problems:
         return {}, problems
 

@@ -139,7 +139,7 @@ def cmd_send(args) -> int:
 def cmd_serve(args) -> int:
     from .server import serve
 
-    return serve(args.workspace, args.port)
+    return serve(args.workspace, args.port, open_browser=args.open)
 
 
 def main(argv=None) -> int:
@@ -183,6 +183,8 @@ def main(argv=None) -> int:
                    help="folder holding the CSVs and show.json "
                         "(default ./showdata)")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--open", action="store_true",
+                   help="open the page in the default browser")
     p.set_defaults(func=cmd_serve)
 
     args = ap.parse_args(argv)

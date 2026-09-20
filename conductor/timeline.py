@@ -122,24 +122,24 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
         mine = problems[cue["id"]]
         item = items.get(cue["item"].lower())
         if item is None:
-            mine.append(f"{cue['item']}: このアイテムがありません(map が未取り込み?)")
+            mine.append(f"{cue['item']}: no such item (is its map loaded?)")
             continue
         design = item["designs"].get(cue["design"])
         if design is None:
-            mine.append(f"デザイン {cue['design'] or '(未選択)'} が取り込まれていません")
+            mine.append(f"design {cue['design'] or '(none)'} is not loaded")
         elif not design["partial" if cue["partial"] else "full"]:
-            mine.append(f"{cue['design']} に問題があります(デザイン確認を参照)"
+            mine.append(f"{cue['design']} has problems (see the Designs tab)"
                         + ("" if cue["partial"] or not design["partial"] else
-                           " — 色未指定の鱗があるので「一部更新」にしてください"))
+                           " - it has undecided scales: make this a partial cue"))
         sent, complete = times(cue, refresh)
         if cue["at"] > duration:
-            mine.append(f"{format_clock(cue['at'])} はショーの終了 "
-                        f"({format_clock(duration)}) より後です")
+            mine.append(f"{format_clock(cue['at'])} is after the end of the "
+                        f"show ({format_clock(duration)})")
         if cue["at"] > 0 and sent < 0:
             mine.append(
-                f"{format_clock(cue['at'])} には完成できません(書き換えに "
-                f"{refresh:.0f} 秒かかる)。0:00(START 前のプリセット)か "
-                f"{format_clock(refresh)} 以降にしてください")
+                f"cannot be complete at {format_clock(cue['at'])}: a refresh "
+                f"takes {refresh:.0f} s. Use 0:00 (the preset, before START) "
+                f"or {format_clock(refresh)} and later")
 
     # One item cannot be told two things at once.
     seen: "dict[tuple, str]" = {}
@@ -147,7 +147,7 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
         key = (cue["item"].lower(), times(cue, refresh)[0])
         if key in seen:
             problems[cue["id"]].append(
-                f"{cue['item']} には同じ瞬間に送信されるキューが既にあります")
+                f"{cue['item']} already has a cue sent at the same moment")
         seen.setdefault(key, cue["id"])
 
     # Each unit's bus: refreshes need room between their send times.
@@ -170,14 +170,14 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                 gap = sent - previous
                 if gap < need:
                     problems[cue["id"]].append(
-                        f"{unit} の前の書き換えから {gap:.0f} 秒しかありません。"
-                        f"基板 {boards} 枚では {need:.0f} 秒必要です"
-                        f"(書き換え {refresh:.0f} 秒 + 基板への書き込み)")
+                        f"only {gap:.0f} s after the previous refresh on {unit}; "
+                        f"its {boards} boards need {need:.0f} s "
+                        f"({refresh:.0f} s refresh + writing the boards)")
             previous = sent
 
     for key, item in sorted(items.items()):
         track = [c for c in cues if c["item"].lower() == key]
         if track and not any(c["at"] <= 0 for c in track):
-            warnings.append(f"{item['item']}: 0:00 のプリセットがありません"
-                            "(ショー開始時は直前の表示のままになります)")
+            warnings.append(f"{item['item']}: no preset at 0:00 - it opens "
+                            "on whatever it showed before the show")
     return problems, warnings

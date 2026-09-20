@@ -27,6 +27,7 @@ the show and is not undone (the delete asks first).
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -222,10 +223,10 @@ class Workspace:
             look_map = maps.get(item.lower())
             unit = assigned.get(look_map.item) if look_map else None
             if look_map is None:
-                problems.append(f"{item}: map がありません")
+                problems.append(f"{item}: no map")
                 continue
             if unit is None:
-                problems.append(f"{item}: 機体が未割当です")
+                problems.append(f"{item}: not assigned to a unit")
                 continue
             try:
                 design = Design.from_csv(self.files / Path(design_name).name)
@@ -536,19 +537,57 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
 
+class _Server(ThreadingHTTPServer):
+    # http.server asks for SO_REUSEADDR, which on Windows lets a second
+    # process bind a port that is already being served - two conductors
+    # then answer the same URL at random (seen 2026-09-21). Off on
+    # Windows, so the second bind fails as it should.
+    allow_reuse_address = os.name != "nt"
+    daemon_threads = True
+
+
 def make_server(workspace, port: int = 8765, host: str = "127.0.0.1",
                 fleet: "Fleet | None" = None) -> ThreadingHTTPServer:
     handler = type("BoundHandler", (Handler,),
                    {"workspace": Workspace(workspace), "fleet": fleet,
                     "prepared": {}})
-    return ThreadingHTTPServer((host, port), handler)
+    return _Server((host, port), handler)
 
 
-def serve(workspace, port: int = 8765) -> int:
+def already_serving(port: int) -> bool:
+    """Is a conductor answering on this port already?"""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state",
+                                    timeout=2) as response:
+            return "workspace" in json.loads(response.read())
+    except (OSError, ValueError):
+        return False
+
+
+def serve(workspace, port: int = 8765, open_browser: bool = False) -> int:
+    import webbrowser
+
+    url = f"http://127.0.0.1:{port}"
+    # Double-clicking the launcher twice must not be an error, and must
+    # not start a second server: it just brings the page up again.
+    if port and already_serving(port):
+        print(f"conductor UI is already running: {url}", flush=True)
+        if open_browser:
+            webbrowser.open(url)
+        return 0
+    try:
+        server = make_server(workspace, port)
+    except OSError as exc:
+        print(f"cannot listen on port {port}: {exc}", flush=True)
+        return 1
     units, token = Workspace(workspace).fleet_config()
     fleet = Fleet(units, token)
     fleet.start()
-    server = make_server(workspace, port, fleet=fleet)
+    server.RequestHandlerClass.fleet = fleet
+    if open_browser:
+        threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     print(f"conductor UI: http://127.0.0.1:{port}  (workspace "
           f"{Path(workspace).resolve()})", flush=True)
     try:

@@ -277,3 +277,24 @@ def test_undo_over_http(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---- the launcher ----
+
+def test_a_second_conductor_on_the_same_port_steps_aside(tmp_path, capsys):
+    from conductor.server import already_serving, serve
+
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert already_serving(port)
+        # Returns at once instead of serving a second copy on the port.
+        assert serve(tmp_path / "other", port) == 0
+        assert "already running" in capsys.readouterr().out
+        with pytest.raises(OSError):
+            make_server(tmp_path, port=port)        # the port is exclusive
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert not already_serving(port)

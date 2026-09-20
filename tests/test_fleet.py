@@ -195,7 +195,7 @@ def test_compile_units_reports_what_cannot_be_sent(tmp_path):
     payloads, problems = ws.compile_units(
         {"Look22": "Look22_color_pattern01_grid.csv", "Look99": "x.csv"}, "c1")
     assert payloads == {}
-    assert any("未割当" in p for p in problems) and any("Look99" in p for p in problems)
+    assert any("not assigned" in p for p in problems) and any("Look99" in p for p in problems)
 
 
 def test_prepare_and_fire_through_the_conductor_api(tmp_path, fleet, units):

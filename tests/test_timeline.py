@@ -76,13 +76,13 @@ def test_refreshes_on_one_unit_need_room():
             cue("c", "Look22", "2:10", "p1")]
     found, _ = problems(cues)
     assert found["b"] == []
-    assert len(found["c"]) == 1 and "10 秒しか" in found["c"][0]
-    assert "基板 16 枚では 14 秒必要" in found["c"][0]
+    assert len(found["c"]) == 1 and "only 10 s" in found["c"][0]
+    assert "16 boards need 14 s" in found["c"][0]
     # 20 s apart is enough at 7 s a refresh - and was not at 16 s.
     cues[2] = cue("c", "Look22", "2:20", "p1")
     assert problems(cues)[0]["c"] == []
     found, _ = validate(cues, ITEMS, 600, refresh=16)
-    assert "20 秒しか" in found["c"][0] and "23 秒必要" in found["c"][0]
+    assert "only 20 s" in found["c"][0] and "need 23 s" in found["c"][0]
 
 
 def test_the_first_cue_must_leave_time_to_write_the_boards_after_start():
@@ -90,7 +90,7 @@ def test_the_first_cue_must_leave_time_to_write_the_boards_after_start():
     # take ~3.5 s + margin to write, so 3 s is too tight; 0:40 is fine.
     found, _ = problems([cue("a", "Look22", 0, "p1"),
                          cue("b", "Look22", "0:10", "p2")])
-    assert found["b"] and "秒しか" in found["b"][0]
+    assert found["b"] and "only 10 s" in found["b"][0]
     found, _ = problems([cue("a", "Look22", 0, "p1"),
                          cue("b", "Look22", "0:40", "p2")])
     assert found["b"] == []
@@ -98,11 +98,11 @@ def test_the_first_cue_must_leave_time_to_write_the_boards_after_start():
 
 def test_done_before_a_refresh_fits_is_refused():
     found, _ = problems([cue("a", "Look22", "0:05", "p1")])
-    assert "完成できません" in found["a"][0] and "0:07 以降" in found["a"][0]
+    assert "cannot be complete" in found["a"][0] and "0:07 and later" in found["a"][0]
     # The same instant as a change that *starts* then is fine.
     found, warnings = problems([cue("a", "Look22", "0:05", "p1", align="start")])
     assert found["a"] == []
-    assert "プリセットがありません" in warnings[0]
+    assert "no preset at 0:00" in warnings[0]
 
 
 def test_items_sharing_a_unit_share_its_bus():
@@ -113,7 +113,7 @@ def test_items_sharing_a_unit_share_its_bus():
     staggered = [cue("a", "Look20-Top", "1:00", "t1"),
                  cue("b", "Look20-Skirt", "1:10", "s1")]
     found, _ = problems(staggered)
-    assert "radxa-02" in found["b"][0] and "基板 32 枚" in found["b"][0]
+    assert "radxa-02" in found["b"][0] and "32 boards" in found["b"][0]
     # Another unit is another bus: no conflict with Look22 ten seconds on.
     found, _ = problems(same_moment + [cue("c", "Look22", "1:10", "p1")])
     assert found["c"] == []
@@ -125,18 +125,18 @@ def test_design_must_exist_and_suit_the_kind_of_cue():
                          cue("c", "Look22", "3:00", "accent", partial=True),
                          cue("d", "Look22", "4:00", "broken", partial=True),
                          cue("e", "Look99", "5:00", "p1")])
-    assert "取り込まれていません" in found["a"][0]
-    assert "一部更新" in found["b"][0]
+    assert "is not loaded" in found["a"][0]
+    assert "partial cue" in found["b"][0]
     assert found["c"] == []
-    assert "問題があります" in found["d"][0]
-    assert "アイテムがありません" in found["e"][0]
+    assert "has problems" in found["d"][0]
+    assert "no such item" in found["e"][0]
 
 
 def test_after_the_end_and_double_booking():
     found, _ = problems([cue("a", "Look22", "6:00", "p1"),
                          cue("b", "Look22", "6:00", "p2")], duration=300)
-    assert any("終了" in p for p in found["a"])
-    assert any("同じ瞬間" in p for p in found["b"])
+    assert any("after the end" in p for p in found["a"])
+    assert any("same moment" in p for p in found["b"])
 
 
 def test_clean_drops_junk_and_sorts():

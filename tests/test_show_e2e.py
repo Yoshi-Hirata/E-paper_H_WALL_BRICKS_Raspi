@@ -91,12 +91,12 @@ def test_a_show_with_a_problem_is_not_built(tmp_path):
     ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1),
                          cue("b", "Look20-Top", 20, P2)], refresh=1.0)
     shows, problems = ws.compile_show()
-    assert shows == {} and any("一部更新" in p for p in problems)
+    assert shows == {} and any("partial cue" in p for p in problems)
     ws.assign("Look20-Top", None)
     ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1)], refresh=1.0)
-    assert any("未割当" in p for p in ws.compile_show()[1])
+    assert any("not assigned" in p for p in ws.compile_show()[1])
     ws.set_timeline(60, [], refresh=1.0)
-    assert any("キューがありません" in p for p in ws.compile_show()[1])
+    assert any("has no cues" in p for p in ws.compile_show()[1])
 
 
 def test_lay_over_keeps_what_the_change_leaves_alone():
