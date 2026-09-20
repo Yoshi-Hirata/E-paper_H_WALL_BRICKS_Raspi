@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E-paper Show Conductor</title>
+<style>
+:root {
+  --bg: #f4f4f6; --panel: #ffffff; --ink: #1d1d24; --dim: #6b6b78;
+  --line: #dcdce3; --accent: #0a62c9; --ok: #12834a; --err: #c62828;
+  --warn: #a15c00; --select: #e6f0fc; --garment: #ececf0; --hold: #dfe7f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15161a; --panel: #1e2026; --ink: #ececf1; --dim: #9a9aa8;
+    --line: #33353f; --accent: #6db3ff; --ok: #5fd896; --err: #ff7b7b;
+    --warn: #ffb860; --select: #243347; --garment: #2a2c35; --hold: #2b3444; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+  background: var(--bg); color: var(--ink); }
+header { display: flex; align-items: center; gap: 14px; padding: 10px 18px; flex-wrap: wrap;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .04em; }
+header .ws { color: var(--dim); font-size: 12px; margin-left: auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
+button, select, input[type=text], .filebtn { font: inherit; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+button, select, .filebtn { cursor: pointer; }
+button:hover, .filebtn:hover { border-color: var(--accent); }
+button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger:hover { border-color: var(--err); color: var(--err); }
+button:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+.filebtn input { display: none; }
+.tabs { display: flex; gap: 0; }
+.tabs button { border-radius: 0; margin-left: -1px; padding: 5px 16px; }
+.tabs button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.tabs button:last-child { border-radius: 0 6px 6px 0; }
+main { display: grid; grid-template-columns: 290px 1fr; min-height: calc(100vh - 50px); }
+main.wide { grid-template-columns: 1fr; }
+main.wide aside { display: none; }
+aside { background: var(--panel); border-right: 1px solid var(--line); padding: 12px; }
+aside h2, .card h2 { font-size: 11px; letter-spacing: .1em; color: var(--dim);
+  margin: 14px 0 6px; font-weight: 600; }
+.card h2 { margin-top: 0; }
+.unit { font-size: 12px; color: var(--dim); margin: 12px 0 4px; font-weight: 600; }
+.item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  margin-bottom: 6px; cursor: pointer; }
+.item.sel { background: var(--select); border-color: var(--accent); }
+.item .name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.meta { color: var(--dim); font-size: 12px; }
+.item select { margin-top: 6px; width: 100%; padding: 2px 6px; font-size: 12px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
+.dot.none { background: var(--line); }
+#content { padding: 14px 18px 40px; min-width: 0; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin-bottom: 10px; }
+.group { display: flex; gap: 4px; align-items: center; }
+.group > span { color: var(--dim); font-size: 12px; margin-right: 4px; }
+.group button { border-radius: 0; margin-left: -1px; }
+.group button:first-of-type { border-radius: 6px 0 0 6px; margin-left: 0; }
+.group button:last-of-type { border-radius: 0 6px 6px 0; }
+#stage { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px; overflow-x: auto; }
+#stage svg { display: block; margin: 0 auto; }
+#info { min-height: 24px; margin: 8px 2px; color: var(--dim); font-size: 13px; }
+#info b { color: var(--ink); }
+.cols { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } main { grid-template-columns: 1fr; }
+  aside { border-right: 0; border-bottom: 1px solid var(--line); } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+.card + .card { margin-top: 12px; }
+.problems { margin: 0; padding-left: 18px; }
+.problems li { color: var(--err); margin: 2px 0; font-size: 13px; }
+.okline { color: var(--ok); }
+.warn { color: var(--warn); font-size: 13px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--dim); font-weight: 600; font-size: 11px; letter-spacing: .06em; }
+tbody tr.pick { cursor: pointer; } tbody tr.pick:hover { background: var(--select); }
+tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+  border: 1px solid var(--line); vertical-align: -2px; margin-right: 6px; }
+.files { font-size: 12px; color: var(--dim); }
+.files span { display: inline-flex; align-items: center; gap: 4px; margin: 2px 10px 2px 0; }
+.files button, td button { padding: 0 6px; font-size: 11px; }
+#drop { position: fixed; inset: 0; background: rgba(10, 98, 201, .18); border: 4px dashed var(--accent);
+  display: none; align-items: center; justify-content: center; font-size: 22px; font-weight: 600;
+  color: var(--accent); z-index: 10; pointer-events: none; }
+#drop.on { display: flex; }
+#toast { position: fixed; right: 18px; bottom: 18px; background: var(--ink); color: var(--bg);
+  padding: 8px 14px; border-radius: 8px; display: none; max-width: 60vw; font-size: 13px; z-index: 11; }
+.empty { color: var(--dim); padding: 60px 0; text-align: center; }
+
+/* ---- timeline ---- */
+.tl-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; min-height: 38px;
+  border-bottom: 1px solid var(--line); }
+.tl-name { font-size: 13px; font-weight: 600; padding-right: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-name small { display: block; font-weight: 400; color: var(--dim); font-size: 11px; }
+.tl-track { position: relative; height: 30px; background: var(--bg); border-radius: 4px; cursor: copy; }
+.tl-ruler { position: relative; height: 20px; font-size: 11px; color: var(--dim); cursor: pointer; }
+.tl-ruler i { position: absolute; top: 0; height: 20px; border-left: 1px solid var(--line); pointer-events: none; }
+.tl-ruler span { position: absolute; top: 1px; transform: translateX(3px); pointer-events: none; }
+.cue-band { position: absolute; top: 3px; bottom: 3px; border-radius: 3px 0 0 3px; cursor: pointer;
+  background: repeating-linear-gradient(135deg, var(--accent) 0 4px, transparent 4px 8px); opacity: .55; }
+.cue-hold { position: absolute; top: 3px; bottom: 3px; background: var(--hold); border-radius: 0 3px 3px 0;
+  cursor: pointer; overflow: hidden; white-space: nowrap; font-size: 11px; line-height: 24px; padding-left: 5px;
+  border-left: 2px solid var(--accent); }
+.cue-hold.bad { border-left-color: var(--err); color: var(--err); }
+.cue-hold.sel, .cue-band.sel { outline: 2px solid var(--accent); z-index: 2; opacity: 1; }
+.cue-hold .chips { display: inline-flex; gap: 1px; margin-right: 5px; vertical-align: -1px; }
+.cue-hold .chips b { width: 7px; height: 10px; display: inline-block; border: 1px solid rgba(128,128,128,.5); }
+.tl-wrap { position: relative; }
+#playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--err); pointer-events: none; z-index: 3; }
+.editor { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.editor label { font-size: 12px; color: var(--dim); display: flex; gap: 6px; align-items: center; }
+.editor input[type=text] { width: 70px; }
+.thumbs { display: flex; flex-wrap: wrap; gap: 12px; }
+.thumb { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; flex: 1 1 260px; max-width: 420px; }
+.thumb .t { font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+.thumb .t span { font-weight: 400; color: var(--dim); }
+.thumb .t .chg { color: var(--warn); }
+input[type=range] { width: 100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1>E-PAPER SHOW CONDUCTOR</h1>
+  <div class="tabs">
+    <button data-tab="items">デザイン確認</button><button data-tab="timeline">タイムライン</button>
+  </div>
+  <div class="tabs">
+    <button id="undo" title="元に戻す (Ctrl+Z)">↶ 元に戻す</button><button id="redo" title="やり直す (Ctrl+Y / Ctrl+Shift+Z)">やり直す ↷</button>
+  </div>
+  <label class="filebtn">CSV を追加<input id="pick" type="file" accept=".csv" multiple></label>
+  <span class="meta">または画面に CSV をドロップ(複数可)</span>
+  <span class="ws" id="ws"></span>
+</header>
+<main id="main">
+  <aside>
+    <h2>アイテム(ルック / バッグ)</h2>
+    <div id="items"></div>
+    <div id="orphans"></div>
+  </aside>
+  <div id="content"></div>
+</main>
+<div id="drop">ここに CSV をドロップ</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
+             board: null, cue: null, playhead: 0 };
+let state = null;
+const PITCH = 0.78, MARGIN = 1.2;
+
+async function api(path, body) {
+  const res = await fetch(path, body ? { method: "POST", headers: {"Content-Type": "application/json"},
+                                         body: JSON.stringify(body) } : undefined);
+  return res.json();
+}
+function toast(text) {
+  const t = $("#toast"); t.textContent = text; t.style.display = "block";
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", 6000);
+}
+const clock = s => { const n = Math.round(Math.abs(s)); return (s < 0 ? "-" : "") + Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0"); };
+function parseClock(text) {                       // "3:20" or "200" -> seconds
+  const m = String(text).trim().match(/^(?:(\d+):)?(\d{1,4})$/);
+  return m ? (m[1] !== undefined ? Number(m[1]) * 60 : 0) + Number(m[2]) : null;
+}
+const hex = c => "0x" + Number(c).toString(16).toUpperCase().padStart(2, "0");
+const rgb = c => `rgb(${state.palette[c].rgb.join(",")})`;
+const designLabel = d => (d.pattern !== null ? "P" + String(d.pattern).padStart(2, "0") : d.name);
+
+async function refresh() {
+  state = await api("/api/state");
+  $("#ws").textContent = "workspace: " + state.workspace;
+  if (!state.items.some(i => i.item === ui.item)) ui.item = state.items[0]?.item ?? null;
+  render();
+}
+function render() {
+  document.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === ui.tab));
+  $("#undo").disabled = !state.history.undo;
+  $("#redo").disabled = !state.history.redo;
+  $("#main").classList.toggle("wide", ui.tab === "timeline");
+  renderSidebar();
+  if (ui.tab === "timeline") renderTimeline(); else renderContent();
+}
+// A design is ok (every scale coloured), partial (some left "-": fine as a
+// partial cue) or bad (wrong even as a partial cue).
+const designState = d => !d.problems.length ? "ok" : !d.partial_problems.length ? "partial" : "bad";
+const designBadge = d => ({ ok: `<span class="okline">OK</span>`,
+  partial: `<span class="warn">一部更新用</span>`,
+  bad: `<span style="color:var(--err)">問題 ${d.partial_problems.length}</span>` }[designState(d)]);
+function problemsOf(item) {
+  return item.problems.length + item.designs.reduce((n, d) => n + d.partial_problems.length, 0);
+}
+
+function renderSidebar() {
+  let html = "", unit;
+  for (const item of state.items) {
+    if (item.unit !== unit) { unit = item.unit; html += `<div class="unit">${unit ? esc(unit) : "未割当"}</div>`; }
+    const bad = problemsOf(item);
+    const dot = !item.map ? "none" : bad ? "err" : "ok";
+    html += `<div class="item ${item.item === ui.item ? "sel" : ""}" data-item="${esc(item.item)}">
+      <div class="name"><span class="dot ${dot}"></span>${esc(item.item)}</div>
+      <div class="meta">${item.map ? `鱗 ${item.map.scales.length} / 基板 ${item.boards.length} / デザイン ${item.designs.length}` : "map がありません"}
+        ${bad ? ` · <span style="color:var(--err)">問題 ${bad}</span>` : ""}</div>
+      <select data-assign="${esc(item.item)}">
+        <option value="">機体: 未割当</option>
+        ${state.units.map(u => `<option ${u === item.unit ? "selected" : ""}>${u}</option>`).join("")}
+      </select></div>`;
+  }
+  $("#items").innerHTML = html || `<div class="meta">まだありません</div>`;
+  $("#orphans").innerHTML = state.orphans.length
+    ? `<h2>MAP 待ちのデザイン</h2>` + state.orphans.map(o =>
+        `<div class="files"><span>${esc(o.name)} <button data-del="${esc(o.name)}">×</button></span></div>`).join("")
+    : "";
+}
+
+// ---- the garment ----
+function tint(index, count) {
+  return `hsl(${Math.round(360 * index / Math.max(count, 1))} 62% ${index % 2 ? 62 : 46}%)`;
+}
+function shiftOf(shifts, side, row) {
+  const s = shifts?.[`${side}|${row}`];
+  return s !== undefined ? s : (row % 2 ? 0.5 : 0);
+}
+// opts: {cell, mode, colors, undecided, shifts, labels}
+function renderGarment(item, opts) {
+  const cell = opts.cell, scales = item.map.scales;
+  const rows = scales.map(s => s[1]), cols = scales.map(s => s[2]);
+  const top = Math.max(...rows), low = Math.min(...rows);
+  const lowCol = Math.min(...cols), span = Math.max(...cols) - lowCol + 1.5;
+  const margin = opts.labels ? MARGIN : 0.4;
+  const sideW = (span + 2 * margin) * cell;
+  const head = opts.labels ? 26 : 0;
+  const bodyH = ((top - low) * PITCH + 1 + 2 * margin) * cell;
+  const order = item.boards.map(b => b.board_no);
+  const sides = item.map.sides;
+  const W = sideW * sides.length, H = bodyH + head;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${opts.labels ? W + "px" : "100%"};height:auto"
+    viewBox="0 0 ${W} ${H}" font-family="Segoe UI, sans-serif">`;
+  sides.forEach((side, index) => {
+    const x0 = index * sideW;
+    if (opts.labels) {
+      const label = { front: "FRONT 前", back: "BACK 後ろ" }[side] || side.toUpperCase();
+      svg += `<text x="${x0 + margin * cell}" y="17" font-size="12" fill="var(--dim)">${esc(label)}</text>`;
+    }
+    const here = scales.filter(s => s[0] === side).sort((a, b) => a[1] - b[1] || a[2] - b[2]);
+    for (const [sd, row, col, boardNo, socket] of here) {
+      let cx = (margin + col - lowCol + shiftOf(opts.shifts, side, row) + 0.5) * cell;
+      if (ui.view === "outside") cx = sideW - cx;            // the files are drawn from the inside
+      const cy = head + (margin + (top - row) * PITCH + 0.5) * cell;
+      const key = `${side}|${row}|${col}`;
+      let fill, text = "";
+      if (opts.mode === "design") {
+        const code = opts.colors[key];
+        fill = code !== undefined ? rgb(code) : "var(--garment)";
+        if (code === undefined && opts.labels) text = opts.undecided?.includes(key) ? "-" : "?";
+      } else { fill = tint(order.indexOf(boardNo), order.length); text = socket; }
+      const dim = ui.board !== null && opts.labels && ui.board !== boardNo ? ` opacity=".18"` : "";
+      svg += `<g${dim}${opts.labels ? ` data-k="${key}" data-b="${boardNo}" data-s="${socket}"` : ""}>
+        <circle cx="${(x0 + cx).toFixed(1)}" cy="${cy.toFixed(1)}" r="${cell / 2}" fill="${fill}" stroke="#7d7d88" stroke-width="${opts.labels ? .7 : .3}"/>` +
+        (text !== "" ? `<text x="${(x0 + cx).toFixed(1)}" y="${(cy + 3).toFixed(1)}" font-size="8.5" text-anchor="middle"
+          fill="${opts.mode === "design" ? "var(--err)" : "#fff"}" pointer-events="none">${text}</text>` : "") + `</g>`;
+    }
+  });
+  return svg + "</svg>";
+}
+
+// ---- tab 1: one item's designs ----
+function renderContent() {
+  const item = state.items.find(i => i.item === ui.item);
+  const root = $("#content");
+  if (!item) { root.innerHTML = `<div class="empty">map と grid の CSV を追加してください(1 アイテムにデザインは何枚でも追加できます)。</div>`; return; }
+  if (!item.map || !item.map.scales.length) {
+    root.innerHTML = `<div class="card"><h2>${esc(item.item)}</h2>
+      <ul class="problems">${item.problems.map(p => `<li>${esc(p)}</li>`).join("") || "<li>map CSV がありません</li>"}</ul>${fileList(item)}</div>`;
+    return;
+  }
+  if (!item.designs.some(d => d.name === ui.design)) ui.design = item.designs[0]?.name ?? null;
+  const design = item.designs.find(d => d.name === ui.design) || null;
+  const mode = design ? ui.mode : "wiring";
+  const usage = {};
+  if (design) for (const code of Object.values(design.colors)) usage[code] = (usage[code] || 0) + 1;
+  const kind = design ? designState(design) : "ok";
+  const problems = [...item.problems, ...(design && kind === "bad" ? design.problems : [])];
+  const btn = (key, value, label) =>
+    `<button data-set="${key}" data-value="${value}" class="${(key === "mode" ? mode : ui[key]) === value ? "on" : ""}">${label}</button>`;
+  const used = state.show.cues.filter(c => c.item === item.item);
+
+  root.innerHTML = `
+    <div class="toolbar">
+      <div class="group"><span>デザイン</span>
+        <select id="design">${item.designs.map(d =>
+          `<option value="${esc(d.name)}" ${d.name === ui.design ? "selected" : ""}>${d.pattern !== null ? "pattern " + String(d.pattern).padStart(2, "0") + " · " : ""}${esc(d.name)}${designState(d) === "bad" ? " ⚠" : ""}</option>`).join("")
+          || "<option>(デザイン CSV なし)</option>"}</select></div>
+      <div class="group"><span>表示</span>${btn("mode", "design", "仕上がり")}${btn("mode", "wiring", "配線")}</div>
+      <div class="group"><span>向き</span>${btn("view", "outside", "外側(客席から)")}${btn("view", "inside", "内側(CSV の向き)")}</div>
+    </div>
+    <div id="stage">${renderGarment(item, { cell: 22, mode, labels: true, colors: design?.colors || {},
+                                          undecided: design?.undecided, shifts: design?.shifts })}</div>
+    <div id="info">鱗にカーソルを合わせると、位置・基板・ソケット・色を表示します。</div>
+    <div class="cols">
+      <div>
+        <div class="card"><h2>検証</h2>
+          ${problems.length
+            ? `<ul class="problems">${problems.slice(0, 60).map(p => `<li>${esc(p)}</li>`).join("")}
+               ${problems.length > 60 ? `<li>… ほか ${problems.length - 60} 件</li>` : ""}</ul>`
+            : `<div class="okline">✓ 問題なし — map ${item.map.scales.length} 枚${design ? ` / デザイン ${Object.keys(design.colors).length} 枚` : ""}</div>`}
+          ${kind === "partial" ? `<div class="warn">一部更新用のデザインです: 色未指定(-)または色なしの鱗 ${design.problems.length} 枚は、直前の表示のまま残ります。タイムラインでは「一部更新」のキューとして使ってください。</div>` : ""}
+          ${(item.map.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
+        </div>
+        <div class="card"><h2>このアイテムのデザイン(${item.designs.length})</h2>
+          <table><tbody>${item.designs.map(d => {
+            const at = used.filter(c => c.design === d.name).map(c => clock(c.at));
+            return `<tr class="pick ${d.name === ui.design ? "hl" : ""}" data-design="${esc(d.name)}">
+              <td><b>${esc(designLabel(d))}</b></td><td>${esc(d.name)}</td>
+              <td>${designBadge(d)}</td>
+              <td class="meta">${at.length ? "タイムライン: " + at.join(", ") : "未使用"}</td>
+              <td><button data-del="${esc(d.name)}" title="ワークスペースから削除">×</button></td></tr>`; }).join("")
+            || `<tr><td class="meta">デザイン CSV(*_color_patternNN_grid.csv)を追加してください</td></tr>`}</tbody></table>
+        </div>
+        ${design ? `<div class="card"><h2>使用色</h2><table><tbody>
+          ${Object.keys(usage).sort((a, b) => a - b).map(c => `<tr><td><span class="sw" style="background:${rgb(c)}"></span>${hex(c)} ${esc(state.palette[c].name)}</td><td>${usage[c]} 枚</td></tr>`).join("")}
+          ${design.undecided.length ? `<tr><td>- 色未指定</td><td>${design.undecided.length} 枚</td></tr>` : ""}
+          </tbody></table></div>` : ""}
+        <div class="card"><h2>MAP ファイル</h2>${fileList(item)}</div>
+      </div>
+      <div class="card">
+        <h2>基板と DIP スイッチ ${item.unit ? "— " + esc(item.unit) + " のバス" : "(機体未割当: このアイテム単独で採番)"}</h2>
+        <table><thead><tr><th>基板 No.</th><th>DIP ID</th><th>ON にするスイッチ</th><th>鱗</th></tr></thead><tbody>
+        ${item.boards.map((b, i) => `<tr data-board="${b.board_no}" class="pick ${ui.board === b.board_no ? "hl" : ""}">
+          <td><span class="sw" style="background:${tint(i, item.boards.length)}"></span>${String(b.board_no).padStart(3, "0")}</td>
+          <td><b>${b.dip_id}</b></td><td>${esc(b.switches_on)}</td><td>${b.scales}</td></tr>`).join("")}
+        </tbody></table>
+        <div class="meta" style="margin-top:6px">行をクリックすると、その基板の鱗だけを強調します。</div>
+      </div>
+    </div>`;
+}
+function fileList(item) {
+  return item.map ? `<div class="files"><span>${esc(item.map.name)} <button data-del="${esc(item.map.name)}" title="ワークスペースから削除">×</button></span></div>` : "";
+}
+
+// ---- tab 2: the timeline ----
+function trackItems() { return state.items.filter(i => i.map && i.map.scales.length); }
+function cuesOf(item) { return state.show.cues.filter(c => c.item === item.item).sort((a, b) => a.sent - b.sent); }
+function wornAt(item, t) {
+  // Designs complete by t, in order: a full cue replaces, a partial one overlays.
+  let colors = {}, shifts = null, label = "(開始前の表示のまま)", changing = false;
+  for (const cue of cuesOf(item)) {
+    const design = item.designs.find(d => d.name === cue.design);
+    if (cue.sent <= t && t < cue.complete) changing = true;
+    if (cue.complete > t || !design) continue;
+    colors = cue.partial ? { ...colors, ...design.colors } : { ...design.colors };
+    shifts = design.shifts; label = designLabel(design) + (cue.partial ? "(一部)" : "");
+  }
+  return { colors, shifts, label, changing };
+}
+async function saveShow(cues, duration, refresh) {
+  const result = await api("/api/show", { duration: duration ?? state.show.duration,
+    refresh_s: refresh ?? state.show.refresh_s,
+    cues: cues.map(({ id, item, at, design, align, partial }) => ({ id, item, at, design, align, partial })) });
+  if (result.error) toast(result.error);
+  await refresh();
+}
+function renderTimeline() {
+  const root = $("#content"), show = state.show, D = show.duration, items = trackItems();
+  if (!items.length) { root.innerHTML = `<div class="empty">先に「デザイン確認」で map とデザインの CSV を追加してください。</div>`; return; }
+  const pct = t => (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
+  const step = D <= 180 ? 10 : D <= 900 ? 30 : 60;
+  let ruler = "";
+  for (let t = 0; t <= D; t += step) ruler += `<i style="left:${pct(t)}"></i>` + (t < D ? `<span style="left:${pct(t)}">${clock(t)}</span>` : "");
+
+  let rows = "";
+  for (const item of items) {
+    const cues = cuesOf(item);
+    let blocks = "";
+    cues.forEach((cue, n) => {
+      const design = item.designs.find(d => d.name === cue.design);
+      const until = n + 1 < cues.length ? Math.max(cue.complete, cues[n + 1].sent) : D;
+      const sel = cue.id === ui.cue ? " sel" : "";
+      const chips = design ? [...new Set(Object.values(design.colors))].sort((a, b) => a - b).slice(0, 8)
+        .map(c => `<b style="background:${rgb(c)}"></b>`).join("") : "";
+      if (cue.at > 0) blocks += `<div class="cue-band${sel}" data-cue="${cue.id}" title="書き換え中 ${clock(cue.sent)} → ${clock(cue.complete)}"
+        style="left:${pct(cue.sent)};width:calc(${pct(cue.complete)} - ${pct(cue.sent)})"></div>`;
+      blocks += `<div class="cue-hold${sel}${cue.problems.length ? " bad" : ""}" data-cue="${cue.id}"
+        title="${esc(cue.design)}" style="left:${pct(cue.complete)};width:calc(${pct(until)} - ${pct(cue.complete)})">
+        <span class="chips">${chips}</span>${cue.problems.length ? "⚠ " : ""}${esc(design ? designLabel(design) : "?")}${cue.partial ? "(一部)" : ""}</div>`;
+    });
+    rows += `<div class="tl-row"><div class="tl-name">${esc(item.item)}<small>${esc(item.unit || "機体未割当")} · 基板 ${item.boards.length}</small></div>
+      <div class="tl-track" data-track="${esc(item.item)}">${blocks}</div></div>`;
+  }
+
+  const cue = show.cues.find(c => c.id === ui.cue) || null;
+  const cueItem = cue && state.items.find(i => i.item === cue.item);
+  const all = [...show.cues].sort((a, b) => a.at - b.at || a.item.localeCompare(b.item));
+  const bad = all.reduce((n, c) => n + c.problems.length, 0);
+
+  root.innerHTML = `
+    <div class="toolbar">
+      <div class="group"><span>ショーの長さ</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
+      <div class="group"><span>書き換え時間</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
+        title="送信から絵が完成するまでの秒数。FW によって変わる(最新 FW で約 7 秒、旧 FW は 16 秒)"><span>秒</span></div>
+      <div class="meta">トラックの空いている所をクリック → その時刻にキューを追加 · キューをクリック → 下で編集 ·
+        斜線 = 書き換え中(${show.refresh_s} 秒)</div>
+    </div>
+    <div class="card">
+      <div class="tl-wrap">
+        <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div></div>
+        ${rows}
+        <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"></div></div>
+      </div>
+    </div>
+    <div class="card"><h2>キューの編集</h2>
+      ${cue ? `<div class="editor">
+        <b>${esc(cue.item)}</b>
+        <label>時刻 <input type="text" id="cue-at" value="${clock(cue.at)}"></label>
+        <label>デザイン <select id="cue-design">${(cueItem?.designs || []).map(d =>
+          `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}</option>`).join("")}</select></label>
+        <label>時刻の意味 <select id="cue-align" ${cue.at <= 0 ? "disabled" : ""}>
+          <option value="done" ${cue.align === "done" ? "selected" : ""}>この時刻に完成(${show.refresh_s} 秒前に送信)</option>
+          <option value="start" ${cue.align === "start" ? "selected" : ""}>この時刻に変化を開始</option></select></label>
+        <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> 一部更新</label>
+        <button id="cue-show">デザインを見る</button>
+        <button id="cue-del" class="danger">削除</button>
+        <span class="meta">${cue.at <= 0 ? "プリセット: START の前に表示しておく" : `送信 ${clock(cue.sent)} → 完成 ${clock(cue.complete)}`}</span>
+      </div>
+      ${cue.problems.length ? `<ul class="problems" style="margin-top:8px">${cue.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}`
+      : `<div class="meta">キューを選ぶか、トラックをクリックして追加してください。</div>`}
+    </div>
+    <div class="card"><h2>この時刻の見え方 — <span id="ph-label"></span></h2>
+      <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
+      <div class="thumbs" id="thumbs" style="margin-top:8px"></div>
+    </div>
+    <div class="card"><h2>キュー一覧(${all.length}) ${bad ? `<span style="color:var(--err)">— 問題 ${bad}</span>` : all.length ? `<span class="okline">— ✓ 問題なし</span>` : ""}</h2>
+      ${show.warnings.map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
+      <table><thead><tr><th>時刻</th><th>アイテム</th><th>機体</th><th>デザイン</th><th>送信 → 完成</th><th>状態</th></tr></thead><tbody>
+      ${all.map(c => { const it = state.items.find(i => i.item === c.item); const d = it?.designs.find(x => x.name === c.design);
+        return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}"><td><b>${clock(c.at)}</b></td><td>${esc(c.item)}</td>
+        <td>${esc(it?.unit || "-")}</td><td>${esc(d ? designLabel(d) : c.design)}${c.partial ? "(一部)" : ""}</td>
+        <td>${c.at <= 0 ? "プリセット" : clock(c.sent) + " → " + clock(c.complete)}</td>
+        <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
+        || `<tr><td class="meta" colspan="6">まだキューがありません</td></tr>`}
+      </tbody></table>
+      <div class="meta" style="margin-top:6px">機体ごとの最短間隔(送信から次の送信まで): ${Object.entries(show.min_interval).map(([u, s]) => `${esc(u)} ${Math.ceil(s)} 秒`).join(" · ")}</div>
+    </div>`;
+  renderThumbs();
+}
+function renderThumbs() {
+  const t = ui.playhead;
+  $("#ph-label").textContent = clock(t);
+  $("#playhead").style.left = (100 * t / state.show.duration).toFixed(3) + "%";
+  $("#thumbs").innerHTML = trackItems().map(item => {
+    const worn = wornAt(item, t);
+    return `<div class="thumb"><div class="t">${esc(item.item)} <span>${esc(worn.label)}</span>
+      ${worn.changing ? `<span class="chg">書き換え中…</span>` : ""}</div>
+      ${renderGarment(item, { cell: 8, mode: "design", labels: false, colors: worn.colors, shifts: worn.shifts })}</div>`;
+  }).join("");
+}
+
+// ---- events ----
+// Undo covers the show (timeline, length, unit assignments); the server keeps the history.
+async function step(which) {
+  const result = await api("/api/" + which, {});
+  if (!result.ok) { toast(which === "undo" ? "これ以上戻せません" : "やり直す操作がありません"); return; }
+  await refresh();
+  if (!state.show.cues.some(c => c.id === ui.cue)) ui.cue = null;
+  render();
+}
+document.addEventListener("keydown", e => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const key = e.key.toLowerCase();
+  if (key !== "z" && key !== "y") return;
+  // Inside a text box Ctrl+Z belongs to the typing, not to the show.
+  if (e.target.matches("input[type=text], textarea")) return;
+  e.preventDefault();
+  step(key === "y" || e.shiftKey ? "redo" : "undo");
+});
+document.addEventListener("click", async e => {
+  if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
+  const tab = e.target.closest("[data-tab]");
+  if (tab) { ui.tab = tab.dataset.tab; render(); return; }
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    if (confirm(del.dataset.del + " をワークスペースから削除しますか?")) { await api("/api/delete", { name: del.dataset.del }); refresh(); }
+    return;
+  }
+  const set = e.target.closest("[data-set]");
+  if (set) { ui[set.dataset.set] = set.dataset.value; renderContent(); return; }
+  const dr = e.target.closest("tr[data-design]");
+  if (dr) { ui.design = dr.dataset.design; ui.mode = "design"; renderContent(); return; }
+  const row = e.target.closest("tr[data-board]");
+  if (row) { const b = Number(row.dataset.board); ui.board = ui.board === b ? null : b; renderContent(); return; }
+
+  const cueEl = e.target.closest("[data-cue]");
+  if (cueEl) {
+    ui.cue = cueEl.dataset.cue;
+    const c = state.show.cues.find(x => x.id === ui.cue);
+    if (c) ui.playhead = Math.min(state.show.duration, Math.round(c.complete));
+    renderTimeline(); return;
+  }
+  if (e.target.id === "cue-del") { await saveShow(state.show.cues.filter(c => c.id !== ui.cue)); return; }
+  if (e.target.id === "cue-show") {
+    const c = state.show.cues.find(x => x.id === ui.cue);
+    ui.tab = "items"; ui.item = c.item; ui.design = c.design; ui.mode = "design"; render(); return;
+  }
+  const track = e.target.closest("[data-track]");
+  if (track) {
+    const item = state.items.find(i => i.item === track.dataset.track);
+    if (!item.designs.length) { toast(item.item + " にはデザイン CSV がまだありません"); return; }
+    const box = track.getBoundingClientRect();
+    let at = Math.round((e.clientX - box.left) / box.width * state.show.duration / 5) * 5;
+    if (at < state.show.refresh_s) at = 0;                     // too early to finish a refresh: the preset
+    const mine = cuesOf(item);
+    const next = item.designs.find(d => !mine.some(c => c.design === d.name)) || item.designs[0];
+    const id = "c" + Math.random().toString(36).slice(2, 10);
+    ui.cue = id; ui.playhead = at;
+    await saveShow([...state.show.cues, { id, item: item.item, at, design: next.name, align: "done",
+                                          partial: designState(next) === "partial" }]);
+    return;
+  }
+  const ruler = e.target.closest("#ruler");
+  if (ruler) {
+    const box = ruler.getBoundingClientRect();
+    ui.playhead = Math.max(0, Math.min(state.show.duration, Math.round((e.clientX - box.left) / box.width * state.show.duration)));
+    $("#ph").value = ui.playhead; renderThumbs(); return;
+  }
+  if (e.target.closest("select, input, button, label")) return;
+  const card = e.target.closest(".item");
+  if (card) { ui.item = card.dataset.item; ui.design = null; ui.board = null; ui.mode = "design"; render(); }
+});
+document.addEventListener("change", async e => {
+  const id = e.target.id;
+  if (id === "design") { ui.design = e.target.value; renderContent(); }
+  else if (id === "pick") { upload(e.target.files); e.target.value = ""; }
+  else if (id === "duration") {
+    const seconds = parseClock(e.target.value);
+    if (seconds === null || seconds < 1) { toast("長さは m:ss で入力してください"); renderTimeline(); return; }
+    ui.playhead = Math.min(ui.playhead, seconds); await saveShow(state.show.cues, seconds);
+  } else if (id === "refresh") {
+    const seconds = Number(e.target.value);
+    if (!(seconds >= 1 && seconds <= 60)) { toast("書き換え時間は 1〜60 秒で入力してください"); renderTimeline(); return; }
+    await saveShow(state.show.cues, undefined, seconds);
+  } else if (id.startsWith("cue-")) {
+    const cues = state.show.cues.map(c => ({ ...c })), cue = cues.find(c => c.id === ui.cue);
+    if (!cue) return;
+    if (id === "cue-at") {
+      const seconds = parseClock(e.target.value);
+      if (seconds === null) { toast("時刻は m:ss で入力してください(例 3:20)"); renderTimeline(); return; }
+      cue.at = seconds;
+    } else if (id === "cue-design") {
+      cue.design = e.target.value;                          // a design with "-" holes can only be a partial cue
+      const d = state.items.find(i => i.item === cue.item)?.designs.find(x => x.name === cue.design);
+      if (d) cue.partial = designState(d) === "partial";
+    }
+    else if (id === "cue-align") cue.align = e.target.value;
+    else if (id === "cue-partial") cue.partial = e.target.checked;
+    await saveShow(cues);
+  } else if (e.target.dataset.assign !== undefined) {
+    await api("/api/assign", { item: e.target.dataset.assign, unit: e.target.value || null }); refresh();
+  }
+});
+document.addEventListener("input", e => { if (e.target.id === "ph") { ui.playhead = Number(e.target.value); renderThumbs(); } });
+document.addEventListener("mouseover", e => {
+  const g = e.target.closest("g[data-k]");
+  if (!g || !$("#info")) return;
+  const item = state.items.find(i => i.item === ui.item);
+  const design = item.designs.find(d => d.name === ui.design);
+  const [side, row, col] = g.dataset.k.split("|");
+  const board = item.boards.find(b => b.board_no === Number(g.dataset.b));
+  const code = design?.colors[g.dataset.k];
+  const label = String(g.dataset.b).padStart(3, "0") + "-" + String(g.dataset.s).padStart(2, "0");
+  $("#info").innerHTML = `<b>${esc(side)}</b> row ${row} / col ${col} · ケーブル <b>${label}</b>
+    (基板 ${String(g.dataset.b).padStart(3, "0")} = DIP ID <b>${board ? board.dip_id : "?"}</b>、ソケット P${g.dataset.s})` +
+    (design ? ` · 色 <b>${code !== undefined ? hex(code) + " " + esc(state.palette[code].name) : "未指定"}</b>` : "");
+});
+
+async function upload(fileList) {
+  const files = [];
+  for (const f of fileList) files.push({ name: f.name, text: await f.text() });
+  if (!files.length) return;
+  const result = await api("/api/files", { files });
+  const parts = [];
+  if (result.saved?.length) parts.push(`${result.saved.length} 件を取り込みました`);
+  if (result.refused?.length) parts.push("取り込めません: " + result.refused.join(" / "));
+  toast(parts.join(" · ") || result.error || "");
+  refresh();
+}
+let depth = 0;
+addEventListener("dragenter", e => { e.preventDefault(); depth++; $("#drop").classList.add("on"); });
+addEventListener("dragleave", e => { if (--depth <= 0) { depth = 0; $("#drop").classList.remove("on"); } });
+addEventListener("dragover", e => e.preventDefault());
+addEventListener("drop", e => { e.preventDefault(); depth = 0; $("#drop").classList.remove("on"); upload(e.dataTransfer.files); });
+
+refresh();
+</script>
+</body>
+</html>
