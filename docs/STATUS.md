@@ -18,6 +18,21 @@
 
 ## 2. 直近で完成したもの
 
+**LCD に `REBOOT`(機体の再起動)を追加(2026-09-21、実機未反映)**
+
+- メニュー末尾 `REBOOT`(`ui/rebooter.py`): 確認画面でホスト名を大きく
+  表示し、**KEY1 の 1 秒長押しでのみ** `sudo -n systemctl reboot` を実行。
+  短押し・ジョイスティックでは何も起きない(メニューでの連打対策)。
+  受理後はボタン無効、拒否されたら `FAILED` + 理由で長押し再試行
+- ランナーは止めない(拒否されればデモは続き、受理されれば OS が全部止める)。
+  再起動後は通常起動と同じ待機(全面白)に入る
+- 前提はパスワード不要 sudo。radxa-01 で `sudo -n true` と
+  `/etc/sudoers.d/010_radxa-nopasswd`(`NOPASSWD:ALL`)を確認済み。
+  ユニットに `NoNewPrivileges` は付いていない。Pi 予備機は 2026-09-21 時点で
+  SSH 不達のため未確認
+- テスト 262 件(Windows で全通過)。**配布は push → 各機体で `GIT PULL` →
+  KEY1 再起動**(`requirements.txt` の変更なし)
+
 **デモ `RND16+SOLID16` を追加(2026-09-20、radxa-01 反映済み)**
 
 - メニュー `RND16+SOLID16`(key `loop16`): **RANDOM16**(60 セグメントに

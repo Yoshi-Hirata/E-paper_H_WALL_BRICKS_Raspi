@@ -22,6 +22,7 @@ from .display import make_display
 from .inputs import make_input
 from .patterns import PATTERNS
 from .puller import RepoPuller
+from .rebooter import Rebooter
 from .runner import DEFAULT_BOARDS, DemoRunner
 from .updater import FirmwareUpdater, find_firmware, usb_rebind
 from .versions import BoardVersions
@@ -101,6 +102,18 @@ def preview(directory: str) -> int:
                        ).save(out / "pull_failed.png")
     render.message_screen("restarting", "now at c0ffee1, UI back in ~15 s",
                           host="radxa-01").save(out / "restarting.png")
+    render.reboot_screen("idle", [], host="radxa-01"
+                         ).save(out / "reboot_confirm.png")
+    render.reboot_screen("rebooting",
+                         ["12:00:00 reboot: sudo -n systemctl reboot",
+                          "12:00:00 reboot requested - going down"],
+                         host="radxa-01").save(out / "reboot_going.png")
+    render.reboot_screen("failed",
+                         ["12:00:00 reboot: sudo -n systemctl reboot",
+                          "12:00:00 ERROR sudo: a password is required",
+                          "12:00:00 ERROR reboot refused (exit 1)"],
+                         error="reboot refused (exit 1)", host="radxa-01"
+                         ).save(out / "reboot_failed.png")
     rows = [(1, "FW_260917"), (2, "FW_260903"), (7, "V1.0 6-color (no OTA)"),
             (20, "V1.1 16-color, build unknown")]
     render.versions_screen(rows[:1], "scanning 3/20...", "scanning",
@@ -302,6 +315,7 @@ def main() -> int:
     updater = FirmwareUpdater(firmware, boards=args.boards, port=args.port,
                               rebind=None if args.no_usb_rebind else usb_rebind)
     puller = RepoPuller()
+    rebooter = Rebooter()
     versions = BoardVersions(boards=args.boards, port=args.port)
     host = socket.gethostname() or None
 
@@ -310,7 +324,7 @@ def main() -> int:
             make_input(args.input) as inputs:
         app_kwargs = {"port_label": port, "locked": args.locked,
                       "updater": updater, "puller": puller, "host": host,
-                      "versions": versions}
+                      "versions": versions, "rebooter": rebooter}
         if args.blank_after is not None:
             app_kwargs["blank_after"] = args.blank_after
         app = App(display, inputs, runner, **app_kwargs)

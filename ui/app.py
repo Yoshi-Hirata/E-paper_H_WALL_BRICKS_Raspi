@@ -27,6 +27,10 @@ the commit moved KEY1 exits the process - the service is Restart=always,
 so systemd brings the UI back on the new code. Ten identical units
 tell apart by the hostname in the top strip of every screen.
 
+REBOOT restarts the whole unit (ui/rebooter.py). Its row only opens a
+confirm screen, and the reboot needs KEY1 *held* - a plain press does
+nothing there - so a double-tap on the menu cannot take a unit down.
+
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
 machine, or a blind press in a dark room could stop a running show.
@@ -59,6 +63,7 @@ class Screen(Enum):
     UPDATE = "update"
     VERSIONS = "versions"
     PULL = "pull"
+    REBOOT = "reboot"
 
 
 class App:
@@ -67,7 +72,7 @@ class App:
                  locked: bool = False, blank_after: float = BLANK_AFTER_S,
                  relock_after: float = RELOCK_AFTER_S,
                  clock=time.monotonic, updater=None, puller=None,
-                 host: str | None = None, versions=None):
+                 host: str | None = None, versions=None, rebooter=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -84,6 +89,9 @@ class App:
         self.puller = puller
         if puller is not None:
             self.patterns.append(puller.menu_entry)
+        self.rebooter = rebooter
+        if rebooter is not None:
+            self.patterns.append(rebooter.menu_entry)
         self.host = host
         self.selected = 0
         self.screen = Screen.MENU
@@ -164,6 +172,9 @@ class App:
         if self.screen is Screen.VERSIONS:
             self._handle_versions(event)
             return
+        if self.screen is Screen.REBOOT:
+            self._handle_reboot(event)
+            return
 
         if event == "key1_hold":
             # Reset: back to cycle 0 with the timer at zero, wherever we
@@ -238,6 +249,19 @@ class App:
             self.screen = Screen.MENU
         self._dirty = True
 
+    def _handle_reboot(self, event: str) -> None:
+        rebooter = self.rebooter
+        if rebooter.busy:
+            return                  # accepted: the OS is on its way down
+        if event == "key1_hold":
+            # Only the hold reboots. It also retries after a refusal.
+            rebooter.reset()
+            rebooter.start()
+        elif event == "key2":
+            rebooter.reset()
+            self.screen = Screen.MENU
+        self._dirty = True
+
     def _handle_versions(self, event: str) -> None:
         versions = self.versions
         if versions.busy:
@@ -260,6 +284,13 @@ class App:
         self._standby = False
         self.versions.scan()
         self.screen = Screen.VERSIONS
+        self._dirty = True
+
+    def _enter_reboot(self) -> None:
+        # Like GIT PULL the runner keeps the port: backing out with KEY2
+        # must leave a running demo exactly as it was.
+        self.rebooter.reset()
+        self.screen = Screen.REBOOT
         self._dirty = True
 
     def _enter_pull(self) -> None:
@@ -297,6 +328,9 @@ class App:
             return
         if self.patterns[self.selected].key == "versions":
             self._enter_versions()
+            return
+        if self.patterns[self.selected].key == "reboot":
+            self._enter_reboot()
             return
         if self.patterns[self.selected].key == "standby":
             # The top menu entry is not a looping demo. One shot of the
@@ -372,6 +406,11 @@ class App:
                 puller.after.label if puller.after else None,
                 puller.phase, puller.recent(LOG_LINES), error=puller.error,
                 changed=puller.changed, locked=self.locked, host=self.host)
+        if self.screen is Screen.REBOOT:
+            rebooter = self.rebooter
+            return render.reboot_screen(
+                rebooter.phase, rebooter.recent(LOG_LINES),
+                error=rebooter.error, locked=self.locked, host=self.host)
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",
@@ -423,6 +462,11 @@ class App:
                 puller = self.puller
                 return ("pull", puller.phase, puller.before, puller.after,
                         tuple(puller.recent(LOG_LINES)), puller.error,
+                        self.locked)
+            if self.screen is Screen.REBOOT:
+                rebooter = self.rebooter
+                return ("reboot", rebooter.phase,
+                        tuple(rebooter.recent(LOG_LINES)), rebooter.error,
                         self.locked)
             return ("menu", self._standby_status())
         return (int(self.runner.elapsed), self.runner.cycle,

@@ -328,6 +328,61 @@ def pull_screen(before: str, after: str | None, phase: str,
     return image
 
 
+_REBOOT_STATUS = {
+    "idle": ("CONFIRM", ACCENT),
+    "rebooting": ("REBOOTING", OK),
+    "failed": ("FAILED", ERR),
+}
+
+
+def reboot_screen(phase: str, log_lines: list[str],
+                  error: str | None = None, locked: bool = False,
+                  host: str | None = None) -> Image.Image:
+    """Reboot confirm: which unit, what happens, KEY1 held to go.
+
+    `phase` is one of ui.rebooter's IDLE/REBOOTING/FAILED. The hostname
+    is repeated large because a reboot on the wrong one of ten identical
+    units is the mistake this screen exists to prevent.
+    """
+    image, draw = _blank()
+    status, color = _REBOOT_STATUS.get(phase, (phase.upper(), DIM))
+    _header(draw, "REBOOT", status=status, status_color=color, host=host)
+
+    draw.text((8, 34), _ellipsize(host or "this unit", FONT_L, WIDTH - 16),
+              font=FONT_L, fill=FG)
+    if phase == "rebooting":
+        body, tint = "Going down now. The UI is back in about a minute.", OK
+    elif phase == "failed":
+        body, tint = f"Not rebooted: {error or 'unknown error'}", ERR
+    else:
+        body = ("Restart the whole unit? The panels are set to standby "
+                "(white) when the UI comes back.")
+        tint = DIM
+    y = 66
+    for line in _wrap(body, FONT_S, WIDTH - 16)[:4]:
+        draw.text((8, y), line, font=FONT_S, fill=tint)
+        y += 15
+
+    draw.line((8, 132, WIDTH - 8, 132), fill=BAR, width=1)
+    y = 136
+    for line in log_lines[-LOG_LINES + 2:]:
+        tint = ERR if "ERROR" in line else DIM
+        draw.text((8, y), _ellipsize(line, FONT_S, WIDTH - 16),
+                  font=FONT_S, fill=tint)
+        y += 15
+
+    if locked:
+        hint = "buttons locked"
+    elif phase == "rebooting":
+        hint = "rebooting - please wait"
+    elif phase == "failed":
+        hint = "hold KEY1 retry  KEY2 menu"
+    else:
+        hint = "hold KEY1 = reboot  KEY2 back"
+    _hint(draw, hint)
+    return image
+
+
 # Scroll step floor for the FW VERSION list: the fewest board rows that
 # fit a page when every label wraps onto two lines. One-line labels fit
 # ten, so the last page simply shows more.
