@@ -298,3 +298,55 @@ def test_a_second_conductor_on_the_same_port_steps_aside(tmp_path, capsys):
         server.shutdown()
         server.server_close()
     assert not already_serving(port)
+
+
+# ---- robustness found in review ----
+
+def test_show_json_is_replaced_whole_never_half_written(workspace):
+    workspace.set_timeline(600, [_cue("a", 0)])
+    assert not list(workspace.root.glob("*.tmp"))
+    assert json.loads((workspace.root / "show.json").read_text(encoding="utf-8"))["cues"]
+
+
+def test_a_broken_map_is_named_when_the_show_is_compiled(workspace):
+    workspace.assign("Look22", "radxa-01")
+    workspace.set_timeline(600, [_cue("a", 0)])
+    assert workspace.compile_show()[1] == []
+    workspace.save("Look23_map.csv", "side,row,col\nfront,0,1\n")
+    shows, problems = workspace.compile_show()
+    assert shows == {} and "Look23_map.csv" in problems[0]
+
+
+def test_start_needs_an_upload_and_does_not_restart_by_accident(tmp_path):
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def post(path, body):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    try:
+        assert "Upload first" in post("/api/fleet/start", {})["note"]
+        assert fleet.run is None
+        fleet.shows = {"radxa-01": {"id": "x", "cues": [], "duration": 60}}
+        fleet.links = {}
+        post("/api/fleet/start", {"lead_s": 1})
+        t0 = fleet.run["t0"]
+        again = post("/api/fleet/start", {"lead_s": 1})     # the double click
+        assert "already running" in again["note"] and fleet.run["t0"] == t0
+        post("/api/fleet/start", {"lead_s": 1, "force": True})
+        assert fleet.run["t0"] > t0
+        assert "not on hold" in post("/api/fleet/resume", {})["note"]
+        post("/api/fleet/stop", {})
+        assert "not running" in post("/api/fleet/hold", {})["note"]
+        assert "No cue ahead" in post("/api/fleet/next", {"lead_s": 1})["note"]
+    finally:
+        server.shutdown()
+        server.server_close()

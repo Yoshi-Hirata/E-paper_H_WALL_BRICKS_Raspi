@@ -77,13 +77,18 @@ def min_interval(boards: int, refresh: float = REFRESH_S) -> float:
 
 
 def times(cue: dict, refresh: float = REFRESH_S) -> "tuple[float, float]":
-    """(sent, complete) for a cue. The preset is complete at 0."""
+    """(sent, complete) for a cue. The preset is complete at 0.
+
+    Rounded to the millisecond: send instants are compared and used as
+    keys ("the same moment" is one broadcast, showfile.py), and
+    10.3 - 7.3 is 3.000000000000001, not the 3.0 of a cue starting at 3.
+    """
     at = float(cue["at"])
     if at <= 0:
-        return -refresh, 0.0
+        return round(-refresh, 3), 0.0
     if cue.get("align", "done") == "start":
-        return at, at + refresh
-    return at - refresh, at
+        return round(at, 3), round(at + refresh, 3)
+    return round(at - refresh, 3), round(at, 3)
 
 
 def clean(cues) -> "list[dict]":

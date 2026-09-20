@@ -87,7 +87,11 @@ class Workspace:
             return {"undo": [], "redo": []}
 
     def _write(self, path: Path, payload) -> None:
-        path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        # Whole or not at all: a power cut in the middle of a plain write
+        # would leave half a timeline, the night before the show.
+        scratch = path.with_name(path.name + ".tmp")
+        scratch.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        os.replace(scratch, path)
 
     def _commit(self, before: dict, after: dict) -> None:
         """Save an edit of the show (lock held). The version it replaces
@@ -214,8 +218,8 @@ class Workspace:
             if self.kind(path.name) == "map":
                 try:
                     look_map = LookMap.from_csv(path)
-                except LookError:
-                    continue
+                except (OSError, LookError):
+                    continue            # reported where the item is chosen
                 maps[(look_map.item or path.stem).lower()] = look_map
         problems: "list[str]" = []
         payloads: "dict[str, dict]" = {}
@@ -258,12 +262,16 @@ class Workspace:
         assigned = show.get("units", {})
         maps: "dict[str, LookMap]" = {}
         facts: "dict[str, dict]" = {}
+        broken: "list[str]" = []
         for path in paths:
             if self.kind(path.name) != "map":
                 continue
             try:
                 look_map = LookMap.from_csv(path)
-            except LookError:
+            except (OSError, LookError) as exc:
+                # Said here, at upload time - not as a vague "no such
+                # item" on every cue of the garment.
+                broken.append(f"{path.name}: {exc}")
                 continue
             maps[(look_map.item or path.stem).lower()] = look_map
         designs: "dict[str, Design]" = {}
@@ -271,7 +279,7 @@ class Workspace:
             if self.kind(path.name) == "grid":
                 try:
                     designs[path.name] = Design.from_csv(path)
-                except LookError:
+                except (OSError, LookError):
                     pass
         for key, look_map in maps.items():
             mine = {name: d for name, d in designs.items()
@@ -286,6 +294,8 @@ class Workspace:
         duration = float(show.get("duration", timeline.DEFAULT_DURATION_S))
         cues = timeline.clean(show.get("cues"))
         cue_problems, _ = timeline.validate(cues, facts, duration, refresh)
+        if broken:
+            return {}, broken
         return showfile.build(maps, assigned, lambda name: designs[name],
                               cues, refresh, duration, cue_problems,
                               name=self.root.name)
@@ -311,10 +321,10 @@ class Workspace:
                 continue
             try:
                 look_map = LookMap.from_csv(path)
-            except LookError as exc:
+            except (OSError, LookError) as exc:
                 entry = item_entry(Path(path.stem[:-4]).name)
                 entry["map"] = {"name": path.name, "scales": [], "sides": []}
-                entry["problems"] += exc.problems
+                entry["problems"] += getattr(exc, "problems", [str(exc)])
                 continue
             entry = item_entry(look_map.item or path.stem)
             maps[entry["item"].lower()] = look_map
@@ -331,8 +341,8 @@ class Workspace:
             try:
                 design = Design.from_csv(path)
                 problems = []
-            except LookError as exc:
-                design, problems = None, exc.problems
+            except (OSError, LookError) as exc:     # deleted meanwhile, too
+                design, problems = None, getattr(exc, "problems", [str(exc)])
             item = (design.item if design else None) or path.stem
             look_map = maps.get(item.lower())
             record = {"name": path.name,
@@ -414,6 +424,7 @@ class Handler(BaseHTTPRequestHandler):
     workspace: Workspace = None            # set by make_server()
     fleet: "Fleet | None" = None
     prepared: "dict[str, str]" = {}        # unit -> the cue it was last sent
+    prepared_lock = threading.Lock()       # request threads share the dict
     server_version = "conductor"
 
     def log_message(self, fmt, *args):     # keep the console for errors
@@ -439,13 +450,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path == "/api/state":
-            return self._json(self.workspace.state())
-        if path == "/api/fleet":
-            if self.fleet is None:
-                return self._json({"units": [], "last_fire": None})
-            return self._json(dict(self.fleet.snapshot(),
-                                   prepared=self.prepared))
+        try:
+            if path == "/api/state":
+                return self._json(self.workspace.state())
+            if path == "/api/fleet":
+                if self.fleet is None:
+                    return self._json({"units": [], "last_fire": None})
+                with self.prepared_lock:
+                    prepared = dict(self.prepared)
+                return self._json(dict(self.fleet.snapshot(),
+                                       prepared=prepared))
+        except Exception as exc:        # noqa: BLE001 - a poll must get JSON
+            return self._json({"error": f"{exc.__class__.__name__}: {exc}"},
+                              status=500)
         if path in ("/", "/index.html"):
             page = (WEB_DIR / "index.html").read_bytes()
             return self._send(200, page, "text/html; charset=utf-8")
@@ -494,14 +511,17 @@ class Handler(BaseHTTPRequestHandler):
             payloads, problems = self.workspace.compile_units(
                 body.get("choices") or {}, cue)
             results = fleet.prepare(payloads) if payloads else {}
-            for unit, result in results.items():
-                if result["ok"]:
-                    self.prepared[unit] = cue
+            with self.prepared_lock:
+                for unit, result in results.items():
+                    if result["ok"]:
+                        self.prepared[unit] = cue
             return self._json({"cue": cue, "units": results,
                                "problems": problems})
         if command == "fire":
-            units = body.get("units") or list(self.prepared)
-            cues = {u: self.prepared[u] for u in units if u in self.prepared}
+            with self.prepared_lock:
+                units = body.get("units") or list(self.prepared)
+                cues = {u: self.prepared[u] for u in units
+                        if u in self.prepared}
             lead = float(body.get("lead_s", DEFAULT_LEAD_S))
             if not 0.5 <= lead <= 60:
                 raise ValueError("lead time is 0.5-60 s")
@@ -518,12 +538,29 @@ class Handler(BaseHTTPRequestHandler):
             lead = float(body.get("lead_s", DEFAULT_LEAD_S))
             if not 0.5 <= lead <= 60:
                 raise ValueError("lead time is 0.5-60 s")
-            action = fleet.start_show if command == "start" else fleet.next_cue
-            return self._json({"units": action(lead), "lead_s": lead})
+            if command == "start":
+                if not fleet.shows:
+                    return self._json({"units": {}, "note":
+                                       "Nothing uploaded yet - Upload first."})
+                # A second click on START must not move a running show's
+                # clock; starting over is said out loud (the page asks).
+                if fleet.run is not None and not body.get("force"):
+                    return self._json({"units": {}, "note":
+                                       "The show is already running."})
+                return self._json({"units": fleet.start_show(lead),
+                                   "lead_s": lead})
+            results = fleet.next_cue(lead)
+            return self._json({"units": results, "lead_s": lead, "note":
+                               "" if results else "No cue ahead to jump to "
+                               "(or it is already due)."})
         if command == "hold":
-            return self._json({"units": fleet.hold()})
+            results = fleet.hold()
+            return self._json({"units": results, "note":
+                               "" if results else "The show is not running."})
         if command == "resume":
-            return self._json({"units": fleet.resume()})
+            results = fleet.resume()
+            return self._json({"units": results, "note":
+                               "" if results else "The show is not on hold."})
         if command == "stop":
             return self._json({"units": fleet.stop_show()})
         if command in ("cancel", "standby", "release"):
@@ -531,8 +568,9 @@ class Handler(BaseHTTPRequestHandler):
             if command == "standby":
                 fleet.stop_show()           # a running show would refuse it
             if command != "cancel":
-                for unit in units:
-                    self.prepared.pop(unit, None)
+                with self.prepared_lock:
+                    for unit in units:
+                        self.prepared.pop(unit, None)
             return self._json({"units": fleet.simple(units, "/" + command)})
         self._send(404, b"not found", "text/plain")
 

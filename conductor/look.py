@@ -157,6 +157,12 @@ class LookMap:
               ) -> "LookMap":
         reader = csv.DictReader(lines)
         header = [h.strip() for h in (reader.fieldnames or [])]
+        doubled = sorted({h for h in header if h and header.count(h) > 1})
+        if doubled:
+            # csv.DictReader keeps the last of two columns with one name,
+            # and a scale would silently take the wrong board or socket.
+            raise LookError([f"{name}: column(s) {', '.join(doubled)} appear "
+                             "more than once"])
         missing = [c for c in _MAP_COLUMNS if c not in header]
         if missing:
             raise LookError([f"{name}: missing column(s) {', '.join(missing)}"
@@ -172,7 +178,7 @@ class LookMap:
                 continue
             where = f"{name}:{line_no}"
             try:
-                scale = Scale(row["side"], int(row["row"]), int(row["col"]),
+                scale = Scale(row["side"].lower(), int(row["row"]), int(row["col"]),
                               int(row["board_no"]), int(row["socket"]),
                               row.get("label", ""))
             except ValueError:
@@ -270,6 +276,11 @@ class Design:
                              "position numbers (1,2,3...)"])
         if not cols:
             raise LookError([f"{name}: no position columns after shift"])
+        doubled = sorted({c for c in cols if cols.count(c) > 1})
+        if doubled:
+            raise LookError([f"{name}: position column(s) "
+                             f"{', '.join(map(str, doubled))} appear more than "
+                             "once - one would silently overwrite the other"])
         colors: "dict[tuple[str, int, int], int]" = {}
         undecided: "set[tuple[str, int, int]]" = set()
         shifts: "dict[tuple[str, int], float]" = {}
@@ -279,7 +290,7 @@ class Design:
                 continue
             where = f"{name}:{line_no}"
             try:
-                side, row = cells[0], int(cells[1])
+                side, row = cells[0].lower(), int(cells[1])
                 shift = float(cells[2] or 0)
             except (ValueError, IndexError):
                 problems.append(f"{where}: needs side, a whole-number row "

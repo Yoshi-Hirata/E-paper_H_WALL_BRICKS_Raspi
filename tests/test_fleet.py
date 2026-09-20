@@ -149,8 +149,23 @@ def test_a_rebooted_unit_starts_its_clock_measurement_over():
     for n in range(5):
         link._learn({"mono": 5000.0 + n * 0.001}, 1000.0 - 0.004, 1000.0 + 0.004)
     assert len(link._samples) == 5 and abs(link.offset - 4000.0) < 0.01
-    link._learn({"mono": 12.0}, 999.99, 1000.01)     # monotonic restarted
-    assert len(link._samples) == 1 and abs(link.offset - -988.0) < 0.01
+    link._learn({"mono": 12.0}, 999.99, 1000.01)     # monotonic restarted?
+    # One sample far off may be a stalled packet: the history is kept...
+    assert len(link._samples) == 5 and abs(link.offset - 4000.0) < 0.01
+    link._learn({"mono": 12.5}, 1000.49, 1000.51)    # ...a second agrees:
+    assert len(link._samples) == 2 and abs(link.offset - -988.0) < 0.01
+
+
+def test_a_lone_wild_sample_does_not_cost_the_clock_history():
+    link = UnitLink("radxa-01", "127.0.0.1:9", clock=lambda: 1000.0)
+    for n in range(5):
+        link._learn({"mono": 5000.0}, 1000.0 - 0.004, 1000.0 + 0.004)
+    link._learn({"mono": 5003.0}, 999.0, 1000.004)   # a 1 s stall on the way
+    link._learn({"mono": 5000.0}, 1000.0 - 0.004, 1000.0 + 0.004)
+    assert len(link._samples) == 6 and abs(link.offset - 4000.0) < 0.01
+    link._learn({"mono": 4990.0}, 999.0, 1001.0)     # two wild ones that do
+    link._learn({"mono": 5010.0}, 999.0, 1001.0)     # not agree: both dropped
+    assert abs(link.offset - 4000.0) < 0.01
 
 
 def test_the_shortest_round_trip_is_the_one_believed():
@@ -236,3 +251,51 @@ def test_prepare_and_fire_through_the_conductor_api(tmp_path, fleet, units):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---- what the operator stopped stays stopped ----
+
+class StubLink:
+    """A unit as the fleet sees it, without a network."""
+
+    def __init__(self, name, show_state, offset=5.0):
+        self.name, self.offset, self.online = name, offset, True
+        self.status = {"show": {"id": "showA", "state": show_state, "t0": 1005.0,
+                                "synced": True}}
+        self.posted = []
+
+    def post(self, path, body):
+        self.posted.append((path, body))
+        return {}
+
+    def snapshot(self):
+        return {"name": self.name, "online": True, "show": self.status["show"]}
+
+
+def test_a_stopped_show_is_not_adopted_back_from_a_unit_that_missed_the_stop():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "running")}   # missed it
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600},
+                   "radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.start_show(lead_s=1.0)
+    fleet.stop_show()
+    for link in fleet.links.values():
+        link.posted.clear()
+    fleet._corrected.clear()
+    assert fleet.snapshot()["run"] is None          # not resurrected
+    for link in fleet.links.values():
+        fleet._supervise(link)
+    assert fleet.links["radxa-01"].posted == []     # the stopped unit is left
+    assert fleet.links["radxa-02"].posted == [("/show/stop", {})]
+    assert any("missed STOP" in line for line in fleet.corrections)
+
+
+def test_a_fresh_conductor_adopts_a_running_show_once():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running")}
+    run = fleet.snapshot()["run"]
+    assert run["adopted"] and run["state"] == "running"
+    assert abs(run["t0"] - 1000.0) < 1e-6           # unit T0 - its offset
+    fleet.stop_show()
+    assert fleet.snapshot()["run"] is None          # and never again

@@ -78,6 +78,7 @@ class UnitLink:
         self._poll_conn: "http.client.HTTPConnection | None" = None
         self._lock = threading.Lock()
         self._samples: "deque[tuple[float, float]]" = deque(maxlen=SAMPLES)
+        self._suspect: "tuple[float, float] | None" = None
 
         self.status: "dict | None" = None
         self.last_seen: "float | None" = None
@@ -120,7 +121,18 @@ class UnitLink:
         with self._lock:
             best = self._best()
             if best is not None and abs(offset - best[1]) > JUMP_S:
-                self._samples.clear()           # the unit restarted
+                # A restarted unit - or one stalled packet behind a stage.
+                # Only two in a row that agree with each other are a
+                # restart; a lone outlier is dropped, the history kept.
+                suspect, self._suspect = self._suspect, (rtt, offset)
+                if suspect is None or abs(offset - suspect[1]) > JUMP_S:
+                    self.rtt, self.last_seen, self.error = rtt, received, None
+                    if "phase" in payload:
+                        self.status = payload
+                    return
+                self._samples.clear()
+                self._samples.append(suspect)
+            self._suspect = None
             self._samples.append((rtt, offset))
             self.rtt = rtt
             if "phase" in payload:
@@ -211,6 +223,11 @@ class Fleet:
         self.shows: "dict[str, dict]" = {}
         self.run: "dict | None" = None
         self._run_lock = threading.Lock()
+        # A run is adopted from the units only by a conductor that has
+        # just come up and been told nothing yet; after an operator's
+        # STOP, a unit still running is a unit that missed it.
+        self._may_adopt = True
+        self._stopped = False
         self._corrected: "dict[str, float]" = {}
         self.corrections: "list[str]" = []
 
@@ -285,6 +302,7 @@ class Fleet:
 
     def start_show(self, lead_s: float = DEFAULT_LEAD_S) -> "dict[str, dict]":
         with self._run_lock:
+            self._may_adopt, self._stopped = False, False
             self.run = {"t0": self._clock() + lead_s, "state": "running",
                         "held_at": None}
         return self._send_run(self._targets())
@@ -331,6 +349,7 @@ class Fleet:
     def stop_show(self) -> "dict[str, dict]":
         targets = self._targets()
         with self._run_lock:
+            self._may_adopt, self._stopped = False, True
             self.run = None
         return self.simple(targets, "/show/stop")
 
@@ -339,13 +358,24 @@ class Fleet:
         T0 it should? If not, tell it - nobody has to notice first."""
         with self._run_lock:
             run = dict(self.run) if self.run else None
-        show = self.shows.get(link.name)
-        if run is None or show is None or link.offset is None:
-            return
+            stopped = self._stopped
         now = self._clock()
         if now - self._corrected.get(link.name, -1e9) < SUPERVISE_EVERY_S:
             return
         unit = (link.status or {}).get("show") or {}
+        if run is None:
+            # The operator stopped the show; a unit that was out of reach
+            # then and still runs it has to be told now.
+            if stopped and unit.get("state") in ("running", "holding"):
+                link.post("/show/stop", {})
+                self._corrected[link.name] = now
+                self.corrections.append(f"{time.strftime('%H:%M:%S')} "
+                                        f"{link.name}: stopped (missed STOP)")
+                del self.corrections[:-20]
+            return
+        show = self.shows.get(link.name)
+        if show is None or link.offset is None:
+            return
         why = None
         if unit.get("id") != show["id"]:
             why = "show reloaded"
@@ -376,7 +406,7 @@ class Fleet:
     def _adopt(self) -> None:
         """A conductor restarted mid-show finds the run on the units."""
         with self._run_lock:
-            if self.run is not None:
+            if self.run is not None or not self._may_adopt:
                 return
             found = []
             for link in self.links.values():
@@ -387,6 +417,7 @@ class Fleet:
                     found.append(unit["t0"] - link.offset)
             if found:
                 found.sort()
+                self._may_adopt = False
                 self.run = {"t0": found[len(found) // 2], "state": "running",
                             "held_at": None, "adopted": True}
 

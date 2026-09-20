@@ -148,6 +148,10 @@ input[type=range] { width: 100%; }
 .shownext b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
 .go button.hold { background: var(--warn); border-color: var(--warn); color: #fff; }
 .go button.stop:hover { border-color: var(--err); color: var(--err); }
+body.busy .go button { opacity: .45; pointer-events: none; }
+.card h2 + .sub { margin: -2px 0 8px; }
+.cue-hold, .cue-band { min-width: 7px; }
+.cue-hold { cursor: grab; } .cue-hold.dragging { cursor: grabbing; opacity: .8; z-index: 4; outline: 2px dashed var(--accent); }
 </style>
 </head>
 <body>
@@ -177,7 +181,7 @@ input[type=range] { width: 100%; }
 <script>
 "use strict";
 const $ = (sel, root = document) => root.querySelector(sel);
-const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "" };
 let fleet = null;
@@ -196,7 +200,9 @@ function toast(text) {
 const clock = s => { const n = Math.round(Math.abs(s)); return (s < 0 ? "-" : "") + Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0"); };
 function parseClock(text) {                       // "3:20" or "200" -> seconds
   const m = String(text).trim().match(/^(?:(\d+):)?(\d{1,4})$/);
-  return m ? (m[1] !== undefined ? Number(m[1]) * 60 : 0) + Number(m[2]) : null;
+  if (!m) return null;
+  if (m[1] !== undefined && Number(m[2]) >= 60) return null;     // "3:75" is a typo
+  return (m[1] !== undefined ? Number(m[1]) * 60 : 0) + Number(m[2]);
 }
 const hex = c => "0x" + Number(c).toString(16).toUpperCase().padStart(2, "0");
 const rgb = c => `rgb(${state.palette[c].rgb.join(",")})`;
@@ -390,9 +396,9 @@ function wornAt(item, t) {
   }
   return { colors, shifts, label, changing };
 }
-async function saveShow(cues, duration, refresh) {
+async function saveShow(cues, duration, refreshS) {     // not "refresh": that is the reload function
   const result = await api("/api/show", { duration: duration ?? state.show.duration,
-    refresh_s: refresh ?? state.show.refresh_s,
+    refresh_s: refreshS ?? state.show.refresh_s,
     cues: cues.map(({ id, item, at, design, align, partial }) => ({ id, item, at, design, align, partial })) });
   if (result.error) toast(result.error);
   await refresh();
@@ -435,7 +441,7 @@ function renderTimeline() {
       <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
       <div class="group"><span>Refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
         title="Seconds from the command to the finished image. Depends on the firmware (about 7 s on the latest, 16 s on older ones)"><span>s</span></div>
-      <div class="meta">Click an empty spot on a track to add a cue there · click a cue to edit it below ·
+      <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
         hatched = refreshing (${show.refresh_s} s)</div>
     </div>
     <div class="card">
@@ -451,11 +457,12 @@ function renderTimeline() {
         <label>Time <input type="text" id="cue-at" value="${clock(cue.at)}"></label>
         <label>Design <select id="cue-design">${(cueItem?.designs || []).map(d =>
           `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}</option>`).join("")}</select></label>
-        <label>The time means <select id="cue-align" ${cue.at <= 0 ? "disabled" : ""}>
+        <label>This time marks <select id="cue-align" ${cue.at <= 0 ? "disabled" : ""}>
           <option value="done" ${cue.align === "done" ? "selected" : ""}>complete at this time (sent ${show.refresh_s} s earlier)</option>
           <option value="start" ${cue.align === "start" ? "selected" : ""}>the change starts at this time</option></select></label>
         <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label>
         <button id="cue-show">View design</button>
+        <button id="cue-all" title="Give every other item a cue at this time (with its own next unused design)">Copy time to all items</button>
         <button id="cue-del" class="danger">Delete</button>
         <span class="meta">${cue.at <= 0 ? "Preset: shown before START" : `sent ${clock(cue.sent)} → complete ${clock(cue.complete)}`}</span>
       </div>
@@ -501,7 +508,8 @@ function renderFleet() {
   const loose = trackItems().filter(i => !i.unit).map(i => i.item);
   const cueCount = state.show.cues.length, cueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
   $("#content").innerHTML = `
-    <div class="card"><h2>THE SHOW — THE TIMELINE (${cueCount} CUES${cueBad ? ` · <span style="color:var(--err)">${cueBad} PROBLEMS</span>` : ""}) IS UPLOADED TO THE UNITS, WHICH RUN IT ON THEIR OWN CLOCKS</h2>
+    <div class="card"><h2>THE SHOW (${cueCount} CUES${cueBad ? ` · <span style="color:var(--err)">${cueBad} PROBLEMS — fix them on the Timeline tab</span>` : ""})</h2>
+      <div class="meta sub">The timeline is uploaded to the units; after START each unit runs it on its own clock, with or without this PC.</div>
       <div class="showbar">
         <div class="showclock" id="show-clock"><small>—</small>0:00</div>
         <div class="shownext" id="show-next"></div>
@@ -517,10 +525,12 @@ function renderFleet() {
         <button class="big" id="show-next-cue">NEXT ▶</button>
         <button class="big stop" id="show-stop">STOP (panels keep their image)</button>
       </div>
+      <div class="warn" id="show-hint" style="margin-top:6px"></div>
       <div class="meta" id="show-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.showLog || "")}</div>
       <div class="meta" id="show-fix"></div>
     </div>
-    <div class="card"><h2>MANUAL CUE (FOR CHECKING THE SYNC)</h2>
+    <div class="card"><h2>MANUAL CUE</h2>
+      <div class="meta sub">For checking the sync outside a show: write a design to the boards, then fire every unit at the same instant.</div>
       ${items.length ? `<div class="picks">${items.map(item => `<label><span><b>${esc(item.item)}</b> → ${esc(item.unit)}</span>
         <select data-choice="${esc(item.item)}">${item.designs.filter(d => designState(d) !== "bad").map(d =>
           `<option value="${esc(d.name)}" ${d.name === ui.choices[item.item] ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}${designState(d) === "partial" ? " (partial)" : ""}</option>`).join("")}</select></label>`).join("")}</div>`
@@ -528,16 +538,17 @@ function renderFleet() {
       ${loose.length ? `<div class="warn" style="margin-top:6px">No unit: ${esc(loose.join(", "))}</div>` : ""}
       <div class="go">
         <button class="big" id="fleet-prepare" ${items.length ? "" : "disabled"}>Prepare — write the boards</button>
-        <button class="big fire" id="fleet-fire">GO — show together</button>
+        <button class="big fire" id="fleet-fire">GO — fire all units together</button>
         <span class="meta">(all units send together after the seconds above; not available while a show runs)</span>
         <button id="fleet-cancel">Cancel the fire</button>
         <span style="flex:1"></span>
         <button id="fleet-standby">All units STANDBY (white)</button>
-        <button id="fleet-release">Release all units to their own menu</button>
+        <button id="fleet-release">Release units to on-device control</button>
       </div>
       <div class="meta" id="go-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.goLog)}</div>
     </div>
-    <div class="card"><h2>UNITS — POLLED EVERY 2 S; EACH ROUND TRIP ALSO MEASURES THE CLOCK OFFSET</h2><div class="tiles" id="tiles"></div></div>`;
+    <div class="card"><h2>UNITS</h2>
+      <div class="meta sub">Every unit is polled every 2 s, and each round trip also measures its clock offset.</div><div class="tiles" id="tiles"></div></div>`;
   renderTiles();
 }
 function showClockText() {
@@ -562,12 +573,23 @@ function showClockText() {
     + `<br>uploaded to ${loaded} / ${want} units`;
   $("#show-fix").innerHTML = fleet.corrections.length
     ? "Corrected automatically: " + fleet.corrections.map(esc).join(" · ") : "";
+  const running = !!run && run.state === "running", holding = !!run && run.state === "holding";
+  const able = { "show-preset": want > 0 && !run, "show-start": want > 0,
+                 "show-hold": running, "show-resume": holding,
+                 "show-next-cue": (running && upcoming.length > 0) || holding, "show-stop": !!run,
+                 "fleet-prepare": !run && assignedItems().length > 0, "fleet-fire": !run };
+  for (const [id, on] of Object.entries(able)) { const b = $("#" + id); if (b) b.disabled = !on; }
+  const hint = $("#show-hint");
+  if (hint) hint.textContent = !want ? "Upload the show first." : loaded < want
+    ? `${want - loaded} unit(s) do not hold this show yet - they are corrected automatically once they answer.` : "";
 }
 setInterval(showClockText, 250);
 function renderTiles() {
   showClockText();
   const box = $("#tiles");
   if (!box || !fleet) return;
+  const picked = getSelection();
+  if (picked && !picked.isCollapsed && box.contains(picked.anchorNode)) return;   // being copied
   const carried = {};
   for (const item of trackItems()) if (item.unit) (carried[item.unit] ||= []).push(item);
   box.innerHTML = fleet.units.map(u => {
@@ -581,9 +603,9 @@ function renderTiles() {
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
       <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
-      <div class="row"><span>Show</span><b>${u.show ? `${fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${u.show.applied || "—"} / ${u.show.cues}` : "—"}</b></div>
+      <div class="row"><span>Show</span><b>${u.show ? `${fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
-      ${u.failed.length ? `<div class="e">Boards not written: ${u.failed.join(", ")}</div>` : ""}
+      ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}
       ${u.unit_error ? `<div class="e">${esc(u.unit_error)}</div>` : ""}
       <div class="l" title="${esc(u.log.join("\n"))}">${esc(u.log[u.log.length - 1] || "")}</div>`
       : `<div class="row"><span>${esc(u.address)}</span></div><div class="l">${esc(u.error || "no answer")}</div>`}
@@ -597,15 +619,23 @@ async function pollFleet() {
 }
 function unitReport(result) {
   const lines = Object.entries(result.units || {}).sort().map(([unit, r]) => `${unit}: ${r.ok ? "OK" : "FAILED — " + r.error}`);
-  return [...(result.problems || []), ...lines].join("\n") || (result.error || "No unit to send to");
+  return [...(result.problems || []), ...lines].join("\n") || result.error || result.note || "No unit to send to";
 }
+let commandInFlight = false;
 async function fleetCommand(command, body, title, slot = "go") {
+  if (commandInFlight) return;                    // a double click must not send it twice
+  commandInFlight = true; document.body.classList.add("busy");
   const key = slot === "go" ? "goLog" : "showLog", box = () => $("#" + slot + "-log");
-  ui[key] = title + " …"; if (box()) box().textContent = ui[key];
-  const result = await api("/api/fleet/" + command, body);
-  ui[key] = `${title}(${new Date().toLocaleTimeString()})\n` + unitReport(result);
-  if (box()) box().textContent = ui[key];
-  fleet = await api("/api/fleet"); fleet.at = performance.now(); renderTiles();
+  try {
+    ui[key] = title + " …"; if (box()) box().textContent = ui[key];
+    const result = await api("/api/fleet/" + command, body);
+    ui[key] = `${title} (${new Date().toLocaleTimeString()})\n` + unitReport(result);
+    if (box()) box().textContent = ui[key];
+    fleet = await api("/api/fleet"); fleet.at = performance.now(); renderTiles();
+  } catch (err) {
+    ui[key] = `${title}: no answer from the conductor server (${err.message})`;
+    if (box()) box().textContent = ui[key];
+  } finally { commandInFlight = false; document.body.classList.remove("busy"); }
 }
 
 // ---- events ----
@@ -632,8 +662,9 @@ document.addEventListener("click", async e => {
     "show-hold": ["hold", "HOLD"], "show-resume": ["resume", "RESUME"] };
   if (showButtons[e.target.id]) { const [command, title] = showButtons[e.target.id]; await fleetCommand(command, {}, title, "show"); return; }
   if (e.target.id === "show-start") {
-    if (fleet?.run && !confirm("The show is running. Start it again from 0:00?")) return;
-    await fleetCommand("start", { lead_s: ui.lead }, `③ START (in ${ui.lead} s)`, "show"); return;
+    const again = !!fleet?.run;
+    if (again && !confirm("The show is running. Start it again from 0:00?")) return;
+    await fleetCommand("start", { lead_s: ui.lead, force: again }, `③ START (in ${ui.lead} s)`, "show"); return;
   }
   if (e.target.id === "show-next-cue") { await fleetCommand("next", { lead_s: ui.lead }, `NEXT (next cue in ${ui.lead} s)`, "show"); return; }
   if (e.target.id === "show-stop") {
@@ -650,7 +681,10 @@ document.addEventListener("click", async e => {
     if (confirm("Turn the panels of every answering unit white (STANDBY)?")) await fleetCommand("standby", {}, "All units STANDBY");
     return;
   }
-  if (e.target.id === "fleet-release") { await fleetCommand("release", {}, "Release to the units' own menu"); return; }
+  if (e.target.id === "fleet-release") {
+    if (confirm("Hand every unit back to its own buttons? A running show stops on the units.")) await fleetCommand("release", {}, "Release to on-device control");
+    return;
+  }
   const tab = e.target.closest("[data-tab]");
   if (tab) { ui.tab = tab.dataset.tab; render(); return; }
   const del = e.target.closest("[data-del]");
@@ -673,9 +707,22 @@ document.addEventListener("click", async e => {
     renderTimeline(); return;
   }
   if (e.target.id === "cue-del") { await saveShow(state.show.cues.filter(c => c.id !== ui.cue)); return; }
+  if (e.target.id === "cue-all") {
+    const from = state.show.cues.find(c => c.id === ui.cue), added = [];
+    for (const item of trackItems()) {
+      const mine = cuesOf(item);
+      if (item.item === from.item || !item.designs.length || mine.some(c => c.at === from.at)) continue;
+      const usable = item.designs.filter(d => designState(d) !== "bad");
+      const next = usable.find(d => !mine.some(c => c.design === d.name)) || usable[0];
+      if (next) added.push({ id: "c" + Math.random().toString(36).slice(2, 10), item: item.item, at: from.at,
+                             design: next.name, align: from.align, partial: designState(next) === "partial" });
+    }
+    if (!added.length) { toast("Every other item already has a cue at this time"); return; }
+    await saveShow([...state.show.cues, ...added]); toast(`Added ${added.length} cue(s) at ${clock(from.at)}`); return;
+  }
   if (e.target.id === "cue-show") {
     const c = state.show.cues.find(x => x.id === ui.cue);
-    ui.tab = "items"; ui.item = c.item; ui.design = c.design; ui.mode = "design"; render(); return;
+    ui.tab = "items"; ui.item = c.item; ui.design = c.design; ui.mode = "design"; ui.board = null; render(); return;
   }
   const track = e.target.closest("[data-track]");
   if (track) {
@@ -765,6 +812,32 @@ async function upload(fileList) {
   toast(parts.join(" · ") || result.error || "");
   refresh();
 }
+let drag = null;
+document.addEventListener("pointerdown", e => {
+  const block = e.target.closest(".cue-hold");
+  if (!block || e.button !== 0) return;
+  const cue = state.show.cues.find(c => c.id === block.dataset.cue);
+  if (!cue || cue.at <= 0) return;                  // the preset stays at 0:00
+  drag = { cue, block, x: e.clientX, left: block.offsetLeft, track: block.parentElement.getBoundingClientRect(), moved: false };
+});
+document.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x;
+  if (!drag.moved && Math.abs(dx) < 5) return;
+  drag.moved = true; drag.block.classList.add("dragging");
+  drag.block.style.left = (drag.left + dx) + "px";
+  const at = Math.max(5, Math.min(state.show.duration, Math.round((drag.cue.at + dx / drag.track.width * state.show.duration) / 5) * 5));
+  drag.at = at; drag.block.title = clock(at);
+  const label = $("#ph-label"); if (label) label.textContent = clock(at) + " (moving)";
+});
+document.addEventListener("pointerup", async () => {
+  const done = drag; drag = null;
+  if (!done || !done.moved) return;
+  ui.cue = done.cue.id;
+  if (done.at === undefined || done.at === done.cue.at) { renderTimeline(); return; }
+  ui.playhead = done.at;
+  await saveShow(state.show.cues.map(c => c.id === done.cue.id ? { ...c, at: done.at } : c));
+});
 let depth = 0;
 addEventListener("dragenter", e => { e.preventDefault(); depth++; $("#drop").classList.add("on"); });
 addEventListener("dragleave", e => { if (--depth <= 0) { depth = 0; $("#drop").classList.remove("on"); } });

@@ -321,3 +321,24 @@ def test_preview_draws_both_views(files, tmp_path):
     out = tmp_path / "p.png"
     assert main(["preview", str(map_path), str(grid_path), "-o", str(out)]) == 0
     assert out.stat().st_size > 0
+
+
+# ---- nothing is overwritten silently ----
+
+def test_a_column_named_twice_is_refused_in_the_map():
+    doubled = MAP.replace("board_no,socket,label", "board_no,socket,socket")
+    problems = problems_of(lambda: LookMap.parse(io.StringIO(doubled), name="m"))
+    assert "socket" in problems[0] and "more than once" in problems[0]
+
+
+def test_a_position_column_named_twice_is_refused_in_the_grid():
+    problems = problems_of(lambda: Design.parse(io.StringIO(
+        "side,row,shift,1,2,2\nfront,0,0,0x01,0x02,0x03\n"), name="g"))
+    assert "2" in problems[0] and "more than once" in problems[0]
+
+
+def test_side_names_match_whatever_their_case():
+    look_map = LookMap.parse(io.StringIO(MAP.replace("front,", "Front,")))
+    design = Design.parse(io.StringIO(GRID.replace("back,", "BACK,")))
+    assert look_map.sides == ["front", "back"]
+    assert check(look_map, design) == []

@@ -146,3 +146,19 @@ def test_clean_drops_junk_and_sorts():
     assert [c["item"] for c in cues] == ["A", "B"]
     assert cues[0]["at"] == 0 and cues[0]["align"] == "done"
     assert cues[0]["partial"] is True and cues[0]["id"]
+
+
+def test_send_instants_are_compared_to_the_millisecond():
+    # 10.3 - 7.3 is 3.000000000000001 in floating point; a change that
+    # starts at 3.0 is the same instant and must be seen as such.
+    done = cue("a", "Look22", 10.3, "p1")
+    start = cue("b", "Look22", 3.0, "p2", align="start")
+    assert times(done, refresh=7.3)[0] == times(start, refresh=7.3)[0] == 3.0
+    found, _ = validate([done, start], ITEMS, 600, refresh=7.3)
+    assert any("same moment" in p for p in found["b"])
+    assert not any("only 0 s" in p for p in found["a"] + found["b"])
+    # On a shared unit the two items become one broadcast, not a clash.
+    top = cue("c", "Look20-Top", 10.3, "t1")
+    skirt = cue("d", "Look20-Skirt", 3.0, "s1", align="start")
+    found, _ = validate([top, skirt], ITEMS, 600, refresh=7.3)
+    assert found["c"] == found["d"] == []
