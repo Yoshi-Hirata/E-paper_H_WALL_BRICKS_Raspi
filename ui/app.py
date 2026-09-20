@@ -39,6 +39,12 @@ No button quits. This runs as a service on a headless appliance, so a
 button that ended the process would leave the screen dark until someone
 SSHed in.
 
+REMOTE is not a menu row: the show PC takes the unit over through
+the agent (ui/agent.py, ui/remote.py) and the screen follows - what is
+loaded, how many boards took it, the countdown to the fire time. KEY2
+hands the unit back to its own menu; on a locked unit nothing does, so
+a knock on stage cannot drop a garment out of the show.
+
 With `locked` set the buttons do nothing at all, except that they still
 wake the screen; the UNLOCK_SEQUENCE frees them temporarily and the lock
 returns by itself after RELOCK_AFTER_S of quiet.
@@ -64,6 +70,7 @@ class Screen(Enum):
     VERSIONS = "versions"
     PULL = "pull"
     REBOOT = "reboot"
+    REMOTE = "remote"
 
 
 class App:
@@ -72,7 +79,8 @@ class App:
                  locked: bool = False, blank_after: float = BLANK_AFTER_S,
                  relock_after: float = RELOCK_AFTER_S,
                  clock=time.monotonic, updater=None, puller=None,
-                 host: str | None = None, versions=None, rebooter=None):
+                 host: str | None = None, versions=None, rebooter=None,
+                 remote=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -92,6 +100,13 @@ class App:
         self.rebooter = rebooter
         if rebooter is not None:
             self.patterns.append(rebooter.menu_entry)
+        # The show PC's session (ui/remote.py). It may not take the port
+        # while something that must not be interrupted holds the unit.
+        self.remote = remote
+        if remote is not None:
+            remote.busy = lambda: any(
+                worker is not None and worker.busy
+                for worker in (self.updater, self.versions, self.rebooter))
         self.host = host
         self.selected = 0
         self.screen = Screen.MENU
@@ -174,6 +189,13 @@ class App:
             return
         if self.screen is Screen.REBOOT:
             self._handle_reboot(event)
+            return
+        if self.screen is Screen.REMOTE:
+            if event == "key2":
+                self.remote.release()
+                self._standby = False
+                self.screen = Screen.MENU
+                self._dirty = True
             return
 
         if event == "key1_hold":
@@ -406,6 +428,11 @@ class App:
                 puller.after.label if puller.after else None,
                 puller.phase, puller.recent(LOG_LINES), error=puller.error,
                 changed=puller.changed, locked=self.locked, host=self.host)
+        if self.screen is Screen.REMOTE:
+            status = self.remote.status()
+            return render.remote_screen(
+                status, self.runner.recent(LOG_LINES), now=self._mono(),
+                locked=self.locked, host=self.host)
         if self.screen is Screen.REBOOT:
             rebooter = self.rebooter
             return render.reboot_screen(
@@ -463,6 +490,17 @@ class App:
                 return ("pull", puller.phase, puller.before, puller.after,
                         tuple(puller.recent(LOG_LINES)), puller.error,
                         self.locked)
+            if self.screen is Screen.REMOTE:
+                status = self.remote.status()
+                fire_at = status["fire_at"]
+                # The countdown repaints once a second, not every poll.
+                left = (None if fire_at is None or status["fired_at"]
+                        else int(max(0.0, fire_at - self._mono())))
+                return ("remote", status["phase"], status["cue"],
+                        status["label"], len(status["saved"]),
+                        len(status["failed"]), len(status["live"]),
+                        status["error"], status["late_ms"], left,
+                        tuple(self.runner.recent(LOG_LINES)), self.locked)
             if self.screen is Screen.REBOOT:
                 rebooter = self.rebooter
                 return ("reboot", rebooter.phase,
@@ -476,7 +514,28 @@ class App:
 
     # ---- main loop ----
 
+    @staticmethod
+    def _mono() -> float:
+        # Fire times are in time.monotonic() - the agent's clock - which
+        # is not the injectable idle clock the tests drive.
+        return time.monotonic()
+
+    def _follow_remote(self) -> None:
+        """The screen follows who drives the unit: REMOTE while the show
+        PC has it, the menu again once it lets go."""
+        remote = self.remote
+        if remote is None:
+            return
+        if remote.active and self.screen is not Screen.REMOTE:
+            self.screen = Screen.REMOTE
+            self._standby = False
+            self._dirty = True
+        elif not remote.active and self.screen is Screen.REMOTE:
+            self.screen = Screen.MENU
+            self._dirty = True
+
     def _idle_tasks(self) -> None:
+        self._follow_remote()
         now = self._clock()
         idle = now - self._last_input
         if not self.blanked and 0 < self.blank_after <= idle:

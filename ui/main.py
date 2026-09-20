@@ -17,12 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 from epaper.commands import TEST_SLOT
 from epaper.transport import find_port
 
+from .agent import DEFAULT_PORT, Agent
 from .app import App
 from .display import make_display
 from .inputs import make_input
 from .patterns import PATTERNS
 from .puller import RepoPuller
 from .rebooter import Rebooter
+from .remote import RemoteSession
 from .runner import DEFAULT_BOARDS, DemoRunner
 from .updater import FirmwareUpdater, find_firmware, usb_rebind
 from .versions import BoardVersions
@@ -102,6 +104,22 @@ def preview(directory: str) -> int:
                        ).save(out / "pull_failed.png")
     render.message_screen("restarting", "now at c0ffee1, UI back in ~15 s",
                           host="radxa-01").save(out / "restarting.png")
+    remote = {"phase": "armed", "cue": "c12", "label": "Look22 P02",
+              "boards": list(range(1, 17)), "live": list(range(1, 17)),
+              "saved": list(range(1, 17)), "failed": [], "error": None,
+              "fire_at": 102.4, "fired_at": None, "late_ms": None,
+              "standby_ready": False}
+    render.remote_screen(remote, ["13:00:01 start REMOTE",
+                                  "13:00:05 cue c12 saved 16/16 in 3.6 s"],
+                         now=100.0, host="radxa-03"
+                         ).save(out / "remote_armed.png")
+    render.remote_screen(dict(remote, phase="fired", fired_at=102.403,
+                              late_ms=3.0, saved=list(range(1, 16)),
+                              failed=[16]),
+                         ["13:00:05 cue c12 saved 15/16 in 9.8 s",
+                          "13:00:08 cue c12 fired +3 ms"],
+                         now=103.0, host="radxa-03"
+                         ).save(out / "remote_fired.png")
     render.reboot_screen("idle", [], host="radxa-01"
                          ).save(out / "reboot_confirm.png")
     render.reboot_screen("rebooting",
@@ -294,6 +312,12 @@ def main() -> int:
                     help="after an update, do not cycle the xhci host "
                          "controller (needs sudo) when the rebooted board "
                          "fails to re-enumerate")
+    ap.add_argument("--no-remote", action="store_true",
+                    help="do not start the agent the show PC drives this "
+                         "unit through (ui/agent.py)")
+    ap.add_argument("--remote-port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--remote-token", metavar="TOKEN",
+                    help="require this X-Show-Token on every agent request")
     ap.add_argument("--max-ticks", type=int,
                     help="exit after N UI ticks (testing)")
     args = ap.parse_args()
@@ -319,12 +343,26 @@ def main() -> int:
     versions = BoardVersions(boards=args.boards, port=args.port)
     host = socket.gethostname() or None
 
+    remote = agent = None
+    if not args.no_remote:
+        remote = RemoteSession(runner)
+        agent = Agent(remote, port=args.remote_port, token=args.remote_token,
+                      commit=puller.before.commit, name=host)
+        try:
+            print(f"remote agent on port {agent.start()}", flush=True)
+        except OSError as exc:
+            # A second instance, or the port taken: the unit still works
+            # from its own buttons, which matters more than the agent.
+            print(f"remote agent not started: {exc}", flush=True)
+            remote = agent = None
+
     display_kwargs = {"directory": args.frames} if args.display in ("png", "auto") else {}
     with make_display(args.display, **display_kwargs) as display, \
             make_input(args.input) as inputs:
         app_kwargs = {"port_label": port, "locked": args.locked,
                       "updater": updater, "puller": puller, "host": host,
-                      "versions": versions, "rebooter": rebooter}
+                      "versions": versions, "rebooter": rebooter,
+                      "remote": remote}
         if args.blank_after is not None:
             app_kwargs["blank_after"] = args.blank_after
         app = App(display, inputs, runner, **app_kwargs)

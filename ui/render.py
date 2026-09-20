@@ -328,6 +328,73 @@ def pull_screen(before: str, after: str | None, phase: str,
     return image
 
 
+_REMOTE_STATUS = {
+    "preparing": ("LOADING", ACCENT),
+    "ready": ("READY", OK),
+    "armed": ("ARMED", OK),
+    "fired": ("FIRED", OK),
+    "failed": ("FAILED", ERR),
+    "standby": ("STANDBY", DIM),
+    "idle": ("IDLE", DIM),
+}
+
+
+def remote_screen(status: dict, log_lines: list[str], now: float = 0.0,
+                  locked: bool = False,
+                  host: str | None = None) -> Image.Image:
+    """The unit under the show PC: what is loaded and when it fires.
+
+    `status` is ui.remote.RemoteSession.status(); `now` is the monotonic
+    clock its fire time is written in.
+    """
+    image, draw = _blank()
+    word, color = _REMOTE_STATUS.get(status["phase"],
+                                     (status["phase"].upper(), DIM))
+    _header(draw, "REMOTE", status=word, status_color=color, host=host)
+
+    label = status["label"] or status["cue"] or "waiting for a cue"
+    draw.text((8, 30), _ellipsize(label, FONT_L, WIDTH - 16), font=FONT_L,
+              fill=FG)
+
+    wanted = len(status["boards"])
+    if status["phase"] == "standby":
+        line = ("white, boards " if status["standby_ready"]
+                else "blanking, boards ") + f"{len(status['live'])}/{wanted}"
+        tint = DIM
+    elif status["phase"] == "preparing":
+        line, tint = f"writing {wanted} boards...", DIM
+    else:
+        line = f"boards {len(status['saved'])}/{wanted} loaded"
+        tint = ERR if status["failed"] else OK
+        if status["failed"]:
+            line += f"  ({len(status['failed'])} failed)"
+    draw.text((8, 58), _ellipsize(line, FONT_M, WIDTH - 16), font=FONT_M,
+              fill=tint)
+
+    if status["late_ms"] is not None:
+        when, tint = f"fired {status['late_ms']:+.0f} ms", OK
+    elif status["fire_at"] is not None:
+        left = max(0.0, status["fire_at"] - now)
+        when, tint = f"fires in {left:.0f} s", ACCENT
+    else:
+        when, tint = "no fire time yet", DIM
+    draw.text((8, 80), when, font=FONT_M, fill=tint)
+    if status["error"]:
+        draw.text((8, 100), _ellipsize(f"ERROR {status['error']}", FONT_S,
+                                       WIDTH - 16), font=FONT_S, fill=ERR)
+
+    draw.line((8, 118, WIDTH - 8, 118), fill=BAR, width=1)
+    y = 122
+    for line in log_lines[-LOG_LINES:]:
+        tint = ERR if "ERROR" in line else DIM
+        draw.text((8, y), _ellipsize(line, FONT_S, WIDTH - 16),
+                  font=FONT_S, fill=tint)
+        y += 15
+
+    _hint(draw, "buttons locked" if locked else "KEY2 local menu  KEY3 off")
+    return image
+
+
 _REBOOT_STATUS = {
     "idle": ("CONFIRM", ACCENT),
     "rebooting": ("REBOOTING", OK),

@@ -14,6 +14,9 @@ client's, not the repo's):
     show.json       which unit carries which item, and the timeline:
                     which design each item wears when (conductor/timeline.py)
     history.json    earlier and undone versions of show.json, for undo/redo
+    fleet.json      optional: {"units": {"radxa-01": "host:port", ...},
+                    "token": "..."} when the units are not at their
+                    usual 192.168.50.1NN:8787 (conductor/fleet.py)
 
 Undo covers show.json - the timeline, the show's length and the unit
 assignments - and is kept on disk, so it survives a reload of the page
@@ -26,17 +29,20 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import timeline
+from .fleet import DEFAULT_LEAD_S, Fleet, default_units
 from .look import (PALETTE, Design, LookError, LookMap, check,
-                   unit_board_ids)
+                   compile_design, unit_board_ids)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 UNITS = [f"radxa-{n:02d}" for n in range(1, 11)]
 MAX_UPLOAD = 8 * 1024 * 1024
 HISTORY_DEPTH = 200
+NUMBER_BRAND = 0x03        # the device type the units' UI sends (ui/patterns.py)
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
 _IS_MAP = re.compile(r"_map$", re.IGNORECASE)
 _IS_GRID = re.compile(r"_color_pattern\s*\d+", re.IGNORECASE)
@@ -166,8 +172,11 @@ class Workspace:
             raise ValueError(f"{name}: not a *_map.csv or "
                              "*_color_patternNN_grid.csv")
         with self._lock:
-            (self.files / name).write_text(text, encoding="utf-8",
-                                           newline="")
+            # open(), not Path.write_text(newline=...): that is 3.10+, and
+            # the units' Python 3.9 should be able to run this too.
+            with open(self.files / name, "w", encoding="utf-8",
+                      newline="") as handle:
+                handle.write(text)
         return name
 
     def delete(self, name: str) -> None:
@@ -175,6 +184,70 @@ class Workspace:
         with self._lock:
             if target.is_file():
                 target.unlink()
+
+    # ---- what goes to the units ----
+
+    def fleet_config(self) -> "tuple[dict, str | None]":
+        try:
+            config = json.loads((self.root / "fleet.json")
+                                .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            config = {}
+        units = dict(default_units())
+        units.update(config.get("units") or {})
+        return units, config.get("token") or None
+
+    def compile_units(self, choices: "dict[str, str]", cue: str
+                      ) -> "tuple[dict[str, dict], list[str]]":
+        """{item: design file} -> ({unit: the agent's /prepare body}, problems).
+
+        Addresses run across everything the unit carries, chosen or not,
+        so a board keeps its DIP setting whichever items a cue touches.
+        A design with undecided (-) scales is sent as a partial cue.
+        """
+        with self._lock:
+            paths = sorted(self.files.glob("*.csv"))
+            assigned = self._load_show().get("units", {})
+        maps: "dict[str, LookMap]" = {}
+        for path in paths:
+            if self.kind(path.name) == "map":
+                try:
+                    look_map = LookMap.from_csv(path)
+                except LookError:
+                    continue
+                maps[(look_map.item or path.stem).lower()] = look_map
+        problems: "list[str]" = []
+        payloads: "dict[str, dict]" = {}
+        for item, design_name in sorted(choices.items()):
+            look_map = maps.get(item.lower())
+            unit = assigned.get(look_map.item) if look_map else None
+            if look_map is None:
+                problems.append(f"{item}: map がありません")
+                continue
+            if unit is None:
+                problems.append(f"{item}: 機体が未割当です")
+                continue
+            try:
+                design = Design.from_csv(self.files / Path(design_name).name)
+                on_unit = [m for key, m in maps.items()
+                           if assigned.get(m.item) == unit]
+                ids = unit_board_ids(on_unit)
+                partial = bool(check(look_map, design))
+                arrays = compile_design(look_map, design, partial=partial,
+                                        ids=ids)
+            except (OSError, LookError) as exc:
+                problems.append(f"{item}: {exc}")
+                continue
+            name = (f"P{design.pattern:02d}" if design.pattern is not None
+                    else design.name)
+            payload = payloads.setdefault(unit, {
+                "cue": cue, "label": "", "dev_type": NUMBER_BRAND,
+                "boards": {}})
+            payload["label"] = (payload["label"] + " + " if payload["label"]
+                                else "") + f"{look_map.item} {name}"
+            payload["boards"].update({str(address): array.hex()
+                                      for address, array in arrays.items()})
+        return payloads, problems
 
     # ---- the state the page draws ----
 
@@ -297,7 +370,9 @@ class Workspace:
 
 
 class Handler(BaseHTTPRequestHandler):
-    workspace: Workspace = None            # set by serve()
+    workspace: Workspace = None            # set by make_server()
+    fleet: "Fleet | None" = None
+    prepared: "dict[str, str]" = {}        # unit -> the cue it was last sent
     server_version = "conductor"
 
     def log_message(self, fmt, *args):     # keep the console for errors
@@ -325,6 +400,11 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/api/state":
             return self._json(self.workspace.state())
+        if path == "/api/fleet":
+            if self.fleet is None:
+                return self._json({"units": [], "last_fire": None})
+            return self._json(dict(self.fleet.snapshot(),
+                                   prepared=self.prepared))
         if path in ("/", "/index.html"):
             page = (WEB_DIR / "index.html").read_bytes()
             return self._send(200, page, "text/html; charset=utf-8")
@@ -350,6 +430,8 @@ class Handler(BaseHTTPRequestHandler):
                                             body.get("cues", []),
                                             body.get("refresh_s"))
                 return self._json({"ok": True})
+            if self.path.startswith("/api/fleet/"):
+                return self._fleet_command(self.path[len("/api/fleet/"):], body)
             if self.path in ("/api/undo", "/api/redo"):
                 step = (self.workspace.undo if self.path == "/api/undo"
                         else self.workspace.redo)
@@ -362,15 +444,49 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
 
-def make_server(workspace, port: int = 8765, host: str = "127.0.0.1"
-                ) -> ThreadingHTTPServer:
+    def _fleet_command(self, command: str, body: dict) -> None:
+        fleet = self.fleet
+        if fleet is None:
+            return self._json({"error": "no fleet configured"}, status=400)
+        if command == "prepare":
+            cue = f"m{int(time.time()) % 1000000:06d}"
+            payloads, problems = self.workspace.compile_units(
+                body.get("choices") or {}, cue)
+            results = fleet.prepare(payloads) if payloads else {}
+            for unit, result in results.items():
+                if result["ok"]:
+                    self.prepared[unit] = cue
+            return self._json({"cue": cue, "units": results,
+                               "problems": problems})
+        if command == "fire":
+            units = body.get("units") or list(self.prepared)
+            cues = {u: self.prepared[u] for u in units if u in self.prepared}
+            lead = float(body.get("lead_s", DEFAULT_LEAD_S))
+            if not 0.5 <= lead <= 60:
+                raise ValueError("lead time is 0.5-60 s")
+            return self._json({"units": fleet.fire(cues, lead), "lead_s": lead})
+        if command in ("cancel", "standby", "release"):
+            units = body.get("units") or list(fleet.links)
+            if command != "cancel":
+                for unit in units:
+                    self.prepared.pop(unit, None)
+            return self._json({"units": fleet.simple(units, "/" + command)})
+        self._send(404, b"not found", "text/plain")
+
+
+def make_server(workspace, port: int = 8765, host: str = "127.0.0.1",
+                fleet: "Fleet | None" = None) -> ThreadingHTTPServer:
     handler = type("BoundHandler", (Handler,),
-                   {"workspace": Workspace(workspace)})
+                   {"workspace": Workspace(workspace), "fleet": fleet,
+                    "prepared": {}})
     return ThreadingHTTPServer((host, port), handler)
 
 
 def serve(workspace, port: int = 8765) -> int:
-    server = make_server(workspace, port)
+    units, token = Workspace(workspace).fleet_config()
+    fleet = Fleet(units, token)
+    fleet.start()
+    server = make_server(workspace, port, fleet=fleet)
     print(f"conductor UI: http://127.0.0.1:{port}  (workspace "
           f"{Path(workspace).resolve()})", flush=True)
     try:
@@ -378,5 +494,6 @@ def serve(workspace, port: int = 8765) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        fleet.stop()
         server.server_close()
     return 0

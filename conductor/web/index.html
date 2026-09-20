@@ -120,13 +120,33 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .thumb .t span { font-weight: 400; color: var(--dim); }
 .thumb .t .chg { color: var(--warn); }
 input[type=range] { width: 100%; }
+
+/* ---- fleet ---- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 12px; }
+.tile.off { opacity: .55; }
+.tile .n { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.tile .n .ph { margin-left: auto; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 9px; border: 1px solid var(--line); }
+.ph.ready, .ph.armed, .ph.fired { color: var(--ok); border-color: var(--ok) !important; }
+.ph.failed { color: var(--err); border-color: var(--err) !important; }
+.ph.preparing { color: var(--accent); border-color: var(--accent) !important; }
+.tile .row { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); }
+.tile .row b { color: var(--ink); font-weight: 500; }
+.tile .e { color: var(--err); }
+.tile .l { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.go { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 10px; }
+.go button.big { padding: 7px 16px; font-weight: 600; }
+.go button.fire { background: var(--ok); border-color: var(--ok); color: #fff; }
+.picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 16px; }
+.picks label { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.picks label span { min-width: 120px; } .picks select { flex: 1; min-width: 0; }
 </style>
 </head>
 <body>
 <header>
   <h1>E-PAPER SHOW CONDUCTOR</h1>
   <div class="tabs">
-    <button data-tab="items">デザイン確認</button><button data-tab="timeline">タイムライン</button>
+    <button data-tab="items">デザイン確認</button><button data-tab="timeline">タイムライン</button><button data-tab="fleet">機体</button>
   </div>
   <div class="tabs">
     <button id="undo" title="元に戻す (Ctrl+Z)">↶ 元に戻す</button><button id="redo" title="やり直す (Ctrl+Y / Ctrl+Shift+Z)">やり直す ↷</button>
@@ -151,7 +171,8 @@ input[type=range] { width: 100%; }
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
-             board: null, cue: null, playhead: 0 };
+             board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "" };
+let fleet = null;
 let state = null;
 const PITCH = 0.78, MARGIN = 1.2;
 
@@ -183,9 +204,11 @@ function render() {
   document.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === ui.tab));
   $("#undo").disabled = !state.history.undo;
   $("#redo").disabled = !state.history.redo;
-  $("#main").classList.toggle("wide", ui.tab === "timeline");
+  $("#main").classList.toggle("wide", ui.tab !== "items");
   renderSidebar();
-  if (ui.tab === "timeline") renderTimeline(); else renderContent();
+  if (ui.tab === "timeline") renderTimeline();
+  else if (ui.tab === "fleet") renderFleet();
+  else renderContent();
 }
 // A design is ok (every scale coloured), partial (some left "-": fine as a
 // partial cue) or bad (wrong even as a partial cue).
@@ -461,6 +484,75 @@ function renderThumbs() {
   }).join("");
 }
 
+// ---- tab 3: the units ----
+function assignedItems() { return trackItems().filter(i => i.unit && i.designs.length); }
+function renderFleet() {
+  const items = assignedItems();
+  for (const item of items)
+    if (!item.designs.some(d => d.name === ui.choices[item.item])) ui.choices[item.item] = item.designs[0].name;
+  const loose = trackItems().filter(i => !i.unit).map(i => i.item);
+  $("#content").innerHTML = `
+    <div class="card"><h2>手動の一斉表示(同期の確認用)</h2>
+      ${items.length ? `<div class="picks">${items.map(item => `<label><span><b>${esc(item.item)}</b> → ${esc(item.unit)}</span>
+        <select data-choice="${esc(item.item)}">${item.designs.filter(d => designState(d) !== "bad").map(d =>
+          `<option value="${esc(d.name)}" ${d.name === ui.choices[item.item] ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}${designState(d) === "partial" ? "(一部更新)" : ""}</option>`).join("")}</select></label>`).join("")}</div>`
+        : `<div class="meta">機体に割り当てたアイテムがありません(「デザイン確認」の左の一覧で割り当てます)。</div>`}
+      ${loose.length ? `<div class="warn" style="margin-top:6px">機体未割当: ${esc(loose.join(", "))}</div>` : ""}
+      <div class="go">
+        <button class="big" id="fleet-prepare" ${items.length ? "" : "disabled"}>① 準備 — 基板へ書き込む</button>
+        <button class="big fire" id="fleet-fire">② GO — 一斉に表示</button>
+        <label class="meta">GO から <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> 秒後に全機体が同時に送信</label>
+        <button id="fleet-cancel">発火を取り消す</button>
+        <span style="flex:1"></span>
+        <button id="fleet-standby">全機体 STANDBY(白)</button>
+        <button id="fleet-release">全機体を本体メニューへ戻す</button>
+      </div>
+      <div class="meta" id="go-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.goLog)}</div>
+    </div>
+    <div class="card"><h2>機体 — 2 秒ごとに問い合わせ、その往復で時計のずれも測っています</h2><div class="tiles" id="tiles"></div></div>`;
+  renderTiles();
+}
+function renderTiles() {
+  const box = $("#tiles");
+  if (!box || !fleet) return;
+  const carried = {};
+  for (const item of trackItems()) if (item.unit) (carried[item.unit] ||= []).push(item);
+  box.innerHTML = fleet.units.map(u => {
+    const items = carried[u.name] || [], expected = items.reduce((n, i) => n + i.boards.length, 0);
+    const phase = u.online ? (u.phase || "?") : "offline";
+    return `<div class="tile ${u.online ? "" : "off"}">
+      <div class="n"><span class="dot ${u.online ? "ok" : "none"}"></span>${esc(u.name)}<span class="ph ${esc(phase)}">${esc(phase)}</span></div>
+      <div class="row"><span>アイテム</span><b>${esc(items.map(i => i.item).join(" + ") || "—")}</b></div>
+      ${u.online ? `
+      <div class="row"><span>基板(応答 / 想定)</span><b>${u.live} / ${expected || u.boards || "?"}</b></div>
+      <div class="row"><span>時計の精度 · 往復</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
+      <div class="row"><span>ロード</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? `(${u.prepare_s.toFixed(1)} 秒)` : "") : "—"}</b></div>
+      <div class="row"><span>発火の遅れ</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
+      <div class="row"><span>コミット</span><b>${esc(u.commit || "?")}</b></div>
+      ${u.failed.length ? `<div class="e">保存できなかった基板: ${u.failed.join(", ")}</div>` : ""}
+      ${u.unit_error ? `<div class="e">${esc(u.unit_error)}</div>` : ""}
+      <div class="l" title="${esc(u.log.join("\n"))}">${esc(u.log[u.log.length - 1] || "")}</div>`
+      : `<div class="row"><span>${esc(u.address)}</span></div><div class="l">${esc(u.error || "応答なし")}</div>`}
+    </div>`; }).join("");
+}
+async function pollFleet() {
+  if (ui.tab === "fleet" && !document.hidden) {
+    try { fleet = await api("/api/fleet"); renderTiles(); } catch (err) { /* the server is restarting */ }
+  }
+  setTimeout(pollFleet, 1000);
+}
+function unitReport(result) {
+  const lines = Object.entries(result.units || {}).sort().map(([unit, r]) => `${unit}: ${r.ok ? "OK" : "失敗 — " + r.error}`);
+  return [...(result.problems || []), ...lines].join("\n") || (result.error || "対象の機体がありません");
+}
+async function fleetCommand(command, body, title) {
+  ui.goLog = title + " …"; if ($("#go-log")) $("#go-log").textContent = ui.goLog;
+  const result = await api("/api/fleet/" + command, body);
+  ui.goLog = `${title}(${new Date().toLocaleTimeString()})\n` + unitReport(result);
+  if ($("#go-log")) $("#go-log").textContent = ui.goLog;
+  fleet = await api("/api/fleet"); renderTiles();
+}
+
 // ---- events ----
 // Undo covers the show (timeline, length, unit assignments); the server keeps the history.
 async function step(which) {
@@ -481,6 +573,17 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
+  if (e.target.id === "fleet-prepare") {
+    const choices = Object.fromEntries(assignedItems().map(i => [i.item, ui.choices[i.item]]));
+    await fleetCommand("prepare", { choices }, "① 準備を送信"); return;
+  }
+  if (e.target.id === "fleet-fire") { await fleetCommand("fire", { lead_s: ui.lead }, `② GO(${ui.lead} 秒後)`); return; }
+  if (e.target.id === "fleet-cancel") { await fleetCommand("cancel", {}, "発火の取り消し"); return; }
+  if (e.target.id === "fleet-standby") {
+    if (confirm("応答している全機体のパネルを白(STANDBY)にします。よろしいですか?")) await fleetCommand("standby", {}, "全機体 STANDBY");
+    return;
+  }
+  if (e.target.id === "fleet-release") { await fleetCommand("release", {}, "本体メニューへ戻す"); return; }
   const tab = e.target.closest("[data-tab]");
   if (tab) { ui.tab = tab.dataset.tab; render(); return; }
   const del = e.target.closest("[data-del]");
@@ -534,6 +637,12 @@ document.addEventListener("click", async e => {
 });
 document.addEventListener("change", async e => {
   const id = e.target.id;
+  if (e.target.dataset.choice !== undefined) { ui.choices[e.target.dataset.choice] = e.target.value; return; }
+  if (id === "fleet-lead") {
+    const seconds = Number(e.target.value);
+    if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("0.5〜60 秒で入力してください"); e.target.value = ui.lead; }
+    return;
+  }
   if (id === "design") { ui.design = e.target.value; renderContent(); }
   else if (id === "pick") { upload(e.target.files); e.target.value = ""; }
   else if (id === "duration") {
@@ -596,6 +705,7 @@ addEventListener("dragover", e => e.preventDefault());
 addEventListener("drop", e => { e.preventDefault(); depth = 0; $("#drop").classList.remove("on"); upload(e.dataTransfer.files); });
 
 refresh();
+pollFleet();
 </script>
 </body>
 </html>

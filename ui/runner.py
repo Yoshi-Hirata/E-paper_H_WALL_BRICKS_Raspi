@@ -36,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
 from epaper.commands import TEST_SLOT, save_color, show_single, slot_config, stop
+from epaper.protocol import DEV_NUMBER_BRAND
 from epaper.transport import Bus, find_port
 
 from .config import LOG_HISTORY
@@ -59,6 +60,7 @@ LINK_GUARD_S = 60.0       # how often standby re-suppresses the autoplay
 PROBE_SWEEPS = 3          # setup passes over the board list
 PROBE_SWEEP_DELAY_S = 3.0 # between passes, so a repaint can finish meanwhile
 REPROBE_INTERVAL_S = 60.0 # how often absent boards get another chance
+FIRE_SPIN_S = 0.02        # the last stretch before a timed show is polled
 
 
 def device_token(port: str):
@@ -149,6 +151,10 @@ class DemoRunner:
 
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
         self.pattern: Pattern | None = None
+        # The session feeding cues while the show PC drives this unit
+        # (ui/remote.py); None whenever the unit runs its own patterns.
+        self.remote = None
+        self._remote_dev_type = DEV_NUMBER_BRAND
         self.caption: str | None = None   # what the current cycle shows
         self._once = False
         self.standby_ready = False
@@ -205,9 +211,37 @@ class DemoRunner:
 
         self.start(STANDBY, once=True)
 
+    def start_remote(self, session) -> None:
+        """Hand the port to the show PC's cues (ui/remote.py).
+
+        Same worker thread, different loop: instead of drawing a pattern
+        every interval it saves what the session hands it and sends the
+        show at the instant the session names.
+        """
+        if self.running:
+            self.stop()
+        self.pattern = None
+        self.remote = session
+        self.cycle = 0
+        self.caption = None
+        self.failures = 0
+        self.error = None
+        self._needs_cfg = set()
+        self._next_reprobe = 0.0
+        self._stop.clear()
+        self._pause.clear()
+        self._elapsed_base = 0.0
+        self.standby_ready = False
+        self.started_at = time.monotonic()
+        self.emit("start REMOTE")
+        self._thread = threading.Thread(target=self._run_remote,
+                                        args=(session,), daemon=True)
+        self._thread.start()
+
     def start(self, pattern: Pattern, once: bool = False) -> None:
         if self.running:
             self.stop()
+        self.remote = None
         self._once = once
         self.pattern = pattern
         self.cycle = 0
@@ -232,9 +266,12 @@ class DemoRunner:
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
         self._pause.clear()          # let a paused worker notice the stop
+        if self.remote is not None:
+            self.remote.wake()       # ...and one waiting for a cue
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=timeout)
+        self.remote = None
         self.started_at = None
         self._elapsed_base = 0.0
 
@@ -346,6 +383,8 @@ class DemoRunner:
 
     def _active_dev_type(self) -> int:
         """Wire format of the pattern drawing this cycle (see Pattern)."""
+        if self.pattern is None:
+            return self._remote_dev_type        # a cue from the show PC
         active, _ = self.pattern.resolve(self.cycle)
         return active.dev_type
 
@@ -560,6 +599,136 @@ class DemoRunner:
             bus.send(stop(0xFF, groups))    # suppress the factory autoplay
             return self._sleep(interval - self.guard_delay)
         return self._sleep(interval)
+
+    # ---- remote cues (ui/remote.py) ----
+
+    def _save_cue(self, bus, groups: int, job: dict) -> "tuple[list, list]":
+        """Write one cue's arrays to the boards; (saved, failed).
+
+        The per-board sequence is _cycle's - stop, slot config when the
+        board may have rebooted, save - without the show: that goes out
+        later, on the clock.
+        """
+        dev_type = job["dev_type"]
+        saved, failed = [], []
+        for board in sorted(job["boards"]):
+            if self._stop.is_set():
+                break
+            if board not in self.live:
+                failed.append(board)            # absent; the reprobe looks
+                continue
+            if not self._request(bus, stop(board, groups), f"stop @{board:02d}"):
+                self._drop(board)
+                failed.append(board)
+                continue
+            if board in self._needs_cfg and not self._request(
+                    bus, slot_config(board, self.slot, group_count=groups,
+                                     dev_type=dev_type), f"cfg @{board:02d}"):
+                self._drop(board)
+                failed.append(board)
+                continue
+            self._needs_cfg.discard(board)
+            if not self._request(bus, save_color(board, self.slot,
+                                                 job["boards"][board], groups,
+                                                 dev_type=dev_type),
+                                 f"save @{board:02d}", self.save_attempts):
+                self._needs_cfg.add(board)
+                failed.append(board)
+                continue
+            saved.append(board)
+        return saved, failed
+
+    def _fire_at(self, bus, groups: int, session, cue_id: str,
+                 at: float) -> bool:
+        """Send the one broadcast show at monotonic time `at`.
+
+        Sleeps most of the way and polls the last FIRE_SPIN_S, so the
+        frame leaves within a millisecond or two of the instant; a time
+        already past (a late command) fires at once and the lateness is
+        what the session reports.
+        """
+        while True:
+            remaining = at - time.monotonic()
+            if remaining <= 0:
+                break
+            if self._stop.is_set() or session.due() != (cue_id, at):
+                return False                    # stopped, cancelled or moved
+            if remaining > FIRE_SPIN_S:
+                self._stop.wait(min(remaining - FIRE_SPIN_S, 0.05))
+            else:
+                time.sleep(0.0005)
+        bus.send(show_single(0xFF, self.slot, groups,
+                             dev_type=self._remote_dev_type))
+        sent_at = time.monotonic()
+        session.fired(cue_id, sent_at)
+        self.cycle += 1
+        self.emit(f"cue {cue_id} fired {(sent_at - at) * 1000:+.0f} ms")
+        return True
+
+    def _run_remote(self, session) -> None:
+        guard_due = None
+        while not self._stop.is_set():
+            port = self.port or find_port()
+            if not port:
+                if self.error != "no serial port":
+                    self.emit("no serial port, waiting")
+                self.error = "no serial port"
+                session.failed_with("no serial port")
+                if not self._sleep(self.port_wait):
+                    break
+                continue
+            try:
+                with self._open_bus(port) as bus:
+                    self.emit(f"port {port}")
+                    needs_setup = True
+                    groups = max(len(self.boards), max(self.boards))
+                    while not self._stop.is_set():
+                        job = session.take_job()
+                        if job is not None:
+                            guard_due = None    # the save's stops cover it
+                            self._remote_dev_type = job["dev_type"]
+                            wanted = sorted(job["boards"])
+                            if wanted != sorted(self.boards):
+                                self.boards = wanted
+                                self.live, self.absent = [], set()
+                                needs_setup = True
+                            groups = max(len(self.boards), max(self.boards))
+                            began = time.monotonic()
+                            if needs_setup and not self._setup(bus, groups):
+                                session.failed_with(self.error or "setup failed")
+                                break           # reopen the bus and retry
+                            needs_setup = False
+                            self.error = None
+                            saved, failed = self._save_cue(bus, groups, job)
+                            took = time.monotonic() - began
+                            session.prepared(job["cue_id"], saved, failed, took)
+                            self.emit(f"cue {job['cue_id']} saved "
+                                      f"{len(saved)}/{len(wanted)} in {took:.1f} s")
+                            continue
+                        due = session.due()
+                        if due is not None:
+                            if self._fire_at(bus, groups, session, *due):
+                                guard_due = time.monotonic() + self.guard_delay
+                            continue
+                        now = time.monotonic()
+                        if guard_due is not None and now >= guard_due:
+                            # As after every demo cycle: a shown slot runs
+                            # on into the factory autoplay unless stopped.
+                            guard_due = None
+                            bus.send(stop(0xFF, groups))
+                        if not needs_setup and self._reprobe(bus, groups):
+                            pass                # joined boards take the next cue
+                        wait = self.link_poll
+                        if guard_due is not None:
+                            wait = min(wait, max(0.0, guard_due - now))
+                        session.wait(wait)
+            except Exception as exc:        # unplugged, permissions, ...
+                self.error = str(exc)
+                self.emit(f"ERROR bus {exc}")
+                session.failed_with(str(exc))
+            if not self._stop.is_set() and not self._sleep(self.reopen_delay):
+                break
+        self.emit("stopped")
 
     # ---- worker ----
 
