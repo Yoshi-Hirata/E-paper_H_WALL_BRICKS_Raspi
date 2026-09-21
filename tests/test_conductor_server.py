@@ -350,3 +350,155 @@ def test_start_needs_an_upload_and_does_not_restart_by_accident(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---- LOOK number and model number ----
+
+def test_an_item_is_its_look_number_until_it_is_given_a_label(workspace):
+    look = item(workspace.state(), "Look22")
+    assert (look["look"], look["model"]) == ("22", "")
+
+
+def test_look_and_model_number_are_editable_and_undoable(workspace):
+    workspace.set_label("Look22", " 22 ", "AZ271SD1305")
+    look = item(workspace.state(), "Look22")
+    assert (look["look"], look["model"]) == ("22", "AZ271SD1305")
+    workspace.set_label("Look22", "25", "AZ271SD1305")
+    workspace.set_label("Look22", "25", "AZ271SD1305")      # no change, no step
+    assert workspace.state()["history"]["undo"] == 2
+    assert item(workspace.state(), "Look22")["look"] == "25"
+    # The files keep their names; the design still belongs to its map.
+    assert [d["pattern"] for d in item(workspace.state(), "Look22")["designs"]] == [1]
+    workspace.undo()
+    assert item(workspace.state(), "Look22")["look"] == "22"
+    # An emptied label stays empty - it does not fall back to the file name.
+    workspace.set_label("Look22", "", "")
+    look = item(workspace.state(), "Look22")
+    assert (look["look"], look["model"]) == ("", "")
+
+
+def test_a_label_survives_the_timeline_and_is_bounded(workspace):
+    workspace.set_label("Look22", "22", "AZ271SD1305")
+    workspace.set_timeline(600, [_cue("a", 0)])
+    workspace.assign("Look22", "radxa-04")
+    assert item(workspace.state(), "Look22")["model"] == "AZ271SD1305"
+    with pytest.raises(ValueError):
+        workspace.set_label("Look22", "22", "x" * 41)
+    with pytest.raises(ValueError):
+        workspace.set_label("", "22", "")
+
+
+def test_arranging_every_unit_at_once_is_one_step(workspace):
+    workspace.save("Look20-Skirt_map.csv", SKIRT_MAP)
+    workspace.assign("Look22", "radxa-01")
+    steps = workspace.state()["history"]["undo"]
+    workspace.arrange({"Look22": "radxa-04", "Look20-Skirt": "radxa-04",
+                       "Gone": ""})
+    state = workspace.state()
+    assert item(state, "Look22")["unit"] == "radxa-04"
+    assert item(state, "Look20-Skirt")["unit"] == "radxa-04"
+    assert state["history"]["undo"] == steps + 1
+    workspace.undo()
+    state = workspace.state()
+    assert item(state, "Look22")["unit"] == "radxa-01"
+    assert item(state, "Look20-Skirt")["unit"] is None
+    with pytest.raises(ValueError):
+        workspace.arrange({"Look22": "radxa-11"})
+    with pytest.raises(ValueError):
+        workspace.arrange(["Look22"])
+
+
+# ---- two garments of one shape: items of their own ----
+
+def test_a_duplicate_is_an_item_of_its_own_with_its_own_files(workspace):
+    workspace.set_label("Look22", "23", "AZ271SD1305")
+    twin = workspace.duplicate("Look22")
+    assert twin == "Look22-2"
+    assert (workspace.files / "Look22-2_map.csv").read_bytes() ==         (workspace.files / "Look22_map.csv").read_bytes()
+    state = workspace.state()
+    first, second = item(state, "Look22"), item(state, twin)
+    assert second["map"]["scales"] == first["map"]["scales"]
+    assert second["model"] == "AZ271SD1305" and second["unit"] is None
+    # Nothing is shared: the designs of the first are not the second's.
+    assert [d["pattern"] for d in first["designs"]] == [1]
+    assert second["designs"] == []
+    assert workspace.duplicate(twin) == "Look22-3"
+    with pytest.raises(ValueError):
+        workspace.duplicate("Look99")
+
+
+def test_each_garment_wears_its_own_designs_at_its_own_times(workspace):
+    twin = workspace.duplicate("Look22")
+    mine, its = "Look22_color_pattern01_grid.csv", "Look22-2_color_pattern01_grid.csv"
+    workspace.save(its, GRID.replace("0x03", "0x05"))   # the same pattern number
+    workspace.arrange({"Look22": "radxa-01", twin: "radxa-02"})
+    workspace.set_timeline(600, [
+        {"id": "a", "item": "Look22", "at": 0, "design": mine},
+        {"id": "b", "item": twin, "at": 0, "design": its},
+        {"id": "c", "item": twin, "at": 60, "design": mine}])       # not its
+    cues = {c["id"]: c["problems"] for c in workspace.state()["show"]["cues"]}
+    assert cues["a"] == [] and cues["b"] == [] and cues["c"]
+    workspace.set_timeline(600, [
+        {"id": "a", "item": "Look22", "at": 0, "design": mine},
+        {"id": "b", "item": twin, "at": 0, "design": its},
+        {"id": "d", "item": twin, "at": 90, "design": its}])
+    shows, problems = workspace.compile_show()
+    assert problems == []
+    assert len(shows["radxa-01"]["cues"]) == 1 and len(shows["radxa-02"]["cues"]) == 2
+    assert shows["radxa-01"]["cues"][0]["boards"] != shows["radxa-02"]["cues"][0]["boards"]
+    # Deleting the files of one leaves the other whole.
+    workspace.delete(its)
+    workspace.delete("Look22-2_map.csv")
+    assert [d["name"] for d in item(workspace.state(), "Look22")["designs"]] == [mine]
+
+
+def test_the_boards_a_garment_really_carries_are_set_on_the_page(workspace):
+    grid = "Look22_color_pattern01_grid.csv"
+    twin = workspace.duplicate("Look22")
+    workspace.save("Look22-2_color_pattern01_grid.csv", GRID)
+    nos = [b["board_no"] for b in item(workspace.state(), "Look22")["boards"]]
+    workspace.set_boards(twin, {str(no): 119 + n for n, no in enumerate(nos)})
+    state = workspace.state()
+    second = item(state, twin)
+    assert [b["board_no"] for b in second["boards"]] == [119, 120, 121]
+    assert [b["source_no"] for b in second["boards"]] == nos
+    assert [b["dip_id"] for b in second["boards"]] == [1, 2, 3]
+    assert {s[3] for s in second["map"]["scales"]} == {119, 120, 121}
+    assert [b["board_no"] for b in item(state, "Look22")["boards"]] == nos
+    # The CSV is not touched; the numbers are the show's, and undoable.
+    assert (workspace.files / "Look22-2_map.csv").read_bytes() ==         (workspace.files / "Look22_map.csv").read_bytes()
+    # What goes to the boards is the same picture under either numbering.
+    workspace.arrange({"Look22": "radxa-01", twin: "radxa-02"})
+    a, _ = workspace.compile_units({"Look22": grid}, "m")
+    b, _ = workspace.compile_units({twin: "Look22-2_color_pattern01_grid.csv"}, "m")
+    assert a["radxa-01"]["boards"] == b["radxa-02"]["boards"]
+    # One number at a time, as the page sends them; rank decides the DIP id.
+    workspace.set_boards(twin, {str(nos[0]): 150})
+    second = item(workspace.state(), twin)
+    assert [(b["board_no"], b["source_no"], b["dip_id"]) for b in second["boards"]]         == [(120, nos[1], 1), (121, nos[2], 2), (150, nos[0], 3)]
+    workspace.undo()
+    assert [b["board_no"] for b in item(workspace.state(), twin)["boards"]]         == [119, 120, 121]
+    # Any item can be renumbered, not only a duplicate.
+    workspace.set_boards("Look22", {str(nos[1]): 200})
+    assert 200 in [b["board_no"] for b in item(workspace.state(), "Look22")["boards"]]
+    # A duplicate starts with the numbers of what it copies.
+    third = workspace.duplicate("Look22")
+    assert 200 in [b["board_no"] for b in item(workspace.state(), third)["boards"]]
+
+
+def test_board_numbers_are_checked_and_survive_a_new_csv(workspace):
+    nos = [b["board_no"] for b in item(workspace.state(), "Look22")["boards"]]
+    for wrong in ({str(nos[0]): nos[1]},            # there twice
+                  {"999": 5},                       # not a board of the item
+                  {str(nos[0]): 0}, {str(nos[0]): "x"}, [1]):
+        with pytest.raises(ValueError):
+            workspace.set_boards("Look22", wrong)
+    with pytest.raises(ValueError):
+        workspace.set_boards("Look99", {"1": 2})
+    workspace.set_boards("Look22", {str(nos[0]): 300})
+    # A new map whose own numbers collide with what was typed: the typed
+    # numbers are dropped, and said so - never two boards merged into one.
+    workspace.save("Look22_map.csv", MAP.replace(",20,5,020-05", ",300,5,300-05"))
+    look = item(workspace.state(), "Look22")
+    assert sorted(b["board_no"] for b in look["boards"]) == [17, 18, 300]
+    assert any("no longer fit" in w for w in look["map"]["warnings"])

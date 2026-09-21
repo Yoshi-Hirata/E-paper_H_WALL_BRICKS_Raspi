@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+from dataclasses import replace
 import re
 import threading
 import time
@@ -43,10 +45,15 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 UNITS = [f"radxa-{n:02d}" for n in range(1, 11)]
 MAX_UPLOAD = 8 * 1024 * 1024
 HISTORY_DEPTH = 200
+LABEL_MAX = 40
+BOARD_NO_MAX = 9999
 NUMBER_BRAND = 0x03        # the device type the units' UI sends (ui/patterns.py)
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
 _IS_MAP = re.compile(r"_map$", re.IGNORECASE)
 _IS_GRID = re.compile(r"_color_pattern\s*\d+", re.IGNORECASE)
+_MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
+_COPY_NO = re.compile(r"-\d+$")
+_LOOK_NO = re.compile(r"look\s*0*(\d+)", re.IGNORECASE)
 
 
 def _key(position) -> str:
@@ -136,6 +143,133 @@ class Workspace:
                 return                      # nothing changed: not a step
             self._commit(before, dict(before, units=units))
 
+    # ---- board numbers set on the page ----
+    # The map CSV says which board drives which scale. The garment that is
+    # finally sewn may carry other boards (a second garment made from the
+    # same map; a board swapped for a spare): {number in the CSV: its own}.
+
+    @staticmethod
+    def _own_boards(show: dict, item: str) -> "dict[int, int]":
+        try:
+            return {int(old): int(new) for old, new in
+                    show.get("boards", {}).get(item, {}).items()}
+        except (AttributeError, TypeError, ValueError):
+            return {}
+
+    def _renumbered(self, look_map: LookMap, show: dict) -> LookMap:
+        own = {old: new for old, new in
+               self._own_boards(show, look_map.item or "").items()
+               if old in look_map.board_nos and new != old}
+        if not own:
+            return look_map
+        result = [own.get(no, no) for no in look_map.board_nos]
+        if len(set(result)) != len(result):     # a newer CSV: no longer fits
+            return replace(look_map, warnings=look_map.warnings + [
+                "the board numbers set on the page no longer fit this map "
+                "and are ignored"])
+        scales = [s if s.board_no not in own else replace(
+                      s, board_no=own[s.board_no],
+                      label=(f"{own[s.board_no]:03d}-{s.socket:02d}"
+                             if s.label else ""))
+                  for s in look_map.scales]
+        return replace(look_map, scales=scales)
+
+    def _map_path(self, item: str) -> "Path | None":
+        for path in sorted(self.files.glob("*.csv")):
+            named = _MAP_ITEM.match(path.name)
+            if (self.kind(path.name) == "map" and named
+                    and named.group(1).lower() == item.lower()):
+                return path
+        return None
+
+    def set_boards(self, item: str, boards: dict) -> None:
+        """{board_no in the map CSV: the number the garment really has}."""
+        with self._lock:
+            before = self._load_show()
+            path = self._map_path(str(item))
+            try:
+                look_map = LookMap.from_csv(path)
+            except (TypeError, OSError, LookError):
+                raise ValueError(f"{item}: no usable map")
+            own = {old: new for old, new in
+                   self._own_boards(before, item).items()
+                   if old in look_map.board_nos}
+            try:
+                own.update({int(old): int(new) for old, new in boards.items()})
+            except (AttributeError, TypeError, ValueError):
+                raise ValueError("boards: {board_no: board_no}")
+            unknown = sorted(set(own) - set(look_map.board_nos))
+            if unknown:
+                raise ValueError(f"{item} has no board {unknown[0]}")
+            result = [own.get(no, no) for no in look_map.board_nos]
+            if not all(1 <= no <= BOARD_NO_MAX for no in result):
+                raise ValueError(f"board numbers are 1 to {BOARD_NO_MAX}")
+            twice = sorted({no for no in result if result.count(no) > 1})
+            if twice:
+                raise ValueError(f"board {twice[0]} would be there twice")
+            every = dict(before.get("boards", {}))
+            every[item] = {str(old): new for old, new in sorted(own.items())
+                           if new != old}
+            self._commit(before, dict(before, boards=every))
+
+    def duplicate(self, item: str) -> str:
+        """Another garment of the same shape, as an item of its own: the map
+        CSV is copied under a new name (Look22 -> Look22-2). Nothing is
+        shared afterwards - designs, cues, unit and label are its own."""
+        with self._lock:
+            source = self._map_path(str(item))
+            if source is None:
+                raise ValueError(f"{item}: no map to copy")
+            base = _COPY_NO.sub("", _MAP_ITEM.match(source.name).group(1))
+            number = 2
+            while self._map_path(f"{base}-{number}") is not None:
+                number += 1
+            twin = f"{base}-{number}"
+            shutil.copyfile(source, self.files / f"{twin}_map.csv")
+            before = self._load_show()
+            after = dict(before)
+            for key in ("labels", "boards"):    # it starts as what it copies
+                if isinstance(before.get(key, {}).get(item), dict):
+                    after[key] = dict(before[key], **{
+                        twin: dict(before[key][item])})
+            self._commit(before, after)
+            return twin
+
+    def arrange(self, units: dict) -> None:
+        """Every assignment at once - {item: unit} - as one step of the
+        history: dragging a look to another place moves all those between."""
+        if not isinstance(units, dict):
+            raise ValueError("units: {item: unit}")
+        placed = {}
+        for item, unit in units.items():
+            if unit is None or unit == "":
+                continue
+            if unit not in UNITS:
+                raise ValueError(f"unknown unit {unit!r}")
+            placed[str(item)] = unit
+        with self._lock:
+            before = self._load_show()
+            self._commit(before, dict(before, units=placed))
+
+    def set_label(self, item: str, look, model) -> None:
+        """What the garment is called on the page: its LOOK number and its
+        model number (AZ271SD1301). The files keep their names - they are
+        what ties a design to its map - so this is free to change."""
+        item = str(item or "").strip()
+        if not item:
+            raise ValueError("no item")
+        label = {}
+        for key, value in (("look", look), ("model", model)):
+            value = " ".join(str(value or "").split())
+            if len(value) > LABEL_MAX:
+                raise ValueError(f"{key}: at most {LABEL_MAX} characters")
+            label[key] = value
+        with self._lock:
+            before = self._load_show()
+            labels = dict(before.get("labels", {}))
+            labels[item] = label
+            self._commit(before, dict(before, labels=labels))
+
     def set_timeline(self, duration, cues, refresh=None) -> None:
         """Replace the whole timeline; the page always posts all of it.
         `refresh` (seconds a repaint takes) is kept when not given."""
@@ -212,7 +346,8 @@ class Workspace:
         """
         with self._lock:
             paths = sorted(self.files.glob("*.csv"))
-            assigned = self._load_show().get("units", {})
+            show = self._load_show()
+            assigned = show.get("units", {})
         maps: "dict[str, LookMap]" = {}
         for path in paths:
             if self.kind(path.name) == "map":
@@ -220,6 +355,7 @@ class Workspace:
                     look_map = LookMap.from_csv(path)
                 except (OSError, LookError):
                     continue            # reported where the item is chosen
+                look_map = self._renumbered(look_map, show)
                 maps[(look_map.item or path.stem).lower()] = look_map
         problems: "list[str]" = []
         payloads: "dict[str, dict]" = {}
@@ -273,6 +409,7 @@ class Workspace:
                 # item" on every cue of the garment.
                 broken.append(f"{path.name}: {exc}")
                 continue
+            look_map = self._renumbered(look_map, show)
             maps[(look_map.item or path.stem).lower()] = look_map
         designs: "dict[str, Design]" = {}
         for path in paths:
@@ -308,12 +445,21 @@ class Workspace:
             show = self._load_show()
             history = self._load_history()
             assigned = show.get("units", {})
+            labels = show.get("labels", {})
         maps: "dict[str, LookMap]" = {}
         items: "dict[str, dict]" = {}
 
         def item_entry(name: str) -> dict:
+            label = labels.get(name)
+            if not isinstance(label, dict):
+                # Until somebody says otherwise, Look22 is LOOK 22.
+                number = _LOOK_NO.match(name)
+                label = {"look": str(int(number.group(1))) if number else "",
+                         "model": ""}
             return items.setdefault(name.lower(), {
                 "item": name, "unit": assigned.get(name), "map": None,
+                "look": str(label.get("look") or ""),
+                "model": str(label.get("model") or ""),
                 "designs": [], "problems": []})
 
         for path in paths:
@@ -326,6 +472,7 @@ class Workspace:
                 entry["map"] = {"name": path.name, "scales": [], "sides": []}
                 entry["problems"] += getattr(exc, "problems", [str(exc)])
                 continue
+            look_map = self._renumbered(look_map, show)
             entry = item_entry(look_map.item or path.stem)
             maps[entry["item"].lower()] = look_map
             entry["map"] = {
@@ -383,6 +530,12 @@ class Workspace:
             for key in keys:
                 look_map = maps[key]
                 items[key]["boards"] = look_map.dip_sheet(ids)
+                # The page can renumber boards: which one is which in the CSV.
+                was = {new: old for old, new in
+                       self._own_boards(show, items[key]["item"]).items()}
+                for board in items[key]["boards"]:
+                    board["source_no"] = was.get(board["board_no"],
+                                                 board["board_no"])
                 if ids is None:
                     items[key]["problems"] += unit_problems[group]
 
@@ -480,6 +633,19 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError as exc:
                         refused.append(str(exc))
                 return self._json({"saved": saved, "refused": refused})
+            if self.path == "/api/duplicate":
+                return self._json({"ok": True, "item":
+                                   self.workspace.duplicate(body["item"])})
+            if self.path == "/api/boards":
+                self.workspace.set_boards(body["item"], body["boards"])
+                return self._json({"ok": True})
+            if self.path == "/api/arrange":
+                self.workspace.arrange(body["units"])
+                return self._json({"ok": True})
+            if self.path == "/api/label":
+                self.workspace.set_label(body["item"], body.get("look"),
+                                         body.get("model"))
+                return self._json({"ok": True})
             if self.path == "/api/assign":
                 self.workspace.assign(body["item"], body.get("unit") or None)
                 return self._json({"ok": True})
