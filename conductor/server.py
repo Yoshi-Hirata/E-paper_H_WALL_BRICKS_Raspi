@@ -556,9 +556,11 @@ class Workspace:
 
         for key, look_map in maps.items():
             order = [s.position for s in look_map.scales]
-            items[key]["sequences"] = {
-                name: [sequence.ranks(look_map, name)[p] for p in order]
-                for name in sequence.SEQUENCES if name != "natural"}
+            items[key]["sequences"] = {}
+            for name in sequence.SEQUENCES:
+                if name != "natural":
+                    ranked = sequence.ranks(look_map, name)     # once, not per scale
+                    items[key]["sequences"][name] = [ranked[p] for p in order]
         ordered = sorted(items.values(),
                          key=lambda e: (e["unit"] or "~", e["item"].lower()))
         for entry in ordered:
