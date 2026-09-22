@@ -3,7 +3,7 @@
 Every item (a look, a bag) has its own track of cues, because the
 models do not all change together. A cue is
 
-    {"id", "item", "at", "design", "align", "partial"}
+    {"id", "item", "at", "design", "align", "partial", "sequence", "step_s"}
 
 `at` is seconds from the start of the show. An e-paper refresh takes
 several seconds from the command to the finished image (REFRESH_S), so
@@ -15,6 +15,12 @@ a time can mean two things and the cue says which:
 "done" is the default: a running order says what the look is at a given
 moment. A cue at 0:00 is the preset - loaded before START, so the show
 opens on it - and its align does not matter.
+
+`sequence` is the order the scales change in (conductor/sequence.py) and
+`step_s` the seconds between two rows of it. A sweep makes the change
+last longer than one refresh - by the last scale's delay, the cue's
+"span" - and the page and the units get that number from the server
+(it depends on the garment's map), as cue["span"].
 
 What one unit can do bounds the timeline. Before a refresh the unit has
 to write every board (about 0.22 s each, docs/SCALING.md), and nothing
@@ -34,6 +40,8 @@ testable and the web page and the units can both rely on them.
 from __future__ import annotations
 
 import re
+
+from .sequence import clean_sequence, clean_step
 
 # Full repaint, command to finished image. It has moved with every
 # firmware - 9.8 s (first boards), 16 s (production boards, 2026-08-14),
@@ -76,19 +84,30 @@ def min_interval(boards: int, refresh: float = REFRESH_S) -> float:
     return refresh + boards * SAVE_S_PER_BOARD + MARGIN_S
 
 
+def span_of(cue: dict) -> float:
+    """Seconds a cue's sweep adds to the refresh (0 without one)."""
+    try:
+        return max(0.0, float(cue.get("span") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def times(cue: dict, refresh: float = REFRESH_S) -> "tuple[float, float]":
     """(sent, complete) for a cue. The preset is complete at 0.
 
-    Rounded to the millisecond: send instants are compared and used as
-    keys ("the same moment" is one broadcast, showfile.py), and
-    10.3 - 7.3 is 3.000000000000001, not the 3.0 of a cue starting at 3.
+    A cue with a sequence takes refresh + span from the send to the
+    finished picture. Rounded to the millisecond: send instants are
+    compared and used as keys ("the same moment" is one broadcast,
+    showfile.py), and 10.3 - 7.3 is 3.000000000000001, not the 3.0 of a
+    cue starting at 3.
     """
     at = float(cue["at"])
+    takes = refresh + span_of(cue)
     if at <= 0:
-        return round(-refresh, 3), 0.0
+        return round(-takes, 3), 0.0
     if cue.get("align", "done") == "start":
-        return round(at, 3), round(at + refresh, 3)
-    return round(at - refresh, 3), round(at, 3)
+        return round(at, 3), round(at + takes, 3)
+    return round(at - takes, 3), round(at, 3)
 
 
 def clean(cues) -> "list[dict]":
@@ -105,6 +124,8 @@ def clean(cues) -> "list[dict]":
             "design": str(raw.get("design", "")),
             "align": align if align in ALIGNS else "done",
             "partial": bool(raw.get("partial", False)),
+            "sequence": clean_sequence(raw.get("sequence", "natural")),
+            "step_s": clean_step(raw.get("step_s", 0.1)),
         })
     result.sort(key=lambda c: (c["at"], c["item"].lower()))
     return result
@@ -141,10 +162,13 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
             mine.append(f"{format_clock(cue['at'])} is after the end of the "
                         f"show ({format_clock(duration)})")
         if cue["at"] > 0 and sent < 0:
+            takes = refresh + span_of(cue)
             mine.append(
-                f"cannot be complete at {format_clock(cue['at'])}: a refresh "
-                f"takes {refresh:.0f} s. Use 0:00 (the preset, before START) "
-                f"or {format_clock(refresh)} and later")
+                f"cannot be complete at {format_clock(cue['at'])}: this change "
+                f"takes {takes:.0f} s. Use 0:00 (the preset, before START) "
+                f"or {format_clock(takes)} and later")
+        if cue.get("sequence", "natural") != "natural" and cue.get("span") is None:
+            mine.append("the sweep needs the item's map to be timed")
 
     # One item cannot be told two things at once.
     seen: "dict[tuple, str]" = {}
@@ -168,17 +192,24 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                      if (item.get("unit") or f"({item['item']})") == unit)
         need = min_interval(boards, refresh)
         unit_cues.sort(key=lambda c: times(c, refresh)[0])
-        previous = None
+        previous = before = None
         for cue in unit_cues:
             sent = times(cue, refresh)[0]
             if previous is not None and sent != previous:
+                # The previous change occupies the bus for its own span,
+                # and a sweep has its delay tables to write as well.
                 gap = sent - previous
-                if gap < need:
+                extra = span_of(before) + (
+                    boards * SAVE_S_PER_BOARD
+                    if cue.get("sequence", "natural") != "natural" else 0.0)
+                if gap < need + extra:
                     problems[cue["id"]].append(
                         f"only {gap:.0f} s after the previous refresh on {unit}; "
-                        f"its {boards} boards need {need:.0f} s "
-                        f"({refresh:.0f} s refresh + writing the boards)")
-            previous = sent
+                        f"its {boards} boards need {need + extra:.0f} s "
+                        f"({refresh:.0f} s refresh"
+                        + (f" + {span_of(before):.0f} s sweep" if span_of(before)
+                           else "") + " + writing the boards)")
+            previous, before = sent, cue
 
     for key, item in sorted(items.items()):
         track = [c for c in cues if c["item"].lower() == key]

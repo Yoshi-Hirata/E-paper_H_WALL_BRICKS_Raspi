@@ -8,7 +8,8 @@ a show.
     GET  /status     who am I, what am I doing, which boards answer -
                      and the clock, for the PC's offset measurement
     GET  /clock      the clock alone (smallest, fastest answer)
-    POST /prepare    {"cue", "label", "dev_type", "boards": {"1": hex64, ...}}
+    POST /prepare    {"cue", "label", "dev_type", "boards": {"1": hex64, ...},
+                      "delays": {"1": hex64, ...}}   (delays optional)
     POST /fire       {"cue", "at"}       at = this unit's monotonic seconds
     POST /cancel     forget the fire time
     POST /standby    white out the panels, keep the unit under remote
@@ -149,7 +150,9 @@ class _Handler(BaseHTTPRequestHandler):
                           for address, array in body["boards"].items()}
                 session.prepare(body["cue"], boards,
                                 int(body.get("dev_type", DEV_NUMBER_BRAND)),
-                                str(body.get("label", ""))[:40])
+                                str(body.get("label", ""))[:40],
+                                {int(a): bytes.fromhex(t) for a, t in
+                                 (body.get("delays") or {}).items()})
             elif self.path == "/fire":
                 session.fire(body["cue"], float(body["at"]))
             elif self.path == "/cancel":

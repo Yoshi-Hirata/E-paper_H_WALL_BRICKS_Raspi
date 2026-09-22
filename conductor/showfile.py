@@ -31,6 +31,7 @@ import json
 from . import timeline
 from .look import (ARRAY_LEN, MARKER, NO_REFRESH, Design, LookError, LookMap,
                    compile_design, unit_board_ids)
+from .sequence import compile_delays
 
 NUMBER_BRAND = 0x03
 
@@ -68,11 +69,18 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
         sent, _ = timeline.times(cue, refresh)
         moments.setdefault(sent, []).append(cue)
 
+    # A sweep is a delay table per board (the firmware request). Once
+    # any cue of the show has one, every cue carries tables - a natural
+    # cue's say "no delay" - so a board never keeps a sweep it should
+    # not; the unit only writes a table that differs from the last.
+    sweeps = any(c.get("sequence", "natural") != "natural" for c in cues)
     state = {address: blank() for address in addresses}
     unit_cues = []
     for number, sent in enumerate(sorted(moments)):
         change = {address: blank() for address in addresses}
+        delays: "dict[int, bytes]" = {}
         labels = []
+        span = 0.0
         for cue in sorted(moments[sent], key=lambda c: c["item"].lower()):
             look_map = by_item[cue["item"].lower()]
             design = designs[(cue["item"].lower(), cue["design"])]
@@ -81,16 +89,26 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
             for address, array in arrays.items():
                 change[address] = bytearray(array)
             labels.append(design_label(look_map, design, cue["partial"]))
+            span = max(span, timeline.span_of(cue))
+            if sweeps:
+                delays.update(compile_delays(
+                    look_map, cue.get("sequence", "natural"),
+                    float(cue.get("step_s", 0.1)), ids=ids))
         for address in addresses:
             lay_over(state[address], change[address])
-        unit_cues.append({
+        entry = {
             "id": f"q{number:02d}",
             "at": min(float(c["at"]) for c in moments[sent]),
             "sent": round(sent, 3),
             "label": " + ".join(labels),
             "boards": {str(a): bytes(change[a]).hex() for a in addresses},
             "state": {str(a): bytes(state[a]).hex() for a in addresses},
-        })
+        }
+        if sweeps:
+            entry["span"] = span
+            entry["delays"] = {str(a): delays[a].hex()
+                               for a in addresses if a in delays}
+        unit_cues.append(entry)
 
     show = {"name": name, "unit": unit, "dev_type": NUMBER_BRAND,
             "refresh_s": refresh, "duration": duration,

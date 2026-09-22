@@ -13,6 +13,7 @@ from .protocol import (
     CMD_SET_SLOT_CONFIG,
     CMD_SHOW_SINGLE,
     CMD_PLAY_STOP,
+    CMD_SAVE_DELAY,
     DEV_H_WALL_BRICKS,
     Frame,
 )
@@ -53,6 +54,21 @@ def slot_config(dest: int, slot: int, mode: int = MODE_ALL_AT_ONCE,
     data = struct.pack("<BBBHHB", slot, mode, direction,
                        start_delay, switch_delay, pipeline)
     return _frame(dest, CMD_SET_SLOT_CONFIG, data, group_count, dev_type)
+
+
+def save_delays(dest: int, slot: int, table64: bytes,
+                group_count: int = 2,
+                dev_type: int = DEV_H_WALL_BRICKS) -> Frame:
+    """Per-segment start delays for the slot (docs/FW_REQUEST_SEGMENT_
+    DELAY.md): index = socket, value = tenths of a second, 0xFF = none.
+    Same 66-byte envelope as save_color. Firmware without the feature
+    answers ACK_INVALID_CMD, which the runner takes as "no sweeps"."""
+    if not 0 <= slot <= 19:
+        raise ValueError(f"slot {slot} out of range 0-19")
+    if len(table64) != 64:
+        raise ValueError(f"delay table must be 64 bytes, got {len(table64)}")
+    return _frame(dest, CMD_SAVE_DELAY, bytes([slot, 0]) + table64,
+                  group_count, dev_type)
 
 
 def save_color(dest: int, slot: int, array64: bytes,

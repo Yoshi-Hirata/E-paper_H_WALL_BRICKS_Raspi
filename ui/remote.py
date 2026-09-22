@@ -69,7 +69,11 @@ class RemoteSession:
     # ---- called by the agent ----
 
     def prepare(self, cue_id: str, boards: "dict[int, bytes]",
-                dev_type: int = DEV_NUMBER_BRAND, label: str = "") -> None:
+                dev_type: int = DEV_NUMBER_BRAND, label: str = "",
+                delays: "dict[int, bytes] | None" = None) -> None:
+        """`delays`: per board, the 64-byte table of per-socket start
+        delays that makes the change sweep the garment (written before
+        the colours; boards without one keep what they have)."""
         if self.busy():
             raise RemoteError("unit is busy (firmware update, scan or reboot)")
         if not boards:
@@ -80,6 +84,11 @@ class RemoteSession:
             if len(array) != ARRAY_LEN:
                 raise RemoteError(f"board {address}: array must be "
                                   f"{ARRAY_LEN} bytes, got {len(array)}")
+        delays = {int(a): bytes(t) for a, t in (delays or {}).items()}
+        for address, table in delays.items():
+            if len(table) != ARRAY_LEN:
+                raise RemoteError(f"board {address}: delay table must be "
+                                  f"{ARRAY_LEN} bytes, got {len(table)}")
         with self._lock:
             self.active = True
             self.phase = PREPARING
@@ -88,7 +97,7 @@ class RemoteSession:
             self.saved, self.failed = [], []
             self.fire_at = self.fired_at = self.prepare_s = None
             self._job = {"cue_id": self.cue_id, "boards": dict(boards),
-                         "dev_type": dev_type}
+                         "dev_type": dev_type, "delays": delays}
         if not self.runner.remote and self.runner.start_remote(self) is False:
             self.failed_with("bus busy: the previous worker has not finished")
         self._wake.set()
@@ -197,5 +206,6 @@ class RemoteSession:
                 "fire_at": self.fire_at, "fired_at": self.fired_at,
                 "late_ms": late_ms,
                 "boards": list(runner.boards), "live": list(runner.live),
+                "no_sweep": sorted(runner.no_sweep),
                 "standby_ready": bool(runner.standby_ready),
             }

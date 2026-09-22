@@ -36,7 +36,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import showfile, timeline
+from . import sequence, showfile, timeline
 from .fleet import DEFAULT_LEAD_S, Fleet, default_units
 from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, unit_board_ids)
@@ -58,6 +58,19 @@ _LOOK_NO = re.compile(r"look\s*0*(\d+)", re.IGNORECASE)
 
 def _key(position) -> str:
     return "|".join(str(part) for part in position)
+
+
+def _time_sweeps(cues: "list[dict]", maps: "dict[str, LookMap]") -> None:
+    """Give every cue with a sequence its span (seconds the sweep adds),
+    which only the item's map can say. A cue whose map is missing keeps
+    no span and validate() reports it."""
+    for cue in cues:
+        look_map = maps.get(cue["item"].lower())
+        if cue["sequence"] == "natural":
+            cue["span"] = 0.0
+        elif look_map is not None:
+            cue["span"] = sequence.span_s(look_map, cue["sequence"],
+                                          cue["step_s"])
 
 
 class Workspace:
@@ -429,6 +442,7 @@ class Workspace:
         refresh = float(show.get("refresh_s", timeline.REFRESH_S))
         duration = float(show.get("duration", timeline.DEFAULT_DURATION_S))
         cues = timeline.clean(show.get("cues"))
+        _time_sweeps(cues, maps)
         cue_problems, _ = timeline.validate(cues, facts, duration, refresh)
         if broken:
             return {}, broken
@@ -540,6 +554,11 @@ class Workspace:
                 if ids is None:
                     items[key]["problems"] += unit_problems[group]
 
+        for key, look_map in maps.items():
+            order = [s.position for s in look_map.scales]
+            items[key]["sequences"] = {
+                name: [sequence.ranks(look_map, name)[p] for p in order]
+                for name in sequence.SEQUENCES if name != "natural"}
         ordered = sorted(items.values(),
                          key=lambda e: (e["unit"] or "~", e["item"].lower()))
         for entry in ordered:
@@ -555,6 +574,7 @@ class Workspace:
         duration = float(show.get("duration", timeline.DEFAULT_DURATION_S))
         refresh = float(show.get("refresh_s", timeline.REFRESH_S))
         cues = timeline.clean(show.get("cues"))
+        _time_sweeps(cues, maps)
         cue_problems, warnings = timeline.validate(cues, facts, duration,
                                                    refresh)
         for cue in cues:
@@ -571,6 +591,8 @@ class Workspace:
                 "history": {"undo": len(history["undo"]),
                             "redo": len(history["redo"])},
                 "units": UNITS, "items": ordered, "orphans": orphans,
+                "sequences": [{"id": name, "label": sequence.LABELS[name]}
+                              for name in sequence.SEQUENCES],
                 "palette": [{"name": n, "rgb": list(rgb)} for n, rgb in PALETTE],
                 "workspace": str(self.root.resolve())}
 

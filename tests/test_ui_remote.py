@@ -459,3 +459,65 @@ def test_agent_connections_time_out_instead_of_leaking_threads():
     from ui.agent import _Handler
 
     assert _Handler.timeout and _Handler.timeout <= 30
+
+
+# ---- sweeps: a delay table per board, before the colours ----
+
+DELAY = 0x1E
+
+
+def table(value: int) -> bytes:
+    return bytes([0xFF] + [value] * 62 + [0xFF])
+
+
+def test_delay_tables_go_out_before_the_colours_and_only_when_they_change():
+    session, runner, bus = make_session()
+    session.prepare("c1", {1: array(3), 2: array(4)}, delays={1: table(2), 2: table(5)})
+    assert wait_until(lambda: session.phase == READY)
+    cmds = [(f.cmd, f.dest) for f in bus.requested if f.cmd in (DELAY, SAVE)]
+    assert cmds == [(DELAY, 1), (SAVE, 1), (DELAY, 2), (SAVE, 2)]
+    assert bus.requested[[f.cmd for f in bus.requested].index(DELAY)].data == bytes([19, 0]) + table(2)
+    # The same tables again: not written again. A new one for board 2 is.
+    n = len(bus.requested)
+    session.prepare("c2", {1: array(6), 2: array(7)}, delays={1: table(2), 2: table(9)})
+    assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
+    later = [(f.cmd, f.dest) for f in bus.requested[n:] if f.cmd in (DELAY, SAVE)]
+    assert later == [(SAVE, 1), (DELAY, 2), (SAVE, 2)]
+    assert session.status()["no_sweep"] == []
+    runner.stop()
+
+
+def test_a_board_whose_firmware_has_no_sweeps_still_gets_the_cue():
+    class OldFirmware(FakeBus):
+        def request(self, frame, retries=3):
+            ack = super().request(frame, retries)
+            if frame.cmd == DELAY:
+                ack.cmd = 0x83                      # ACK_INVALID_CMD
+            return ack
+
+    session, runner, bus = make_session(OldFirmware())
+    session.prepare("c1", {1: array(3)}, delays={1: table(1)})
+    assert wait_until(lambda: session.phase == READY)
+    assert session.saved == [1] and session.failed == []
+    assert session.status()["no_sweep"] == [1]
+    session.prepare("c2", {1: array(4)}, delays={1: table(2)})
+    assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
+    assert [f.cmd for f in bus.requested].count(DELAY) == 1   # asked once
+    runner.stop()
+
+
+def test_a_bad_delay_table_is_refused_before_anything_is_written():
+    session, runner, bus = make_session()
+    with pytest.raises(RemoteError):
+        session.prepare("c1", {1: array(3)}, delays={1: b"\x00" * 10})
+    assert session.phase == LOCAL
+    runner.stop()
+
+
+def test_agent_passes_delays_through(agent):
+    agent, session, runner, bus = agent
+    status, body = call(agent, "/prepare", {"cue": "x", "boards": {"1": array(2).hex()},
+                                            "delays": {"1": table(3).hex()}})
+    assert status == 200, body
+    assert wait_until(lambda: session.phase == READY)
+    assert any(f.cmd == DELAY and f.data[2:] == table(3) for f in bus.requested)

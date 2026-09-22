@@ -514,3 +514,39 @@ def test_designer_named_files_are_accepted_and_labelled(workspace):
         [("P01", 1), ("ref_multicolor_redorange_s22", None)]
     payloads, problems = workspace.compile_units({"Look22": name}, "m")
     assert problems == ["Look22: not assigned to a unit"]
+
+
+# ---- sweeps ----
+
+def test_a_sweeping_cue_is_timed_from_the_map_and_reaches_the_show_file(workspace):
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.assign("Look22", "radxa-01")
+    workspace.set_timeline(600, [
+        {"id": "a", "item": "Look22", "at": 0, "design": grid},
+        {"id": "b", "item": "Look22", "at": 60, "design": grid,
+         "sequence": "top_down", "step_s": 2.0},
+        {"id": "c", "item": "Look22", "at": 120, "design": grid}])
+    show = workspace.state()["show"]
+    a, b, c = show["cues"]
+    assert (b["sequence"], b["step_s"], b["span"]) == ("top_down", 2.0, 2.0)  # rows 1 and 0
+    assert (b["sent"], b["complete"]) == (60 - 7 - 2, 60)
+    assert a["span"] == 0 and a["problems"] == [] and b["problems"] == []
+    assert workspace.state()["sequences"][0]["id"] == "natural"
+    item22 = item(workspace.state(), "Look22")
+    assert set(item22["sequences"]) == {"center", "top_down", "bottom_up",
+                                        "left_right", "right_left"}
+    assert len(item22["sequences"]["top_down"]) == len(item22["map"]["scales"])
+    shows, problems = workspace.compile_show()
+    assert problems == []
+    cues = shows["radxa-01"]["cues"]
+    # Every cue carries tables once one sweeps; the others' say "no delay".
+    assert [q["span"] for q in cues] == [0.0, 2.0, 0.0]
+    assert set(cues[0]["delays"]) == {"1", "2", "3"}
+    assert set(bytes.fromhex(cues[0]["delays"]["1"])) == {0xFF}
+    swept = bytes.fromhex(cues[1]["delays"]["1"])          # board 17: sockets 1, 60
+    assert swept[1] == 0 and swept[60] == 0                 # row 1 is the top row
+    assert bytes.fromhex(cues[1]["delays"]["3"])[5] == 20   # board 20, row 0: 2 s
+    # No sweep anywhere: no tables at all (the units need not write any).
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0, "design": grid}])
+    shows, _ = workspace.compile_show()
+    assert "delays" not in shows["radxa-01"]["cues"][0]

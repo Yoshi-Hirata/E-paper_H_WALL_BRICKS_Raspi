@@ -35,8 +35,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
-from epaper.commands import TEST_SLOT, save_color, show_single, slot_config, stop
-from epaper.protocol import DEV_NUMBER_BRAND
+from epaper.commands import (TEST_SLOT, save_color, save_delays, show_single,
+                             slot_config, stop)
+from epaper.protocol import ACK_INVALID_CMD, ACK_SUCCESS, DEV_NUMBER_BRAND
 from epaper.transport import Bus, find_port
 
 from .config import LOG_HISTORY
@@ -152,6 +153,11 @@ class DemoRunner:
         self.absent: set[int] = set()
         self._needs_cfg: set[int] = set()
         self._next_reprobe = 0.0
+        # Sweeps (docs/FW_REQUEST_SEGMENT_DELAY.md): the delay table each
+        # board holds, so an unchanged one is not written again, and the
+        # boards whose firmware answered "no such command".
+        self._delays_sent: dict[int, bytes] = {}
+        self.no_sweep: set[int] = set()
 
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
         self.pattern: Pattern | None = None
@@ -455,6 +461,7 @@ class DemoRunner:
             self.live.remove(board)
         self.absent.add(board)
         self._needs_cfg.discard(board)
+        self._delays_sent.pop(board, None)      # may come back rebooted
         self.emit(f"board {board} dropped, will reprobe")
 
     def _reprobe(self, bus, groups: int) -> bool:
@@ -674,6 +681,12 @@ class DemoRunner:
                 failed.append(board)
                 continue
             self._needs_cfg.discard(board)
+            table = (job.get("delays") or {}).get(board)
+            if table is not None and not self._save_delays(bus, groups, board,
+                                                           table, dev_type):
+                self._needs_cfg.add(board)
+                failed.append(board)
+                continue
             if not self._request(bus, save_color(board, self.slot,
                                                  job["boards"][board], groups,
                                                  dev_type=dev_type),
@@ -683,6 +696,26 @@ class DemoRunner:
                 continue
             saved.append(board)
         return saved, failed
+
+    def _save_delays(self, bus, groups: int, board: int, table: bytes,
+                     dev_type: int) -> bool:
+        """Write a board's delay table unless it already holds it. A
+        board whose firmware does not know the command is remembered
+        and left alone: the cue still goes out, in socket order."""
+        if board in self.no_sweep or self._delays_sent.get(board) == table:
+            return True
+        frame = save_delays(board, self.slot, table, groups, dev_type=dev_type)
+        ack = bus.request(frame)
+        if ack is not None and ack.src == board and ack.cmd == ACK_INVALID_CMD:
+            self.no_sweep.add(board)
+            self.emit(f"board {board}: firmware without sweeps (0x1E refused)")
+            return True
+        if not (ack is not None and ack.src == board and ack.cmd == ACK_SUCCESS
+                or self._request(bus, frame, f"delays @{board:02d}",
+                                 self.save_attempts)):
+            return False
+        self._delays_sent[board] = table
+        return True
 
     def _fire_at(self, bus, groups: int, session, cue_id: str,
                  at: float) -> bool:

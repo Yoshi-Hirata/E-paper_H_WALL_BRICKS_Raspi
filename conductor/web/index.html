@@ -424,13 +424,31 @@ function fileList(item) {
 // ---- tab 2: the timeline ----
 function trackItems() { return state.items.filter(i => i.map && i.map.scales.length); }
 function cuesOf(item) { return state.show.cues.filter(c => c.item === item.item).sort((a, b) => a.sent - b.sent); }
+const seqLabel = id => state.sequences.find(s => s.id === id)?.label || id;
+// The scales a sweeping cue has finished by t: rank x step is a scale's
+// delay, and it is done one refresh after that.
+function sweptColors(item, cue, design, t) {
+  const ranks = item.sequences?.[cue.sequence];
+  if (!ranks) return design.colors;
+  const refresh = state.show.refresh_s, done = {};
+  item.map.scales.forEach((s, n) => {
+    const key = `${s[0]}|${s[1]}|${s[2]}`;
+    if (key in design.colors && cue.sent + ranks[n] * cue.step_s + refresh <= t) done[key] = design.colors[key];
+  });
+  return done;
+}
 function wornAt(item, t) {
-  // Designs complete by t, in order: a full cue replaces, a partial one overlays.
+  // Designs complete by t, in order: a full cue replaces, a partial one overlays;
+  // a sweep in progress overlays what it has finished so far.
   let colors = {}, shifts = null, label = "(as before the show)", changing = false;
   for (const cue of cuesOf(item)) {
     const design = item.designs.find(d => d.name === cue.design);
     if (cue.sent <= t && t < cue.complete) changing = true;
-    if (cue.complete > t || !design) continue;
+    if (!design) continue;
+    if (cue.complete > t) {
+      if (cue.sequence !== "natural" && cue.sent <= t) colors = { ...colors, ...sweptColors(item, cue, design, t) };
+      continue;
+    }
     colors = cue.partial ? { ...colors, ...design.colors } : { ...design.colors };
     shifts = design.shifts; label = designLabel(design) + (cue.partial ? " (partial)" : "");
   }
@@ -439,7 +457,7 @@ function wornAt(item, t) {
 async function saveShow(cues, duration, refreshS) {     // not "refresh": that is the reload function
   const result = await api("/api/show", { duration: duration ?? state.show.duration,
     refresh_s: refreshS ?? state.show.refresh_s,
-    cues: cues.map(({ id, item, at, design, align, partial }) => ({ id, item, at, design, align, partial })) });
+    cues: cues.map(({ id, item, at, design, align, partial, sequence, step_s }) => ({ id, item, at, design, align, partial, sequence, step_s })) });
   if (result.error) toast(result.error);
   await refresh();
 }
@@ -501,6 +519,10 @@ function renderTimeline() {
           <option value="done" ${cue.align === "done" ? "selected" : ""}>complete at this time (sent ${show.refresh_s} s earlier)</option>
           <option value="start" ${cue.align === "start" ? "selected" : ""}>the change starts at this time</option></select></label>
         <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label>
+        <label>Sequence <select id="cue-seq">${state.sequences.map(s =>
+          `<option value="${s.id}" ${s.id === cue.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>
+        <label ${cue.sequence === "natural" ? 'style="display:none"' : ""}>Step <input type="text" id="cue-step" value="${cue.step_s}" size="4" title="Seconds between two rows (or columns, or rings) of the sweep"> s
+          ${cue.span ? `<span class="meta">· sweep ${cue.span.toFixed(1)} s, change ${(cue.complete - cue.sent).toFixed(0)} s in all</span>` : ""}</label>
         <button id="cue-show">View design</button>
         <button id="cue-all" title="Give every other item a cue at this time (with its own next unused design)">Copy time to all items</button>
         <button id="cue-del" class="danger">Delete</button>
@@ -518,7 +540,7 @@ function renderTimeline() {
       <table><thead><tr><th>TIME</th><th>ITEM</th><th>UNIT</th><th>DESIGN</th><th>SENT → COMPLETE</th><th>STATUS</th></tr></thead><tbody>
       ${all.map(c => { const it = state.items.find(i => i.item === c.item); const d = it?.designs.find(x => x.name === c.design);
         return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}"><td><b>${clock(c.at)}</b></td><td>${esc(itemFull(it) || c.item)}</td>
-        <td>${esc(it?.unit || "-")}</td><td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}</td>
+        <td>${esc(it?.unit || "-")}</td><td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}${c.sequence !== "natural" ? ` <span class="meta">· ${esc(seqLabel(c.sequence))} ${c.step_s} s</span>` : ""}</td>
         <td>${c.at <= 0 ? "preset" : clock(c.sent) + " → " + clock(c.complete)}</td>
         <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
         || `<tr><td class="meta" colspan="6">No cues yet</td></tr>`}
@@ -840,6 +862,12 @@ document.addEventListener("change", async e => {
     }
     else if (id === "cue-align") cue.align = e.target.value;
     else if (id === "cue-partial") cue.partial = e.target.checked;
+    else if (id === "cue-seq") cue.sequence = e.target.value;
+    else if (id === "cue-step") {
+      const step = Number(e.target.value);
+      if (!(step >= 0.1 && step <= 5)) { toast("Step: 0.1 to 5 seconds"); renderTimeline(); return; }
+      cue.step_s = Math.round(step * 10) / 10;
+    }
     await saveShow(cues);
   } else if (e.target.dataset.boardNo) {
     const no = Number(e.target.value);

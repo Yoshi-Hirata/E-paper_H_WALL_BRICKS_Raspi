@@ -284,7 +284,8 @@ class ShowPlayer:
         self._healed_for = self._latched = self._counted = None
 
     def _lead(self, cue: dict, after_another: bool = False) -> float:
-        boards = len(cue["boards"])
+        # A cue with delay tables writes each board twice.
+        boards = len(cue["boards"]) + len(cue.get("delays") or {})
         lead = boards * self.save_s + self.margin_s
         if self.session.runner.remote is None and not after_another:
             lead += self.setup_s + boards * self.setup_board_s   # setup to pay
@@ -333,7 +334,9 @@ class ShowPlayer:
                                             else "")
             session.prepare(key, {int(a): bytes.fromhex(h)
                                   for a, h in source.items()},
-                            int(show.get("dev_type", 3)), label)
+                            int(show.get("dev_type", 3)), label,
+                            {int(a): bytes.fromhex(h)
+                             for a, h in (cue.get("delays") or {}).items()})
         with self._lock:
             if epoch != self._epoch:
                 if session.cue_id == key:
@@ -424,6 +427,7 @@ class ShowPlayer:
                     or (self.dirty and self._healed_for != current["id"])):
                 room = (nxt["sent"] - now) if nxt else float("inf")
                 need = (self._lead(current) + refresh
+                        + float(current.get("span") or 0.0)
                         + (self._lead(nxt, after_another=True) if nxt else 0.0))
                 if room > need:
                     if self.applied == current["id"]:

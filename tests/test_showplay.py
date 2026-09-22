@@ -533,3 +533,21 @@ def test_starting_again_from_the_top_runs_every_cue_again(rig):
     assert len(show_times(bus)) == first_run + 3
     assert player.applied == "q02"
     assert 0 <= show_times(bus)[-2] - (t0 + 0.8) < 0.05
+
+
+def test_a_cue_with_delay_tables_hands_them_to_the_session(rig):
+    player, session, runner, bus, _ = rig
+    show = make_show(duration=30)
+    swept = bytes([0xFF] + [7] * 62 + [0xFF])
+    for cue in show["cues"]:
+        cue["delays"] = {"1": swept.hex(), "2": swept.hex()}
+        cue["span"] = 0.7
+    player.load(show)
+    player.preset()
+    assert wait_until(lambda: player.applied == "q00")
+    delays = [f for f in bus.requested if f.cmd == 0x1E]
+    assert [f.dest for f in delays] == [1, 2]
+    assert delays[0].data[2:] == swept
+    # Its lead counts the tables: each board is written twice.
+    assert player._lead(show["cues"][1]) > player._lead(
+        dict(show["cues"][1], delays={}))

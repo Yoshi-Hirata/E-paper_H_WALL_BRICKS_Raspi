@@ -162,3 +162,43 @@ def test_send_instants_are_compared_to_the_millisecond():
     skirt = cue("d", "Look20-Skirt", 3.0, "s1", align="start")
     found, _ = validate([top, skirt], ITEMS, 600, refresh=7.3)
     assert found["c"] == found["d"] == []
+
+
+# ---- sweeps ----
+
+def test_a_sweep_lengthens_the_change_and_the_room_after_it():
+    swept = cue("a", "Look22", 60, "g1.csv")
+    swept.update(sequence="top_down", step_s=0.5, span=4.0)
+    sent, complete = times(swept, 7.0)
+    assert (sent, complete) == (49.0, 60.0)             # 7 s refresh + 4 s sweep
+    swept["align"] = "start"
+    assert times(swept, 7.0) == (60.0, 71.0)
+    # The next refresh on the unit must wait for the sweep too.
+    items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
+                        "designs": {"g1.csv": {"full": True, "partial": True}}}}
+    # Sent at 49; the bus is busy 7 + 4 s, then 2 boards + margin: 14.44 s.
+    swept["align"] = "done"
+    later = cue("b", "Look22", 49 + 14.44 - 1 + 7, "g1.csv")     # 1 s short
+    problems, _ = validate([swept, later], items, 600, 7.0)
+    assert problems["b"] and "sweep" in problems["b"][0]
+    later["at"] = 49 + 14.44 + 1 + 7
+    problems, _ = validate([swept, later], items, 600, 7.0)
+    assert problems["b"] == []
+
+
+def test_a_sweep_without_its_map_is_reported_not_guessed():
+    swept = cue("a", "Look22", 60, "g1.csv")
+    swept.update(sequence="center", step_s=0.1)          # no span given
+    items = {"look22": {"item": "Look22", "unit": None, "boards": 2,
+                        "designs": {"g1.csv": {"full": True, "partial": True}}}}
+    problems, _ = validate([swept], items, 600, 7.0)
+    assert any("map" in p for p in problems["a"])
+
+
+def test_clean_keeps_sequence_and_step_and_tidies_them():
+    cues = clean([{"id": "a", "item": "L", "at": 5, "design": "d",
+                   "sequence": "left_right", "step_s": "0.3"},
+                  {"id": "b", "item": "L", "at": 6, "design": "d",
+                   "sequence": "sideways", "step_s": -1}])
+    assert (cues[0]["sequence"], cues[0]["step_s"]) == ("left_right", 0.3)
+    assert (cues[1]["sequence"], cues[1]["step_s"]) == ("natural", 0.1)
