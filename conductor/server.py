@@ -50,7 +50,7 @@ BOARD_NO_MAX = 9999
 NUMBER_BRAND = 0x03        # the device type the units' UI sends (ui/patterns.py)
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
 _IS_MAP = re.compile(r"_map$", re.IGNORECASE)
-_IS_GRID = re.compile(r"_color_pattern\s*\d+", re.IGNORECASE)
+_IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
 _MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
 _COPY_NO = re.compile(r"-\d+$")
 _LOOK_NO = re.compile(r"look\s*0*(\d+)", re.IGNORECASE)
@@ -309,7 +309,7 @@ class Workspace:
         name = _SAFE_NAME.sub("_", Path(name).name)
         if self.kind(name) is None:
             raise ValueError(f"{name}: not a *_map.csv or "
-                             "*_color_patternNN_grid.csv")
+                             "*_color_NAME_grid.csv")
         with self._lock:
             # open(), not Path.write_text(newline=...): that is 3.10+, and
             # the units' Python 3.9 should be able to run this too.
@@ -379,8 +379,7 @@ class Workspace:
             except (OSError, LookError) as exc:
                 problems.append(f"{item}: {exc}")
                 continue
-            name = (f"P{design.pattern:02d}" if design.pattern is not None
-                    else design.name)
+            name = design.label or design.name
             payload = payloads.setdefault(unit, {
                 "cue": cue, "label": "", "dev_type": NUMBER_BRAND,
                 "boards": {}})
@@ -494,6 +493,8 @@ class Workspace:
             look_map = maps.get(item.lower())
             record = {"name": path.name,
                       "pattern": design.pattern if design else None,
+                      "label": (design.label if design
+                                else Design.name_parts(path.name)[2]),
                       # problems: as a full cue. partial_problems: as a
                       # cue that leaves uncoloured scales as they are - a
                       # design that only passes that way is a partial one,
@@ -542,7 +543,8 @@ class Workspace:
         ordered = sorted(items.values(),
                          key=lambda e: (e["unit"] or "~", e["item"].lower()))
         for entry in ordered:
-            entry["designs"].sort(key=lambda d: (d["pattern"] or 0, d["name"]))
+            entry["designs"].sort(key=lambda d: (d["pattern"] is None,
+                                                 d["pattern"] or 0, d["name"]))
             entry.setdefault("boards", [])
         facts = {key: {"item": entry["item"], "unit": entry["unit"],
                        "boards": len(entry["boards"]),

@@ -49,8 +49,7 @@ def lay_over(state: bytearray, change: bytes) -> None:
 
 
 def design_label(look_map: LookMap, design: Design, partial: bool) -> str:
-    name = (f"P{design.pattern:02d}" if design.pattern is not None
-            else design.name)
+    name = design.label or design.name
     return f"{look_map.item} {name}" + ("*" if partial else "")
 
 

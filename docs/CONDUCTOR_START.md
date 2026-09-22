@@ -51,7 +51,7 @@ python -m conductor serve --open
 
 すべて `showdata/` フォルダ(リポジトリ直下、Git の管理外):
 
-- `showdata/files/` … 取り込んだ CSV(`LookNN_map.csv`、`LookNN_color_patternNN_grid.csv`)
+- `showdata/files/` … 取り込んだ CSV(`LookNN_map.csv`、`LookNN_color_NAME_grid.csv`)
 - `showdata/show.json` … タイムライン、機体の割り当て、LOOK 番号と型番、基板番号の書き換え
 - `showdata/history.json` … Undo / Redo の履歴
 

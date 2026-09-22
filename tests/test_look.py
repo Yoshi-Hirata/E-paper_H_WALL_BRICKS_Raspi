@@ -342,3 +342,17 @@ def test_side_names_match_whatever_their_case():
     design = Design.parse(io.StringIO(GRID.replace("back,", "BACK,")))
     assert look_map.sides == ["front", "back"]
     assert check(look_map, design) == []
+
+
+def test_a_design_is_named_after_what_the_designer_typed():
+    # <item>_color_<name>_grid[...].csv - the wiring page's export; the
+    # name is a pattern number or whatever the designer called it.
+    assert Design.name_parts("Look22_color_pattern01_grid.csv") == ("Look22", 1, "P01")
+    assert Design.name_parts("Look22_color_pattern 3.csv") == ("Look22", 3, "P03")
+    assert Design.name_parts(
+        "AZ271SD1305_color_ref_multicolor_redorange_s22_grid_A-1.csv"
+    ) == ("AZ271SD1305", None, "ref_multicolor_redorange_s22")
+    assert Design.name_parts(
+        "AZ271SD1305_color_ref_multicolor_redorange_s22_grid-2_A-2.csv"
+    ) == ("AZ271SD1305", None, "ref_multicolor_redorange_s22")
+    assert Design.name_parts("notes.csv") == (None, None, "notes")

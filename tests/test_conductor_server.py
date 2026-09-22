@@ -502,3 +502,15 @@ def test_board_numbers_are_checked_and_survive_a_new_csv(workspace):
     look = item(workspace.state(), "Look22")
     assert sorted(b["board_no"] for b in look["boards"]) == [17, 18, 300]
     assert any("no longer fit" in w for w in look["map"]["warnings"])
+
+
+def test_designer_named_files_are_accepted_and_labelled(workspace):
+    name = "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv"
+    assert Workspace.kind(name) == "grid"
+    assert Workspace.kind("AZ271SD1305_ref_multicolor_redorange_s22_HW.csv") is None
+    workspace.save(name, GRID)
+    designs = item(workspace.state(), "Look22")["designs"]
+    assert [(d["label"], d["pattern"]) for d in designs] == \
+        [("P01", 1), ("ref_multicolor_redorange_s22", None)]
+    payloads, problems = workspace.compile_units({"Look22": name}, "m")
+    assert problems == ["Look22: not assigned to a unit"]

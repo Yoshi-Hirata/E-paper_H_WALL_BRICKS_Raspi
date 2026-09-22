@@ -78,7 +78,11 @@ assert len(PALETTE) == COLOR_COUNT
 # The item is whatever precedes _map / _color_patternMM: "Look22", but
 # also "Look20-Skirt" (a look in two garments) or a bag's own name.
 _MAP_NAME = re.compile(r"(.+?)_map", re.IGNORECASE)
-_GRID_NAME = re.compile(r"(.+?)_color_pattern\s*0*(\d+)", re.IGNORECASE)
+# A design is <item>_color_<name>_grid[...].csv: the name is what the designer
+# typed on the wiring page ("pattern01", "ref_multicolor_redorange_s22").
+_GRID_NAME = re.compile(r"(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$",
+                        re.IGNORECASE)
+_PATTERN_NO = re.compile(r"pattern\s*0*(\d+)$", re.IGNORECASE)
 _MAP_COLUMNS = ("side", "row", "col", "board_no", "socket")
 _EMPTY_CELLS = ("", "0")       # no hole here
 _UNDECIDED = "-"               # a hole, colour not chosen yet
@@ -247,18 +251,31 @@ class Design:
     shifts: "dict[tuple[str, int], float]" = field(default_factory=dict)
     item: "str | None" = None
     pattern: "int | None" = None
+    label: str = ""             # "P01", or the designer's name for it
     # Holes written "-": there is a scale, its colour is not decided.
     undecided: "set[tuple[str, int, int]]" = field(default_factory=set)
 
     @classmethod
     def from_csv(cls, path) -> "Design":
         path = Path(path)
-        match = _GRID_NAME.match(path.stem)
-        item, pattern = ((match.group(1), int(match.group(2)))
-                         if match else (None, None))
+        item, pattern, label = cls.name_parts(path.name)
         with open(path, newline="", encoding="utf-8-sig") as handle:
-            return cls.parse(handle, name=path.name, item=item,
-                             pattern=pattern)
+            design = cls.parse(handle, name=path.name, item=item,
+                               pattern=pattern)
+            design.label = label
+            return design
+
+    @staticmethod
+    def name_parts(filename) -> "tuple[str | None, int | None, str]":
+        """(item, pattern number, label) from a design file's name."""
+        match = _GRID_NAME.match(Path(filename).stem)
+        if not match:
+            return None, None, Path(filename).stem
+        item, name = match.group(1), match.group(2)
+        number = _PATTERN_NO.match(name)
+        if number:
+            return item, int(number.group(1)), f"P{int(number.group(1)):02d}"
+        return item, None, name
 
     @classmethod
     def parse(cls, lines, name: str = "grid", item: "str | None" = None,

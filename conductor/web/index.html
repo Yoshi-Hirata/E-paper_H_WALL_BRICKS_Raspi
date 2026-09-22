@@ -233,7 +233,7 @@ const rgb = c => `rgb(${state.palette[c].rgb.join(",")})`;
 const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : i.item;
 const itemFull = i => !i ? "" : [i.look ? "LOOK " + i.look : "", i.model].filter(Boolean).join(" · ") || i.item;
 const itemByKey = key => state.items.find(i => i.item === key);
-const designLabel = d => (d.pattern !== null ? "P" + String(d.pattern).padStart(2, "0") : d.name);
+const designLabel = d => d.label || d.name;
 
 async function refresh() {
   state = await api("/api/state");
@@ -369,7 +369,7 @@ function renderContent() {
     <div class="toolbar">
       <div class="group"><span>Design</span>
         <select id="design">${item.designs.map(d =>
-          `<option value="${esc(d.name)}" ${d.name === ui.design ? "selected" : ""}>${d.pattern !== null ? "pattern " + String(d.pattern).padStart(2, "0") + " · " : ""}${esc(d.name)}${designState(d) === "bad" ? " ⚠" : ""}</option>`).join("")
+          `<option value="${esc(d.name)}" ${d.name === ui.design ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}${designState(d) === "bad" ? " ⚠" : ""}</option>`).join("")
           || "<option>(no design CSV)</option>"}</select></div>
       <div class="group"><span>View</span>${btn("mode", "design", "Finished")}${btn("mode", "wiring", "Wiring")}</div>
       <div class="group"><span>Seen from</span>${btn("view", "outside", "Outside (audience)")}${btn("view", "inside", "Inside (as in the CSV)")}</div>
@@ -395,7 +395,7 @@ function renderContent() {
               <td>${designBadge(d)}</td>
               <td class="meta">${at.length ? "timeline: " + at.join(", ") : "unused"}</td>
               <td><button data-del="${esc(d.name)}" title="Delete from the workspace">×</button></td></tr>`; }).join("")
-            || `<tr><td class="meta">Add design CSV files (*_color_patternNN_grid.csv)</td></tr>`}</tbody></table>
+            || `<tr><td class="meta">Add design CSV files (*_color_NAME_grid.csv)</td></tr>`}</tbody></table>
           <div class="meta" style="margin-top:8px"><label class="filebtn">Add CSV to this item<input id="pick-own" type="file" accept=".csv" multiple></label>
             <span style="margin-left:6px">whatever look the files are named after, they are saved as ${esc(item.item)}_… and belong to this item alone</span></div>
         </div>
@@ -922,11 +922,11 @@ document.addEventListener("mouseover", e => {
 async function uploadOwn(item, fileList) {
   const files = [], refused = [];
   for (const f of fileList) {
-    const rest = f.name.match(/(_map|_color_pattern\s*\d+).*\.csv$/i);
+    const rest = f.name.match(/(_map|_color_.+grid).*\.csv$/i);
     if (rest) files.push({ name: item.item + f.name.slice(rest.index), text: await f.text() });
     else refused.push(f.name);
   }
-  const note = refused.length ? `Not a *_map.csv or *_color_patternNN_grid.csv: ${refused.join(", ")}` : "";
+  const note = refused.length ? `Not a *_map.csv or *_color_NAME_grid.csv: ${refused.join(", ")}` : "";
   if (files.length) upload(files, note); else toast(note);
 }
 async function upload(fileList, note) {

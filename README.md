@@ -271,9 +271,13 @@ LCD 本体は未接続だが、以下は実機で確認済み:
 | ファイル | 内容 |
 |---|---|
 | `LookNN_map.csv` | `side,row,col,board_no,socket,label` — 鱗 1 枚 = 1 行。衣装上の位置と、どの基板のどのソケットか |
-| `LookNN_color_patternMM_grid.csv` | `side,row,shift,1,2,3,…` — 衣装の 1 段 = 1 行。セルは色コード `0x00`〜`0x0F`、**穴の無いマスは `0`、色未指定は `-`**(先方 README の定義)。キューごとに 1 ファイル |
+| `LookNN_color_NAME_grid.csv` | `side,row,shift,1,2,3,…` — 衣装の 1 段 = 1 行。セルは色コード `0x00`〜`0x0F`、**穴の無いマスは `0`、色未指定は `-`**(先方 README の定義)。キューごとに 1 ファイル |
 
-ファイル名の `_map` / `_color_patternMM` より前がアイテム名(`Look22`、
+ファイル名の `_map` / `_color_` より前がアイテム名(`Look22`、
+デザインの `_color_` と `_grid` の間が、そのデザインの名前(`pattern01` なら `P01`、
+`ref_multicolor_redorange_s22` ならそのまま)。配線ナビの書き出し名がそのまま使える
+(`AZ271SD1305_color_ref_multicolor_redorange_s22_grid_A-1.csv` など。先頭が型番の
+ファイルは「Add CSV to this item」でアイテムに入れる)。
 `Look20-Skirt`、バッグの名前など)で、map と grid はこの名前で対応付ける。
 
 - 2 つは `(side, row, col)` で結合する。row 0 が裾、最大の row が首側
@@ -335,7 +339,7 @@ map とデザインを結び付けるのは従来どおり CSV のファイル�
   `show.json` の `boards` に保存(Undo 対象)。DIP ID は書き換えた番号の小さい順に振り直される
 
 **Timeline** タブ: アイテムごとに 1 本のトラックがあり、1 アイテムに
-何枚でも取り込めるデザイン(`*_color_patternNN_grid.csv`)を、ショー開始からの
+何枚でも取り込めるデザイン(`*_color_NAME_grid.csv`)を、ショー開始からの
 経過時刻に割り当てる(`showdata/show.json` に保存)。
 
 - トラックをクリックでキュー追加、キューをクリックで時刻・デザイン・
