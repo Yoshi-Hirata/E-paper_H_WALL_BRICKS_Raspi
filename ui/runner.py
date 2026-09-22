@@ -48,6 +48,8 @@ from .patterns import DEFAULT_PALETTE, Pattern
 # stops once EXPLORE_GAP addresses in a row past the last board that
 # answered stay silent - so a 21-board garment costs ~27 probes, not 60,
 # and a dead board in the middle (16 of 21) does not end the search.
+# Until the first board answers it keeps going to 60: the dead ones may
+# be the low addresses (2026-09-22: 1-11 and 19-20 off, 12-18 and 21 on).
 MAX_BOARD_ID = 60
 DEFAULT_BOARDS = list(range(1, MAX_BOARD_ID + 1))
 EXPLORE_GAP = 6
@@ -544,7 +546,10 @@ class DemoRunner:
             if sweep and not self._sleep(self.probe_sweep_delay):
                 return False
             still = []
-            reach = EXPLORE_GAP if self.explore and sweep == 0 else None
+            # Until a board answers the whole range is searched: the
+            # low addresses can be the ones that are dead (a power feed
+            # off, a cable out) while the rest of the garment is fine.
+            reach = MAX_BOARD_ID if self.explore and sweep == 0 else None
             for board in pending:
                 if reach is not None and board > reach:
                     break                       # nothing for a while: the end

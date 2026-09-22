@@ -223,15 +223,27 @@ def test_without_a_list_the_runner_explores_and_stops_past_the_last_board():
     runner.stop()
 
 
-def test_exploring_an_empty_bus_gives_up_early():
-    from ui.runner import EXPLORE_GAP
+def test_exploring_searches_the_whole_range_until_a_board_answers():
+    from ui.runner import EXPLORE_GAP, MAX_BOARD_ID
 
+    # The low addresses dead (a power feed off), the rest alive: found.
+    bus = Wall(set(range(12, 19)) | {21})
+    runner = make_runner(bus, boards=None, probe_sweeps=1)
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: "panels online" in " ".join(runner.log), timeout=20)
+    assert runner.live == [12, 13, 14, 15, 16, 17, 18, 21]
+    assert runner.expected == 21
+    assert any("panels online: 8/21" in line for line in runner.log)
+    probed = {f.dest for f in bus.requested if f.dest != 0xFF}
+    assert max(probed) == 21 + EXPLORE_GAP
+    runner.stop()
+    # An empty bus: the whole range once, then "no boards answering".
     bus = Wall(set())
     runner = make_runner(bus, boards=None, probe_sweeps=1)
     runner.start(BY_KEY["solid"])
-    assert wait_until(lambda: runner.error == "no boards answering", timeout=10)
+    assert wait_until(lambda: runner.error == "no boards answering", timeout=20)
     probed = {f.dest for f in bus.requested if f.dest != 0xFF}
-    assert max(probed) == EXPLORE_GAP
+    assert max(probed) == MAX_BOARD_ID
     assert runner.expected == 0
     runner.stop()
 
