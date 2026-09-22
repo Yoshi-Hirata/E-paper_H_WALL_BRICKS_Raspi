@@ -512,12 +512,13 @@ function renderTimeline() {
     <div class="card"><h2>EDIT CUE</h2>
       ${cue ? `<div class="editor">
         <b>${esc(itemFull(cueItem) || cue.item)}</b>
-        <label>Time <input type="text" id="cue-at" value="${clock(cue.at)}"></label>
+        <label title="When the change begins (the boards are told at this instant)">Start <input type="text" id="cue-start" value="${clock(cue.sent)}" ${cue.at <= 0 ? "disabled" : ""}></label>
+        <label title="When the picture is complete">End <input type="text" id="cue-end" value="${clock(cue.complete)}" ${cue.at <= 0 ? "disabled" : ""}></label>
         <label>Design <select id="cue-design">${(cueItem?.designs || []).map(d =>
           `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}</option>`).join("")}</select></label>
-        <label>This time marks <select id="cue-align" ${cue.at <= 0 ? "disabled" : ""}>
-          <option value="done" ${cue.align === "done" ? "selected" : ""}>complete at this time (sent ${show.refresh_s} s earlier)</option>
-          <option value="start" ${cue.align === "start" ? "selected" : ""}>the change starts at this time</option></select></label>
+        <label title="Which of the two the cue keeps when the refresh time changes">Fixed <select id="cue-align" ${cue.at <= 0 ? "disabled" : ""}>
+          <option value="done" ${cue.align === "done" ? "selected" : ""}>end</option>
+          <option value="start" ${cue.align === "start" ? "selected" : ""}>start</option></select></label>
         <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label>
         <label>Sequence <select id="cue-seq">${state.sequences.map(s =>
           `<option value="${s.id}" ${s.id === cue.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>
@@ -526,7 +527,7 @@ function renderTimeline() {
         <button id="cue-show">View design</button>
         <button id="cue-all" title="Give every other item a cue at this time (with its own next unused design)">Copy time to all items</button>
         <button id="cue-del" class="danger">Delete</button>
-        <span class="meta">${cue.at <= 0 ? "Preset: shown before START" : `sent ${clock(cue.sent)} → complete ${clock(cue.complete)}`}</span>
+        <span class="meta">${cue.at <= 0 ? "Preset: shown before START" : `${(cue.complete - cue.sent).toFixed(1)} s from start to end: ${show.refresh_s} s refresh${cue.span ? ` + ${cue.span.toFixed(1)} s sweep` : ""}`}</span>
       </div>
       ${cue.problems.length ? `<ul class="problems" style="margin-top:8px">${cue.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}`
       : `<div class="meta">Select a cue, or click a track to add one.</div>`}
@@ -851,10 +852,25 @@ document.addEventListener("change", async e => {
   } else if (id.startsWith("cue-")) {
     const cues = state.show.cues.map(c => ({ ...c })), cue = cues.find(c => c.id === ui.cue);
     if (!cue) return;
-    if (id === "cue-at") {
+    if (id === "cue-start" || id === "cue-end") {
       const seconds = parseClock(e.target.value);
       if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
-      cue.at = seconds;
+      const refresh = state.show.refresh_s;
+      if (id === "cue-end") {
+        cue.at = seconds; cue.align = "done";               // complete at this time
+      } else if (cue.sequence === "natural") {
+        cue.at = seconds; cue.align = "start";              // begins at this time
+      } else {
+        // A sweep: keep the end, and make the sweep last from this start to it.
+        const ranks = itemByKey(cue.item)?.sequences?.[cue.sequence];
+        const steps = ranks ? Math.max(...ranks) : 0;
+        const span = cue.complete - seconds - refresh;
+        if (steps < 1) { toast("This item's map is needed to time the sweep"); renderTimeline(); return; }
+        if (span < 0.1 * steps - 1e-9) { toast(`Too short: ${steps} steps of at least 0.1 s plus the ${refresh} s refresh need ${clock(cue.complete - refresh - 0.1 * steps)} or earlier`); renderTimeline(); return; }
+        if (span > 5 * steps + 1e-9) { toast(`Too long: the step is at most 5 s, so the sweep starts at ${clock(cue.complete - refresh - 5 * steps)} at the earliest`); renderTimeline(); return; }
+        cue.step_s = Math.round(span / steps * 10) / 10;
+        cue.at = cue.complete; cue.align = "done";
+      }
     } else if (id === "cue-design") {
       cue.design = e.target.value;                          // a design with "-" holes can only be a partial cue
       const d = state.items.find(i => i.item === cue.item)?.designs.find(x => x.name === cue.design);
