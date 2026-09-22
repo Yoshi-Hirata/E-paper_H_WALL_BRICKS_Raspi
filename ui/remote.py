@@ -205,7 +205,7 @@ class RemoteSession:
                 "prepare_s": self.prepare_s,
                 "fire_at": self.fire_at, "fired_at": self.fired_at,
                 "late_ms": late_ms,
-                "boards": list(runner.boards), "live": list(runner.live),
+                "boards": runner.reported_boards, "live": list(runner.live),
                 "no_sweep": sorted(runner.no_sweep),
                 "standby_ready": bool(runner.standby_ready),
             }

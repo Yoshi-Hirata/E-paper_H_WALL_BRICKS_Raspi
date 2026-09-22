@@ -51,6 +51,7 @@ def wait_until(predicate, timeout=5.0):
 
 def make_runner(bus, **kwargs):
     kwargs.setdefault("interval", 0.05)
+    kwargs.setdefault("boards", list(range(1, 21)))     # the test wall
     kwargs.setdefault("guard_delay", 0.0)
     kwargs.setdefault("port", "/dev/fake")
     kwargs.setdefault("echo_log", False)
@@ -174,16 +175,71 @@ def test_pattern_interval_overrides_the_runner_default():
 
 
 def test_log_is_mirrored_to_stdout_for_journalctl(capsys):
-    runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake")
+    runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake", boards=list(range(1, 21)))
     runner.emit("cycle 1 shown")
     assert "cycle 1 shown" in capsys.readouterr().out
 
 
 def test_log_keeps_newest_lines_only():
-    runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake",
+    runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake", boards=list(range(1, 21)),
                         echo_log=False)
     for i in range(500):
         runner.emit(f"line {i}")
     lines = runner.recent(3)
     assert len(lines) == 3
     assert lines[-1].endswith("line 499")
+
+
+# ---- exploring the bus: 1..60, stopping past the last board ----
+
+class Wall(FakeBus):
+    """Only the given boards answer; the others are empty sockets."""
+
+    def __init__(self, present):
+        super().__init__()
+        self.present = set(present)
+
+    def request(self, frame, retries=3):
+        self.requested.append(frame)
+        if frame.dest != 0xFF and frame.dest not in self.present:
+            return None
+        return Frame(dest=0x00, src=frame.dest, dev_type=0xFF, cmd=0x80)
+
+
+def test_without_a_list_the_runner_explores_and_stops_past_the_last_board():
+    from ui.runner import EXPLORE_GAP
+
+    bus = Wall(set(range(1, 22)) - {16})               # a 21-board garment, 16 dead
+    runner = make_runner(bus, boards=None)
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: "panels online" in " ".join(runner.log), timeout=10)
+    assert runner.live == [b for b in range(1, 22) if b != 16]
+    assert runner.expected == 21 and runner.reported_boards == list(range(1, 22))
+    assert any("panels online: 20/21" in line for line in runner.log)
+    assert any("absent" in line and "16" in line for line in runner.log)
+    probed = {f.dest for f in bus.requested if f.dest != 0xFF}
+    assert max(probed) == 21 + EXPLORE_GAP               # not 60
+    assert 16 in runner.absent and 22 in runner.absent   # both get reprobed
+    runner.stop()
+
+
+def test_exploring_an_empty_bus_gives_up_early():
+    from ui.runner import EXPLORE_GAP
+
+    bus = Wall(set())
+    runner = make_runner(bus, boards=None, probe_sweeps=1)
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: runner.error == "no boards answering", timeout=10)
+    probed = {f.dest for f in bus.requested if f.dest != 0xFF}
+    assert max(probed) == EXPLORE_GAP
+    assert runner.expected == 0
+    runner.stop()
+
+
+def test_a_given_list_is_probed_as_given():
+    bus = Wall({1, 2})
+    runner = make_runner(bus, boards=[1, 2, 3])
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: "panels online" in " ".join(runner.log), timeout=10)
+    assert runner.expected == 3 and any("panels online: 2/3" in l for l in runner.log)
+    runner.stop()

@@ -47,7 +47,7 @@ def wait_until(predicate, timeout=5.0):
 
 
 def make_runner(bus):
-    return DemoRunner(open_bus=lambda port: bus, port="/dev/fake",
+    return DemoRunner(open_bus=lambda port: bus, port="/dev/fake", boards=list(range(1, 21)),
                       interval=0.05, guard_delay=0.0, echo_log=False,
                       show_gap=0.001)
 

@@ -284,8 +284,9 @@ def main() -> int:
                     help="report panel/SPI/GPIO/LCD readiness and exit")
     ap.add_argument("--port", help="serial port (default: auto-detect)")
     ap.add_argument("--boards", nargs="+", type=lambda v: int(v, 0),
-                    default=list(DEFAULT_BOARDS),
-                    help="board addresses to drive (default 1..20; boards "
+                    default=None,
+                    help="board addresses to drive (default: explore 1..60 "
+                         "and stop past the last board that answers; boards "
                          "that do not answer are skipped and re-probed)")
     ap.add_argument("--interval", type=float, default=60.0,
                     help="seconds between panel refreshes (default 60)")

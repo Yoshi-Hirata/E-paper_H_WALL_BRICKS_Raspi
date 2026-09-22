@@ -43,7 +43,14 @@ from epaper.transport import Bus, find_port
 from .config import LOG_HISTORY
 from .patterns import DEFAULT_PALETTE, Pattern
 
-DEFAULT_BOARDS = list(range(1, 21))   # the production wall: board IDs 1..20
+# A garment carries up to 60 boards, addressed 1..n by rank. Without a
+# list from the show PC the runner explores: it probes upwards from 1 and
+# stops once EXPLORE_GAP addresses in a row past the last board that
+# answered stay silent - so a 21-board garment costs ~27 probes, not 60,
+# and a dead board in the middle (16 of 21) does not end the search.
+MAX_BOARD_ID = 60
+DEFAULT_BOARDS = list(range(1, MAX_BOARD_ID + 1))
+EXPLORE_GAP = 6
 ACK_SUCCESS, ACK_BUSY = 0x80, 0x82
 # The show broadcast goes out exactly once. It is unacknowledged, and it
 # is tempting to repeat it as insurance - but a board does NOT discard
@@ -116,7 +123,8 @@ class DemoRunner:
                  probe_sweeps: int = PROBE_SWEEPS,
                  probe_sweep_delay: float = PROBE_SWEEP_DELAY_S,
                  reprobe_interval: float = REPROBE_INTERVAL_S):
-        self.boards = boards or list(DEFAULT_BOARDS)
+        self.explore = not boards            # no list given: find them
+        self.boards = list(boards) if boards else list(DEFAULT_BOARDS)
         self.interval = interval
         self.guard_delay = guard_delay
         self.slot = slot
@@ -464,6 +472,22 @@ class DemoRunner:
         self._delays_sent.pop(board, None)      # may come back rebooted
         self.emit(f"board {board} dropped, will reprobe")
 
+    @property
+    def expected(self) -> int:
+        """How many boards the wall is taken to have: the highest that
+        ever answered when exploring, the length of the list otherwise."""
+        if self.explore:
+            return max(self.live) if self.live else 0
+        return len(self.boards)
+
+    @property
+    def reported_boards(self) -> "list[int]":
+        """The board list as told to the LCD and the show PC: when
+        exploring, 1 up to the highest board that answers."""
+        if self.explore:
+            return [b for b in self.boards if b <= self.expected]
+        return list(self.boards)
+
     def _reprobe(self, bus, groups: int) -> bool:
         """Give absent boards a quick chance to join; True if any did.
 
@@ -484,8 +508,14 @@ class DemoRunner:
         keep = set(self.live) | set(joined)
         self.live = [b for b in self.boards if b in keep]
         self._needs_cfg -= set(joined)      # _probe just configured them
+        if self.explore:                    # look a little past the newcomer
+            horizon = min(MAX_BOARD_ID, max(self.live) + EXPLORE_GAP)
+            beyond = [b for b in DEFAULT_BOARDS if b > max(self.boards)
+                      and b <= horizon]
+            self.boards += beyond
+            self.absent |= set(beyond)
         self.emit(f"board {self._fmt_boards(joined)} joined "
-                  f"({len(self.live)}/{len(self.boards)})")
+                  f"({len(self.live)}/{self.expected})")
         return True
 
     # ---- one cycle ----
@@ -503,6 +533,8 @@ class DemoRunner:
         """
         bus.send(stop(0xFF, groups))
         time.sleep(0.3)
+        if self.explore:
+            self.boards = list(DEFAULT_BOARDS)      # the search starts over
         known_absent = {b for b in self.boards if b in self.absent}
         pending = list(self.boards)
         found: list[int] = []
@@ -512,11 +544,21 @@ class DemoRunner:
             if sweep and not self._sleep(self.probe_sweep_delay):
                 return False
             still = []
+            reach = EXPLORE_GAP if self.explore and sweep == 0 else None
             for board in pending:
+                if reach is not None and board > reach:
+                    break                       # nothing for a while: the end
                 if self._probe(bus, board, groups):
                     found.append(board)
+                    if reach is not None:
+                        reach = board + EXPLORE_GAP
                 else:
                     still.append(board)
+            if reach is not None:
+                # Only what lies within reach is worth the extra sweeps
+                # (a board mid-repaint); the rest is the empty end of the bus.
+                self.boards = [b for b in self.boards
+                               if b <= min(reach, MAX_BOARD_ID)]
             # The extra sweeps exist to catch a fitted board that is deaf
             # mid-repaint. A board already known absent was not fitted a
             # moment ago, so it gets one pass here and the periodic
@@ -532,7 +574,7 @@ class DemoRunner:
             return False
         if pending:
             self.emit(f"board {self._fmt_boards(pending)} absent, skipping")
-        self.emit(f"panels online: {len(self.live)}/{len(self.boards)}")
+        self.emit(f"panels online: {len(self.live)}/{self.expected}")
         return True
 
     def _cycle(self, bus, groups: int, rng: random.Random) -> bool:
@@ -589,7 +631,7 @@ class DemoRunner:
         label = "" if active is self.pattern else f" {active.label}"
         note = f" {self.caption}" if self.caption else ""
         self.emit(f"cycle {self.cycle}{label}{note} shown "
-                  f"({updated}/{len(self.boards)})")
+                  f"({updated}/{self.expected})")
         return True
 
     def _settle(self, bus, groups: int) -> None:
@@ -779,6 +821,7 @@ class DemoRunner:
                                 self.live = [b for b in self.live
                                              if b in wanted]
                                 self.boards = wanted
+                                self.explore = False    # the show PC knows
                                 needs_setup = True
                             groups = max(len(self.boards), max(self.boards))
                             began = time.monotonic()

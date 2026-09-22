@@ -396,7 +396,8 @@ class App:
             return ""
         if self.runner.error:
             return f"ERROR {self.runner.error}"
-        boards = f"{len(self.runner.live)}/{len(self.runner.boards)}"
+        expected = getattr(self.runner, "expected", len(self.runner.boards))
+        boards = f"{len(self.runner.live)}/{expected}"
         if self.runner.standby_ready:
             return f"standby: white, boards {boards} OK"
         if self.runner.running:

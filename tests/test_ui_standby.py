@@ -241,7 +241,7 @@ def test_standby_failure_is_shown_but_does_not_block_the_ui():
 
 
 def test_default_runner_reaches_standby_without_arguments():
-    runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake",
+    runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake", boards=list(range(1, 21)),
                         echo_log=False, guard_delay=0.0, show_gap=0.001)
     runner.standby()
     assert wait_until(lambda: runner.standby_ready, timeout=30.0)
