@@ -1043,6 +1043,202 @@ def test_save_music_does_not_touch_the_old_file_if_the_commit_fails(workspace,
     assert not list(workspace.music.glob("*.part"))
 
 
+# ---- SEEK and a manually-started position, over HTTP ----
+
+def _post(port, path, body):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+def test_seek_needs_manual_control(tmp_path):
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for body in ({"to_s": 10.0}, {"to_s": 10.0, "manual": False},
+                     {"to_s": 10.0, "manual": "true"},
+                     {"to_s": 10.0, "manual": 1}):
+            status, payload = _post(port, "/api/fleet/seek", body)
+            assert status == 400
+            assert payload["error"] == (
+                'Manual control is off. Tick "Manual control" to move '
+                "the show position.")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_seek_before_an_upload_says_upload_first(tmp_path):
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/seek",
+                                {"to_s": 30.0, "manual": True})
+        assert status == 200
+        assert payload == {"units": {},
+                           "note": "Nothing uploaded yet - Upload first."}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_seek_with_hostile_json_is_a_400_not_a_500(tmp_path):
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for body in ({"manual": True, "to_s": None},
+                     {"manual": True, "to_s": "abc"},
+                     {"manual": True, "to_s": {}},
+                     {"manual": True, "to_s": [1]},
+                     {"manual": True, "to_s": True},
+                     {"manual": True},
+                     {"manual": True, "to_s": 10.0, "lead_s": "fast"}):
+            status, _ = _post(port, "/api/fleet/seek", body)
+            assert status == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_begins_where_the_seek_bar_was_left(tmp_path):
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.links = {}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, seek_result = _post(port, "/api/fleet/seek",
+                                    {"to_s": 90.0, "manual": True})
+        assert status == 200
+        assert seek_result["mode"] == "start_at"
+        assert seek_result["start_at"] == 90.0
+        status, start_result = _post(port, "/api/fleet/start", {"lead_s": 1})
+        assert status == 200
+        assert start_result["from_s"] == 90.0
+        assert start_result["note"] == "Started from 1:30."
+        assert fleet.start_at == 0.0                  # forgotten once used
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_from_a_time_needs_manual_too(tmp_path):
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.links = {}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/start",
+                                {"lead_s": 1, "from_s": 90})
+        assert status == 400
+        assert payload["error"] == (
+            'Manual control is off. Tick "Manual control" to start from '
+            "a time other than 0:00.")
+        assert fleet.run is None
+        status, payload = _post(port, "/api/fleet/start",
+                                {"lead_s": 1, "from_s": 90, "manual": True})
+        assert status == 200 and payload["from_s"] == 90.0
+        fleet.run = None
+        # from_s = 0 never needs manual control.
+        status, payload = _post(port, "/api/fleet/start",
+                                {"lead_s": 1, "from_s": 0})
+        assert status == 200 and payload["from_s"] == 0.0 and "note" not in payload
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_fleet_snapshot_carries_the_start_position_and_the_show_length(tmp_path):
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def get(path):
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}",
+                                    timeout=5) as response:
+            return json.loads(response.read())
+
+    try:
+        snap = get("/api/fleet")
+        assert snap["start_at"] == 0.0 and snap["show_duration"] is None
+        fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 300},
+                       "radxa-02": {"id": "showA", "cues": [], "duration": 480}}
+        fleet.start_at = 45.0
+        snap = get("/api/fleet")
+        assert snap["start_at"] == 45.0 and snap["show_duration"] == 480.0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # No fleet configured at all: the fallback carries the same keys.
+    no_fleet = make_server(tmp_path, port=0)
+    port = no_fleet.server_address[1]
+    threading.Thread(target=no_fleet.serve_forever, daemon=True).start()
+    try:
+        snap = json.loads(urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/fleet", timeout=5).read())
+        assert snap == {"units": [], "last_fire": None, "run": None,
+                        "shows": {}, "corrections": [], "prepared": {},
+                        "start_at": 0.0, "show_duration": None}
+    finally:
+        no_fleet.shutdown()
+        no_fleet.server_close()
+
+
+def test_a_seek_answers_per_unit_like_every_other_command(tmp_path):
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    fleet = Fleet({})
+    link = StubLink("radxa-02", "running")
+    fleet.links = {"radxa-02": link}
+    fleet.shows = {"radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 1000.0 - 60.0, "state": "running", "held_at": None}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, result = _post(port, "/api/fleet/seek",
+                               {"to_s": 30.0, "manual": True, "lead_s": 0.5})
+        assert status == 200 and result["mode"] == "running"
+        # The same {unit: {"ok": ...}} shape every other fleet command answers with.
+        assert result["units"] == {"radxa-02": {"ok": True}}
+        status, hold_result = _post(port, "/api/fleet/hold", {})
+        assert set(hold_result["units"]) == set(result["units"])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_a_manual_prepare_carries_the_designs_delay_tables(workspace):
     """The Designs tab's Prepare sweeps the way the design says, like a
     timeline cue does: one 128-byte table per board, the last scale on

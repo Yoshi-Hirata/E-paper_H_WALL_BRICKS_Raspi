@@ -329,3 +329,124 @@ def test_a_restored_unit_is_told_its_t0_even_when_it_is_close_enough():
     link.posted.clear(); fleet._corrected.clear()
     fleet._supervise(link)
     assert link.posted == []
+
+
+# ---- SEEK: moving the show's position by hand ----
+
+def test_seek_while_running_moves_t0_for_every_unit_alike():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running"),
+                   "radxa-02": StubLink("radxa-02", "running")}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600},
+                   "radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "running", "held_at": None}
+    for link in fleet.links.values():
+        link.posted.clear()
+    mode, results = fleet.seek(180.0, lead_s=3.0)
+    assert mode == "running"
+    assert all(r["ok"] for r in results.values())
+    assert fleet.run["t0"] == 1000.0 + 3.0 - 180.0
+    for link in fleet.links.values():
+        assert link.posted == [("/show/run",
+                                {"t0": fleet.run["t0"] + link.offset,
+                                 "show": "showA"})]
+
+
+def test_seeking_backwards_lands_the_units_inside_the_show():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = StubLink("radxa-01", "running")
+    fleet.links = {"radxa-01": link}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 400.0, "state": "running", "held_at": None}   # 600 s in
+    link.posted.clear()
+    mode, results = fleet.seek(100.0, lead_s=3.0)
+    assert mode == "running" and results["radxa-01"]["ok"]
+    # lead_s from now the show reads exactly 100 s.
+    assert (1000.0 + 3.0) - fleet.run["t0"] == pytest.approx(100.0)
+    assert fleet.run["t0"] < 1000.0                  # landed in the past
+
+
+def test_seeking_to_the_top_is_a_start_from_the_top():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = StubLink("radxa-01", "running")
+    fleet.links = {"radxa-01": link}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 400.0, "state": "running", "held_at": None}   # 600 s in
+    mode, results = fleet.seek(0.0, lead_s=3.0)
+    assert mode == "running" and results["radxa-01"]["ok"]
+    assert fleet.run["t0"] == 1003.0
+    assert fleet.run["t0"] > 1000.0                  # T0 ahead of now: a restart
+
+
+def test_seek_while_holding_moves_the_position_and_stays_on_hold():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = StubLink("radxa-01", "running")
+    fleet.links = {"radxa-01": link}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "holding", "held_at": 950.0}  # 250 s in
+    mode, results = fleet.seek(100.0)
+    assert mode == "holding" and results == {}
+    assert link.posted == []                         # nothing sent while holding
+    assert fleet.run["t0"] == 850.0 and fleet.run["state"] == "holding"
+    fleet._clock = lambda: 1200.0                     # time passes; then RESUME
+    results = fleet.resume()
+    assert results["radxa-01"]["ok"]
+    assert fleet.run["t0"] == 1100.0                  # continues from where SEEK left it
+    assert link.posted == [("/show/run", {"t0": 1100.0 + link.offset,
+                                          "show": "showA"})]
+
+
+def test_seek_without_a_run_only_says_where_start_begins():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = StubLink("radxa-01", "running")
+    fleet.links = {"radxa-01": link}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = None
+    mode, results = fleet.seek(180.0)
+    assert mode == "start_at" and results == {}
+    assert link.posted == []
+    assert fleet.start_at == 180.0
+    started = fleet.start_show(lead_s=2.0)
+    assert started["radxa-01"]["ok"]
+    assert fleet.run["t0"] == 1000.0 + 2.0 - 180.0
+    assert fleet.start_at == 0.0                      # forgotten once used
+
+
+def test_stop_forgets_where_start_would_begin():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running")}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.seek(180.0)
+    assert fleet.start_at == 180.0
+    fleet.stop_show()
+    assert fleet.start_at == 0.0
+
+
+def test_seek_outside_the_show_is_refused():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match=r"0:00 to 10:00"):
+        fleet.seek(600.1)
+    with pytest.raises(ValueError):
+        fleet.seek(-0.1)
+    mode, results = fleet.seek(600.0)                 # the top boundary is fine
+    assert mode == "start_at" and fleet.start_at == 600.0
+
+
+def test_show_duration_is_the_longest_uploaded_show():
+    fleet = Fleet({})
+    assert fleet.show_duration() == 0.0
+    fleet.shows = {"radxa-01": {"id": "a", "cues": [], "duration": 300},
+                   "radxa-02": {"id": "b", "cues": [], "duration": 720}}
+    assert fleet.show_duration() == 720.0
+
+
+def test_a_seek_is_not_held_up_by_an_offline_unit(fleet, units):
+    fleet.shows = {name: {"id": "showA", "cues": [], "duration": 600}
+                   for name in list(units) + ["radxa-09"]}
+    fleet.run = {"t0": fleet._clock() - 60.0, "state": "running", "held_at": None}
+    mode, results = fleet.seek(30.0, lead_s=0.5)
+    assert mode == "running"
+    assert set(results) == set(fleet.shows)
+    assert not results["radxa-09"]["ok"]
+    assert "clock not measured" in results["radxa-09"]["error"]

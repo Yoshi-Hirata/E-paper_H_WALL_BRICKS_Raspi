@@ -29,6 +29,10 @@ the supervision in _supervise().
 Monotonic clocks restart with the machine. A unit that rebooted shows
 up as an offset that jumped by more than any drift could explain, and
 its measurements start over.
+
+SEEK moves the show's position by hand, the way NEXT moves it - the
+same T0 arithmetic, just to a position the operator chose instead of
+the next cue.
 """
 
 from __future__ import annotations
@@ -39,6 +43,8 @@ import socket
 import threading
 import time
 from collections import deque
+
+from . import timeline
 
 DEFAULT_AGENT_PORT = 8787
 POLL_S = 2.0
@@ -222,6 +228,9 @@ class Fleet:
         # PC's clock ({"t0", "state": running|holding, "held_at"}).
         self.shows: "dict[str, dict]" = {}
         self.run: "dict | None" = None
+        # Where START begins when nothing says otherwise - moved by SEEK
+        # while there is no run, reset by every START and STOP.
+        self.start_at: float = 0.0
         self._run_lock = threading.Lock()
         # A run is adopted from the units only by a conductor that has
         # just come up and been told nothing yet; after an operator's
@@ -259,14 +268,24 @@ class Fleet:
         self._adopt()
         with self._run_lock:
             run = dict(self.run) if self.run else None
+            start_at = self.start_at
         if run:
             mark = run["held_at"] if run["state"] == "holding" else self._clock()
             run["now"] = round(mark - run["t0"], 2)
+        duration = self.show_duration()
         return {"units": [link.snapshot() for link in self.links.values()],
                 "last_fire": self.last_fire, "run": run,
                 "shows": {unit: {"id": show["id"], "cues": len(show["cues"])}
                           for unit, show in self.shows.items()},
-                "corrections": self.corrections[-5:]}
+                "corrections": self.corrections[-5:],
+                "start_at": start_at,
+                "show_duration": duration or None}
+
+    def show_duration(self) -> float:
+        """The longest `duration` among the uploaded shows, 0.0 when none
+        are uploaded (§2.1: the page then sees `show_duration: null`)."""
+        return max((show.get("duration", 0.0) for show in self.shows.values()),
+                   default=0.0)
 
     # ---- the show ----
 
@@ -301,12 +320,50 @@ class Fleet:
             name for name, link in self.links.items()
             if (link.status or {}).get("show")]
 
-    def start_show(self, lead_s: float = DEFAULT_LEAD_S) -> "dict[str, dict]":
+    def start_show(self, lead_s: float = DEFAULT_LEAD_S,
+                   from_s: "float | None" = None) -> "dict[str, dict]":
+        """Begin the show `lead_s` from now, at `from_s` seconds into it -
+        or, when `from_s` is not given, at `self.start_at` (where a SEEK
+        made before the show started, or nothing, left it). Either way a
+        successful START forgets that position (§2.3)."""
         with self._run_lock:
+            at = self.start_at if from_s is None else float(from_s)
             self._may_adopt, self._stopped = False, False
-            self.run = {"t0": self._clock() + lead_s, "state": "running",
+            self.run = {"t0": self._clock() + lead_s - at, "state": "running",
                         "held_at": None}
+            self.start_at = 0.0
         return self._send_run(self._targets())
+
+    def seek(self, to_s: float, lead_s: float = DEFAULT_LEAD_S
+             ) -> "tuple[str, dict[str, dict]]":
+        """Move the show to `to_s` seconds from its start (§2.4):
+
+            running :  t0 = clock + lead_s - to_s  -> sent to every unit
+            holding :  t0 = held_at - to_s          -> nothing sent
+            no run  :  start_at = to_s              -> nothing sent
+
+        Returns (mode, per-unit results); `to_s` outside 0..show_duration()
+        is a ValueError, the plain-English range the page shows."""
+        duration = self.show_duration()
+        to_s = round(float(to_s), 1)
+        if not 0 <= to_s <= duration:
+            raise ValueError(f"The show is {timeline.format_clock(0)} to "
+                             f"{timeline.format_clock(duration)}.")
+        send = False
+        with self._run_lock:
+            if self.run is None:
+                self.start_at = to_s
+                mode = "start_at"
+            elif self.run["state"] == "holding":
+                self.run["t0"] = self.run["held_at"] - to_s
+                mode = "holding"
+            else:
+                self.run["t0"] = self._clock() + lead_s - to_s
+                mode = "running"
+                send = True
+        if send:
+            return mode, self._send_run(self._targets())
+        return mode, {}
 
     def hold(self) -> "dict[str, dict]":
         with self._run_lock:
@@ -353,6 +410,7 @@ class Fleet:
             self._may_adopt, self._stopped = False, True
             self._stop_told = set()
             self.run = None
+            self.start_at = 0.0
         return self.simple(targets, "/show/stop")
 
     def _supervise(self, link: UnitLink) -> None:

@@ -1013,7 +1013,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(self.workspace.state())
             if path == "/api/fleet":
                 if self.fleet is None:
-                    return self._json({"units": [], "last_fire": None})
+                    return self._json({"units": [], "last_fire": None,
+                                       "run": None, "shows": {},
+                                       "corrections": [], "prepared": {},
+                                       "start_at": 0.0, "show_duration": None})
                 with self.prepared_lock:
                     prepared = dict(self.prepared)
                 return self._json(dict(self.fleet.snapshot(),
@@ -1241,6 +1244,25 @@ class Handler(BaseHTTPRequestHandler):
         if command == "preset":
             return self._json({"units": fleet.simple(fleet._targets(),
                                                      "/show/preset")})
+        if command == "seek":
+            if body.get("manual") is not True:
+                raise ValueError('Manual control is off. Tick "Manual '
+                                 'control" to move the show position.')
+            to_s = body.get("to_s")
+            if not isinstance(to_s, (int, float)) or isinstance(to_s, bool):
+                raise ValueError("Where to move to must be a number of "
+                                 "seconds.")
+            lead = float(body.get("lead_s", DEFAULT_LEAD_S))
+            if not 0.5 <= lead <= 60:
+                raise ValueError("lead time is 0.5-60 s")
+            if not fleet.shows:
+                return self._json({"units": {}, "note":
+                                   "Nothing uploaded yet - Upload first."})
+            mode, results = fleet.seek(float(to_s), lead)
+            snap = fleet.snapshot()
+            return self._json({"units": results, "run": snap["run"],
+                               "mode": mode, "to_s": round(float(to_s), 1),
+                               "start_at": snap["start_at"], "note": ""})
         if command in ("start", "next"):
             lead = float(body.get("lead_s", DEFAULT_LEAD_S))
             if not 0.5 <= lead <= 60:
@@ -1254,8 +1276,30 @@ class Handler(BaseHTTPRequestHandler):
                 if fleet.run is not None and not body.get("force"):
                     return self._json({"units": {}, "note":
                                        "The show is already running."})
-                return self._json({"units": fleet.start_show(lead),
-                                   "lead_s": lead})
+                from_s = body.get("from_s")
+                if from_s is None:
+                    at = fleet.start_at
+                else:
+                    if (not isinstance(from_s, (int, float))
+                            or isinstance(from_s, bool)):
+                        raise ValueError("Where to start from must be a "
+                                         "number of seconds.")
+                    at = float(from_s)
+                    if at > 0 and body.get("manual") is not True:
+                        raise ValueError(
+                            'Manual control is off. Tick "Manual control" '
+                            "to start from a time other than 0:00.")
+                    duration = fleet.show_duration()
+                    if not 0 <= at <= duration:
+                        raise ValueError(
+                            f"The show is {timeline.format_clock(0)} to "
+                            f"{timeline.format_clock(duration)}.")
+                results = fleet.start_show(lead, from_s)
+                response = {"units": results, "lead_s": lead, "from_s": at}
+                if at > 0:
+                    response["note"] = (f"Started from "
+                                        f"{timeline.format_clock(at)}.")
+                return self._json(response)
             results = fleet.next_cue(lead)
             return self._json({"units": results, "lead_s": lead, "note":
                                "" if results else "No cue ahead to jump to "

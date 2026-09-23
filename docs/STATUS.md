@@ -18,6 +18,28 @@
 
 ## 2. 直近で完成したもの
 
+**SEEK(手動でショーの再生位置を動かす)・Designs 一覧のレイアウト・LOOK サムネイル行(2026-09-24)**
+
+- **`POST /api/fleet/seek`**(新規): `{"to_s","manual":true,"lead_s"}` でショーの位置を
+  動かす。実行中は全機体の T0 を動かして `/show/run` を送り直し(`mode: "running"`)、
+  HOLD 中は保留した位置だけを動かして何も送らない(`mode: "holding"`)、未実行なら
+  次の START が始まる位置を覚えるだけ(`mode: "start_at"`)。`manual` が JSON の
+  `true` でない限り拒否(`"true"` や `1` も不可)。範囲外は
+  `"The show is 0:00 to 12:00."` の 400、未アップロードは 200 で
+  `"Nothing uploaded yet - Upload first."`
+- **`POST /api/fleet/start` を拡張**(後方互換): `from_s` を渡すとその位置から
+  始める(渡さなければ SEEK が覚えた位置)。`from_s > 0` は同じく `manual: true` が
+  要る。成功した START・STOP はどちらもその位置を忘れる(次の START は 0:00 から)
+- **`GET /api/fleet` に `start_at`・`show_duration` を追加**(常時。未アップロードは
+  `show_duration: null`)。フリート未設定時のフォールバックにも同じキーを用意
+- **Designs タブのデザイン一覧を表・2 列グリッドから 1 デザイン = 2 行の帯に変更**
+  (1366 px 幅でも横スクロールなしで Transition の操作まで届く)。同じ操作を
+  ガーメント上のツールバーからも(選択中のデザインのみ)。Units タブに手動シークバー
+  (MANUAL CONTROL チェックで解禁)と、LOOK ごとの小さいサムネイル行を追加。
+  これらの画面側(`conductor/web/index.html`)は別担当の実装
+- 機体側(`ui/*.py`)は変更なし。SEEK は既存の `/show/run`(T0 を渡すだけ)を
+  そのまま使う
+
 **キューの時間の意味を統一: Start・Complete・End、キューごとの書き換え時間(2026-09-24)**
 
 - **`at` = Start(指令を送った瞬間、e ペーパーが書き換えを始める時刻)に統一**。`align`
