@@ -545,9 +545,9 @@ def test_a_cue_with_delay_tables_hands_them_to_the_session(rig):
     player.load(show)
     player.preset()
     assert wait_until(lambda: player.applied == "q00")
-    delays = [f for f in bus.requested if f.cmd == 0x1E]
-    assert [f.dest for f in delays] == [1, 2]
-    assert delays[0].data[2:] == swept
+    delays = [f for f in bus.requested if f.cmd == 0x1F]
+    assert [f.dest for f in delays] == [1, 1, 2, 2]        # low + high per board
+    assert delays[0].data[2:] == bytes([0]) + bytes([70] * 62) + bytes([0])
     # Its lead counts the tables: each board is written twice.
     assert player._lead(show["cues"][1]) > player._lead(
         dict(show["cues"][1], delays={}))

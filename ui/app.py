@@ -242,10 +242,14 @@ class App:
                 self._leave_update()
             self._dirty = True
             return
-        if event in ("up", "left"):
+        if event == "up":
             updater.select(-1)
-        elif event in ("down", "right"):
+        elif event == "down":
             updater.select(+1)
+        elif event == "left":
+            updater.select_image(-1)     # an older build, to go back to
+        elif event == "right":
+            updater.select_image(+1)
         elif event in ("key1", "press"):
             updater.start()
         elif event == "key2":
@@ -416,7 +420,8 @@ class App:
                 updater.firmware_label, updater.size, updater.addr,
                 updater.phase, updater.board_state, updater.done,
                 updater.recent(LOG_LINES), error=updater.error,
-                locked=self.locked, host=self.host)
+                locked=self.locked, host=self.host,
+                image_choice=updater.image_choice)
         if self.screen is Screen.VERSIONS:
             versions = self.versions
             return render.versions_screen(

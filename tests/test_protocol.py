@@ -54,3 +54,26 @@ def test_decode_bad_crc_resyncs():
     decoded, rest = decode(bytes(raw) + good)
     assert decoded is not None
     assert decoded.src == 0x02
+
+
+def test_pipeline_frames_follow_v1_4():
+    from epaper.commands import clear_pipeline, save_pipeline
+    from epaper.protocol import CMD_CLEAR_PIPELINE, CMD_SAVE_PIPELINE
+
+    frames = [0] * 64
+    frames[2], frames[5], frames[60] = 10, 300, 0x1234
+    low, high = save_pipeline(7, 19, frames, group_count=21, dev_type=3)
+    assert low.cmd == high.cmd == CMD_SAVE_PIPELINE == 0x1F
+    assert low.dest == high.dest == 7 and low.dev_type == 3
+    assert len(low.data) == len(high.data) == 66
+    assert low.data[:2] == bytes([19, 0x00]) and high.data[:2] == bytes([19, 0x03])
+    assert low.data[2 + 2] == 10 and high.data[2 + 2] == 0
+    assert low.data[2 + 5] == 300 & 0xFF and high.data[2 + 5] == 300 >> 8
+    assert low.data[2 + 60] == 0x34 and high.data[2 + 60] == 0x12
+    clear = clear_pipeline(7, 19, group_count=21, dev_type=3)
+    assert clear.cmd == CMD_CLEAR_PIPELINE == 0x25 and clear.data == bytes([19])
+    import pytest
+    with pytest.raises(ValueError):
+        save_pipeline(7, 19, [70000] + [0] * 63)
+    with pytest.raises(ValueError):
+        save_pipeline(7, 19, [0] * 10)

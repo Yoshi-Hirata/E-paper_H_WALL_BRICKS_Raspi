@@ -35,9 +35,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
-from epaper.commands import (TEST_SLOT, save_color, save_delays, show_single,
-                             slot_config, stop)
+from epaper.commands import (TEST_SLOT, clear_pipeline, save_color,
+                             save_pipeline, show_single, slot_config, stop)
 from epaper.protocol import ACK_INVALID_CMD, ACK_SUCCESS, DEV_NUMBER_BRAND
+
+NO_DELAY = 0xFF            # in a show file's table: no delay for this socket
+FRAMES_PER_UNIT = 10       # the table's 0.1 s in the board's 10 ms frames
 from epaper.transport import Bus, find_port
 
 from .config import LOG_HISTORY
@@ -746,21 +749,35 @@ class DemoRunner:
 
     def _save_delays(self, bus, groups: int, board: int, table: bytes,
                      dev_type: int) -> bool:
-        """Write a board's delay table unless it already holds it. A
-        board whose firmware does not know the command is remembered
+        """Give a board the sweep's delay table unless it already holds
+        it. The show file says tenths of a second per socket (0xFF: no
+        delay given); the board takes frames of 10 ms as V1.4's 0x1F,
+        and a table with no delays at all is 0x25 - forget the sweep.
+        A board whose firmware does not know the commands is remembered
         and left alone: the cue still goes out, in socket order."""
         if board in self.no_sweep or self._delays_sent.get(board) == table:
             return True
-        frame = save_delays(board, self.slot, table, groups, dev_type=dev_type)
-        ack = bus.request(frame)
-        if ack is not None and ack.src == board and ack.cmd == ACK_INVALID_CMD:
-            self.no_sweep.add(board)
-            self.emit(f"board {board}: firmware without sweeps (0x1E refused)")
-            return True
-        if not (ack is not None and ack.src == board and ack.cmd == ACK_SUCCESS
-                or self._request(bus, frame, f"delays @{board:02d}",
-                                 self.save_attempts)):
-            return False
+        if all(b == NO_DELAY for b in table):
+            frames = [clear_pipeline(board, self.slot, groups, dev_type=dev_type)]
+            label = f"sweep off @{board:02d}"
+        else:
+            frames = list(save_pipeline(
+                board, self.slot,
+                [0 if b == NO_DELAY else b * FRAMES_PER_UNIT for b in table],
+                groups, dev_type=dev_type))
+            label = f"sweep @{board:02d}"
+        for frame in frames:
+            ack = bus.request(frame)
+            if (ack is not None and ack.src == board
+                    and ack.cmd == ACK_INVALID_CMD):
+                self.no_sweep.add(board)
+                self.emit(f"board {board}: firmware without sweeps "
+                          f"(0x{frame.cmd:02X} refused) - update it to V1.4")
+                return True
+            if not (ack is not None and ack.src == board
+                    and ack.cmd == ACK_SUCCESS
+                    or self._request(bus, frame, label, self.save_attempts)):
+                return False
         self._delays_sent[board] = table
         return True
 

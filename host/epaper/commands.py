@@ -13,7 +13,8 @@ from .protocol import (
     CMD_SET_SLOT_CONFIG,
     CMD_SHOW_SINGLE,
     CMD_PLAY_STOP,
-    CMD_SAVE_DELAY,
+    CMD_CLEAR_PIPELINE,
+    CMD_SAVE_PIPELINE,
     DEV_H_WALL_BRICKS,
     Frame,
 )
@@ -56,19 +57,46 @@ def slot_config(dest: int, slot: int, mode: int = MODE_ALL_AT_ONCE,
     return _frame(dest, CMD_SET_SLOT_CONFIG, data, group_count, dev_type)
 
 
-def save_delays(dest: int, slot: int, table64: bytes,
-                group_count: int = 2,
-                dev_type: int = DEV_H_WALL_BRICKS) -> Frame:
-    """Per-segment start delays for the slot (docs/FW_REQUEST_SEGMENT_
-    DELAY.md): index = socket, value = tenths of a second, 0xFF = none.
-    Same 66-byte envelope as save_color. Firmware without the feature
-    answers ACK_INVALID_CMD, which the runner takes as "no sweeps"."""
+PIPELINE_FRAME_S = 0.010        # nominal; V1.4 7.4.2
+PIPELINE_HIGH = 0x02            # flags: this is the high half-frame
+PIPELINE_LAST = 0x01            # flags: the table's closing frame
+
+
+def save_pipeline(dest: int, slot: int, frames64: "list[int]",
+                  group_count: int = 2,
+                  dev_type: int = DEV_H_WALL_BRICKS) -> "tuple[Frame, Frame]":
+    """Per-segment refresh start delays for the slot (V1.4 7.4, 0x1F).
+
+    `frames64[N]` is when segment N starts, in display frames (10 ms)
+    after the refresh begins, 0-65535; index 0 and 63 and unused
+    sockets are 0. A single-chip device takes two 66-byte frames, the
+    low bytes then the high bytes with the "last" flag; the firmware
+    stores the table with the slot, and 0x1D applies it. Firmware
+    before V1.4 answers ACK_INVALID_CMD.
+    """
     if not 0 <= slot <= 19:
         raise ValueError(f"slot {slot} out of range 0-19")
-    if len(table64) != 64:
-        raise ValueError(f"delay table must be 64 bytes, got {len(table64)}")
-    return _frame(dest, CMD_SAVE_DELAY, bytes([slot, 0]) + table64,
-                  group_count, dev_type)
+    if len(frames64) != 64:
+        raise ValueError(f"delay table must be 64 entries, got {len(frames64)}")
+    if not all(0 <= f <= 0xFFFF for f in frames64):
+        raise ValueError("delays are 0-65535 frames")
+    low = bytes(f & 0xFF for f in frames64)
+    high = bytes(f >> 8 for f in frames64)
+    return (_frame(dest, CMD_SAVE_PIPELINE, bytes([slot, 0]) + low,
+                   group_count, dev_type),
+            _frame(dest, CMD_SAVE_PIPELINE,
+                   bytes([slot, PIPELINE_HIGH | PIPELINE_LAST]) + high,
+                   group_count, dev_type))
+
+
+def clear_pipeline(dest: int, slot: int, group_count: int = 2,
+                   dev_type: int = DEV_H_WALL_BRICKS) -> Frame:
+    """Forget the slot's delay table (V1.4 7.5, 0x25): back to the
+    firmware's own order, the colours untouched."""
+    if not 0 <= slot <= 19:
+        raise ValueError(f"slot {slot} out of range 0-19")
+    return _frame(dest, CMD_CLEAR_PIPELINE, bytes([slot]), group_count,
+                  dev_type)
 
 
 def save_color(dest: int, slot: int, array64: bytes,

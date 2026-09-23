@@ -39,7 +39,11 @@ CMD_SET_AUTOPLAY = 0x19
 CMD_SET_SLAVE_COUNT = 0x1A
 CMD_SET_SLOT_CONFIG = 0x1B
 CMD_SHOW_SINGLE = 0x1D
-CMD_SAVE_DELAY = 0x1E       # requested: docs/FW_REQUEST_SEGMENT_DELAY.md
+# Per-segment refresh delays (V1.4 7.4 / 7.5, the answer to
+# docs/FW_REQUEST_SEGMENT_DELAY.md). 0x1E is NOT free: it is "switch to
+# next slot" and must never be sent as a probe (it starts playback).
+CMD_SAVE_PIPELINE = 0x1F
+CMD_CLEAR_PIPELINE = 0x25
 
 ACK_SUCCESS = 0x80
 ACK_FAIL = 0x81

@@ -27,7 +27,8 @@ from .rebooter import Rebooter
 from .remote import RemoteSession
 from .showplay import ShowPlayer
 from .runner import DEFAULT_BOARDS, DemoRunner
-from .updater import FirmwareUpdater, find_firmware, usb_rebind
+from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
+                      usb_rebind)
 from .versions import BoardVersions
 
 
@@ -308,8 +309,9 @@ def main() -> int:
                          "whatever they are showing (the factory autoplay "
                          "keeps running)")
     ap.add_argument("--firmware", metavar="BIN",
-                    help="OTA image offered by the UPDATE FW menu row "
-                         "(default: the .bin in the newest FW/FW_* folder)")
+                    help="the one OTA image the UPDATE FW menu row offers "
+                         "(default: every .bin under FW/FW_*, newest first, "
+                         "LEFT/RIGHT on the screen picks another)")
     ap.add_argument("--no-usb-rebind", action="store_true",
                     help="after an update, do not cycle the xhci host "
                          "controller (needs sudo) when the rebooted board "
@@ -338,7 +340,9 @@ def main() -> int:
                         port=args.port)
 
     firmware = Path(args.firmware) if args.firmware else find_firmware()
-    updater = FirmwareUpdater(firmware, boards=args.boards, port=args.port,
+    images = [firmware] if args.firmware else find_firmware_images()
+    updater = FirmwareUpdater(firmware, images=images,
+                              boards=args.boards, port=args.port,
                               rebind=None if args.no_usb_rebind else usb_rebind)
     puller = RepoPuller()
     rebooter = Rebooter()

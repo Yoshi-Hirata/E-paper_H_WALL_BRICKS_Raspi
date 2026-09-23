@@ -463,7 +463,7 @@ def test_agent_connections_time_out_instead_of_leaking_threads():
 
 # ---- sweeps: a delay table per board, before the colours ----
 
-DELAY = 0x1E
+DELAY, CLEAR = 0x1F, 0x25
 
 
 def table(value: int) -> bytes:
@@ -475,15 +475,24 @@ def test_delay_tables_go_out_before_the_colours_and_only_when_they_change():
     session.prepare("c1", {1: array(3), 2: array(4)}, delays={1: table(2), 2: table(5)})
     assert wait_until(lambda: session.phase == READY)
     cmds = [(f.cmd, f.dest) for f in bus.requested if f.cmd in (DELAY, SAVE)]
-    assert cmds == [(DELAY, 1), (SAVE, 1), (DELAY, 2), (SAVE, 2)]
-    assert bus.requested[[f.cmd for f in bus.requested].index(DELAY)].data == bytes([19, 0]) + table(2)
+    assert cmds == [(DELAY, 1), (DELAY, 1), (SAVE, 1), (DELAY, 2), (DELAY, 2), (SAVE, 2)]
+    low, high = [f for f in bus.requested if f.cmd == DELAY][:2]
+    # 0.2 s per socket = 20 frames: low bytes 20, high bytes 0, "last" on the high frame.
+    assert low.data == bytes([19, 0, 0]) + bytes([20] * 62) + bytes([0])
+    assert high.data == bytes([19, 0x03]) + bytes(64)
     # The same tables again: not written again. A new one for board 2 is.
     n = len(bus.requested)
     session.prepare("c2", {1: array(6), 2: array(7)}, delays={1: table(2), 2: table(9)})
     assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
     later = [(f.cmd, f.dest) for f in bus.requested[n:] if f.cmd in (DELAY, SAVE)]
-    assert later == [(SAVE, 1), (DELAY, 2), (SAVE, 2)]
+    assert later == [(SAVE, 1), (DELAY, 2), (DELAY, 2), (SAVE, 2)]
     assert session.status()["no_sweep"] == []
+    # A table of "no delay" anywhere is 0x25: the board forgets the sweep.
+    n = len(bus.requested)
+    session.prepare("c3", {1: array(8), 2: array(9)}, delays={1: bytes([0xFF] * 64), 2: table(9)})
+    assert wait_until(lambda: session.phase == READY and session.cue_id == "c3")
+    later = [(f.cmd, f.dest) for f in bus.requested[n:] if f.cmd in (DELAY, CLEAR, SAVE)]
+    assert later == [(CLEAR, 1), (SAVE, 1), (SAVE, 2)]
     runner.stop()
 
 
@@ -520,4 +529,5 @@ def test_agent_passes_delays_through(agent):
                                             "delays": {"1": table(3).hex()}})
     assert status == 200, body
     assert wait_until(lambda: session.phase == READY)
-    assert any(f.cmd == DELAY and f.data[2:] == table(3) for f in bus.requested)
+    assert any(f.cmd == DELAY and f.data[2:] == bytes([0]) + bytes([30] * 62) + bytes([0])
+               for f in bus.requested)

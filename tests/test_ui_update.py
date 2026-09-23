@@ -171,13 +171,61 @@ def test_vendor_named_image_in_a_newer_folder_wins(tmp_path):
     assert image.name == "MCB_e16_2029.09.17.bin"
 
 
-def test_repo_ships_the_fw_260917_image():
+def test_repo_ships_the_fw_260923_image_and_the_one_before_it():
     # The whole "copy the firmware to the appliance" step is git pull,
-    # which only works if the image is in the tree.
+    # which only works if the images are in the tree. FW_260923 keeps
+    # the vendor's subfolder; FW_260917 stays offered, to go back to.
     image = updater_mod.find_firmware()
     assert image is not None
-    assert image.parent.name >= "FW_260917"
+    assert updater_mod.firmware_label(image) == "FW_260923/MCB_16_0923.bin"
     assert 0 < image.stat().st_size <= ota.MAX_IMAGE_SIZE
+    labels = [updater_mod.firmware_label(p) for p in updater_mod.find_firmware_images()]
+    assert "FW_260917/MCB_e16_2029.09.17.bin" in labels
+    assert labels[-1] == "FW_260923/MCB_16_0923.bin"
+
+
+def test_images_in_vendor_subfolders_are_found_and_labelled_by_fw_folder(tmp_path):
+    (tmp_path / "FW_260917").mkdir()
+    (tmp_path / "FW_260917" / "MCB_e16_2029.09.17.bin").write_bytes(b"a")
+    (tmp_path / "FW_260923" / "fw2029.09.23").mkdir(parents=True)
+    (tmp_path / "FW_260923" / "fw2029.09.23" / "MCB_16_0923.bin").write_bytes(b"b")
+    (tmp_path / "FW_260923" / "fw2029.09.23" / "MCB_16_0923.hex").write_bytes(b":")
+    images = updater_mod.find_firmware_images(tmp_path)
+    assert [updater_mod.firmware_label(p) for p in images] == [
+        "FW_260917/MCB_e16_2029.09.17.bin", "FW_260923/MCB_16_0923.bin"]
+    assert updater_mod.find_firmware(tmp_path) == images[-1]
+
+
+def test_left_and_right_pick_another_build_up_and_down_still_pick_the_board(tmp_path):
+    old = make_image(tmp_path)
+    (tmp_path / "FW_260923" / "sub").mkdir(parents=True)
+    new = tmp_path / "FW_260923" / "sub" / "MCB_16_0923.bin"
+    new.write_bytes(b"n" * 100)
+    updater, calls = make_updater(new, images=[old, new],
+                                  bus=FakeOtaBus(answers={20}))   # one board on USB
+    assert updater.image_choice == "2/2" and updater.size == 100
+    app, _ = make_app(updater)
+    app.select("update")
+    app.handle("key1")
+    assert wait_until(lambda: updater.addr == 20)     # the scan found it
+    app.handle("left")
+    assert updater.firmware == old and updater.image_choice == "1/2"
+    assert updater.size == 150 and updater.menu_entry.detail == "FW_260903/OTA_16c.bin"
+    app.handle("right")
+    assert updater.firmware == new
+    app.handle("left")
+    assert updater.addr == 20 and updater.firmware == old   # the board is a separate axis
+    app.handle("key1")                       # flashes the chosen build
+    assert wait_until(lambda: updater.finished)
+    assert calls["flash"] == [20]
+    assert any("FW_260903" in line for line in updater.log)
+
+
+def test_a_single_image_has_no_choice(tmp_path):
+    updater, _ = make_updater(make_image(tmp_path))
+    assert updater.image_choice == "" and len(updater.images) == 1
+    updater.select_image(+1)
+    assert updater.firmware.name == "OTA_16c.bin"
 
 
 def test_menu_entry_names_the_image(tmp_path):

@@ -218,18 +218,24 @@ def update_screen(firmware: str, size: int, addr: int, phase: str,
                   board_state: str, done: int, log_lines: list[str],
                   error: str | None = None,
                   locked: bool = False,
-                  host: str | None = None) -> Image.Image:
+                  host: str | None = None,
+                  image_choice: str = "") -> Image.Image:
     """Firmware update: image, target board, transfer bar, log tail.
 
     `phase` is one of ui.updater's IDLE/FLASHING/VERIFYING/DONE/FAILED.
+    `image_choice` ("2/3") says there are other builds: LEFT/RIGHT.
     """
     image, draw = _blank()
     status, color = _UPDATE_STATUS.get(phase, (phase.upper(), DIM))
     _header(draw, "FW UPDATE", status=status, status_color=color, host=host)
 
     draw.text((8, 32), "image", font=FONT_S, fill=DIM)
-    draw.text((56, 30), _ellipsize(firmware, FONT_M, WIDTH - 64),
+    choice = f"< {image_choice} >" if image_choice else ""
+    choice_w = int(FONT_S.getlength(choice)) + 6 if choice else 0
+    draw.text((56, 30), _ellipsize(firmware, FONT_M, WIDTH - 64 - choice_w),
               font=FONT_M, fill=FG)
+    if choice:
+        draw.text((WIDTH - 8 - choice_w + 6, 32), choice, font=FONT_S, fill=DIM)
     draw.text((8, 52), "board", font=FONT_S, fill=DIM)
     draw.text((56, 46), f"{addr:02d}", font=FONT_L, fill=FG)
     tint = ERR if board_state.startswith(("ERROR", "no ")) else DIM

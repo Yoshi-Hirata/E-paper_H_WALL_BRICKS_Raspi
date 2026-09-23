@@ -1,8 +1,10 @@
 """Firmware update mode: flash the bundled OTA image from the LCD HAT.
 
-The images live in the repo (FW/FW_<yymmdd>/*.bin), so a `git pull`
-on the appliance is the whole "copy the firmware over" step, and the
-newest folder is what the menu offers. The flashing itself is
+The images live in the repo (FW/FW_<yymmdd>/**/*.bin), so a `git pull`
+on the appliance is the whole "copy the firmware over" step. The newest
+folder is what the menu offers first; LEFT/RIGHT on the confirm screen
+step through every image in the tree, so a board can be taken back to
+an earlier build (FW_260917) when a new one misbehaves. The flashing itself is
 host/ota.py, unchanged; this module runs it in a worker thread and turns
 its log into screen state, the way DemoRunner does for the demos.
 
@@ -70,17 +72,32 @@ class MenuEntry:
     detail: str
 
 
-def find_firmware(directory: Path = FIRMWARE_DIR) -> Path | None:
-    """Newest OTA image in the repo: the .bin in the last FW_<yymmdd> folder.
+def find_firmware_images(directory: Path = FIRMWARE_DIR) -> list[Path]:
+    """Every OTA image in the repo, oldest first, newest last.
 
-    Folders are date-named, so the last one in sort order is the newest.
-    The vendor's file names are kept as delivered (OTA_16c.bin in
-    FW_260903, MCB_e16_2029.09.17.bin in FW_260917), so any .bin counts;
-    the .hex beside it is for SWD burning and is never offered. Should a
-    folder ever hold several .bin files, the last in sort order wins.
+    Folders are date-named (FW_<yymmdd>), so their sort order is their
+    age. The vendor's file names are kept as delivered (OTA_16c.bin in
+    FW_260903, MCB_e16_2029.09.17.bin in FW_260917, and from FW_260923 a
+    subfolder: fw2029.09.23/MCB_16_0923.bin), so any .bin anywhere under
+    the folder counts; the .hex beside it is for SWD burning and is never
+    offered.
     """
-    candidates = sorted(directory.glob("FW_*/*.bin"))
+    return sorted(directory.glob("FW_*/**/*.bin"))
+
+
+def find_firmware(directory: Path = FIRMWARE_DIR) -> Path | None:
+    """The newest OTA image in the repo (what the menu offers first)."""
+    candidates = find_firmware_images(directory)
     return candidates[-1] if candidates else None
+
+
+def firmware_label(image: Path | None) -> str:
+    """FW_<yymmdd>/<file>, whatever subfolders the vendor put between."""
+    if image is None:
+        return "no firmware image in FW/"
+    folder = next((p.name for p in image.parents if p.name.startswith("FW_")),
+                  image.parent.name)
+    return f"{folder}/{image.name}"
 
 
 def usb_rebind(log, driver: Path = XHCI_DRIVER, settle_s: float = 3.0) -> bool:
@@ -131,8 +148,19 @@ class FirmwareUpdater:
                  rebind=usb_rebind, locate=find_port,
                  verify_wait: float = VERIFY_WAIT_S, echo_log: bool = True,
                  serial_of=port_serial,
-                 flash_log: Path = flashlog.DEFAULT_PATH):
+                 flash_log: Path = flashlog.DEFAULT_PATH,
+                 images: list[Path] | None = None):
+        """`firmware` is the image offered first; `images` every image the
+        operator may switch to (default: the one given, or the repo's)."""
         self.firmware = Path(firmware) if firmware else None
+        if images is not None:
+            self.images = [Path(p) for p in images]
+        elif self.firmware is not None:
+            self.images = [self.firmware]
+        else:
+            self.images = []
+        if self.firmware is not None and self.firmware not in self.images:
+            self.images.append(self.firmware)
         self._serial_of = serial_of
         self.flash_log = Path(flash_log)
         self.boards = list(boards) if boards else list(range(1, 21))
@@ -168,9 +196,25 @@ class FirmwareUpdater:
 
     @property
     def firmware_label(self) -> str:
-        if self.firmware is None:
-            return "no firmware image in FW/"
-        return f"{self.firmware.parent.name}/{self.firmware.name}"
+        return firmware_label(self.firmware)
+
+    @property
+    def image_choice(self) -> str:
+        """'2/3' when there is a choice, '' otherwise (for the screen)."""
+        if len(self.images) < 2 or self.firmware not in self.images:
+            return ""
+        return f"{self.images.index(self.firmware) + 1}/{len(self.images)}"
+
+    def select_image(self, step: int) -> None:
+        """LEFT/RIGHT on the confirm screen: another build to flash."""
+        if self.busy or len(self.images) < 2:
+            return
+        index = (self.images.index(self.firmware)
+                 if self.firmware in self.images else len(self.images) - 1)
+        self.firmware = self.images[(index + step) % len(self.images)]
+        self.size = self._image_size()
+        self.done = 0
+        self.emit(f"image: {self.firmware_label}")
 
     @property
     def busy(self) -> bool:
@@ -370,7 +414,7 @@ class FirmwareUpdater:
         except OSError as exc:
             self.emit(f"flash record not written: {exc}", error=True)
             return
-        self.emit(f"recorded {self.firmware.parent.name} for {serial_no}")
+        self.emit(f"recorded {self.firmware_label.split('/')[0]} for {serial_no}")
 
     def _run(self) -> None:
         addr = self.addr

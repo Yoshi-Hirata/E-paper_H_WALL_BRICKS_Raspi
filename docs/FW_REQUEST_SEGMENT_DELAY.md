@@ -8,6 +8,18 @@ Requested by: R2 Engineering (Hirata), 2026-09-22. Contact for questions: y.hira
 
 ---
 
+> **Answered 2026-09-23 / 已于 2026-09-23 答复** — `FW/FW_260923/fw2029.09.23/REPLY_FW_REQUEST_SEGMENT_DELAY.pdf`,
+> protocol V1.4 §7.4 / §7.5 (`Display Control Protocol_16Color_V1.4.pdf`, same folder).
+> What was implemented differs from the proposal below, and the units follow the implementation:
+> - Command **0x1F** "send per-segment pipeline", not 0x1E (0x1E is "switch to next slot" and must never be probed).
+> - Value = **uint16 frames of 10 ms** (0–65535), sent as two 66-byte frames per chip: low bytes (flags 0x00), then high bytes (flags 0x02 | 0x01 last).
+> - **0x25** clears a slot's table; 0x14 / 0x15 clear it with the colours. The table is kept in flash, paired with the slot.
+> - Equal delays start in the same frame (truly simultaneous is allowed); keep the largest delay under ~30 s.
+> - Firmware before V1.4 answers ACK_INVALID_CMD to 0x1F.
+> 
+> 実装は提案と異なる。機体は実装に従う: **0x1F**(0x1E は「次スロットへ切替」なので送らない)、
+> 値は **10 ms のフレーム数(uint16)**、下位バイト・上位バイトの 2 フレームで送る、**0x25** で表を消す。
+
 ## 1. Background / 背景
 
 **EN** — Each board drives up to 60 e-paper scales sewn into a garment. When a board receives the broadcast "show single" command (0x1D), it refreshes its segments one after another in socket order P01 → P60, about 100 ms apart, so a full refresh takes about 7 s. The order is fixed in the firmware. On the garment the 60 sockets of one board are wired to scattered positions, so the visible change runs in wiring order, which has no meaning to the audience.
