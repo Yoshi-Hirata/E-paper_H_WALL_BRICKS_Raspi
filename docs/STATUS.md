@@ -67,6 +67,10 @@
 - 現場の予定: ショーは 2026-09-29 19:00 パリ(日本時間 9/30 02:00)
 **演出側: デザイン単位の遷移・10 ms 単位の遅延表・BGM アップロード・保存/読込(2026-09-24)**
 
+- **手動 Prepare も遷移を運ぶ(2026-09-24 追記)**: `compile_units()` がデザインの遷移から
+  `delays` を組み立てて `/prepare` に同梱(以前はタイムライン経由のみ)。機体側 `runner`
+  は遅延表を基板に保存/消去するたびにログへ 1 行出す。radxa-01 の実基板(FW_260923)で
+  「board 1: sweep table saved, 60 sockets, last starts +3.00 s」→ 発火 +1 ms を確認
 - **遷移(sweep)をデザイン単位に**: `show.json` に `transitions: {デザインファイル名:
   {sequence, span_s}}` を追加。キューは既定で自分のデザインの遷移を継承し(`transition:
   "design"`)、`transition: "custom"` のときだけキュー自身の `sequence`/`span_s` を使う。
