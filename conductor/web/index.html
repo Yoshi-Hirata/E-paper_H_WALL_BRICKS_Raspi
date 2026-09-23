@@ -136,11 +136,28 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .editor { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .editor label { font-size: 12px; color: var(--dim); display: flex; gap: 6px; align-items: center; }
 .editor input[type=text] { width: 70px; }
-.thumbs { display: flex; flex-wrap: wrap; gap: 12px; }
-.thumb { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; flex: 1 1 260px; max-width: 420px; }
-.thumb .t { font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
-.thumb .t span { font-weight: 400; color: var(--dim); }
-.thumb .t .chg { color: var(--warn); }
+.cue-card { display: flex; flex-direction: column; gap: 9px; }
+.cue-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.cue-row { display: grid; grid-template-columns: 76px auto 1fr; gap: 4px 12px; align-items: center; }
+.cue-row .lbl { font-weight: 600; font-size: 13px; }
+.cue-row .ctl { display: flex; gap: 6px 12px; align-items: center; flex-wrap: wrap; }
+.cue-row .ctl input[type=text] { width: 64px; }
+.cue-row .why { color: var(--dim); font-size: 12px; }
+.cue-row label.rad { display: flex; gap: 5px; align-items: center; font-size: 13px; color: var(--ink); font-weight: 400; }
+.cue-computed { grid-column: 2 / 4; color: var(--dim); font-size: 13px; margin-left: 0; }
+.cue-design { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+/* One row, one cell per LOOK, sized by layoutLooks() to fit without the row
+   ever needing its own scrollbar; a LOOK shared by two garments (e.g. a top
+   and its skirt on one Radxa) stacks them inside one cell. */
+.thumbs { display: flex; flex-wrap: nowrap; gap: 10px; align-items: flex-start; overflow: hidden; }
+.look-cell { box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+  display: flex; flex-direction: column; align-items: center; overflow: hidden; flex: 0 0 auto; }
+.lk-head { font-size: 12px; font-weight: 600; align-self: stretch; }
+.lk-head .chg { float: right; color: var(--warn); font-weight: 400; font-size: 11px; }
+.lk-head .sub { display: block; font-weight: 400; color: var(--dim); font-size: 10.5px; clear: both;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lk-item + .lk-item { margin-top: 4px; }
+.look-cell svg { display: block; }
 input[type=range] { width: 100%; }
 
 /* ---- fleet ---- */
@@ -206,18 +223,28 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
-             playing: false, anchor: 0, startT: 0 };
+             playing: false, anchor: 0, startT: 0, simView: false };
 let fleet = null;
 let state = null;
 // The transport's audio element: a singleton that is NEVER inserted into the DOM,
 // so renderTimeline()'s innerHTML= (fired by every edit) can never interrupt it.
 const player = new Audio();
 let playerUrl = null;               // the last URL assigned to player.src (reassign only when it changes)
+let seeking = false;                // true while the operator is dragging #ph: the loop must not fight it
+let lookCache = [];                 // one entry per look-cell, built by renderThumbs(), read by updateThumbColors()/layoutLooks()
+const maxRankCache = new Map();     // "item|sequence" -> max(ranks): hoisted out of the per-frame sweep math
 function syncPlayerSrc() {
   const url = state?.music?.url || null;
   if (url === playerUrl) return;
   playerUrl = url;
-  if (url) player.src = url; else player.removeAttribute("src");
+  // Always pause first: without this, removing or replacing the track while it
+  // plays leaves the old audio running with nothing left to stop it (no button
+  // is gated on the src any more, so this is the one place that must act).
+  player.pause();
+  if (url) player.src = url;
+  else { player.removeAttribute("src"); player.load(); }
+  ui.playing = false;
+  renderTransport();
 }
 function fmtSize(bytes) {
   if (bytes === null || bytes === undefined) return "";
@@ -255,6 +282,7 @@ async function refresh() {
   state = await api("/api/state");
   $("#ws").textContent = "workspace: " + state.workspace;
   if (!state.items.some(i => i.item === ui.item)) ui.item = state.items[0]?.item ?? null;
+  maxRankCache.clear();               // ranks/maps may have changed under us
   syncPlayerSrc();
   render();
 }
@@ -352,7 +380,10 @@ function renderGarment(item, opts) {
         if (code === undefined && opts.labels) text = opts.undecided?.includes(key) ? "-" : "?";
       } else { fill = tint(order.indexOf(boardNo), order.length); text = socket; }
       const dim = ui.board !== null && opts.labels && ui.board !== boardNo ? ` opacity=".18"` : "";
-      svg += `<g${dim}${opts.labels ? ` data-k="${key}" data-b="${boardNo}" data-s="${socket}"` : ""}>
+      // Thumbnails ask for tagging (data-k/-b/-s) without the on-stage labels,
+      // so the playback loop can find and recolour these circles by key.
+      const tagged = opts.labels || opts.tag;
+      svg += `<g${dim}${tagged ? ` data-k="${key}" data-b="${boardNo}" data-s="${socket}"` : ""}>
         <circle cx="${(x0 + cx).toFixed(1)}" cy="${cy.toFixed(1)}" r="${cell / 2}" fill="${fill}" stroke="#7d7d88" stroke-width="${opts.labels ? .7 : .3}"/>` +
         (text !== "" ? `<text x="${(x0 + cx).toFixed(1)}" y="${(cy + 3).toFixed(1)}" font-size="8.5" text-anchor="middle"
           fill="${opts.mode === "design" ? "var(--err)" : "#fff"}" pointer-events="none">${text}</text>` : "") + `</g>`;
@@ -450,14 +481,39 @@ const seqLabel = id => state.sequences.find(s => s.id === id)?.label || id;
 // from the design's default or the cue's own override. Defensive against a
 // server that does not compile it yet.
 const sweepOf = cue => cue.sweep || { sequence: "natural", span_s: 0, source: "design" };
+// The cue's effective refresh time: its own override (`refresh_s`, stored),
+// or the show's default. Defensive against a server that has not landed
+// `refresh`/`refresh_source` yet - only `refresh_s` is guaranteed then.
+function refreshOf(cue) {
+  if (cue.refresh !== undefined) return { value: cue.refresh, source: cue.refresh_source || (cue.refresh_s != null ? "cue" : "show") };
+  return cue.refresh_s != null ? { value: cue.refresh_s, source: "cue" } : { value: state.show.refresh_s, source: "show" };
+}
+// The cue's effective End: the next cue's Start on the same item, or the
+// show's duration for the last cue. Defensive against a server that has not
+// landed `end`/`end_source` yet.
+function endOf(item, cue) {
+  if (cue.end !== undefined) return { value: cue.end, source: cue.end_source || "next" };
+  const cues = cuesOf(item);
+  const idx = cues.findIndex(c => c.id === cue.id);
+  const next = cues[idx + 1];
+  return next ? { value: next.at, source: "next" } : { value: state.show.duration, source: "show" };
+}
+// max(ranks) never changes for a given item+sequence within a session, so it
+// is computed once instead of on every animation frame.
+function maxRankOf(item, sequence, ranks) {
+  const key = item.item + "|" + sequence;
+  let m = maxRankCache.get(key);
+  if (m === undefined) { m = Math.max(...ranks, 0); maxRankCache.set(key, m); }
+  return m;
+}
 // The scales a sweeping cue has finished by t: rank x step is a scale's
 // delay, and it is done one refresh after that.
 function sweptColors(item, cue, design, t) {
   const sweep = sweepOf(cue);
   const ranks = item.sequences?.[sweep.sequence];
   if (!ranks) return design.colors;
-  const refresh = state.show.refresh_s, done = {};
-  const maxRank = Math.max(...ranks, 0);
+  const refresh = refreshOf(cue).value, done = {};
+  const maxRank = maxRankOf(item, sweep.sequence, ranks);
   item.map.scales.forEach((s, n) => {
     const key = `${s[0]}|${s[1]}|${s[2]}`;
     const delay = maxRank > 0 ? ranks[n] * sweep.span_s / maxRank : 0;
@@ -486,10 +542,79 @@ function wornAt(item, t) {
 async function saveShow(cues, duration, refreshS) {     // not "refresh": that is the reload function
   const result = await api("/api/show", { duration: duration ?? state.show.duration,
     refresh_s: refreshS ?? state.show.refresh_s,
-    cues: cues.map(({ id, item, at, design, align, partial, transition, sequence, span_s }) =>
-      ({ id, item, at, design, align, partial, transition: transition || "design", sequence: sequence || "natural", span_s: span_s ?? 0 })) });
+    cues: cues.map(({ id, item, at, design, partial, transition, sequence, span_s, refresh_s }) =>
+      ({ id, item, at, design, partial, transition: transition || "design", sequence: sequence || "natural",
+         span_s: span_s ?? 0, refresh_s: refresh_s ?? null })) });
   if (result.error) toast(result.error);
   await refresh();
+}
+// The Edit Cue card: Start / Refresh / Transition / (computed Complete) / End,
+// each with a plain-English explanation right beside the control - this is
+// the part the operator must never have to guess at.
+function renderCueEditor(cue, item) {
+  if (!cue) return `<div class="meta">Select a cue, or click a track to add one.</div>`;
+  const isPreset = cue.at <= 0;
+  const design = item?.designs.find(d => d.name === cue.design);
+  const designTr = design?.transition || { sequence: "natural", span_s: 0 };
+  const trText = tr => (tr.sequence === "natural" || tr.span_s <= 0) ? "no sweep" : `${esc(seqLabel(tr.sequence))} · ${tr.span_s.toFixed(1)} s`;
+  const transitionMode = cue.transition || "design";
+  const sweep = sweepOf(cue);
+  const refr = refreshOf(cue);
+  const cuesOnItem = item ? cuesOf(item) : [];
+  const idxOnItem = cuesOnItem.findIndex(c => c.id === cue.id);
+  const isLast = idxOnItem === cuesOnItem.length - 1;
+  const endInfo = item ? endOf(item, cue) : { value: state.show.duration };
+  const startWhy = isPreset ? "Preset: shown before START" : "Command sent — the e-paper starts refreshing";
+  const endWhy = isLast ? `until the end of the show (${clock(state.show.duration)})` : "Shown until the next cue of this item starts (= that cue's Start)";
+
+  return `<div class="cue-card">
+    <div class="cue-head">
+      <b>${esc(itemFull(item) || cue.item)}</b>
+      <span>
+        <button id="cue-show">View design</button>
+        <button id="cue-all" title="Give every other item a cue at this time (with its own next unused design)">Copy time to all items</button>
+        <button id="cue-del" class="danger">Delete</button>
+      </span>
+    </div>
+    <div class="cue-row">
+      <div class="lbl">Start</div>
+      <div class="ctl" title="${esc(startWhy)}"><input type="text" id="cue-start" value="${clock(cue.at)}" ${isPreset ? "disabled" : ""}></div>
+      <div class="why">${esc(startWhy)}</div>
+    </div>
+    <div class="cue-row">
+      <div class="lbl">Refresh</div>
+      <div class="ctl" title="How long this board's e-paper takes to redraw">
+        <label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-show" value="show" ${refr.source === "show" ? "checked" : ""}> show default (${state.show.refresh_s.toFixed(1)} s)</label>
+        <label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-cue" value="cue" ${refr.source === "cue" ? "checked" : ""}> this cue</label>
+        <input type="text" id="cue-refresh" value="${refr.value.toFixed(1)}" ${refr.source === "cue" ? "" : "disabled"}> s
+      </div>
+      <div class="why">How long this board's e-paper takes to redraw</div>
+    </div>
+    <div class="cue-row">
+      <div class="lbl">Transition</div>
+      <div class="ctl">
+        <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-design" value="design" ${transitionMode === "design" ? "checked" : ""}> design default: ${trText(designTr)}</label>
+        <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-custom" value="custom" ${transitionMode === "custom" ? "checked" : ""}> custom</label>
+        ${transitionMode === "custom" ? `
+        <select id="cue-seq">${state.sequences.map(s =>
+          `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
+        <span ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}><input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" title="Seconds from the command to the first rank to the command to the last"> s</span>` : ""}
+      </div>
+      <div class="why"></div>
+    </div>
+    <div class="cue-computed">Picture complete at ${clock(cue.complete)} (Start + ${refr.value.toFixed(1)} s refresh${sweep.span_s > 0 ? ` + ${sweep.span_s.toFixed(1)} s sweep` : ""})</div>
+    <div class="cue-row">
+      <div class="lbl">End</div>
+      <div class="ctl" title="${esc(endWhy)}"><input type="text" id="cue-end" value="${clock(endInfo.value)}" ${isLast ? "disabled" : ""}></div>
+      <div class="why">${esc(endWhy)}</div>
+    </div>
+    <div class="cue-design">
+      <label>Design <select id="cue-design">${(item?.designs || []).map(d =>
+        `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}</option>`).join("")}</select></label>
+      <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label>
+    </div>
+    ${cue.problems.length ? `<ul class="problems">${cue.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
+  </div>`;
 }
 function renderTimeline() {
   const root = $("#content"), show = state.show, D = show.duration, items = trackItems();
@@ -505,7 +630,10 @@ function renderTimeline() {
     let blocks = "";
     cues.forEach((cue, n) => {
       const design = item.designs.find(d => d.name === cue.design);
-      const until = n + 1 < cues.length ? Math.max(cue.complete, cues[n + 1].sent) : D;
+      // Start -> Complete is drawn hatched ("refreshing"); Complete -> End is
+      // solid and carries the label, using the server's own End (with a
+      // next-cue-or-show-duration fallback while it lands).
+      const until = Math.max(cue.complete, endOf(item, cue).value);
       const sel = cue.id === ui.cue ? " sel" : "";
       const chips = design ? [...new Set(Object.values(design.colors))].sort((a, b) => a - b).slice(0, 8)
         .map(c => `<b style="background:${rgb(c)}"></b>`).join("") : "";
@@ -521,8 +649,6 @@ function renderTimeline() {
 
   const cue = show.cues.find(c => c.id === ui.cue) || null;
   const cueItem = cue && state.items.find(i => i.item === cue.item);
-  const sweep = cue && sweepOf(cue);
-  const transitionMode = cue && (cue.transition || "design");
   const all = [...show.cues].sort((a, b) => a.at - b.at || a.item.localeCompare(b.item));
   const bad = all.reduce((n, c) => n + c.problems.length, 0);
   const music = state.music || null;
@@ -530,57 +656,31 @@ function renderTimeline() {
   root.innerHTML = `
     <div class="toolbar">
       <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
-      <div class="group"><span>Refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
-        title="Seconds from the command to the finished image. Depends on the firmware (about 7 s on the latest, 16 s on older ones)"><span>s</span></div>
+      <div class="group"><span>Default refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
+        title="Seconds from the command to the finished image, used by every cue that does not set its own (about 7 s on the latest firmware, 16 s on older ones)"><span>s</span></div>
       <div class="group">
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
         <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
-        hatched = refreshing (${show.refresh_s} s)</div>
+        hatched = refreshing · solid = held until End</div>
     </div>
-    <div class="card">
-      <div class="tl-wrap">
-        <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div></div>
-        ${rows}
-        <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"></div></div>
+    <div id="tl-editing"${ui.simView ? ' style="display:none"' : ""}>
+      <div class="card">
+        <div class="tl-wrap">
+          <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div></div>
+          ${rows}
+          <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"></div></div>
+        </div>
       </div>
-    </div>
-    <div class="card"><h2>EDIT CUE</h2>
-      ${cue ? `<div class="editor">
-        <b>${esc(itemFull(cueItem) || cue.item)}</b>
-        <label title="When the change begins (the boards are told at this instant)">Start <input type="text" id="cue-start" value="${clock(cue.sent)}" ${cue.at <= 0 ? "disabled" : ""}></label>
-        <label title="When the picture is complete">End <input type="text" id="cue-end" value="${clock(cue.complete)}" ${cue.at <= 0 ? "disabled" : ""}></label>
-        <label>Design <select id="cue-design">${(cueItem?.designs || []).map(d =>
-          `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}</option>`).join("")}</select></label>
-        <label title="Which of the two the cue keeps when the refresh time changes">Fixed <select id="cue-align" ${cue.at <= 0 ? "disabled" : ""}>
-          <option value="done" ${cue.align === "done" ? "selected" : ""}>end</option>
-          <option value="start" ${cue.align === "start" ? "selected" : ""}>start</option></select></label>
-        <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label>
-        <label>Transition <select id="cue-transition">
-          <option value="design" ${transitionMode === "design" ? "selected" : ""}>design default</option>
-          <option value="custom" ${transitionMode === "custom" ? "selected" : ""}>custom</option>
-        </select></label>
-        ${transitionMode === "custom" ? `
-        <label>Sequence <select id="cue-seq">${state.sequences.map(s =>
-          `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>
-        <label ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}>Span <input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" title="Seconds from the command to the first rank to the command to the last"> s</label>`
-        : `<span class="meta">${sweep.sequence === "natural" ? "No sweep (design default)" : `${esc(seqLabel(sweep.sequence))} · ${sweep.span_s.toFixed(1)} s (design default)`}</span>`}
-        <button id="cue-show">View design</button>
-        <button id="cue-all" title="Give every other item a cue at this time (with its own next unused design)">Copy time to all items</button>
-        <button id="cue-del" class="danger">Delete</button>
-        <span class="meta">${cue.at <= 0 ? "Preset: shown before START" : cue.span
-          ? `sweep ${cue.span.toFixed(1)} s · change ${(cue.complete - cue.sent).toFixed(0)} s in all`
-          : `change ${(cue.complete - cue.sent).toFixed(0)} s in all (${show.refresh_s} s refresh)`}</span>
-      </div>
-      ${cue.problems.length ? `<ul class="problems" style="margin-top:8px">${cue.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}`
-      : `<div class="meta">Select a cue, or click a track to add one.</div>`}
+      <div class="card"><h2>EDIT CUE</h2>${renderCueEditor(cue, cueItem)}</div>
     </div>
     <div class="card"><h2>THE LOOKS AT — <span id="ph-label"></span></h2>
       <div class="editor" id="transport" style="margin-bottom:8px">
         <button id="tp-play" title="Play/Pause (Space)">${ui.playing ? "⏸ Pause" : "▶ Play"}</button>
         <button id="tp-stop" title="Stop and rewind to 0:00">⏹ Stop</button>
         <span class="meta" id="tp-time">${clock(ui.playhead)} / ${clock(D)}</span>
+        <button id="tl-simview" title="Hide the tracks and cue list so the looks and transport fill the screen">${ui.simView ? "Timeline view" : "Simulator view"}</button>
         <span style="flex:1"></span>
         ${music
           ? `<span class="meta">${esc(music.name)} (${fmtSize(music.size)})</span>
@@ -591,41 +691,170 @@ function renderTimeline() {
       <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
       <div class="thumbs" id="thumbs" style="margin-top:8px"></div>
     </div>
+    <div id="tl-cues"${ui.simView ? ' style="display:none"' : ""}>
     <div class="card"><h2>CUES (${all.length}) ${bad ? `<span style="color:var(--err)">— ${bad} PROBLEMS</span>` : all.length ? `<span class="okline">— ✓ NO PROBLEMS</span>` : ""}</h2>
       ${show.warnings.map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
-      <table><thead><tr><th>TIME</th><th>ITEM</th><th>UNIT</th><th>DESIGN</th><th>SENT → COMPLETE</th><th>STATUS</th></tr></thead><tbody>
+      <table><thead><tr><th>START</th><th>COMPLETE</th><th>END</th><th>ITEM</th><th>UNIT</th><th>DESIGN</th><th>TRANSITION</th><th>STATUS</th></tr></thead><tbody>
       ${all.map(c => { const it = state.items.find(i => i.item === c.item); const d = it?.designs.find(x => x.name === c.design);
         const sw = sweepOf(c);
-        return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}"><td><b>${clock(c.at)}</b></td><td>${esc(itemFull(it) || c.item)}</td>
-        <td>${esc(it?.unit || "-")}</td><td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}${sw.sequence !== "natural" && sw.span_s > 0 ? ` <span class="meta">· ${esc(seqLabel(sw.sequence))} ${sw.span_s.toFixed(1)} s${c.transition === "custom" ? "" : " (design)"}</span>` : ""}</td>
-        <td>${c.at <= 0 ? "preset" : clock(c.sent) + " → " + clock(c.complete)}</td>
+        const endInfo = it ? endOf(it, c) : { value: state.show.duration };
+        return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}">
+        <td><b>${c.at <= 0 ? "preset" : clock(c.at)}</b></td>
+        <td>${c.at <= 0 ? clock(0) : clock(c.complete)}</td>
+        <td>${clock(endInfo.value)}</td>
+        <td>${esc(itemFull(it) || c.item)}</td>
+        <td>${esc(it?.unit || "-")}</td>
+        <td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}</td>
+        <td>${sw.sequence !== "natural" && sw.span_s > 0 ? `${esc(seqLabel(sw.sequence))} ${sw.span_s.toFixed(1)} s${c.transition === "custom" ? " (custom)" : " (design)"}` : "—"}</td>
         <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
-        || `<tr><td class="meta" colspan="6">No cues yet</td></tr>`}
+        || `<tr><td class="meta" colspan="8">No cues yet</td></tr>`}
       </tbody></table>
       <div class="meta" style="margin-top:6px">Shortest interval per unit (one send to the next): ${Object.entries(show.min_interval).map(([u, s]) => `${esc(u)} ${Math.ceil(s)} s`).join(" · ")}</div>
+    </div>
     </div>`;
   renderThumbs();
 }
+// Items sharing a LOOK number are one outfit (a top and a skirt sewn to the
+// same Radxa) and share one cell, stacked; an item with no LOOK number gets
+// a cell of its own. Ordered by LOOK number ascending, then by item name -
+// which also breaks the tie inside a shared cell, since nothing here says
+// which garment of an outfit is worn on top.
+function lookGroups() {
+  const groups = new Map();
+  for (const item of trackItems()) {
+    const key = item.look ? "L" + item.look : "I" + item.item;
+    if (!groups.has(key)) groups.set(key, { look: item.look || null, items: [] });
+    groups.get(key).items.push(item);
+  }
+  const list = [...groups.values()];
+  // Nothing here says which garment of a shared outfit is worn higher, but
+  // the model label itself often does ("... (Tops)" / "... (Skirt)") - use
+  // that hint when present, alphabetical otherwise.
+  const stackRank = i => /top/i.test(i.model || "") ? 0 : /skirt|bottom/i.test(i.model || "") ? 2 : 1;
+  for (const g of list) g.items.sort((a, b) => stackRank(a) - stackRank(b) || a.item.localeCompare(b.item));
+  list.sort((a, b) => {
+    const an = a.look !== null ? Number(a.look) : NaN, bn = b.look !== null ? Number(b.look) : NaN;
+    const aNum = Number.isFinite(an), bNum = Number.isFinite(bn);
+    if (aNum && bNum && an !== bn) return an - bn;
+    if (aNum !== bNum) return aNum ? -1 : 1;
+    return a.items[0].item.localeCompare(b.items[0].item);
+  });
+  return list;
+}
+// Height per unit of width, for a garment drawn with no label margin/head:
+// scale-invariant (both dimensions grow with the same factor), so it can be
+// read straight off the map without asking renderGarment to draw anything.
+function garmentAspect(item) {
+  const scales = item.map.scales;
+  const rows = scales.map(s => s[1]), cols = scales.map(s => s[2]);
+  const top = Math.max(...rows), low = Math.min(...rows);
+  const lowCol = Math.min(...cols), span = Math.max(...cols) - lowCol + 1.5;
+  const margin = 0.4;
+  const w = (span + 2 * margin) * item.map.sides.length;
+  const h = (top - low) * PITCH + 1 + 2 * margin;
+  return h / w;
+}
+// Full rebuild: only when the timeline/state actually changes (called from
+// renderTimeline(), a ruler click, or a non-playing scrub). Builds each
+// look's SVGs once and caches their circle nodes so the playback loop never
+// touches innerHTML again - see updateThumbColors() - and lays them out to
+// fill exactly one row, no internal scrolling, at whatever size fits.
 function renderThumbs() {
+  const box = $("#thumbs");
+  if (!box) return;                    // not on the Timeline tab right now
   const t = ui.playhead;
-  $("#ph-label").textContent = clock(t);
-  $("#playhead").style.left = (100 * t / state.show.duration).toFixed(3) + "%";
-  $("#thumbs").innerHTML = trackItems().map(item => {
-    const worn = wornAt(item, t);
-    return `<div class="thumb"><div class="t">${esc(itemName(item))} <span>${esc(worn.label)}</span>
-      ${worn.changing ? `<span class="chg">refreshing…</span>` : ""}</div>
-      ${renderGarment(item, { cell: 8, mode: "design", labels: false, colors: worn.colors, shifts: worn.shifts })}</div>`;
-  }).join("");
+  updatePlayheadDom(t);
+  const groups = lookGroups();
+  // shifts is structural (it moves circles, not just their fill) so it must
+  // be right from the first paint; colors is repainted a moment later by
+  // updateThumbColors() below regardless, so an empty start is harmless.
+  box.innerHTML = groups.map(g => `<div class="look-cell">
+      <div class="lk-head">${esc(g.look ? "LOOK " + g.look : itemName(g.items[0]))}<span class="chg" style="display:none">refreshing…</span>
+        <div class="sub"></div></div>
+      ${g.items.map(item => { const worn = wornAt(item, t); return `<div class="lk-item">
+        ${renderGarment(item, { cell: 8, mode: "design", labels: false, tag: true, colors: worn.colors, shifts: worn.shifts })}</div>`; }).join("")}
+    </div>`).join("");
+  buildLookCache(groups);
+  layoutLooks();
+  updateThumbColors(t);
+}
+function buildLookCache(groups) {
+  lookCache = [];
+  document.querySelectorAll("#thumbs .look-cell").forEach((cellEl, gi) => {
+    const g = groups[gi];
+    const items = [];
+    cellEl.querySelectorAll(".lk-item").forEach((itemEl, ii) => {
+      const item = g.items[ii];
+      const circles = new Map();
+      itemEl.querySelectorAll("g[data-k]").forEach(el => circles.set(el.dataset.k, el.querySelector("circle")));
+      items.push({ item, svg: itemEl.querySelector("svg"), circles, colors: new Map(), ratio: garmentAspect(item) });
+    });
+    lookCache.push({ cellEl, sub: cellEl.querySelector(".sub"), chg: cellEl.querySelector(".chg"), items });
+  });
+}
+// Sizes (never rebuilds) every look-cell to fill one row without vertical
+// scrolling: width = row width / cell count; height = what is left of the
+// window below the row. Each cell then gets the largest common render width
+// for its garment(s) that fits both budgets - recomputed here only, on
+// resize or a full rebuild, never inside the playback loop.
+function layoutLooks() {
+  const box = $("#thumbs");
+  if (!box || !lookCache.length) return;
+  const rect = box.getBoundingClientRect();
+  const count = lookCache.length;
+  const GAP = 10, CELL_PAD_X = 16, CELL_PAD_Y = 12, HEAD_H = 34, STACK_GAP = 4;
+  const containerWidth = box.clientWidth || rect.width;
+  const cellWidth = Math.max(40, (containerWidth - GAP * (count - 1)) / count);
+  const wBudget = Math.max(20, cellWidth - CELL_PAD_X);
+  const availableHeight = Math.max(80, window.innerHeight - rect.top - 16);
+  box.style.height = availableHeight + "px";
+  for (const cell of lookCache) {
+    cell.cellEl.style.width = cellWidth + "px";
+    const n = cell.items.length;
+    const hBudget = Math.max(20, availableHeight - HEAD_H - CELL_PAD_Y - (n - 1) * STACK_GAP);
+    const sumRatio = cell.items.reduce((s, it) => s + it.ratio, 0) || 1;
+    const renderWidth = Math.max(16, Math.min(wBudget, hBudget / sumRatio));
+    for (const it of cell.items) {
+      if (it.svg) { it.svg.style.width = renderWidth + "px"; it.svg.style.maxWidth = "none"; it.svg.style.height = "auto"; }
+    }
+  }
+}
+let resizeScheduled = false;
+window.addEventListener("resize", () => {
+  if (ui.tab !== "timeline" || resizeScheduled) return;
+  resizeScheduled = true;
+  requestAnimationFrame(() => { resizeScheduled = false; layoutLooks(); });
+});
+// Per-frame update: no innerHTML, only the fill of circles whose colour
+// actually changed since the last frame (a full rebuild at 10 Hz was ~12,600
+// SVG nodes for 7 looks - this is a handful of attribute writes instead).
+function updateThumbColors(t) {
+  for (const cell of lookCache) {
+    let changing = false;
+    const sub = [];
+    for (const entry of cell.items) {
+      const worn = wornAt(entry.item, t);
+      if (worn.changing) changing = true;
+      sub.push(`${entry.item.model || entry.item.item}: ${worn.label}`);
+      for (const [key, circleEl] of entry.circles) {
+        const code = worn.colors[key];
+        const fill = code !== undefined ? rgb(code) : "var(--garment)";
+        if (entry.colors.get(key) !== fill) { entry.colors.set(key, fill); if (circleEl) circleEl.setAttribute("fill", fill); }
+      }
+    }
+    if (cell.chg) cell.chg.style.display = changing ? "inline" : "none";
+    if (cell.sub) cell.sub.textContent = sub.join(" · ");
+  }
 }
 
 // ---- transport: play / pause / stop, driven by requestAnimationFrame ----
 // The loop never calls renderTimeline() or render() - only direct DOM pokes plus
-// a throttled renderThumbs() - so it never fights an edit's own re-render, and a
+// a throttled updateThumbColors() - so it never fights an edit's own re-render, and a
 // re-render (from saveShow/refresh) never interrupts it: ui.playing/ui.playhead
 // live outside the DOM and are simply read again when the markup is rebuilt.
 function updatePlayheadDom(t) {
   const D = state.show.duration;
-  const ph = $("#ph"); if (ph) ph.value = Math.round(Math.max(0, Math.min(D, t)));
+  const ph = $("#ph"); if (ph && !seeking) ph.value = Math.round(Math.max(0, Math.min(D, t)));
   const label = $("#ph-label"); if (label) label.textContent = clock(t);
   const marker = $("#playhead"); if (marker) marker.style.left = (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
   const tpTime = $("#tp-time"); if (tpTime) tpTime.textContent = `${clock(t)} / ${clock(D)}`;
@@ -633,24 +862,37 @@ function updatePlayheadDom(t) {
 function renderTransport() {
   const btn = $("#tp-play"); if (btn) btn.textContent = ui.playing ? "⏸ Pause" : "▶ Play";
 }
+// Stop the simulator (audio and the loop) without moving the playhead - used
+// both when the music runs out before the show does, and when the show
+// itself reaches its end (only the Stop button rewinds to 0:00).
+function haltPlaybackAt(t) {
+  ui.playhead = t;
+  updatePlayheadDom(t);
+  updateThumbColors(t);
+  pausePlayback();
+}
 let lastThumbAt = 0;
 function tick() {
   if (!ui.playing) return;
+  // The simulator only owns the screen on the Timeline tab; leaving it must
+  // not leave music playing with nothing left on screen to stop it.
+  if (ui.tab !== "timeline") { pausePlayback(); return; }
+  // The audio can pause itself (autoplay policy, OS media keys, or simply
+  // running out before the show does - see the "ended" listener below);
+  // treat that the same as our own pause instead of spinning forever on a
+  // currentTime that no longer advances.
+  if (playerUrl && player.paused) { pausePlayback(); return; }
   const D = state.show.duration;
   let t = playerUrl ? player.currentTime : (performance.now() - ui.anchor) / 1000 + ui.startT;
-  if (t >= D) {
-    ui.playhead = D; updatePlayheadDom(D); renderThumbs();
-    stopPlayback(false);
-    return;
-  }
+  if (t >= D) { haltPlaybackAt(D); return; }
   ui.playhead = t;
   updatePlayheadDom(t);
   const now = performance.now();
-  if (now - lastThumbAt >= 100) { lastThumbAt = now; renderThumbs(); }
+  if (now - lastThumbAt >= 100) { lastThumbAt = now; updateThumbColors(t); }
   requestAnimationFrame(tick);
 }
 function startPlayback() {
-  if (ui.playing) return;
+  if (ui.playing || ui.tab !== "timeline") return;
   ui.playing = true;
   if (playerUrl) {
     player.currentTime = ui.playhead;
@@ -665,23 +907,32 @@ function startPlayback() {
 function pausePlayback() {
   if (!ui.playing) return;
   ui.playing = false;
-  if (playerUrl) player.pause();
+  player.pause();                 // always - not gated on playerUrl, so Remove/tab-away truly stops it
   renderTransport();
 }
 function stopPlayback(rerender = true) {
   ui.playing = false;
-  if (playerUrl) { player.pause(); player.currentTime = 0; }
+  player.pause();
+  if (playerUrl) player.currentTime = 0;
   ui.playhead = 0;
   if (rerender) renderTimeline(); else { renderTransport(); updatePlayheadDom(0); }
 }
 function togglePlayback() { ui.playing ? pausePlayback() : startPlayback(); }
+// Music shorter than the show: pause the simulator right where the track
+// ended (do not rewind) instead of leaving currentTime stuck while nothing
+// advances.
+player.addEventListener("ended", () => { if (ui.playing) haltPlaybackAt(player.currentTime); });
+player.addEventListener("seeked", () => { seeking = false; });
 const MAX_MUSIC = 64 * 1024 * 1024;
 async function uploadMusic(file) {
   if (!file) return;
   if (file.size > MAX_MUSIC) { toast(`${file.name} is too large (${fmtSize(file.size)}) - the limit is 64 MB`); return; }
   toast(`Uploading ${file.name} (${fmtSize(file.size)})…`);
   try {
-    const res = await fetch("/api/music", { method: "POST", headers: { "X-File-Name": file.name }, body: file });
+    // A raw header value must be Latin-1; encode it so names outside that
+    // range (e.g. non-ASCII show titles) do not throw inside fetch(). The
+    // server is expected to decodeURIComponent() it back.
+    const res = await fetch("/api/music", { method: "POST", headers: { "X-File-Name": encodeURIComponent(file.name) }, body: file });
     const result = await res.json();
     toast(result.error ? result.error : `${file.name} loaded`);
   } catch (err) { toast("Upload failed: " + err.message); }
@@ -870,6 +1121,7 @@ document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
+  if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
   if (e.target.id === "tp-music-remove") {
     if (confirm("Remove the loaded music?")) {
       const result = await api("/api/music/remove", {});
@@ -941,7 +1193,7 @@ document.addEventListener("click", async e => {
       const usable = item.designs.filter(d => designState(d) !== "bad");
       const next = usable.find(d => !mine.some(c => c.design === d.name)) || usable[0];
       if (next) added.push({ id: "c" + Math.random().toString(36).slice(2, 10), item: item.item, at: from.at,
-                             design: next.name, align: from.align, partial: designState(next) === "partial" });
+                             design: next.name, partial: designState(next) === "partial" });
     }
     if (!added.length) { toast("Every other item already has a cue at this time"); return; }
     await saveShow([...state.show.cues, ...added]); toast(`Added ${added.length} cue(s) at ${clock(from.at)}`); return;
@@ -961,7 +1213,7 @@ document.addEventListener("click", async e => {
     const next = item.designs.find(d => !mine.some(c => c.design === d.name)) || item.designs[0];
     const id = "c" + Math.random().toString(36).slice(2, 10);
     ui.cue = id; ui.playhead = at;
-    await saveShow([...state.show.cues, { id, item: item.item, at, design: next.name, align: "done",
+    await saveShow([...state.show.cues, { id, item: item.item, at, design: next.name,
                                           partial: designState(next) === "partial" }]);
     return;
   }
@@ -992,7 +1244,14 @@ document.addEventListener("change", async e => {
     const row = e.target.closest("tr");
     const seq = row.querySelector("[data-tr-seq]").value;
     const spanEl = row.querySelector("[data-tr-span]");
-    const span = seq === "natural" ? 0 : (Number(spanEl.value) || 0);
+    let span = 0;
+    if (seq !== "natural") {
+      // Number("3,5") (a comma decimal) is NaN, not 0 - do not let that
+      // silently post span_s: 0 and delete the transition. Refuse instead.
+      span = Number(spanEl.value.trim());
+      if (!(span >= 0 && span <= 30)) { toast("Span: 0 to 30 seconds (use a period for decimals, e.g. 3.5)"); renderContent(); return; }
+      span = Math.round(span * 10) / 10;
+    }
     const result = await api("/api/transition", { design, sequence: seq, span_s: span });
     if (result?.error) toast(result.error);
     await refresh();
@@ -1014,31 +1273,60 @@ document.addEventListener("change", async e => {
   } else if (id.startsWith("cue-")) {
     const cues = state.show.cues.map(c => ({ ...c })), cue = cues.find(c => c.id === ui.cue);
     if (!cue) return;
-    const effSweep = sweepOf(cue);
-    if (id === "cue-start" || id === "cue-end") {
+    const item = state.items.find(i => i.item === cue.item);
+    // Start simply moves the cue - no more turning an edited Start into a
+    // custom span behind the operator's back. Landing before the previous
+    // cue's Complete on this item is saved anyway and flagged as a problem
+    // by the server; it is never silently clamped.
+    if (id === "cue-start") {
       const seconds = parseClock(e.target.value);
       if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
-      const refresh = state.show.refresh_s;
-      if (id === "cue-end") {
-        cue.at = seconds; cue.align = "done";               // complete at this time
-      } else if (effSweep.sequence === "natural") {
-        cue.at = seconds; cue.align = "start";              // begins at this time
-      } else {
-        // A sweep: keep the end, and make the sweep last from this start to it.
-        const span = Math.max(0, Math.min(30, cue.complete - seconds - refresh));
-        if (Math.abs(span - (cue.complete - seconds - refresh)) > 1e-9) toast(`Sweep set to ${span.toFixed(1)} s: the boards' firmware allows 0 to 30 s from the first scale to the last`);
-        cue.transition = "custom"; cue.sequence = effSweep.sequence;
-        cue.span_s = Math.round(span * 10) / 10;
-        cue.at = cue.complete; cue.align = "done";
-      }
-    } else if (id === "cue-design") {
+      const onItem = item ? cuesOf(item) : [];
+      const idx = onItem.findIndex(c => c.id === cue.id);
+      const prev = idx > 0 ? onItem[idx - 1] : null;
+      cue.at = seconds;
+      await saveShow(cues);
+      if (prev && seconds < prev.complete) toast(`Starts before the previous picture is complete (${clock(prev.complete)})`);
+      return;
+    }
+    // End moves the NEXT cue's Start on this item, in the same save - refused
+    // outright (no save) if it would land before this picture is complete.
+    if (id === "cue-end") {
+      const seconds = parseClock(e.target.value);
+      if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
+      if (seconds < cue.complete) { toast(`End cannot be before the picture is complete (${clock(cue.complete)})`); renderTimeline(); return; }
+      const onItem = item ? cuesOf(item) : [];
+      const idx = onItem.findIndex(c => c.id === cue.id);
+      const next = idx >= 0 ? onItem[idx + 1] : null;
+      if (!next) { renderTimeline(); return; }         // the last cue: the field is disabled anyway
+      const nextCue = cues.find(c => c.id === next.id);
+      nextCue.at = seconds;
+      await saveShow(cues);
+      return;
+    }
+    if (id === "cue-refresh-show" || id === "cue-refresh-cue") {
+      cue.refresh_s = id === "cue-refresh-cue" ? refreshOf(cue).value : null;
+      await saveShow(cues);
+      return;
+    }
+    if (id === "cue-refresh") {
+      const seconds = Number(e.target.value);
+      if (!(seconds >= 1 && seconds <= 60)) { toast("Enter a refresh time of 1 to 60 seconds"); renderTimeline(); return; }
+      cue.refresh_s = Math.round(seconds * 10) / 10;
+      await saveShow(cues);
+      return;
+    }
+    if (id === "cue-transition-design" || id === "cue-transition-custom") {
+      cue.transition = id === "cue-transition-custom" ? "custom" : "design";
+      await saveShow(cues);
+      return;
+    }
+    if (id === "cue-design") {
       cue.design = e.target.value;                          // a design with "-" holes can only be a partial cue
-      const d = state.items.find(i => i.item === cue.item)?.designs.find(x => x.name === cue.design);
+      const d = item?.designs.find(x => x.name === cue.design);
       if (d) cue.partial = designState(d) === "partial";
     }
-    else if (id === "cue-align") cue.align = e.target.value;
     else if (id === "cue-partial") cue.partial = e.target.checked;
-    else if (id === "cue-transition") cue.transition = e.target.value;
     else if (id === "cue-seq") cue.sequence = e.target.value;
     else if (id === "cue-span") {
       const span = Number(e.target.value);
@@ -1106,22 +1394,31 @@ document.addEventListener("drop", async e => {
 });
 document.addEventListener("dragend", () => { dragged = null; clearDrop();
   document.querySelectorAll(".moving").forEach(p => p.classList.remove("moving")); });
+document.addEventListener("pointerdown", e => {
+  if (e.target.id === "ph") seeking = true;    // the loop must not fight an in-progress scrub
+});
+document.addEventListener("pointerup", () => { seeking = false; });
 document.addEventListener("input", e => {
   if (e.target.id !== "ph") return;
   const t = Number(e.target.value);
   ui.playhead = t;
   if (ui.playing) {                 // dragging the scrubber while playing seeks, not stops
-    if (playerUrl) player.currentTime = t;
-    else { ui.anchor = performance.now(); ui.startT = t; }
+    if (playerUrl) player.currentTime = t;   // "seeked" clears `seeking` once the async seek lands
+    else { ui.anchor = performance.now(); ui.startT = t; seeking = false; }
+  } else {
+    seeking = false;
   }
-  renderThumbs();
+  updatePlayheadDom(t);
+  updateThumbColors(t);
 });
-// Space toggles play/pause, except while typing or over a control that owns the key.
+// Space toggles play/pause, except while typing, over a control that owns the
+// key, or off the Timeline tab (there is nothing to play/pause to look at).
 document.addEventListener("keydown", e => {
   if (e.key !== " " && e.code !== "Space") return;
   if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (["input", "select", "textarea", "button"].includes(tag)) return;
+  if (ui.tab !== "timeline") return;
   e.preventDefault();
   togglePlayback();
 });
