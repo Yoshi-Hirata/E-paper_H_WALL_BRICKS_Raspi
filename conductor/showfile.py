@@ -6,10 +6,15 @@ may depend on. So everything is resolved here, on the PC - designs to
 arrays, board numbers to bus addresses, "complete at 2:00" to "send at
 1:53" - and the unit's file is just a list of
 
-    {"id", "at", "sent", "label", "boards": {addr: hex}, "state": {addr: hex}}
+    {"id", "at", "sent", "refresh_s", "label",
+     "boards": {addr: hex}, "state": {addr: hex}}
 
 in the order they are sent. `sent` is seconds from the start (the preset,
-loaded before START, has a negative one).
+loaded before START, has a negative one). `refresh_s` is the refresh
+this moment actually waits for - the slowest of the cues sharing it, a
+cue's own override or the show's default (conductor/timeline.py's
+effective_refresh()) - so a unit on different firmware still gets the
+right room before its next write.
 
 One unit cue is one broadcast, so items that share a unit (Look 20's top
 and skirt) and change at the same instant are one cue. Every cue writes
@@ -75,8 +80,7 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
     # any cue of the show has one, every cue carries tables - a natural
     # cue's say "no delay" - so a board never keeps a sweep it should
     # not; the unit only writes a table that differs from the last.
-    sweeps = any(c["sweep"]["sequence"] != "natural" and c["sweep"]["span_s"] > 0
-                for c in cues)
+    sweeps = any(timeline.sweeps(c) for c in cues)
     state = {address: blank() for address in addresses}
     unit_cues = []
     for number, sent in enumerate(sorted(moments)):
@@ -103,6 +107,11 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
             "id": f"q{number:02d}",
             "at": min(float(c["at"]) for c in moments[sent]),
             "sent": round(sent, 3),
+            # Items sharing a moment (one broadcast) may want different
+            # refresh times (different firmware): the unit waits for the
+            # slowest one before it may write the next cue's boards.
+            "refresh_s": max(timeline.effective_refresh(c, refresh)
+                             for c in moments[sent]),
             "label": " + ".join(labels),
             "boards": {str(a): bytes(change[a]).hex() for a in addresses},
             "state": {str(a): bytes(state[a]).hex() for a in addresses},

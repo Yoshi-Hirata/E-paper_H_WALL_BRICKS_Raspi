@@ -3,19 +3,26 @@
 Every item (a look, a bag) has its own track of cues, because the
 models do not all change together. A cue is
 
-    {"id", "item", "at", "design", "align", "partial",
+    {"id", "item", "at", "design", "partial", "refresh_s",
      "transition", "sequence", "span_s"}
 
-`at` is seconds from the start of the show. An e-paper refresh takes
-several seconds from the command to the finished image (REFRESH_S), so
-a time can mean two things and the cue says which:
+    Start ──refresh──▶ (sweep) ──▶ Complete ── held ──▶ End (next Start)
 
-    align "done"   the design is complete at `at`   (sent REFRESH_S earlier)
-    align "start"  the change begins at `at`        (complete REFRESH_S later)
+`at` IS **Start**: the instant the unit sends the show command and the
+e-paper begins refreshing. The one exception is the preset (`at <= 0`),
+shown before START - it is sent one refresh early, so it is already on
+the garment (complete at 0:00) when the show begins.
 
-"done" is the default: a running order says what the look is at a given
-moment. A cue at 0:00 is the preset - loaded before START, so the show
-opens on it - and its align does not matter.
+**Complete** is Start + refresh + the sweep's span (server field
+`complete`); **End** is the next cue's Start on the same item, or the
+show's duration for the last one (ends() below; server fields
+`end`/`end_source`, merged into state()'s cues by conductor/server.py).
+
+`refresh_s`, optional: `None` means the show's own refresh time
+(show.json's `refresh_s`); a number 1-60 (one decimal) overrides it for
+this cue alone - a board on older firmware, a different refresh mode.
+`cue["refresh"]` (server state) is the effective value actually used;
+`cue["refresh_source"]` says "show" or "cue".
 
 `transition` says whether the cue sweeps as its design does ("design",
 the default) or has its own sweep ("custom"). `sequence` and `span_s`
@@ -60,7 +67,6 @@ REFRESH_RANGE_S = (1.0, 60.0)
 SAVE_S_PER_BOARD = 0.22    # stop + save, measured
 MARGIN_S = 3.0
 DEFAULT_DURATION_S = 600.0
-ALIGNS = ("done", "start")
 
 _CLOCK = re.compile(r"^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)\s*$")
 
@@ -75,7 +81,9 @@ def parse_clock(text) -> float:
         return int(hours or 0) * 3600 + int(minutes) * 60 + float(seconds)
     try:
         return float(text)
-    except ValueError:
+    except (TypeError, ValueError):
+        # None, a dict, a list from hostile JSON - anything unparsable
+        # is the same "not a time", not a crash the caller must expect.
         raise ValueError(f"not a time: {text!r} (write m:ss)")
 
 
@@ -98,22 +106,78 @@ def span_of(cue: dict) -> float:
         return 0.0
 
 
-def times(cue: dict, refresh: float = REFRESH_S) -> "tuple[float, float]":
-    """(sent, complete) for a cue. The preset is complete at 0.
+def clean_refresh(value) -> "float | None":
+    """`None`, or a number rounded to 1 decimal, whatever its range -
+    validate() is where "1-60 s" is enforced, as a problem the operator
+    sees and can fix, never a silent clamp. Junk (a string, a dict, NaN)
+    is `None`: the show's own refresh_s, same as not overriding it."""
+    if value is None:
+        return None
+    try:
+        refresh = round(float(value), 1)
+    except (TypeError, ValueError):
+        return None
+    return None if refresh != refresh else refresh      # NaN
 
-    A cue with a sequence takes refresh + span from the send to the
-    finished picture. Rounded to the millisecond: send instants are
-    compared and used as keys ("the same moment" is one broadcast,
+
+def effective_refresh(cue: dict, refresh: float = REFRESH_S) -> float:
+    """The refresh this cue actually uses: its own `refresh_s` when it
+    is set, else the show's (the argument every caller passes)."""
+    own = cue.get("refresh_s")
+    return float(own) if isinstance(own, (int, float)) else refresh
+
+
+def times(cue: dict, refresh: float = REFRESH_S) -> "tuple[float, float]":
+    """(sent, complete) for a cue.
+
+    `at` IS sent, Start - except the preset (`at <= 0`), sent one
+    refresh before the show begins so it is already complete at 0:00.
+    Complete is sent + refresh + the sweep's span, using the cue's own
+    refresh when it set one. Rounded to the millisecond: send instants
+    are compared and used as keys ("the same moment" is one broadcast,
     showfile.py), and 10.3 - 7.3 is 3.000000000000001, not the 3.0 of a
     cue starting at 3.
     """
     at = float(cue["at"])
-    takes = refresh + span_of(cue)
-    if at <= 0:
-        return round(-takes, 3), 0.0
-    if cue.get("align", "done") == "start":
-        return round(at, 3), round(at + takes, 3)
-    return round(at - takes, 3), round(at, 3)
+    eff = effective_refresh(cue, refresh)
+    sent = round(at, 3) if at > 0 else round(-eff, 3)
+    complete = round(sent + eff + span_of(cue), 3)
+    return sent, complete
+
+
+def ends(cues: "list[dict]", refresh: float = REFRESH_S,
+        duration: float = DEFAULT_DURATION_S) -> "dict[str, tuple[float, str]]":
+    """{cue id: (end, "next"|"show")} for every cue - the next cue's
+    Start on the same item (by sent order), or the show's duration for
+    the last one. Kept separate from validate()/times() since it needs
+    every cue of an item's track at once rather than one at a time."""
+    result: "dict[str, tuple[float, str]]" = {}
+    by_item: "dict[str, list[dict]]" = {}
+    for cue in cues:
+        by_item.setdefault(cue["item"].lower(), []).append(cue)
+    for item_cues in by_item.values():
+        ordered = sorted(item_cues, key=lambda c: times(c, refresh)[0])
+        for index, cue in enumerate(ordered):
+            if index + 1 < len(ordered):
+                result[cue["id"]] = (times(ordered[index + 1], refresh)[0],
+                                     "next")
+            else:
+                result[cue["id"]] = (duration, "show")
+    return result
+
+
+def sweeps(cue: dict) -> bool:
+    """Whether a cue's resolved sweep (cue["sweep"], apply_transitions())
+    actually delays anything - the one definition showfile.py and
+    validate() must agree on, so a custom transition left at span 0
+    (switched back towards natural but not saved yet) is never charged
+    for delay tables it will not write."""
+    sweep = cue.get("sweep") or {}
+    try:
+        span = float(sweep.get("span_s") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return sweep.get("sequence", "natural") != "natural" and span > 0
 
 
 def clean(cues) -> "list[dict]":
@@ -122,15 +186,14 @@ def clean(cues) -> "list[dict]":
     for raw in cues or []:
         if not isinstance(raw, dict):
             continue
-        align = raw.get("align", "done")
         transition = raw.get("transition")
         result.append({
             "id": str(raw.get("id") or f"c{len(result)}")[:40],
             "item": str(raw.get("item", "")),
             "at": max(0.0, round(parse_clock(raw.get("at", 0)), 1)),
             "design": str(raw.get("design", "")),
-            "align": align if align in ALIGNS else "done",
             "partial": bool(raw.get("partial", False)),
+            "refresh_s": clean_refresh(raw.get("refresh_s")),
             "transition": transition if transition in ("design", "custom")
                          else "design",
             "sequence": clean_sequence(raw.get("sequence", "natural")),
@@ -153,7 +216,8 @@ def resolve(cue: dict, transitions: dict) -> dict:
         return {"sequence": clean_sequence(cue.get("sequence", "natural")),
                 "span_s": clean_span(cue.get("span_s", 0.0)),
                 "source": "cue"}
-    entry = transitions.get(cue.get("design", "")) or {}
+    entry = transitions.get(cue.get("design", ""))
+    entry = entry if isinstance(entry, dict) else {}
     return {"sequence": clean_sequence(entry.get("sequence", "natural")),
             "span_s": clean_span(entry.get("span_s", 0.0)),
             "source": "design"}
@@ -192,16 +256,15 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
             mine.append(f"{cue['design']} has problems (see the Designs tab)"
                         + ("" if cue["partial"] or not design["partial"] else
                            " - it has undecided scales: make this a partial cue"))
-        sent, complete = times(cue, refresh)
         if cue["at"] > duration:
             mine.append(f"{format_clock(cue['at'])} is after the end of the "
                         f"show ({format_clock(duration)})")
-        if cue["at"] > 0 and sent < 0:
-            takes = refresh + span_of(cue)
-            mine.append(
-                f"cannot be complete at {format_clock(cue['at'])}: this change "
-                f"takes {takes:.0f} s. Use 0:00 (the preset, before START) "
-                f"or {format_clock(takes)} and later")
+        own_refresh = cue.get("refresh_s")
+        if own_refresh is not None:
+            low, high = REFRESH_RANGE_S
+            if not low <= own_refresh <= high:
+                mine.append(f"this cue's refresh time ({own_refresh:g} s) "
+                           f"must be {low:.0f}-{high:.0f} s")
         sweep = cue.get("sweep") or {"sequence": "natural", "span_s": 0.0}
         if sweep["sequence"] != "natural":
             if cue.get("span") is None:
@@ -218,6 +281,23 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
             problems[cue["id"]].append(
                 f"{cue['item']} already has a cue sent at the same moment")
         seen.setdefault(key, cue["id"])
+
+    # A garment cannot start its next look before this one has finished
+    # painting: two cues of the SAME item, in the order they are sent.
+    overlapped: "set[str]" = set()
+    by_item: "dict[str, list[dict]]" = {}
+    for cue in cues:
+        by_item.setdefault(cue["item"].lower(), []).append(cue)
+    for item_cues in by_item.values():
+        ordered = sorted(item_cues, key=lambda c: times(c, refresh)[0])
+        for prev, cur in zip(ordered, ordered[1:]):
+            prev_sent, prev_complete = times(prev, refresh)
+            cur_sent = times(cur, refresh)[0]
+            if cur_sent != prev_sent and cur_sent < prev_complete:
+                problems[cur["id"]].append(
+                    "starts before the previous picture is complete "
+                    f"({format_clock(prev_complete)})")
+                overlapped.add(cur["id"])
 
     # Each unit's bus: refreshes need room between their send times.
     by_unit: "dict[str, list[dict]]" = {}
@@ -239,11 +319,12 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                 # The previous change occupies the bus for its own span,
                 # and a sweep has its delay tables to write as well.
                 gap = sent - previous
-                cue_sweep = cue.get("sweep") or {"sequence": "natural"}
                 extra = span_of(before) + (
-                    boards * SAVE_S_PER_BOARD
-                    if cue_sweep["sequence"] != "natural" else 0.0)
-                if gap < need + extra:
+                    boards * SAVE_S_PER_BOARD if sweeps(cue) else 0.0)
+                same_item = (before is not None
+                            and cue["item"].lower() == before["item"].lower())
+                if gap < need + extra and not (
+                        same_item and cue["id"] in overlapped):
                     problems[cue["id"]].append(
                         f"only {gap:.0f} s after the previous refresh on {unit}; "
                         f"its {boards} boards need {need + extra:.0f} s "

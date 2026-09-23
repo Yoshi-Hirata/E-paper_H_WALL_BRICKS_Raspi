@@ -18,6 +18,37 @@
 
 ## 2. 直近で完成したもの
 
+**キューの時間の意味を統一: Start・Complete・End、キューごとの書き換え時間(2026-09-24)**
+
+- **`at` = Start(指令を送った瞬間、e ペーパーが書き換えを始める時刻)に統一**。`align`
+  (`"done"`/`"start"`)は廃止。**Complete** = Start + 書き換え時間 + スイープの Span、
+  **End** = 同じアイテムの次のキューの Start(最後のキューはショーの終わり)。
+  `/api/state` の各キューは `sent`/`complete` に加えて `end`・`end_source`
+  (`"next"`|`"show"`)を返す
+- **キューごとの書き換え時間の上書き**: `cue.refresh_s`(null か 1〜60 s の数値、null =
+  ショー既定値)。有効値は `cue.refresh` / どちらを使ったかは `cue.refresh_source`
+  (`"show"`|`"cue"`)。範囲外は保存時にクランプせず `validate()` の問題として警告。
+  ユニット向けの書き出しファイル(`showfile.build_unit_show`)の各キューにも実効値を
+  `refresh_s` として持たせ、同じ瞬間に複数アイテムが重なる場合は一番遅い値を採用。
+  `ui/showplay.py` はショー既定より先にキュー自身の `refresh_s` を見る
+- **旧 `align` 付きの show.json は自動移行**: `Workspace` が一度だけ、`align: "done"` の
+  キューの `at` をその時点の書き換え・スイープから逆算して Start に付け替え、
+  `align: "start"` はキーを外すだけ。undo 1 手にまとまり、2 回目の読み込みでは何も
+  変わらない(冪等)。エクスポート/インポートも同じ移行を通す
+- 同じアイテムの次のキューが前のキューの Complete より前に始まる場合は
+  「starts before the previous picture is complete」と明示(バス間隔の警告と二重には
+  出さない)
+- レビュー指摘の修正: インポートの `transitions` が壊れた値でも `/api/state` を落とさない
+  よう検証・無害化、`{"at": null}` 等の壊れた JSON は 400(500 落ちを修正)、
+  `showfile`/`validate()` の「スイープするか」の判定を 1 箇所(`timeline.sweeps()`)に統一、
+  `set_transition` も 30 s 上限を強制、BGM 配信のキャッシュヘッダ(ETag・長期キャッシュ)と
+  拡張子チェック、アップロードのファイル名を unquote、`save_music` は先にポインタを
+  commit してからファイルを差し替え(失敗時に旧ファイルを消さない)、ユニット側は配送
+  テーブル送信失敗時のキャッシュ忘れと `delay_unit_ms` 不一致の拒否を追加
+- 変更ファイル: `conductor/timeline.py`・`conductor/server.py`・`conductor/showfile.py`・
+  `ui/showplay.py`・`ui/runner.py`、テスト一式。表示側(`conductor/web/index.html`)は
+  別担当
+
 **アイテム名を制作サイトの型番に揃えた(2026-09-24)**
 
 - 制作インデックス https://vglabjp.synology.me/az27ss/ が更新され、配線ナビの書き出しファイル名の

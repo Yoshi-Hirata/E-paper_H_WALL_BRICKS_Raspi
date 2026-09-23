@@ -71,9 +71,9 @@ def test_a_show_file_holds_every_cue_resolved_for_the_unit(tmp_path):
     assert preset["label"] == "Look20-Skirt P01 + Look20-Top P01"
     assert bytes.fromhex(preset["boards"]["1"])[7] == 0x0A      # skirt 001-07
     assert bytes.fromhex(preset["boards"]["3"])[1] == 0x03      # top 017-01
-    # The partial cue: sent 1 s before 0:20, touches board 3 socket 1 only;
-    # every other board is written "refresh nothing".
-    assert accent["sent"] == 19.0 and accent["label"] == "Look20-Top P02*"
+    # The partial cue: "at" IS Start, sent at 0:20; touches board 3 socket
+    # 1 only, every other board is written "refresh nothing".
+    assert accent["sent"] == 20.0 and accent["label"] == "Look20-Top P02*"
     change = bytes.fromhex(accent["boards"]["3"])
     assert change[1] == 0x08 and change[60] == 0xFF
     assert all(bytes.fromhex(accent["boards"][a]) == bytes(blank())
@@ -186,10 +186,10 @@ def test_upload_preset_start_and_both_units_fire_together(stage):
                                   for u in units.values()), timeout=8)
     fired = [u.shows[1] for u in units.values()]
     assert max(fired) - min(fired) < 0.05                   # together
-    # Sent 1 s (the refresh) before 0:06, on the PC's clock.
+    # "at" IS Start: sent at 0:06 sharp, on the PC's clock.
     offsets = [fleet.links[n].offset for n in units]
     for stamp, offset in zip(fired, offsets):
-        assert -TICK <= (stamp - offset) - (t0 + 5.0) < 0.06
+        assert -TICK <= (stamp - offset) - (t0 + 6.0) < 0.06
     assert all(len(u.shows) == 2 for u in units.values())   # preset not redone
     snap = fleet.snapshot()
     assert snap["run"]["state"] == "running" and snap["run"]["now"] > 5
@@ -272,7 +272,7 @@ def test_a_unit_that_restarts_is_put_right_without_being_asked(stage):
     fired = [units[n].shows[-1] for n in ("radxa-01", "radxa-02")]
     assert max(fired) - min(fired) < 0.05
     offset = fleet.links["radxa-01"].offset
-    assert -TICK <= (fired[0] - offset) - (t0 + 5.0) < 0.06
+    assert -TICK <= (fired[0] - offset) - (t0 + 6.0) < 0.06
 
 
 def test_a_running_show_refuses_loose_cues_but_not_the_panic_white(stage):

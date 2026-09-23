@@ -407,6 +407,15 @@ def test_show_files_missing_what_the_player_needs_are_refused(rig):
     assert player.show is None
 
 
+def test_a_show_with_the_wrong_delay_unit_ms_is_refused(rig):
+    player, *_ = rig
+    good = make_show()
+    with pytest.raises(RemoteError):
+        player.load(dict(good, delay_unit_ms=20))       # this unit's frame is 10 ms
+    player.load(dict(good, delay_unit_ms=10))            # matches: fine
+    assert player.show is not None
+
+
 def test_a_restored_t0_in_the_future_is_not_trusted(rig):
     player, session, runner, bus, store = rig
     player.load(make_show(duration=60))
@@ -534,6 +543,37 @@ def test_starting_again_from_the_top_runs_every_cue_again(rig):
     assert len(show_times(bus)) == first_run + 3
     assert player.applied == "q02"
     assert 0 <= show_times(bus)[-2] - (t0 + 0.8) < 0.05
+
+
+def test_a_cue_with_its_own_refresh_time_spaces_the_next_write_by_it(rig):
+    player, session, runner, bus, _ = rig
+    current = make_show(sents=(-REFRESH, 0.0, 1.0))["cues"][1]
+    nxt = make_show(sents=(-REFRESH, 0.0, 1.0))["cues"][2]
+
+    def need_for(refresh):
+        return (player._lead(current) + refresh
+                + player._lead(nxt, after_another=True))
+
+    need_default = need_for(REFRESH)            # the show's own refresh
+    override = REFRESH / 3                      # this cue's own, much faster
+    need_own = need_for(override)
+    assert need_own < need_default              # the override must matter
+    room = (need_default + need_own) / 2        # enough for its own, not the show's
+
+    def plan_with(refresh_s):
+        show = make_show(sents=(-REFRESH, 0.0, room + 0.05), duration=1000)
+        if refresh_s is not None:
+            show["cues"][1]["refresh_s"] = refresh_s
+        player.load(show)
+        with player._lock:
+            player.state = RUNNING
+            player.t0 = time.monotonic() - 0.05
+            player.applied = show["cues"][1]["id"]
+            player.dirty = True                 # needs a whole repaint
+        return player._plan()[1]
+
+    assert plan_with(None) is None              # the show's default is too slow
+    assert plan_with(override) is not None      # its own, smaller one fits
 
 
 def test_a_cue_with_delay_tables_hands_them_to_the_session(rig):
