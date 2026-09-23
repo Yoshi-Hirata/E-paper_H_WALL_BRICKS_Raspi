@@ -132,7 +132,7 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
 | 行 | 動作 |
 |---|---|
 | `UPDATE FW` | 基板の FW を OTA で書き込む(485 を抜いて 1 枚ずつ)。確認画面で **LEFT / RIGHT** が書き込む版(`FW/FW_*` にある全部、既定は最新)、UP / DOWN が基板 |
-| `FW VERSION` | 応答した基板の FW を一覧 |
+| `FW VERSION` | 応答した基板の FW を一覧。V1.4(FW_260923 以降)は `V1.4 16-color`、それ以前は `V1.1` と出る(USB 直結の 1 枚に 0x25 で判別) |
 | `GIT PULL` | `git pull --ff-only`。更新があれば KEY1 で UI を再起動 |
 | **`REBOOT`** | **機体(OS)を再起動**。確認画面で **KEY1 を 1 秒長押し**したときだけ実行(短押しでは何も起きない)。KEY2 で中止 |
 

@@ -63,12 +63,14 @@ def wall(tmp_path):
     return FakeOtaBus(answers={1, 2, 7, 20})
 
 
-def alone(addr, firmware=None, v10=False):
-    """One board on USB, 485 unplugged: the only case 0x29 is sent."""
+def alone(addr, firmware=None, v10=False, v14=True):
+    """One board on USB, 485 unplugged: the only case 0x29 (and 0x25) is
+    sent. V1.4 boards answer 0x25; V1.1 boards refuse it."""
     special = ACK_INVALID_CMD if v10 else (
         ota.image_fingerprint(firmware) if firmware else None)
     return FakeOtaBus(answers={addr},
-                      per_addr={addr: special} if special else {})
+                      per_addr={addr: special} if special else {},
+                      nak={} if v14 else {0x25: ACK_INVALID_CMD})
 
 
 # ---- host/ota.py ----
@@ -118,7 +120,8 @@ def test_scan_reports_progress_per_address():
 def test_lone_usb_board_is_identified(tmp_path):
     for bus, label in ((alone(2, firmware=NEW), "FW_260917"),
                        (alone(2, firmware=OLD), "FW_260903"),
-                       (alone(2), "V1.1, no flash record here"),
+                       (alone(2), "V1.4 16-color (FW_260923+), no flash record here"),
+                       (alone(2, v14=False), "V1.1 16-color, no flash record here"),
                        (alone(2, v10=True), "V1.0 6-color (no OTA)")):
         versions = make_versions(tmp_path, bus=bus)
         assert versions.phase == IDLE
@@ -301,3 +304,32 @@ def test_long_labels_wrap_on_the_versions_screen_and_page():
     later = render.versions_screen(rows, "USB 48EC7570324C", "done",
                                    "FW_260917", offset=render.VERSION_ROWS)
     assert later.tobytes() != image.tobytes()
+
+
+def test_0x25_tells_v1_4_from_v1_1_and_goes_only_to_the_lone_usb_board(tmp_path):
+    # V1.4: 0x25 answered; V1.1: refused; the 485 crowd is never asked.
+    bus = alone(2)
+    versions = make_versions(tmp_path, bus=bus)
+    versions.scan()
+    assert wait_until(lambda: versions.phase == DONE)
+    clears = [f for f in bus.sent if f.cmd == 0x25]
+    assert [f.dest for f in clears] == [2] and clears[0].data == bytes([19])
+    assert versions.rows[0][1].startswith("V1.4")
+    bus = wall(tmp_path)
+    versions = make_versions(tmp_path, bus=bus)
+    versions.scan()
+    assert wait_until(lambda: versions.phase == DONE)
+    assert [f for f in bus.sent if f.cmd in (0x25, ota.CMD_OTA_QUERY)] == []
+
+
+def test_a_v1_4_board_whose_record_is_older_is_flagged(tmp_path):
+    from ui import flashlog
+
+    log = tmp_path / "flash.json"
+    flashlog.record("48EA604B324C", 2, "FW_260917/MCB_e16_2029.09.17.bin", 1, 2, path=log)
+    versions = make_versions(tmp_path, bus=alone(2), flash_log=log,
+                             serial_of=lambda port: "48EA604B324C")
+    versions.scan()
+    assert wait_until(lambda: versions.phase == DONE)
+    label = versions.rows[0][1]
+    assert label.startswith("V1.4") and "FW_260917" in label and "older than the board" in label

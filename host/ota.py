@@ -45,6 +45,7 @@ from epaper.protocol import (
     Frame,
     crc16_modbus,
 )
+from epaper.commands import TEST_SLOT, clear_pipeline
 from epaper.commands import stop as stop_frame
 from epaper.transport import Bus, find_port
 
@@ -224,6 +225,29 @@ def scan(bus: Bus, boards=SCAN_BOARDS,
     addr = next(iter(present))
     bus.send(_frame(addr, CMD_OTA_QUERY))
     return {addr: _ack_from(bus, addr, max(timeout, 0.8))}
+
+
+def pipeline_supported(bus: Bus, addr: int, groups: int = 21,
+                       log: Log = print_log) -> bool | None:
+    """Does the board run the V1.4 protocol (FW_260923 and later)?
+
+    0x29 cannot tell V1.1 from V1.4 (both answer it, and the size/crc
+    are 0 after a reboot). V1.4 added the per-segment pipeline family;
+    0x25 "clear pipeline" of the test slot is its harmless member - a
+    delay table the runner writes again before every sweep. V1.1 answers
+    ACK_INVALID_CMD. Unicast to the USB board only, like 0x29. True /
+    False, or None when the board does not answer at all.
+    """
+    ack = _request(bus, clear_pipeline(addr, TEST_SLOT, groups, dev_type=3),
+                   timeout=0.8, log=log)
+    if ack is None:
+        return None
+    if ack.cmd == ACK_SUCCESS:
+        return True
+    if ack.cmd == ACK_INVALID_CMD:
+        return False
+    log(f"Board 0x{addr:02X}: 0x25 answered {ack.describe()}")
+    return None
 
 
 def describe_found(ack: Frame | None) -> str:

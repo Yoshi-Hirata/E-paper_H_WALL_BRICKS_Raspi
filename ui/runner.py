@@ -540,6 +540,7 @@ class DemoRunner:
         time.sleep(0.3)
         if self.explore:
             self.boards = list(DEFAULT_BOARDS)      # the search starts over
+        self._delays_sent.clear()       # FW VERSION's 0x25 / a reboot may have cleared them
         known_absent = {b for b in self.boards if b in self.absent}
         pending = list(self.boards)
         found: list[int] = []

@@ -6,7 +6,10 @@ variant tried 2026-09-17), so the OTA state query (0x29) is the
 fingerprint: V1.0 firmware rejects it, V1.1 answers it. The size/CRC in
 that answer would name the bundled image (ota.identify), but the boards
 report 0 after their post-OTA reset, so in practice the answer is only
-"V1.0" or "V1.1".
+"V1.0" or "V1.1". V1.4 (FW_260923) answers 0x29 like V1.1; what tells
+them apart is the pipeline family it added, so the lone USB board is
+also asked 0x25 (ota.pipeline_supported): "V1.4 16-color" when it
+answers, "V1.1" when it refuses.
 
 0x29 may only go to the USB-attached board: relayed over the 485 it is
 never answered and wedges the USB board's CDC (ota.scan explains). So
@@ -33,6 +36,7 @@ from pathlib import Path
 import serial
 
 import ota
+from epaper.protocol import ACK_SUCCESS
 from epaper.transport import Bus, find_port, port_serial
 
 from . import flashlog
@@ -54,6 +58,7 @@ class BoardVersions:
     def __init__(self, boards: list[int] | None = None,
                  port: str | None = None, open_bus=None, locate=find_port,
                  scan=ota.scan, catalog: dict | None = None,
+                 v14=ota.pipeline_supported,
                  firmware_dir: Path = FIRMWARE_DIR, echo_log: bool = True,
                  serial_of=port_serial,
                  flash_log: Path = flashlog.DEFAULT_PATH):
@@ -65,6 +70,7 @@ class BoardVersions:
         self._open_bus = open_bus or (lambda p: Bus(p, verbose=False))
         self._locate = locate
         self._scan = scan
+        self._v14 = v14
         self.catalog = (catalog if catalog is not None
                         else ota.bundled_images(firmware_dir))
         self._echo_log = echo_log
@@ -145,14 +151,20 @@ class BoardVersions:
             self.rows.append((addr, "answers..."))
         self.status = f"scanning {self.asked}/{len(self.boards)}..."
 
-    def _label(self, ack) -> str:
+    def _label(self, ack, v14: bool | None = None) -> str:
         if ack is None:
             return self.ON_BUS
         label = ota.identify(ack, self.catalog)
         if label.startswith("V1.1") and "build unknown" in label:
-            # The board cannot say which build; the flash record can.
-            label = "V1.1, " + flashlog.describe(
-                flashlog.lookup(self.usb_serial, self.flash_log))
+            # The board cannot say which build; 0x25 tells V1.4 from
+            # V1.1, and the flash record names the file.
+            record = flashlog.lookup(self.usb_serial, self.flash_log)
+            family = ("V1.4 16-color (FW_260923+)" if v14 else
+                      "V1.1 16-color" if v14 is False else
+                      "V1.1/V1.4 16-color (0x25 unanswered)")
+            label = f"{family}, {flashlog.describe(record)}"
+            if v14 and record and "FW_2609" in str(record) and "FW_260923" not in str(record):
+                label += " - record older than the board"
         return label
 
     def _run(self) -> None:
@@ -166,7 +178,14 @@ class BoardVersions:
             self.usb_serial = self._serial_of(port)
             with self._open_bus(port) as bus:
                 found = self._scan(bus, self.boards, progress=self._progress)
-            self.rows = [(addr, self._label(ack)) for addr, ack in found.items()]
+                v14 = {}
+                if len(found) == 1:             # alone on USB: may be asked
+                    (addr, ack), = found.items()
+                    if ack is not None and ack.cmd == ACK_SUCCESS:
+                        v14[addr] = self._v14(bus, addr, max(self.boards),
+                                              log=self.emit)
+            self.rows = [(addr, self._label(ack, v14.get(addr)))
+                         for addr, ack in found.items()]
             for addr, label in self.rows:
                 self.emit(f"board {addr:02d}: {label}")
             answering = len(found)
