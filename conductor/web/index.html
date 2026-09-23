@@ -205,9 +205,25 @@ body.busy .go button { opacity: .45; pointer-events: none; }
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
-             board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "" };
+             board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
+             playing: false, anchor: 0, startT: 0 };
 let fleet = null;
 let state = null;
+// The transport's audio element: a singleton that is NEVER inserted into the DOM,
+// so renderTimeline()'s innerHTML= (fired by every edit) can never interrupt it.
+const player = new Audio();
+let playerUrl = null;               // the last URL assigned to player.src (reassign only when it changes)
+function syncPlayerSrc() {
+  const url = state?.music?.url || null;
+  if (url === playerUrl) return;
+  playerUrl = url;
+  if (url) player.src = url; else player.removeAttribute("src");
+}
+function fmtSize(bytes) {
+  if (bytes === null || bytes === undefined) return "";
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? mb.toFixed(1) + " MB" : Math.max(1, Math.round(bytes / 1024)) + " KB";
+}
 const PITCH = 0.78, MARGIN = 1.2;
 
 async function api(path, body) {
@@ -239,6 +255,7 @@ async function refresh() {
   state = await api("/api/state");
   $("#ws").textContent = "workspace: " + state.workspace;
   if (!state.items.some(i => i.item === ui.item)) ui.item = state.items[0]?.item ?? null;
+  syncPlayerSrc();
   render();
 }
 function render() {
@@ -388,12 +405,16 @@ function renderContent() {
           ${(item.map.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
         </div>
         <div class="card"><h2>DESIGNS OF THIS ITEM (${item.designs.length})</h2>
-          <table><tbody>${item.designs.map(d => {
+          <table><thead><tr><th>LOOK</th><th>FILE</th><th>STATUS</th><th>ON TIMELINE</th><th>TRANSITION</th><th></th></tr></thead><tbody>${item.designs.map(d => {
             const at = used.filter(c => c.design === d.name).map(c => clock(c.at));
+            const tr = d.transition || { sequence: "natural", span_s: 0 };
             return `<tr class="pick ${d.name === ui.design ? "hl" : ""}" data-design="${esc(d.name)}">
               <td><b>${esc(designLabel(d))}</b></td><td>${esc(d.name)}</td>
               <td>${designBadge(d)}</td>
               <td class="meta">${at.length ? "timeline: " + at.join(", ") : "unused"}</td>
+              <td><select data-tr-seq="${esc(d.name)}">${state.sequences.map(s =>
+                `<option value="${esc(s.id)}" ${s.id === tr.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
+                <span ${tr.sequence === "natural" ? 'style="display:none"' : ""}><input type="text" data-tr-span="${esc(d.name)}" size="4" value="${tr.span_s}" title="Seconds from the command to the first rank to the command to the last"> s</span></td>
               <td><button data-del="${esc(d.name)}" title="Delete from the workspace">×</button></td></tr>`; }).join("")
             || `<tr><td class="meta">Add design CSV files (*_color_NAME_grid.csv)</td></tr>`}</tbody></table>
           <div class="meta" style="margin-top:8px"><label class="filebtn">Add CSV to this item<input id="pick-own" type="file" accept=".csv" multiple></label>
@@ -425,15 +446,22 @@ function fileList(item) {
 function trackItems() { return state.items.filter(i => i.map && i.map.scales.length); }
 function cuesOf(item) { return state.show.cues.filter(c => c.item === item.item).sort((a, b) => a.sent - b.sent); }
 const seqLabel = id => state.sequences.find(s => s.id === id)?.label || id;
+// The cue's effective sweep: what actually delays the scales, whether it comes
+// from the design's default or the cue's own override. Defensive against a
+// server that does not compile it yet.
+const sweepOf = cue => cue.sweep || { sequence: "natural", span_s: 0, source: "design" };
 // The scales a sweeping cue has finished by t: rank x step is a scale's
 // delay, and it is done one refresh after that.
 function sweptColors(item, cue, design, t) {
-  const ranks = item.sequences?.[cue.sequence];
+  const sweep = sweepOf(cue);
+  const ranks = item.sequences?.[sweep.sequence];
   if (!ranks) return design.colors;
   const refresh = state.show.refresh_s, done = {};
+  const maxRank = Math.max(...ranks, 0);
   item.map.scales.forEach((s, n) => {
     const key = `${s[0]}|${s[1]}|${s[2]}`;
-    if (key in design.colors && cue.sent + ranks[n] * cue.step_s + refresh <= t) done[key] = design.colors[key];
+    const delay = maxRank > 0 ? ranks[n] * sweep.span_s / maxRank : 0;
+    if (key in design.colors && cue.sent + delay + refresh <= t) done[key] = design.colors[key];
   });
   return done;
 }
@@ -443,10 +471,11 @@ function wornAt(item, t) {
   let colors = {}, shifts = null, label = "(as before the show)", changing = false;
   for (const cue of cuesOf(item)) {
     const design = item.designs.find(d => d.name === cue.design);
+    const sweep = sweepOf(cue);
     if (cue.sent <= t && t < cue.complete) changing = true;
     if (!design) continue;
     if (cue.complete > t) {
-      if (cue.sequence !== "natural" && cue.sent <= t) colors = { ...colors, ...sweptColors(item, cue, design, t) };
+      if (sweep.sequence !== "natural" && sweep.span_s > 0 && cue.sent <= t) colors = { ...colors, ...sweptColors(item, cue, design, t) };
       continue;
     }
     colors = cue.partial ? { ...colors, ...design.colors } : { ...design.colors };
@@ -457,7 +486,8 @@ function wornAt(item, t) {
 async function saveShow(cues, duration, refreshS) {     // not "refresh": that is the reload function
   const result = await api("/api/show", { duration: duration ?? state.show.duration,
     refresh_s: refreshS ?? state.show.refresh_s,
-    cues: cues.map(({ id, item, at, design, align, partial, sequence, step_s }) => ({ id, item, at, design, align, partial, sequence, step_s })) });
+    cues: cues.map(({ id, item, at, design, align, partial, transition, sequence, span_s }) =>
+      ({ id, item, at, design, align, partial, transition: transition || "design", sequence: sequence || "natural", span_s: span_s ?? 0 })) });
   if (result.error) toast(result.error);
   await refresh();
 }
@@ -491,14 +521,21 @@ function renderTimeline() {
 
   const cue = show.cues.find(c => c.id === ui.cue) || null;
   const cueItem = cue && state.items.find(i => i.item === cue.item);
+  const sweep = cue && sweepOf(cue);
+  const transitionMode = cue && (cue.transition || "design");
   const all = [...show.cues].sort((a, b) => a.at - b.at || a.item.localeCompare(b.item));
   const bad = all.reduce((n, c) => n + c.problems.length, 0);
+  const music = state.music || null;
 
   root.innerHTML = `
     <div class="toolbar">
       <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
       <div class="group"><span>Refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
         title="Seconds from the command to the finished image. Depends on the firmware (about 7 s on the latest, 16 s on older ones)"><span>s</span></div>
+      <div class="group">
+        <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
+        <label class="filebtn" title="Replace the timeline, transitions, labels and unit assignments from a saved JSON file">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
+      </div>
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
         hatched = refreshing (${show.refresh_s} s)</div>
     </div>
@@ -520,19 +557,37 @@ function renderTimeline() {
           <option value="done" ${cue.align === "done" ? "selected" : ""}>end</option>
           <option value="start" ${cue.align === "start" ? "selected" : ""}>start</option></select></label>
         <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label>
+        <label>Transition <select id="cue-transition">
+          <option value="design" ${transitionMode === "design" ? "selected" : ""}>design default</option>
+          <option value="custom" ${transitionMode === "custom" ? "selected" : ""}>custom</option>
+        </select></label>
+        ${transitionMode === "custom" ? `
         <label>Sequence <select id="cue-seq">${state.sequences.map(s =>
-          `<option value="${s.id}" ${s.id === cue.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>
-        <label ${cue.sequence === "natural" ? 'style="display:none"' : ""}>Step <input type="text" id="cue-step" value="${cue.step_s}" size="4" title="Seconds between two rows (or columns, or rings) of the sweep"> s
-          ${cue.span ? `<span class="meta">· sweep ${cue.span.toFixed(1)} s, change ${(cue.complete - cue.sent).toFixed(0)} s in all</span>` : ""}</label>
+          `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>
+        <label ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}>Span <input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" title="Seconds from the command to the first rank to the command to the last"> s</label>`
+        : `<span class="meta">${sweep.sequence === "natural" ? "No sweep (design default)" : `${esc(seqLabel(sweep.sequence))} · ${sweep.span_s.toFixed(1)} s (design default)`}</span>`}
         <button id="cue-show">View design</button>
         <button id="cue-all" title="Give every other item a cue at this time (with its own next unused design)">Copy time to all items</button>
         <button id="cue-del" class="danger">Delete</button>
-        <span class="meta">${cue.at <= 0 ? "Preset: shown before START" : `${(cue.complete - cue.sent).toFixed(1)} s from start to end: ${show.refresh_s} s refresh${cue.span ? ` + ${cue.span.toFixed(1)} s sweep` : ""}`}</span>
+        <span class="meta">${cue.at <= 0 ? "Preset: shown before START" : cue.span
+          ? `sweep ${cue.span.toFixed(1)} s · change ${(cue.complete - cue.sent).toFixed(0)} s in all`
+          : `change ${(cue.complete - cue.sent).toFixed(0)} s in all (${show.refresh_s} s refresh)`}</span>
       </div>
       ${cue.problems.length ? `<ul class="problems" style="margin-top:8px">${cue.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}`
       : `<div class="meta">Select a cue, or click a track to add one.</div>`}
     </div>
     <div class="card"><h2>THE LOOKS AT — <span id="ph-label"></span></h2>
+      <div class="editor" id="transport" style="margin-bottom:8px">
+        <button id="tp-play" title="Play/Pause (Space)">${ui.playing ? "⏸ Pause" : "▶ Play"}</button>
+        <button id="tp-stop" title="Stop and rewind to 0:00">⏹ Stop</button>
+        <span class="meta" id="tp-time">${clock(ui.playhead)} / ${clock(D)}</span>
+        <span style="flex:1"></span>
+        ${music
+          ? `<span class="meta">${esc(music.name)} (${fmtSize(music.size)})</span>
+             <label class="filebtn">Replace<input type="file" id="tp-music-replace" accept="audio/*"></label>
+             <button id="tp-music-remove" class="danger">Remove</button>`
+          : `<label class="filebtn">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`}
+      </div>
       <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
       <div class="thumbs" id="thumbs" style="margin-top:8px"></div>
     </div>
@@ -540,8 +595,9 @@ function renderTimeline() {
       ${show.warnings.map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
       <table><thead><tr><th>TIME</th><th>ITEM</th><th>UNIT</th><th>DESIGN</th><th>SENT → COMPLETE</th><th>STATUS</th></tr></thead><tbody>
       ${all.map(c => { const it = state.items.find(i => i.item === c.item); const d = it?.designs.find(x => x.name === c.design);
+        const sw = sweepOf(c);
         return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}"><td><b>${clock(c.at)}</b></td><td>${esc(itemFull(it) || c.item)}</td>
-        <td>${esc(it?.unit || "-")}</td><td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}${c.sequence !== "natural" ? ` <span class="meta">· ${esc(seqLabel(c.sequence))} ${c.step_s} s</span>` : ""}</td>
+        <td>${esc(it?.unit || "-")}</td><td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}${sw.sequence !== "natural" && sw.span_s > 0 ? ` <span class="meta">· ${esc(seqLabel(sw.sequence))} ${sw.span_s.toFixed(1)} s${c.transition === "custom" ? "" : " (design)"}</span>` : ""}</td>
         <td>${c.at <= 0 ? "preset" : clock(c.sent) + " → " + clock(c.complete)}</td>
         <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
         || `<tr><td class="meta" colspan="6">No cues yet</td></tr>`}
@@ -560,6 +616,90 @@ function renderThumbs() {
       ${worn.changing ? `<span class="chg">refreshing…</span>` : ""}</div>
       ${renderGarment(item, { cell: 8, mode: "design", labels: false, colors: worn.colors, shifts: worn.shifts })}</div>`;
   }).join("");
+}
+
+// ---- transport: play / pause / stop, driven by requestAnimationFrame ----
+// The loop never calls renderTimeline() or render() - only direct DOM pokes plus
+// a throttled renderThumbs() - so it never fights an edit's own re-render, and a
+// re-render (from saveShow/refresh) never interrupts it: ui.playing/ui.playhead
+// live outside the DOM and are simply read again when the markup is rebuilt.
+function updatePlayheadDom(t) {
+  const D = state.show.duration;
+  const ph = $("#ph"); if (ph) ph.value = Math.round(Math.max(0, Math.min(D, t)));
+  const label = $("#ph-label"); if (label) label.textContent = clock(t);
+  const marker = $("#playhead"); if (marker) marker.style.left = (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
+  const tpTime = $("#tp-time"); if (tpTime) tpTime.textContent = `${clock(t)} / ${clock(D)}`;
+}
+function renderTransport() {
+  const btn = $("#tp-play"); if (btn) btn.textContent = ui.playing ? "⏸ Pause" : "▶ Play";
+}
+let lastThumbAt = 0;
+function tick() {
+  if (!ui.playing) return;
+  const D = state.show.duration;
+  let t = playerUrl ? player.currentTime : (performance.now() - ui.anchor) / 1000 + ui.startT;
+  if (t >= D) {
+    ui.playhead = D; updatePlayheadDom(D); renderThumbs();
+    stopPlayback(false);
+    return;
+  }
+  ui.playhead = t;
+  updatePlayheadDom(t);
+  const now = performance.now();
+  if (now - lastThumbAt >= 100) { lastThumbAt = now; renderThumbs(); }
+  requestAnimationFrame(tick);
+}
+function startPlayback() {
+  if (ui.playing) return;
+  ui.playing = true;
+  if (playerUrl) {
+    player.currentTime = ui.playhead;
+    const p = player.play();
+    if (p?.catch) p.catch(err => { ui.playing = false; renderTransport(); toast("Could not play the music: " + err.message); });
+  } else {
+    ui.anchor = performance.now(); ui.startT = ui.playhead;
+  }
+  renderTransport();
+  requestAnimationFrame(tick);
+}
+function pausePlayback() {
+  if (!ui.playing) return;
+  ui.playing = false;
+  if (playerUrl) player.pause();
+  renderTransport();
+}
+function stopPlayback(rerender = true) {
+  ui.playing = false;
+  if (playerUrl) { player.pause(); player.currentTime = 0; }
+  ui.playhead = 0;
+  if (rerender) renderTimeline(); else { renderTransport(); updatePlayheadDom(0); }
+}
+function togglePlayback() { ui.playing ? pausePlayback() : startPlayback(); }
+const MAX_MUSIC = 64 * 1024 * 1024;
+async function uploadMusic(file) {
+  if (!file) return;
+  if (file.size > MAX_MUSIC) { toast(`${file.name} is too large (${fmtSize(file.size)}) - the limit is 64 MB`); return; }
+  toast(`Uploading ${file.name} (${fmtSize(file.size)})…`);
+  try {
+    const res = await fetch("/api/music", { method: "POST", headers: { "X-File-Name": file.name }, body: file });
+    const result = await res.json();
+    toast(result.error ? result.error : `${file.name} loaded`);
+  } catch (err) { toast("Upload failed: " + err.message); }
+  await refresh();
+}
+async function loadShowFile(file) {
+  if (!file) return;
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { toast("Not a show file"); return; }
+  if (!data || data.format !== "epaper-show") { toast("Not a show file"); return; }
+  if (!confirm(`Replace the timeline, transitions, labels and unit assignments with ${file.name}? (Undo restores the current ones)`)) return;
+  if (ui.playing) stopPlayback(false);
+  try {
+    const result = await api("/api/show/import", data);
+    if (result?.error) toast(result.error);
+    else toast(`Loaded ${file.name}: ${result.cues ?? 0} cue(s)` + (result.warnings?.length ? " · " + result.warnings.join(" · ") : ""));
+  } catch (err) { toast("Import failed: " + err.message); }
+  await refresh();
 }
 
 // ---- tab 3: the units ----
@@ -728,6 +868,15 @@ document.addEventListener("keydown", e => {
 document.addEventListener("click", async e => {
   if (Date.now() - draggedAt < 400) return;   // the tail of a drag, not a click
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
+  if (e.target.id === "tp-play") { togglePlayback(); return; }
+  if (e.target.id === "tp-stop") { stopPlayback(); return; }
+  if (e.target.id === "tp-music-remove") {
+    if (confirm("Remove the loaded music?")) {
+      const result = await api("/api/music/remove", {});
+      if (result?.error) toast(result.error); else { toast("Music removed"); await refresh(); }
+    }
+    return;
+  }
   const showButtons = { "show-upload": ["upload", "① Upload"], "show-preset": ["preset", "② Show preset"],
     "show-hold": ["hold", "HOLD"], "show-resume": ["resume", "RESUME"] };
   if (showButtons[e.target.id]) { const [command, title] = showButtons[e.target.id]; await fleetCommand(command, {}, title, "show"); return; }
@@ -771,7 +920,7 @@ document.addEventListener("click", async e => {
   }
   const set = e.target.closest("[data-set]");
   if (set) { ui[set.dataset.set] = set.dataset.value; renderContent(); return; }
-  const dr = e.target.closest("tr[data-design]");
+  const dr = !e.target.closest("select, input") && e.target.closest("tr[data-design]");
   if (dr) { ui.design = dr.dataset.design; ui.mode = "design"; renderContent(); return; }
   const row = !e.target.closest("input") && e.target.closest("tr[data-board]");
   if (row) { const b = Number(row.dataset.board); ui.board = ui.board === b ? null : b; renderContent(); return; }
@@ -838,9 +987,22 @@ document.addEventListener("change", async e => {
     if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
     return;
   }
+  if (e.target.dataset.trSeq !== undefined || e.target.dataset.trSpan !== undefined) {
+    const design = e.target.dataset.trSeq ?? e.target.dataset.trSpan;
+    const row = e.target.closest("tr");
+    const seq = row.querySelector("[data-tr-seq]").value;
+    const spanEl = row.querySelector("[data-tr-span]");
+    const span = seq === "natural" ? 0 : (Number(spanEl.value) || 0);
+    const result = await api("/api/transition", { design, sequence: seq, span_s: span });
+    if (result?.error) toast(result.error);
+    await refresh();
+    return;
+  }
   if (id === "design") { ui.design = e.target.value; renderContent(); }
   else if (id === "pick") { upload(e.target.files); e.target.value = ""; }
   else if (id === "pick-own") { uploadOwn(itemByKey(ui.item), e.target.files); e.target.value = ""; }
+  else if (id === "tp-music-load" || id === "tp-music-replace") { const f = e.target.files[0]; e.target.value = ""; await uploadMusic(f); }
+  else if (id === "tl-load-show") { const f = e.target.files[0]; e.target.value = ""; await loadShowFile(f); }
   else if (id === "duration") {
     const seconds = parseClock(e.target.value);
     if (seconds === null || seconds < 1) { toast("Enter the length as m:ss"); renderTimeline(); return; }
@@ -852,23 +1014,21 @@ document.addEventListener("change", async e => {
   } else if (id.startsWith("cue-")) {
     const cues = state.show.cues.map(c => ({ ...c })), cue = cues.find(c => c.id === ui.cue);
     if (!cue) return;
+    const effSweep = sweepOf(cue);
     if (id === "cue-start" || id === "cue-end") {
       const seconds = parseClock(e.target.value);
       if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
       const refresh = state.show.refresh_s;
       if (id === "cue-end") {
         cue.at = seconds; cue.align = "done";               // complete at this time
-      } else if (cue.sequence === "natural") {
+      } else if (effSweep.sequence === "natural") {
         cue.at = seconds; cue.align = "start";              // begins at this time
       } else {
         // A sweep: keep the end, and make the sweep last from this start to it.
-        const ranks = itemByKey(cue.item)?.sequences?.[cue.sequence];
-        const steps = ranks ? Math.max(...ranks) : 0;
-        const span = cue.complete - seconds - refresh;
-        if (steps < 1) { toast("This item's map is needed to time the sweep"); renderTimeline(); return; }
-        if (span < 0.1 * steps - 1e-9) { toast(`Too short: ${steps} steps of at least 0.1 s plus the ${refresh} s refresh need ${clock(cue.complete - refresh - 0.1 * steps)} or earlier`); renderTimeline(); return; }
-        if (span > 5 * steps + 1e-9) { toast(`Too long: the step is at most 5 s, so the sweep starts at ${clock(cue.complete - refresh - 5 * steps)} at the earliest`); renderTimeline(); return; }
-        cue.step_s = Math.round(span / steps * 10) / 10;
+        const span = Math.max(0, Math.min(30, cue.complete - seconds - refresh));
+        if (Math.abs(span - (cue.complete - seconds - refresh)) > 1e-9) toast(`Clamped the sweep to ${span.toFixed(1)} s (0 to 30 s allowed)`);
+        cue.transition = "custom"; cue.sequence = effSweep.sequence;
+        cue.span_s = Math.round(span * 10) / 10;
         cue.at = cue.complete; cue.align = "done";
       }
     } else if (id === "cue-design") {
@@ -878,11 +1038,12 @@ document.addEventListener("change", async e => {
     }
     else if (id === "cue-align") cue.align = e.target.value;
     else if (id === "cue-partial") cue.partial = e.target.checked;
+    else if (id === "cue-transition") cue.transition = e.target.value;
     else if (id === "cue-seq") cue.sequence = e.target.value;
-    else if (id === "cue-step") {
-      const step = Number(e.target.value);
-      if (!(step >= 0.1 && step <= 5)) { toast("Step: 0.1 to 5 seconds"); renderTimeline(); return; }
-      cue.step_s = Math.round(step * 10) / 10;
+    else if (id === "cue-span") {
+      const span = Number(e.target.value);
+      if (!(span >= 0 && span <= 30)) { toast("Span: 0 to 30 seconds"); renderTimeline(); return; }
+      cue.span_s = Math.round(span * 10) / 10;
     }
     await saveShow(cues);
   } else if (e.target.dataset.boardNo) {
@@ -945,7 +1106,25 @@ document.addEventListener("drop", async e => {
 });
 document.addEventListener("dragend", () => { dragged = null; clearDrop();
   document.querySelectorAll(".moving").forEach(p => p.classList.remove("moving")); });
-document.addEventListener("input", e => { if (e.target.id === "ph") { ui.playhead = Number(e.target.value); renderThumbs(); } });
+document.addEventListener("input", e => {
+  if (e.target.id !== "ph") return;
+  const t = Number(e.target.value);
+  ui.playhead = t;
+  if (ui.playing) {                 // dragging the scrubber while playing seeks, not stops
+    if (playerUrl) player.currentTime = t;
+    else { ui.anchor = performance.now(); ui.startT = t; }
+  }
+  renderThumbs();
+});
+// Space toggles play/pause, except while typing or over a control that owns the key.
+document.addEventListener("keydown", e => {
+  if (e.key !== " " && e.code !== "Space") return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (["input", "select", "textarea", "button"].includes(tag)) return;
+  e.preventDefault();
+  togglePlayback();
+});
 document.addEventListener("mouseover", e => {
   const g = e.target.closest("g[data-k]");
   if (!g || !$("#info")) return;
