@@ -618,7 +618,10 @@ class DemoRunner:
                                  f"save @{board:02d}", self.save_attempts):
                 # Answering but not taking data - it may have rebooted, so
                 # it needs its slot configured again before the next try.
+                # A rebooted board forgets its delay table too, so the
+                # cache must not tell _save_delays it is still there.
                 self._needs_cfg.add(board)
+                self._delays_sent.pop(board, None)
                 skipped = True
                 continue
             updated += 1
@@ -735,7 +738,10 @@ class DemoRunner:
             table = (job.get("delays") or {}).get(board)
             if table is not None and not self._save_delays(bus, groups, board,
                                                            table, dev_type):
+                # A rebooted or reconfigured board forgets its delay
+                # table, so the cache must not skip resending it later.
                 self._needs_cfg.add(board)
+                self._delays_sent.pop(board, None)
                 failed.append(board)
                 continue
             if not self._request(bus, save_color(board, self.slot,
@@ -743,6 +749,7 @@ class DemoRunner:
                                                  dev_type=dev_type),
                                  f"save @{board:02d}", self.save_attempts):
                 self._needs_cfg.add(board)
+                self._delays_sent.pop(board, None)
                 failed.append(board)
                 continue
             saved.append(board)

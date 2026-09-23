@@ -18,7 +18,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
+from epaper.protocol import Frame
 from ui import render
 from ui.agent import Agent
 from ui.app import App, Screen
@@ -562,3 +564,43 @@ def test_a_table_of_no_delay_everywhere_clears_the_pipeline():
     assert runner._save_delays(bus, 20, 3, all_no_delay(), dev_type=3)
     assert [f.cmd for f in bus.requested] == [CLEAR]
     runner.stop()
+
+
+class FailOnceBus(FakeBus):
+    """ACKs everything except the one frame it is told to fail, once."""
+
+    def __init__(self, fail_cmd: int, board: int):
+        super().__init__()
+        self.fail_cmd, self.board = fail_cmd, board
+        self.failed_once = False
+
+    def request(self, frame, retries=3):
+        self.requested.append(frame)
+        if (not self.failed_once and frame.cmd == self.fail_cmd
+                and frame.dest == self.board):
+            self.failed_once = True
+            return None
+        return Frame(dest=0x00, src=frame.dest, dev_type=0xFF, cmd=self.ack_cmd)
+
+
+def test_a_failed_save_forgets_the_boards_delay_table_so_it_is_resent():
+    # save_color failing after _save_delays already succeeded used to
+    # leave _delays_sent pointing at a table the board may no longer
+    # hold once it is reconfigured (slot_config resets it) - the retry
+    # would then wrongly skip resending it.
+    bus = FailOnceBus(SAVE, 1)
+    runner = make_runner(bus, save_attempts=1, command_attempts=1)
+    runner.live = [1]
+    job = {"dev_type": 3, "boards": {1: array(3)}, "delays": {1: table(20)}}
+    try:
+        saved, failed = runner._save_cue(bus, 20, job)
+        assert failed == [1] and saved == []
+        assert 1 in runner._needs_cfg
+        assert 1 not in runner._delays_sent          # forgotten, not stale
+
+        saved2, failed2 = runner._save_cue(bus, 20, job)
+        assert saved2 == [1] and failed2 == []
+        delay_frames = [f for f in bus.requested if f.cmd == DELAY and f.dest == 1]
+        assert len(delay_frames) == 4                # 2 (low + high), twice
+    finally:
+        runner.stop()

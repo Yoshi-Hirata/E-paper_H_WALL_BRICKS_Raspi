@@ -14,8 +14,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conductor.timeline import (REFRESH_S, apply_transitions, clean,
-                                format_clock, min_interval, parse_clock,
-                                resolve, times, validate)
+                                effective_refresh, ends, format_clock,
+                                min_interval, parse_clock, resolve, times,
+                                validate)
 
 OK = {"full": True, "partial": True}
 ITEMS = {
@@ -30,9 +31,9 @@ ITEMS = {
 }
 
 
-def cue(id_, item, at, design, align="done", partial=False):
+def cue(id_, item, at, design, partial=False, refresh_s=None):
     return clean([{"id": id_, "item": item, "at": at, "design": design,
-                   "align": align, "partial": partial}])[0]
+                   "partial": partial, "refresh_s": refresh_s}])[0]
 
 
 def problems(cues, duration=600):
@@ -48,15 +49,85 @@ def test_clock_both_ways():
     assert REFRESH_S == 7.0            # latest firmware, reported 2026-09-21
     with pytest.raises(ValueError):
         parse_clock("soon")
+    # Hostile JSON (None, a dict) is the same "not a time", never a
+    # TypeError the caller has to expect.
+    with pytest.raises(ValueError):
+        parse_clock(None)
+    with pytest.raises(ValueError):
+        parse_clock({})
 
 
-def test_a_time_means_done_unless_the_cue_says_start():
-    assert times(cue("a", "Look22", "1:00", "p1")) == (53, 60)
-    assert times(cue("a", "Look22", "1:00", "p1", align="start")) == (60, 67)
-    # 0:00 is the preset: on the garment before START, whatever the align.
-    assert times(cue("a", "Look22", 0, "p1", align="start")) == (-7, 0)
+def test_start_is_the_send_instant_and_complete_adds_refresh_and_sweep():
+    assert times(cue("a", "Look22", "1:00", "p1")) == (60, 67)
+    # 0:00 is the preset: sent one refresh before the show even begins,
+    # so it is already complete when it starts.
+    assert times(cue("a", "Look22", 0, "p1")) == (-7, 0)
     # A unit on older firmware: the show carries its own refresh time.
-    assert times(cue("a", "Look22", "1:00", "p1"), refresh=16) == (44, 60)
+    assert times(cue("a", "Look22", "1:00", "p1"), refresh=16) == (60, 76)
+    swept = cue("a", "Look22", 60, "g1.csv")
+    swept["sweep"] = {"sequence": "top_down", "span_s": 4.0, "source": "cue"}
+    swept["span"] = 4.0
+    assert times(swept, 7.0) == (60.0, 71.0)            # 7 s refresh + 4 s sweep
+
+
+def test_a_cue_may_carry_its_own_refresh_time():
+    own = cue("a", "Look22", "1:00", "p1", refresh_s=3.0)
+    assert own["refresh_s"] == 3.0
+    assert effective_refresh(own, 7.0) == 3.0
+    assert times(own, refresh=7.0) == (60, 63)          # its own 3 s, not the show's
+    plain = cue("b", "Look22", "1:00", "p1")
+    assert plain["refresh_s"] is None
+    assert effective_refresh(plain, 7.0) == 7.0
+    # Kept whatever its range - validate() is where it becomes a problem,
+    # not clean() silently clamping it.
+    bad = cue("c", "Look22", "1:00", "p1", refresh_s=99)
+    assert bad["refresh_s"] == 99.0
+    found, _ = problems([bad])
+    assert any("1-60" in p for p in found["c"])
+    # Junk falls back to the show's own refresh time (None), same as
+    # never setting one.
+    assert cue("d", "Look22", 0, "p1", refresh_s="fast")["refresh_s"] is None
+
+
+def test_end_is_the_next_cues_start_or_the_shows_end():
+    a = cue("a", "Look22", 0, "p1")
+    b = cue("b", "Look22", "1:00", "p2")
+    c = cue("c", "Look20-Top", "0:30", "t1")
+    result = ends([a, b, c], refresh=7.0, duration=600)
+    assert result["a"] == (60, "next")          # the next Look22 cue's Start
+    assert result["b"] == (600, "show")         # the last on its track
+    assert result["c"] == (600, "show")         # the only cue of its item here
+
+
+def test_a_next_cue_before_the_picture_is_complete_is_a_problem_in_those_words():
+    items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
+                        "designs": {"p1": OK, "p2": OK}}}
+    early = cue("a", "Look22", 60, "p1")             # complete at 67
+    late = cue("b", "Look22", 65, "p2")              # starts before that
+    found, _ = validate([early, late], items, 600, 7.0)
+    assert any("previous picture is complete" in p and "1:07" in p
+              for p in found["b"])
+    # It replaces the bus-spacing message for this pair, not adds to it.
+    assert not any("boards need" in p for p in found["b"])
+    # Comfortably clear of both the overlap and the bus-room rule: no
+    # problem at all.
+    late["at"] = 72
+    found, _ = validate([early, late], items, 600, 7.0)
+    assert found["b"] == []
+
+
+def test_clean_drops_align_and_keeps_refresh_s():
+    cues = clean([{"id": "z", "item": "B", "at": "1:00", "design": "d",
+                   "align": "start"},
+                  {"id": "y", "item": "A", "at": 5, "design": "d",
+                   "align": "done", "refresh_s": "3.456"}])
+    assert "align" not in cues[0] and "align" not in cues[1]
+    assert [c["id"] for c in cues] == ["y", "z"]        # sorted by "at": A, B
+    assert cues[0]["refresh_s"] == 3.5          # rounded to 1 decimal
+    assert clean([{"id": "x", "item": "A", "at": 0, "design": "d",
+                   "refresh_s": "fast"}])[0]["refresh_s"] is None
+    assert clean([{"id": "x", "item": "A", "at": 0, "design": "d"}]
+                )[0]["refresh_s"] is None
 
 
 def test_min_interval_grows_with_the_boards_to_write():
@@ -67,20 +138,20 @@ def test_min_interval_grows_with_the_boards_to_write():
 
 def test_a_plain_show_has_no_problems():
     cues = [cue("a", "Look22", 0, "p1"), cue("b", "Look22", "2:00", "p2"),
-            cue("c", "Look22", "5:30", "p1", align="start")]
+            cue("c", "Look22", "5:30", "p1")]
     found, warnings = problems(cues)
     assert all(not v for v in found.values()) and warnings == []
 
 
 def test_refreshes_on_one_unit_need_room():
-    cues = [cue("a", "Look22", 0, "p1"), cue("b", "Look22", "2:00", "p2"),
-            cue("c", "Look22", "2:10", "p1")]
+    cues = [cue("a", "Look22", 0, "p1"), cue("b", "Look22", 113, "p2"),
+            cue("c", "Look22", 123, "p1")]
     found, _ = problems(cues)
     assert found["b"] == []
     assert len(found["c"]) == 1 and "only 10 s" in found["c"][0]
     assert "16 boards need 14 s" in found["c"][0]
     # 20 s apart is enough at 7 s a refresh - and was not at 16 s.
-    cues[2] = cue("c", "Look22", "2:20", "p1")
+    cues[2] = cue("c", "Look22", 133, "p1")
     assert problems(cues)[0]["c"] == []
     found, _ = validate(cues, ITEMS, 600, refresh=16)
     assert "only 20 s" in found["c"][0] and "need 23 s" in found["c"][0]
@@ -88,35 +159,43 @@ def test_refreshes_on_one_unit_need_room():
 
 def test_the_first_cue_must_leave_time_to_write_the_boards_after_start():
     # Sent at 0:03 - the preset's refresh ended at 0:00, and 16 boards
-    # take ~3.5 s + margin to write, so 3 s is too tight; 0:40 is fine.
+    # take ~3.5 s + margin to write, so 3 s is too tight; 0:33 is fine.
     found, _ = problems([cue("a", "Look22", 0, "p1"),
-                         cue("b", "Look22", "0:10", "p2")])
+                         cue("b", "Look22", 3, "p2")])
     assert found["b"] and "only 10 s" in found["b"][0]
     found, _ = problems([cue("a", "Look22", 0, "p1"),
-                         cue("b", "Look22", "0:40", "p2")])
+                         cue("b", "Look22", 33, "p2")])
     assert found["b"] == []
 
 
-def test_done_before_a_refresh_fits_is_refused():
-    found, _ = problems([cue("a", "Look22", "0:05", "p1")])
-    assert "cannot be complete" in found["a"][0] and "0:07 and later" in found["a"][0]
-    # The same instant as a change that *starts* then is fine.
-    found, warnings = problems([cue("a", "Look22", "0:05", "p1", align="start")])
+def test_no_preset_is_a_warning():
+    found, warnings = problems([cue("a", "Look22", "0:05", "p1")])
     assert found["a"] == []
     assert "no preset at 0:00" in warnings[0]
 
 
+def test_the_preset_is_sent_one_refresh_before_the_show():
+    preset = cue("a", "Look22", 0, "p1")
+    assert times(preset, refresh=7.3) == (-7.3, 0.0)
+    # Two items on one unit at the very same instant are one broadcast,
+    # not a bus clash.
+    top = cue("c", "Look20-Top", 10.3, "t1")
+    skirt = cue("d", "Look20-Skirt", 10.3, "s1")
+    found, _ = validate([top, skirt], ITEMS, 600, refresh=7.3)
+    assert found["c"] == found["d"] == []
+
+
 def test_items_sharing_a_unit_share_its_bus():
-    same_moment = [cue("a", "Look20-Top", "1:00", "t1"),
-                   cue("b", "Look20-Skirt", "1:00", "s1")]
+    same_moment = [cue("a", "Look20-Top", 53, "t1"),
+                   cue("b", "Look20-Skirt", 53, "s1")]
     found, _ = problems(same_moment)
     assert found["a"] == found["b"] == []           # one refresh for both
-    staggered = [cue("a", "Look20-Top", "1:00", "t1"),
-                 cue("b", "Look20-Skirt", "1:10", "s1")]
+    staggered = [cue("a", "Look20-Top", 53, "t1"),
+                 cue("b", "Look20-Skirt", 63, "s1")]
     found, _ = problems(staggered)
     assert "radxa-02" in found["b"][0] and "32 boards" in found["b"][0]
     # Another unit is another bus: no conflict with Look22 ten seconds on.
-    found, _ = problems(same_moment + [cue("c", "Look22", "1:10", "p1")])
+    found, _ = problems(same_moment + [cue("c", "Look22", 63, "p1")])
     assert found["c"] == []
 
 
@@ -143,47 +222,28 @@ def test_after_the_end_and_double_booking():
 def test_clean_drops_junk_and_sorts():
     cues = clean([{"id": "z", "item": "B", "at": "1:00", "design": "d"},
                   "junk", {"item": "A", "at": -5, "design": "d",
-                           "align": "??", "partial": 1}])
+                           "partial": 1}])
     assert [c["item"] for c in cues] == ["A", "B"]
-    assert cues[0]["at"] == 0 and cues[0]["align"] == "done"
+    assert cues[0]["at"] == 0
     assert cues[0]["partial"] is True and cues[0]["id"]
-
-
-def test_send_instants_are_compared_to_the_millisecond():
-    # 10.3 - 7.3 is 3.000000000000001 in floating point; a change that
-    # starts at 3.0 is the same instant and must be seen as such.
-    done = cue("a", "Look22", 10.3, "p1")
-    start = cue("b", "Look22", 3.0, "p2", align="start")
-    assert times(done, refresh=7.3)[0] == times(start, refresh=7.3)[0] == 3.0
-    found, _ = validate([done, start], ITEMS, 600, refresh=7.3)
-    assert any("same moment" in p for p in found["b"])
-    assert not any("only 0 s" in p for p in found["a"] + found["b"])
-    # On a shared unit the two items become one broadcast, not a clash.
-    top = cue("c", "Look20-Top", 10.3, "t1")
-    skirt = cue("d", "Look20-Skirt", 3.0, "s1", align="start")
-    found, _ = validate([top, skirt], ITEMS, 600, refresh=7.3)
-    assert found["c"] == found["d"] == []
+    assert "align" not in cues[0]
 
 
 # ---- sweeps ----
 
 def test_a_sweep_lengthens_the_change_and_the_room_after_it():
-    swept = cue("a", "Look22", 60, "g1.csv")
+    swept = cue("a", "Look22", 49, "g1.csv")
     swept["sweep"] = {"sequence": "top_down", "span_s": 4.0, "source": "cue"}
     swept["span"] = 4.0
-    sent, complete = times(swept, 7.0)
-    assert (sent, complete) == (49.0, 60.0)             # 7 s refresh + 4 s sweep
-    swept["align"] = "start"
-    assert times(swept, 7.0) == (60.0, 71.0)
+    assert times(swept, 7.0) == (49.0, 60.0)            # 7 s refresh + 4 s sweep
     # The next refresh on the unit must wait for the sweep too.
     items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
                         "designs": {"g1.csv": {"full": True, "partial": True}}}}
     # Sent at 49; the bus is busy 7 + 4 s, then 2 boards + margin: 14.44 s.
-    swept["align"] = "done"
-    later = cue("b", "Look22", 49 + 14.44 - 1 + 7, "g1.csv")     # 1 s short
+    later = cue("b", "Look22", 49 + 14.44 - 1, "g1.csv")     # 1 s short
     problems, _ = validate([swept, later], items, 600, 7.0)
     assert problems["b"] and "sweep" in problems["b"][0]
-    later["at"] = 49 + 14.44 + 1 + 7
+    later["at"] = 49 + 14.44 + 1
     problems, _ = validate([swept, later], items, 600, 7.0)
     assert problems["b"] == []
 
@@ -209,6 +269,20 @@ def test_a_sweep_longer_than_thirty_seconds_is_a_problem_on_the_cue():
     swept["span"] = 30.1
     problems, _ = validate([swept], items, 600, 7.0)
     assert any("30 s" in p for p in problems["a"])
+
+
+def test_sweeps_agrees_with_showfile_a_custom_cue_with_zero_span_does_not_sweep():
+    from conductor.timeline import sweeps
+    natural = cue("a", "Look22", 60, "g1.csv")
+    natural["sweep"] = {"sequence": "natural", "span_s": 0.0, "source": "design"}
+    assert sweeps(natural) is False
+    zero_span = cue("b", "Look22", 60, "g1.csv")
+    zero_span["sweep"] = {"sequence": "top_down", "span_s": 0.0, "source": "cue"}
+    assert sweeps(zero_span) is False           # a sequence chosen, but no span
+    real = cue("c", "Look22", 60, "g1.csv")
+    real["sweep"] = {"sequence": "top_down", "span_s": 2.0, "source": "cue"}
+    assert sweeps(real) is True
+    assert sweeps({}) is False                  # no "sweep" key at all
 
 
 def test_clean_takes_transition_sequence_and_span_and_drops_step_s():
@@ -238,6 +312,10 @@ def test_a_cue_inherits_its_designs_transition_and_may_override_it():
     # No entry for the design: natural, whatever the design's own default.
     plain = cue("c", "Look22", 60, "other.csv")
     assert resolve(plain, transitions)["sequence"] == "natural"
+    # A malformed transitions entry (hostile import) must not crash this -
+    # it is treated as if nothing had been set.
+    assert resolve(inherited, {"g1.csv": "oops"})["sequence"] == "natural"
+    assert resolve(inherited, {"g1.csv": 5})["sequence"] == "natural"
     cues = [inherited, custom]
     apply_transitions(cues, transitions)
     assert cues[0]["sweep"] == {"sequence": "top_down", "span_s": 3.0,

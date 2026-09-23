@@ -34,6 +34,7 @@ from dataclasses import replace
 import re
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -80,6 +81,26 @@ def _design_transition(entry) -> dict:
         entry = {}
     return {"sequence": sequence.clean_sequence(entry.get("sequence", "natural")),
             "span_s": sequence.clean_span(entry.get("span_s", 0.0))}
+
+
+def _clean_transitions(raw) -> dict:
+    """{design: {"sequence", "span_s"}}, tidied the way set_transition
+    normalises one - an import is not a promise the file was hand-edited
+    honestly, and timeline.resolve() must never see an entry that is not
+    a plain dict of known shape (it would crash state() for everyone,
+    not just the importer). A malformed or natural/zero entry is simply
+    dropped, the same as if it had never been set."""
+    result = {}
+    if not isinstance(raw, dict):
+        return result
+    for design, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        seq = sequence.clean_sequence(entry.get("sequence", "natural"))
+        span = min(sequence.MAX_DELAY_S, sequence.clean_span(entry.get("span_s", 0.0)))
+        if seq != "natural" and span > 0:
+            result[str(design)] = {"sequence": seq, "span_s": span}
+    return result
 
 
 def _parse_range(header: str, size: int):
@@ -195,6 +216,67 @@ class Workspace:
 
     def redo(self) -> bool:
         return self._step("redo", "undo")
+
+    # ---- migrating cues saved before `align` was removed ----
+    # A cue used to say `align`: "done" (the design is complete at `at`)
+    # or "start" (it begins at `at`). `at` is now always Start, so a
+    # "done" cue moves its `at` back by whatever that refresh (and any
+    # sweep) took; a "start" cue already meant Start and only loses the
+    # key. Called from state()/compile_show()/export_show(), under
+    # self._lock, so the one _commit it may need is safe to make there.
+
+    def _maps_for_migration(self, show: dict) -> "dict[str, LookMap]":
+        maps: "dict[str, LookMap]" = {}
+        for path in sorted(self.files.glob("*.csv")):
+            if self.kind(path.name) != "map":
+                continue
+            try:
+                look_map = LookMap.from_csv(path)
+            except (OSError, LookError):
+                continue
+            look_map = self._renumbered(look_map, show)
+            maps[(look_map.item or path.stem).lower()] = look_map
+        return maps
+
+    @staticmethod
+    def _migrate_cue(raw, refresh: float, transitions: dict,
+                     maps: "dict[str, LookMap]") -> dict:
+        """One raw cue -> the same cue without `align`, its `at` moved so
+        the instant it used to mean (done or start) is unchanged. A cue
+        that never had `align` passes through untouched."""
+        if not isinstance(raw, dict) or "align" not in raw:
+            return raw
+        cleaned = timeline.clean([raw])[0]
+        if raw.get("align", "done") == "done" and cleaned["at"] > 0:
+            eff = timeline.effective_refresh(cleaned, refresh)
+            span = 0.0
+            sweep = timeline.resolve(cleaned, transitions)
+            if sweep["sequence"] != "natural":
+                look_map = maps.get(cleaned["item"].lower())
+                if look_map is not None:
+                    span = sequence.span_s(look_map, sweep["sequence"],
+                                           sweep["span_s"])
+            cleaned["at"] = max(0.0, round(cleaned["at"] - eff - span, 1))
+        return cleaned
+
+    def _migrate_align(self, show: dict) -> dict:
+        """A show whose cues still carry `align` -> the same show with
+        every one migrated, as ONE _commit (one undo step); a show with
+        nothing to migrate is returned untouched (the common case, so a
+        plain state() poll pays nothing for this). Idempotent: the
+        result never has `align`, so a second call is a no-op."""
+        cues = show.get("cues")
+        if not isinstance(cues, list) or not any(
+                isinstance(c, dict) and "align" in c for c in cues):
+            return show
+        refresh = float(show.get("refresh_s", timeline.REFRESH_S))
+        transitions = show.get("transitions") or {}
+        maps = self._maps_for_migration(show)
+        migrated = [self._migrate_cue(c, refresh, transitions, maps)
+                   for c in cues]
+        after = dict(show, cues=timeline.clean(migrated))
+        self._commit(show, after)
+        return after
 
     def assign(self, item: str, unit: "str | None") -> None:
         if unit is not None and unit not in UNITS:
@@ -369,6 +451,10 @@ class Workspace:
                              "(*_color_NAME_grid.csv)")
         sequence_id = sequence.clean_sequence(sequence_id)
         span = sequence.clean_span(span_s)
+        if span > sequence.MAX_DELAY_S:
+            raise ValueError(f"a sweep is at most {sequence.MAX_DELAY_S:.0f} s "
+                             "from the first scale to the last "
+                             "(the firmware's limit)")
         with self._lock:
             before = self._load_show()
             transitions = dict(before.get("transitions", {}))
@@ -409,14 +495,17 @@ class Workspace:
                     handle.write(chunk)
                     written += len(chunk)
                     remaining -= len(chunk)
+            info = {"name": safe, "size": written, "type": music_type(safe)}
             with self._lock:
                 before = self._load_show()
                 old = before.get("music") or {}
+                # The pointer moves first: if the commit fails (a full
+                # disk), the bytes are still only `part` and nothing on
+                # disk is broken - the old file is untouched and correct.
+                self._commit(before, dict(before, music=info))
                 os.replace(part, self.music / safe)
                 if old.get("name") and old["name"] != safe:
                     (self.music / Path(old["name"]).name).unlink(missing_ok=True)
-                info = {"name": safe, "size": written, "type": music_type(safe)}
-                self._commit(before, dict(before, music=info))
             return info
         except BaseException:
             part.unlink(missing_ok=True)
@@ -461,7 +550,8 @@ class Workspace:
         boards/labels' per-item numbering trivia... actually those too,
         so a restore is exact; just not the music bytes, which travel
         separately (only the name is kept, as a reminder)."""
-        show = self._load_show()
+        with self._lock:
+            show = self._migrate_align(self._load_show())
         music = show.get("music")
         return {
             "format": SHOW_FORMAT, "version": SHOW_FORMAT_VERSION,
@@ -507,17 +597,29 @@ class Workspace:
                 raise ValueError(f"a refresh takes between {low:.0f} and "
                                  f"{high:.0f} s")
             changes["refresh_s"] = refresh
+        if "transitions" in payload:
+            if not isinstance(payload["transitions"], dict):
+                raise ValueError("transitions: must be an object")
+            changes["transitions"] = _clean_transitions(payload["transitions"])
         cues = None
         if "cues" in payload:
             if not isinstance(payload["cues"], list):
                 raise ValueError("cues: must be a list")
-            cues = timeline.clean(payload["cues"])
+            raw_cues = payload["cues"]
+            if any(isinstance(c, dict) and "align" in c for c in raw_cues):
+                # An older export: migrated the same way as a stored
+                # show, using what refresh/transitions/maps this import
+                # leaves the workspace with.
+                current = self._load_show()
+                refresh = changes.get(
+                    "refresh_s", float(current.get("refresh_s", timeline.REFRESH_S)))
+                own_transitions = changes.get(
+                    "transitions", _clean_transitions(current.get("transitions")))
+                maps = self._maps_for_migration(current)
+                raw_cues = [self._migrate_cue(c, refresh, own_transitions, maps)
+                           for c in raw_cues]
+            cues = timeline.clean(raw_cues)
             changes["cues"] = cues
-        if "transitions" in payload:
-            if not isinstance(payload["transitions"], dict):
-                raise ValueError("transitions: must be an object")
-            changes["transitions"] = {str(k): v for k, v
-                                      in payload["transitions"].items()}
         if "labels" in payload:
             if not isinstance(payload["labels"], dict):
                 raise ValueError("labels: must be an object")
@@ -656,7 +758,7 @@ class Workspace:
         """The whole timeline -> ({unit: show file}, problems)."""
         with self._lock:
             paths = sorted(self.files.glob("*.csv"))
-            show = self._load_show()
+            show = self._migrate_align(self._load_show())
         assigned = show.get("units", {})
         maps: "dict[str, LookMap]" = {}
         facts: "dict[str, dict]" = {}
@@ -706,7 +808,7 @@ class Workspace:
     def state(self) -> dict:
         with self._lock:
             paths = sorted(self.files.glob("*.csv"))
-            show = self._load_show()
+            show = self._migrate_align(self._load_show())
             history = self._load_history()
             assigned = show.get("units", {})
             labels = show.get("labels", {})
@@ -833,8 +935,13 @@ class Workspace:
         _time_sweeps(cues, maps)
         cue_problems, warnings = timeline.validate(cues, facts, duration,
                                                    refresh)
+        cue_ends = timeline.ends(cues, refresh, duration)
         for cue in cues:
             cue["sent"], cue["complete"] = timeline.times(cue, refresh)
+            cue["refresh"] = timeline.effective_refresh(cue, refresh)
+            cue["refresh_source"] = ("cue" if isinstance(
+                cue.get("refresh_s"), (int, float)) else "show")
+            cue["end"], cue["end_source"] = cue_ends[cue["id"]]
             cue["problems"] = cue_problems[cue["id"]]
         unit_boards: "dict[str, int]" = {}
         for fact in facts.values():
@@ -943,7 +1050,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             return
         path = self.workspace.music / Path(info["name"]).name
+        try:
+            mtime = int(path.stat().st_mtime)
+        except OSError:
+            mtime = 0
         size, content_type = info["size"], info["type"]
+        etag = f'"{size}-{mtime}"'
+        # The URL is already versioned (?v=<mtime>), so a long-lived,
+        # private cache is safe: a new upload is a new URL. ETag/304
+        # saves the bytes again on a reload of the *same* version.
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control",
+                             "private, max-age=31536000, immutable")
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            return
         status, start, end = 200, 0, max(0, size - 1)
         range_header = self.headers.get("Range")
         if range_header:
@@ -963,7 +1086,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", "private, max-age=31536000, immutable")
+        self.send_header("ETag", etag)
+        self.send_header("X-Content-Type-Options", "nosniff")
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
@@ -994,7 +1119,13 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return self._json({"error": f"music is at most "
                                f"{MAX_MUSIC // (1024 * 1024)} MB"}, status=400)
-        name = self.headers.get("X-File-Name") or "music"
+        # The page sends encodeURIComponent(name): decoded here so a
+        # Japanese or accented file name survives, not just ASCII ones.
+        name = urllib.parse.unquote(self.headers.get("X-File-Name") or "music")
+        if Path(name).suffix.lower() not in _MUSIC_TYPES:
+            allowed = ", ".join(sorted(_MUSIC_TYPES))
+            return self._json({"error": f"music must be one of {allowed}"},
+                              status=400)
         try:
             self.workspace.save_music(name, self.rfile, length)
         except (OSError, ValueError) as exc:
@@ -1057,7 +1188,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/delete":
                 self.workspace.delete(body["name"])
                 return self._json({"ok": True})
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, TypeError) as exc:
+            # TypeError: hostile JSON ({"at": null}, {"at": {}}, ...) that
+            # reaches a str/float/dict call before it reaches a ValueError
+            # of its own - still a 400, never a 500 that kills the page.
             return self._json({"error": str(exc)}, status=400)
         self._send(404, b"not found", "text/plain")
 

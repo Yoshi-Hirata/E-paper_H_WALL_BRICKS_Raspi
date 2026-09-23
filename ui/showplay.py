@@ -62,6 +62,7 @@ END_SLACK_S = 30.0
 
 LOADED, RUNNING, HOLDING, STOPPED, ENDED = (
     "loaded", "running", "holding", "stopped", "ended")
+DELAY_UNIT_MS = 10        # conductor/showfile.py's DELAY_UNIT_MS (10 ms frames)
 
 
 class ShowPlayer:
@@ -118,6 +119,11 @@ class ShowPlayer:
             float(show["refresh_s"]), float(show["duration"])
         except (KeyError, TypeError, ValueError):
             raise RemoteError("the show needs refresh_s and duration")
+        unit_ms = show.get("delay_unit_ms")
+        if unit_ms is not None and unit_ms != DELAY_UNIT_MS:
+            raise RemoteError(f"this unit's delay tables are "
+                              f"{DELAY_UNIT_MS} ms frames; the show says "
+                              f"{unit_ms!r}")
         for cue in cues:
             if not isinstance(cue, dict):
                 raise RemoteError("a cue must be an object")
@@ -383,7 +389,6 @@ class ShowPlayer:
             show, session = self.show, self.session
             cues = show["cues"]
             now = now_mono - self.t0
-            refresh = float(show["refresh_s"])
 
             past = [c for c in cues if c["sent"] <= now]
             ahead = [c for c in cues if c["sent"] > now]
@@ -426,6 +431,10 @@ class ShowPlayer:
                     self.applied != current["id"]
                     or (self.dirty and self._healed_for != current["id"])):
                 room = (nxt["sent"] - now) if nxt else float("inf")
+                # The unit compiled this moment's own refresh (the
+                # slowest of the cues sharing it, conductor/showfile.py)
+                # - prefer it over the show's default when it is there.
+                refresh = float(current.get("refresh_s", show["refresh_s"]))
                 need = (self._lead(current) + refresh
                         + float(current.get("span") or 0.0)
                         + (self._lead(nxt, after_another=True) if nxt else 0.0))
