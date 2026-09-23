@@ -6,9 +6,13 @@ workspace; the CSVs are the small fixtures from tests/test_look.py.
 
 from __future__ import annotations
 
+import http.client
+import io
 import json
+import struct
 import sys
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -16,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.server import Workspace, make_server
+from conductor.server import MAX_MUSIC, Workspace, make_server
 from tests.test_look import GRID, MAP, SKIRT_GRID, SKIRT_MAP
 
 
@@ -518,17 +522,18 @@ def test_designer_named_files_are_accepted_and_labelled(workspace):
 
 # ---- sweeps ----
 
-def test_a_sweeping_cue_is_timed_from_the_map_and_reaches_the_show_file(workspace):
+def test_the_show_file_carries_uint16_delay_tables_and_the_unit_of_ten_ms(workspace):
     grid = "Look22_color_pattern01_grid.csv"
     workspace.assign("Look22", "radxa-01")
     workspace.set_timeline(600, [
         {"id": "a", "item": "Look22", "at": 0, "design": grid},
         {"id": "b", "item": "Look22", "at": 60, "design": grid,
-         "sequence": "top_down", "step_s": 2.0},
+         "transition": "custom", "sequence": "top_down", "span_s": 2.0},
         {"id": "c", "item": "Look22", "at": 120, "design": grid}])
     show = workspace.state()["show"]
     a, b, c = show["cues"]
-    assert (b["sequence"], b["step_s"], b["span"]) == ("top_down", 2.0, 2.0)  # rows 1 and 0
+    assert (b["sweep"]["sequence"], b["sweep"]["span_s"], b["span"]) == \
+        ("top_down", 2.0, 2.0)                              # rows 1 and 0
     assert (b["sent"], b["complete"]) == (60 - 7 - 2, 60)
     assert a["span"] == 0 and a["problems"] == [] and b["problems"] == []
     assert workspace.state()["sequences"][0]["id"] == "natural"
@@ -538,15 +543,292 @@ def test_a_sweeping_cue_is_timed_from_the_map_and_reaches_the_show_file(workspac
     assert len(item22["sequences"]["top_down"]) == len(item22["map"]["scales"])
     shows, problems = workspace.compile_show()
     assert problems == []
+    assert shows["radxa-01"]["delay_unit_ms"] == 10
     cues = shows["radxa-01"]["cues"]
-    # Every cue carries tables once one sweeps; the others' say "no delay".
+    # Every cue carries tables once one sweeps; the others say "no delay".
     assert [q["span"] for q in cues] == [0.0, 2.0, 0.0]
     assert set(cues[0]["delays"]) == {"1", "2", "3"}
-    assert set(bytes.fromhex(cues[0]["delays"]["1"])) == {0xFF}
-    swept = bytes.fromhex(cues[1]["delays"]["1"])          # board 17: sockets 1, 60
+    assert struct.unpack(">64H", bytes.fromhex(cues[0]["delays"]["1"])) == (0xFFFF,) * 64
+    swept = struct.unpack(">64H", bytes.fromhex(cues[1]["delays"]["1"]))   # board 17: sockets 1, 60
     assert swept[1] == 0 and swept[60] == 0                 # row 1 is the top row
-    assert bytes.fromhex(cues[1]["delays"]["3"])[5] == 20   # board 20, row 0: 2 s
+    row0 = struct.unpack(">64H", bytes.fromhex(cues[1]["delays"]["3"]))    # board 20, row 0
+    assert row0[5] == 200                                    # 2.0 s = 200 frames of 10 ms
     # No sweep anywhere: no tables at all (the units need not write any).
     workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0, "design": grid}])
     shows, _ = workspace.compile_show()
     assert "delays" not in shows["radxa-01"]["cues"][0]
+
+
+# ---- per-design transitions ----
+
+def test_a_designs_transition_is_stored_and_undoable(workspace):
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.set_transition(grid, "top_down", 3.0)
+    design = item(workspace.state(), "Look22")["designs"][0]
+    assert design["transition"] == {"sequence": "top_down", "span_s": 3.0}
+    assert workspace.state()["transitions"] == {grid: {"sequence": "top_down",
+                                                        "span_s": 3.0}}
+    assert workspace.undo()
+    assert workspace.state()["transitions"] == {}
+    assert item(workspace.state(), "Look22")["designs"][0]["transition"] == \
+        {"sequence": "natural", "span_s": 0.0}
+    with pytest.raises(ValueError):
+        workspace.set_transition("nope.csv", "top_down", 3.0)
+    # Natural, or a zero span, removes the entry - and is not a step if
+    # there was nothing there to remove.
+    steps = workspace.state()["history"]["undo"]
+    workspace.set_transition(grid, "natural", 0)
+    assert workspace.state()["history"]["undo"] == steps
+
+
+def test_a_cue_inherits_the_design_transition_and_reaches_the_show_file(workspace):
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.assign("Look22", "radxa-01")
+    workspace.set_transition(grid, "top_down", 2.0)
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0,
+                                  "design": grid}])
+    cue = workspace.state()["show"]["cues"][0]
+    assert cue["transition"] == "design"                # nothing overridden
+    assert cue["sweep"] == {"sequence": "top_down", "span_s": 2.0,
+                            "source": "design"}
+    assert cue["span"] == 2.0
+    shows, problems = workspace.compile_show()
+    assert problems == []
+    assert shows["radxa-01"]["cues"][0]["span"] == 2.0
+    assert "delays" in shows["radxa-01"]["cues"][0]
+    # A cue that opts out of the design keeps its own numbers instead.
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0,
+                                  "design": grid, "transition": "custom",
+                                  "sequence": "natural", "span_s": 0}])
+    cue = workspace.state()["show"]["cues"][0]
+    assert cue["sweep"] == {"sequence": "natural", "span_s": 0.0, "source": "cue"}
+    assert cue["span"] == 0.0
+
+
+# ---- the show's music ----
+
+def test_music_is_uploaded_served_and_removed(tmp_path):
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        data = (b"ID3" + bytes(range(256))) * 20             # a few KB
+        upload = urllib.request.Request(
+            f"{base}/api/music", data=data,
+            headers={"X-File-Name": "AZ 27SS.DEMO.mp3"})
+        with urllib.request.urlopen(upload, timeout=5) as response:
+            body = json.loads(response.read())
+        assert body["ok"] and body["music"]["name"] == "AZ 27SS.DEMO.mp3"
+        assert body["music"]["size"] == len(data)
+        assert body["music"]["type"] == "audio/mpeg"
+
+        state = json.loads(urllib.request.urlopen(f"{base}/api/state",
+                                                   timeout=5).read())
+        assert state["music"]["name"] == "AZ 27SS.DEMO.mp3"
+        assert state["music"]["size"] == len(data)
+        assert state["music"]["url"].startswith("/api/music/file?v=")
+
+        with urllib.request.urlopen(f"{base}{state['music']['url']}",
+                                    timeout=5) as response:
+            assert response.status == 200
+            assert response.read() == data
+            assert response.headers["Content-Type"] == "audio/mpeg"
+            assert response.headers["Accept-Ranges"] == "bytes"
+            assert response.headers["Cache-Control"] == "no-cache"
+
+        remove = urllib.request.Request(f"{base}/api/music/remove", data=b"{}")
+        with urllib.request.urlopen(remove, timeout=5) as response:
+            assert json.loads(response.read()) == {"ok": True}
+        assert not (tmp_path / "music" / "AZ 27SS.DEMO.mp3").exists()
+        state = json.loads(urllib.request.urlopen(f"{base}/api/state",
+                                                   timeout=5).read())
+        assert state["music"] is None
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{base}/api/music/file", timeout=5)
+        assert caught.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_music_answers_a_range_request_for_seeking(tmp_path):
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        data = bytes(range(256)) * 20                        # 5120 bytes
+        upload = urllib.request.Request(f"{base}/api/music", data=data,
+                                        headers={"X-File-Name": "clip.wav"})
+        urllib.request.urlopen(upload, timeout=5).read()
+
+        req = urllib.request.Request(f"{base}/api/music/file",
+                                     headers={"Range": "bytes=10-19"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == 206
+            assert response.read() == data[10:20]
+            assert response.headers["Content-Range"] == f"bytes 10-19/{len(data)}"
+            assert response.headers["Content-Length"] == "10"
+
+        # A suffix range: the last 8 bytes.
+        req = urllib.request.Request(f"{base}/api/music/file",
+                                     headers={"Range": "bytes=-8"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.read() == data[-8:]
+
+        # An end past EOF is clamped, not refused.
+        req = urllib.request.Request(f"{base}/api/music/file",
+                                     headers={"Range": f"bytes=0-{len(data) + 500}"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == 206 and response.read() == data
+
+        # A malformed header falls back to a plain 200, not a refusal.
+        req = urllib.request.Request(f"{base}/api/music/file",
+                                     headers={"Range": "nonsense"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == 200 and response.read() == data
+
+        # Entirely past the end: unsatisfiable.
+        req = urllib.request.Request(f"{base}/api/music/file",
+                                     headers={"Range": f"bytes={len(data)}-"})
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=5)
+        assert caught.value.code == 416
+        assert caught.value.headers["Content-Range"] == f"bytes */{len(data)}"
+
+        req = urllib.request.Request(f"{base}/api/music/file", method="HEAD")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == 200
+            assert response.headers["Content-Length"] == str(len(data))
+            assert response.headers["Accept-Ranges"] == "bytes"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_music_over_the_limit_is_refused(tmp_path):
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", "/api/music")
+        conn.putheader("X-File-Name", "big.mp3")
+        conn.putheader("Content-Length", str(MAX_MUSIC + 1))
+        conn.endheaders()                    # no body: refused before reading
+        response = conn.getresponse()
+        assert response.status == 400
+        body = json.loads(response.read())
+        assert "MB" in body["error"]
+        conn.close()
+        assert not (tmp_path / "music").exists() or \
+            not list((tmp_path / "music").glob("*"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_music_and_transitions_survive_undo_and_redo(workspace):
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.set_transition(grid, "top_down", 2.0)                  # step 1
+    workspace.save_music("clip.mp3", io.BytesIO(b"abcde"), 5)        # step 2
+    assert workspace.music_info()["name"] == "clip.mp3"
+    workspace.remove_music()                                        # step 3
+    assert workspace.music_info() is None
+    assert workspace.state()["history"]["undo"] == 3
+
+    assert workspace.undo()                  # back to right after the upload...
+    # ...but the file is gone: the pointer must not resurrect it.
+    assert workspace.music_info() is None
+    assert workspace.state()["transitions"][grid]["sequence"] == "top_down"
+
+    assert workspace.undo()                  # back to before the upload
+    assert workspace.music_info() is None
+    assert workspace.state()["transitions"][grid]["sequence"] == "top_down"
+
+    assert workspace.undo()                  # back to before the transition
+    assert workspace.state()["transitions"] == {}
+
+    assert workspace.redo() and workspace.redo() and workspace.redo()
+    assert workspace.music_info() is None     # redoing "remove" again
+    assert workspace.state()["transitions"][grid]["sequence"] == "top_down"
+
+
+# ---- exporting and importing the timeline ----
+
+def test_a_show_is_exported_as_a_json_file_and_imported_back(tmp_path):
+    ws = Workspace(tmp_path / "ws")
+    ws.save("Look22_map.csv", MAP)
+    ws.save("Look22_color_pattern01_grid.csv", GRID)
+    grid = "Look22_color_pattern01_grid.csv"
+    ws.assign("Look22", "radxa-03")
+    ws.set_transition(grid, "top_down", 2.0)
+    ws.set_label("Look22", "22", "AZ271SD1305")
+    ws.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0, "design": grid}])
+
+    server = make_server(ws.root, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        with urllib.request.urlopen(f"{base}/api/show/export", timeout=5) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "application/json"
+            disposition = response.headers["Content-Disposition"]
+            assert disposition.startswith("attachment;") and "ws-show-" in disposition
+            exported = json.loads(response.read())
+        assert exported["format"] == "epaper-show" and exported["version"] == 1
+        assert exported["cues"][0]["item"] == "Look22"
+        assert exported["transitions"][grid]["sequence"] == "top_down"
+        assert exported["units"] == {"Look22": "radxa-03"}
+        assert exported["music"] is None
+
+        # Change everything, then import the export back.
+        ws.set_timeline(600, [])
+        ws.assign("Look22", None)
+        steps = ws.state()["history"]["undo"]
+        request = urllib.request.Request(
+            f"{base}/api/show/import", data=json.dumps(exported).encode())
+        with urllib.request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read())
+        assert body["ok"] and body["cues"] == 1 and body["warnings"] == []
+        assert ws.state()["history"]["undo"] == steps + 1     # one step, not many
+        state = ws.state()
+        assert state["show"]["cues"][0]["item"] == "Look22"
+        assert item(state, "Look22")["unit"] == "radxa-03"
+        assert state["transitions"][grid]["sequence"] == "top_down"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_importing_the_wrong_kind_of_file_is_refused(workspace):
+    with pytest.raises(ValueError):
+        workspace.import_show({"version": 1, "cues": []})            # no format
+    with pytest.raises(ValueError):
+        workspace.import_show({"format": "epaper-show", "version": 2, "cues": []})
+    with pytest.raises(ValueError):
+        workspace.import_show({"format": "epaper-show", "version": 1,
+                               "cues": "nope"})
+    assert workspace.state()["history"]["undo"] == 0
+    assert workspace.state()["show"]["cues"] == []
+
+
+def test_import_keeps_what_the_file_does_not_mention(workspace):
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.save_music("clip.mp3", io.BytesIO(b"abcde"), 5)
+    workspace.set_label("Look22", "22", "AZ271SD1305")
+    cues, warnings = workspace.import_show({
+        "format": "epaper-show", "version": 1,
+        "cues": [{"id": "a", "item": "Look22", "at": 0, "design": grid}]})
+    assert cues == 1 and warnings == []
+    assert workspace.music_info()["name"] == "clip.mp3"                  # untouched
+    assert item(workspace.state(), "Look22")["model"] == "AZ271SD1305"   # untouched
+    assert workspace.state()["show"]["cues"][0]["item"] == "Look22"
+    # A cue for an item or design this workspace does not have: a warning,
+    # not a refusal - the import still lands, the timeline shows the problem.
+    cues2, warnings2 = workspace.import_show({
+        "format": "epaper-show", "version": 1,
+        "cues": [{"id": "b", "item": "Nope", "at": 0, "design": "x.csv"}]})
+    assert cues2 == 1 and warnings2 and "Nope" in warnings2[0]

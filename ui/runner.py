@@ -27,6 +27,7 @@ come back from a power cycle running their factory demo.
 from __future__ import annotations
 
 import random
+import struct
 import sys
 import threading
 import time
@@ -39,8 +40,7 @@ from epaper.commands import (TEST_SLOT, clear_pipeline, save_color,
                              save_pipeline, show_single, slot_config, stop)
 from epaper.protocol import ACK_INVALID_CMD, ACK_SUCCESS, DEV_NUMBER_BRAND
 
-NO_DELAY = 0xFF            # in a show file's table: no delay for this socket
-FRAMES_PER_UNIT = 10       # the table's 0.1 s in the board's 10 ms frames
+NO_DELAY = 0xFFFF          # in a show file's table: no delay for this socket
 from epaper.transport import Bus, find_port
 
 from .config import LOG_HISTORY
@@ -751,20 +751,22 @@ class DemoRunner:
     def _save_delays(self, bus, groups: int, board: int, table: bytes,
                      dev_type: int) -> bool:
         """Give a board the sweep's delay table unless it already holds
-        it. The show file says tenths of a second per socket (0xFF: no
-        delay given); the board takes frames of 10 ms as V1.4's 0x1F,
-        and a table with no delays at all is 0x25 - forget the sweep.
-        A board whose firmware does not know the commands is remembered
-        and left alone: the cue still goes out, in socket order."""
+        it. The show file's table is 64 sockets of uint16, big-endian,
+        already in the board's own unit - 10 ms frames (NO_DELAY: no
+        delay given); the board takes it as V1.4's 0x1F, and a table
+        with no delays at all is 0x25 - forget the sweep. A board whose
+        firmware does not know the commands is remembered and left
+        alone: the cue still goes out, in socket order."""
         if board in self.no_sweep or self._delays_sent.get(board) == table:
             return True
-        if all(b == NO_DELAY for b in table):
+        values = struct.unpack(">64H", table)
+        if all(v == NO_DELAY for v in values):
             frames = [clear_pipeline(board, self.slot, groups, dev_type=dev_type)]
             label = f"sweep off @{board:02d}"
         else:
             frames = list(save_pipeline(
                 board, self.slot,
-                [0 if b == NO_DELAY else b * FRAMES_PER_UNIT for b in table],
+                [0 if v == NO_DELAY else v for v in values],
                 groups, dev_type=dev_type))
             label = f"sweep @{board:02d}"
         for frame in frames:

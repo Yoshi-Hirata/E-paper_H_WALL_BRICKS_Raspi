@@ -36,6 +36,7 @@ STANDBY = "standby"        # asked for the white standby
 LOCAL = "local"            # the unit is on its own menu
 
 ARRAY_LEN = 64
+TABLE_LEN = 128            # a delay table: 64 sockets x uint16, big-endian
 DEV_NUMBER_BRAND = 0x03    # the layout every UI pattern sends (ui/patterns.py)
 
 
@@ -71,9 +72,10 @@ class RemoteSession:
     def prepare(self, cue_id: str, boards: "dict[int, bytes]",
                 dev_type: int = DEV_NUMBER_BRAND, label: str = "",
                 delays: "dict[int, bytes] | None" = None) -> None:
-        """`delays`: per board, the 64-byte table of per-socket start
-        delays that makes the change sweep the garment (written before
-        the colours; boards without one keep what they have)."""
+        """`delays`: per board, the 128-byte table (64 sockets x uint16,
+        big-endian, 10 ms frames) of per-socket start delays that makes
+        the change sweep the garment (written before the colours;
+        boards without one keep what they have)."""
         if self.busy():
             raise RemoteError("unit is busy (firmware update, scan or reboot)")
         if not boards:
@@ -86,9 +88,10 @@ class RemoteSession:
                                   f"{ARRAY_LEN} bytes, got {len(array)}")
         delays = {int(a): bytes(t) for a, t in (delays or {}).items()}
         for address, table in delays.items():
-            if len(table) != ARRAY_LEN:
+            if len(table) != TABLE_LEN:
                 raise RemoteError(f"board {address}: delay table must be "
-                                  f"{ARRAY_LEN} bytes, got {len(table)}")
+                                  f"{TABLE_LEN} bytes (64 sockets x uint16), "
+                                  f"got {len(table)}")
         with self._lock:
             self.active = True
             self.phase = PREPARING

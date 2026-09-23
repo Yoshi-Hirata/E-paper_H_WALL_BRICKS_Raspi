@@ -8,6 +8,7 @@ is what the show PC will talk to.
 from __future__ import annotations
 
 import json
+import struct
 import sys
 import time
 import urllib.error
@@ -27,6 +28,7 @@ from ui.inputs import ScriptedInput
 from ui.patterns import BY_KEY
 from ui.remote import (ARMED, FAILED, FIRED, LOCAL, READY, STANDBY,
                        RemoteError, RemoteSession)
+from ui.runner import NO_DELAY
 from tests.test_ui_runner import FakeBus, make_runner, wait_until
 
 SAVE, SHOW, STOP, CFG = 0x13, 0x1D, 0x17, 0x1B
@@ -462,34 +464,51 @@ def test_agent_connections_time_out_instead_of_leaking_threads():
 
 
 # ---- sweeps: a delay table per board, before the colours ----
+# Tables are now 64 sockets of uint16, big-endian (V1.4 7.4, 10 ms frames):
+# 128 bytes, NO_DELAY = 0xFFFF. `table(value)` puts `value` frames on every
+# socket but the two that never carry a scale.
 
 DELAY, CLEAR = 0x1F, 0x25
 
 
 def table(value: int) -> bytes:
-    return bytes([0xFF] + [value] * 62 + [0xFF])
+    return struct.pack(">64H", *([NO_DELAY] + [value] * 62 + [NO_DELAY]))
+
+
+def all_no_delay() -> bytes:
+    return struct.pack(">64H", *([NO_DELAY] * 64))
+
+
+def test_a_delay_table_of_the_wrong_length_is_refused():
+    # 64 bytes was the table's old (0.1 s, one byte a socket) length; it
+    # is refused now that a table is 128 bytes of uint16 frames.
+    session, runner, bus = make_session()
+    with pytest.raises(RemoteError):
+        session.prepare("c1", {1: array(3)}, delays={1: bytes([0xFF] * 64)})
+    assert session.phase == LOCAL
+    runner.stop()
 
 
 def test_delay_tables_go_out_before_the_colours_and_only_when_they_change():
     session, runner, bus = make_session()
-    session.prepare("c1", {1: array(3), 2: array(4)}, delays={1: table(2), 2: table(5)})
+    session.prepare("c1", {1: array(3), 2: array(4)}, delays={1: table(20), 2: table(50)})
     assert wait_until(lambda: session.phase == READY)
     cmds = [(f.cmd, f.dest) for f in bus.requested if f.cmd in (DELAY, SAVE)]
     assert cmds == [(DELAY, 1), (DELAY, 1), (SAVE, 1), (DELAY, 2), (DELAY, 2), (SAVE, 2)]
     low, high = [f for f in bus.requested if f.cmd == DELAY][:2]
-    # 0.2 s per socket = 20 frames: low bytes 20, high bytes 0, "last" on the high frame.
+    # 20 frames (0.2 s) a socket: low bytes 20, high bytes 0, "last" on the high frame.
     assert low.data == bytes([19, 0, 0]) + bytes([20] * 62) + bytes([0])
     assert high.data == bytes([19, 0x03]) + bytes(64)
     # The same tables again: not written again. A new one for board 2 is.
     n = len(bus.requested)
-    session.prepare("c2", {1: array(6), 2: array(7)}, delays={1: table(2), 2: table(9)})
+    session.prepare("c2", {1: array(6), 2: array(7)}, delays={1: table(20), 2: table(90)})
     assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
     later = [(f.cmd, f.dest) for f in bus.requested[n:] if f.cmd in (DELAY, SAVE)]
     assert later == [(SAVE, 1), (DELAY, 2), (DELAY, 2), (SAVE, 2)]
     assert session.status()["no_sweep"] == []
-    # A table of "no delay" anywhere is 0x25: the board forgets the sweep.
+    # A table of "no delay" everywhere is 0x25: the board forgets the sweep.
     n = len(bus.requested)
-    session.prepare("c3", {1: array(8), 2: array(9)}, delays={1: bytes([0xFF] * 64), 2: table(9)})
+    session.prepare("c3", {1: array(8), 2: array(9)}, delays={1: all_no_delay(), 2: table(90)})
     assert wait_until(lambda: session.phase == READY and session.cue_id == "c3")
     later = [(f.cmd, f.dest) for f in bus.requested[n:] if f.cmd in (DELAY, CLEAR, SAVE)]
     assert later == [(CLEAR, 1), (SAVE, 1), (SAVE, 2)]
@@ -505,29 +524,41 @@ def test_a_board_whose_firmware_has_no_sweeps_still_gets_the_cue():
             return ack
 
     session, runner, bus = make_session(OldFirmware())
-    session.prepare("c1", {1: array(3)}, delays={1: table(1)})
+    session.prepare("c1", {1: array(3)}, delays={1: table(10)})
     assert wait_until(lambda: session.phase == READY)
     assert session.saved == [1] and session.failed == []
     assert session.status()["no_sweep"] == [1]
-    session.prepare("c2", {1: array(4)}, delays={1: table(2)})
+    session.prepare("c2", {1: array(4)}, delays={1: table(20)})
     assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
     assert [f.cmd for f in bus.requested].count(DELAY) == 1   # asked once
-    runner.stop()
-
-
-def test_a_bad_delay_table_is_refused_before_anything_is_written():
-    session, runner, bus = make_session()
-    with pytest.raises(RemoteError):
-        session.prepare("c1", {1: array(3)}, delays={1: b"\x00" * 10})
-    assert session.phase == LOCAL
     runner.stop()
 
 
 def test_agent_passes_delays_through(agent):
     agent, session, runner, bus = agent
     status, body = call(agent, "/prepare", {"cue": "x", "boards": {"1": array(2).hex()},
-                                            "delays": {"1": table(3).hex()}})
+                                            "delays": {"1": table(30).hex()}})
     assert status == 200, body
     assert wait_until(lambda: session.phase == READY)
     assert any(f.cmd == DELAY and f.data[2:] == bytes([0]) + bytes([30] * 62) + bytes([0])
                for f in bus.requested)
+
+
+def test_frames_are_sent_as_uint16_low_then_high():
+    bus = FakeBus()
+    runner = make_runner(bus)
+    # 300 = 0x012C: low byte 0x2C, high byte 0x01 - needs both frames.
+    wide = struct.pack(">64H", *([NO_DELAY] + [300] * 62 + [NO_DELAY]))
+    assert runner._save_delays(bus, 20, 7, wide, dev_type=3)
+    low, high = [f for f in bus.requested if f.cmd == DELAY][:2]
+    assert low.data[2:] == bytes([0]) + bytes([0x2C] * 62) + bytes([0])
+    assert high.data[2:] == bytes([0]) + bytes([0x01] * 62) + bytes([0])
+    runner.stop()
+
+
+def test_a_table_of_no_delay_everywhere_clears_the_pipeline():
+    bus = FakeBus()
+    runner = make_runner(bus)
+    assert runner._save_delays(bus, 20, 3, all_no_delay(), dev_type=3)
+    assert [f.cmd for f in bus.requested] == [CLEAR]
+    runner.stop()

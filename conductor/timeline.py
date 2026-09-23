@@ -3,7 +3,8 @@
 Every item (a look, a bag) has its own track of cues, because the
 models do not all change together. A cue is
 
-    {"id", "item", "at", "design", "align", "partial", "sequence", "step_s"}
+    {"id", "item", "at", "design", "align", "partial",
+     "transition", "sequence", "span_s"}
 
 `at` is seconds from the start of the show. An e-paper refresh takes
 several seconds from the command to the finished image (REFRESH_S), so
@@ -16,11 +17,16 @@ a time can mean two things and the cue says which:
 moment. A cue at 0:00 is the preset - loaded before START, so the show
 opens on it - and its align does not matter.
 
-`sequence` is the order the scales change in (conductor/sequence.py) and
-`step_s` the seconds between two rows of it. A sweep makes the change
-last longer than one refresh - by the last scale's delay, the cue's
-"span" - and the page and the units get that number from the server
-(it depends on the garment's map), as cue["span"].
+`transition` says whether the cue sweeps as its design does ("design",
+the default) or has its own sweep ("custom"). `sequence` and `span_s`
+are always stored (so switching back and forth keeps both), but only
+used when `transition` is "custom" - see resolve() and
+apply_transitions() below, and conductor/sequence.py for what a
+sequence and a span mean. `span_s` is seconds from the command to the
+first scale to the command to the last one; a sweep makes the change
+last longer than one refresh, by that span. The resolved sweep and the
+seconds it actually adds (which needs the garment's map) come from the
+server, as cue["sweep"] and cue["span"].
 
 What one unit can do bounds the timeline. Before a refresh the unit has
 to write every board (about 0.22 s each, docs/SCALING.md), and nothing
@@ -41,7 +47,7 @@ from __future__ import annotations
 
 import re
 
-from .sequence import clean_sequence, clean_step
+from .sequence import MAX_DELAY_S, clean_sequence, clean_span
 
 # Full repaint, command to finished image. It has moved with every
 # firmware - 9.8 s (first boards), 16 s (production boards, 2026-08-14),
@@ -117,6 +123,7 @@ def clean(cues) -> "list[dict]":
         if not isinstance(raw, dict):
             continue
         align = raw.get("align", "done")
+        transition = raw.get("transition")
         result.append({
             "id": str(raw.get("id") or f"c{len(result)}")[:40],
             "item": str(raw.get("item", "")),
@@ -124,11 +131,39 @@ def clean(cues) -> "list[dict]":
             "design": str(raw.get("design", "")),
             "align": align if align in ALIGNS else "done",
             "partial": bool(raw.get("partial", False)),
+            "transition": transition if transition in ("design", "custom")
+                         else "design",
             "sequence": clean_sequence(raw.get("sequence", "natural")),
-            "step_s": clean_step(raw.get("step_s", 0.1)),
+            "span_s": clean_span(raw.get("span_s", 0.0)),
         })
     result.sort(key=lambda c: (c["at"], c["item"].lower()))
     return result
+
+
+def resolve(cue: dict, transitions: dict) -> dict:
+    """The sweep a cue actually plays: its design's transition, unless
+    the cue overrides it. `transitions` is show.json's map of design
+    file -> {"sequence", "span_s"} (conductor/server.py Workspace).
+
+    `source` says where the values came from - "design" so the page can
+    show "design default", "cue" so it shows the cue's own numbers -
+    not whether they happen to differ.
+    """
+    if cue.get("transition", "design") == "custom":
+        return {"sequence": clean_sequence(cue.get("sequence", "natural")),
+                "span_s": clean_span(cue.get("span_s", 0.0)),
+                "source": "cue"}
+    entry = transitions.get(cue.get("design", "")) or {}
+    return {"sequence": clean_sequence(entry.get("sequence", "natural")),
+            "span_s": clean_span(entry.get("span_s", 0.0)),
+            "source": "design"}
+
+
+def apply_transitions(cues: "list[dict]", transitions: dict) -> None:
+    """Give every cue its resolved sweep, as cue["sweep"] - in place, so
+    the same list can go on to _time_sweeps() and validate()."""
+    for cue in cues:
+        cue["sweep"] = resolve(cue, transitions)
 
 
 def validate(cues: "list[dict]", items: "dict[str, dict]",
@@ -167,8 +202,13 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                 f"cannot be complete at {format_clock(cue['at'])}: this change "
                 f"takes {takes:.0f} s. Use 0:00 (the preset, before START) "
                 f"or {format_clock(takes)} and later")
-        if cue.get("sequence", "natural") != "natural" and cue.get("span") is None:
-            mine.append("the sweep needs the item's map to be timed")
+        sweep = cue.get("sweep") or {"sequence": "natural", "span_s": 0.0}
+        if sweep["sequence"] != "natural":
+            if cue.get("span") is None:
+                mine.append("the sweep needs the item's map to be timed")
+            if sweep["span_s"] > MAX_DELAY_S:
+                mine.append("a sweep is at most 30 s from the first scale "
+                           "to the last (the firmware's limit)")
 
     # One item cannot be told two things at once.
     seen: "dict[tuple, str]" = {}
@@ -199,9 +239,10 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                 # The previous change occupies the bus for its own span,
                 # and a sweep has its delay tables to write as well.
                 gap = sent - previous
+                cue_sweep = cue.get("sweep") or {"sequence": "natural"}
                 extra = span_of(before) + (
                     boards * SAVE_S_PER_BOARD
-                    if cue.get("sequence", "natural") != "natural" else 0.0)
+                    if cue_sweep["sequence"] != "natural" else 0.0)
                 if gap < need + extra:
                     problems[cue["id"]].append(
                         f"only {gap:.0f} s after the previous refresh on {unit}; "
