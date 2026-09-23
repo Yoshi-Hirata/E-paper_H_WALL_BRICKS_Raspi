@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import struct
 import sys
 from pathlib import Path
 
@@ -11,8 +12,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conductor.look import LookMap  # noqa: E402
-from conductor.sequence import (MAX_UNITS, NO_DELAY, SEQUENCES, clean_step,  # noqa: E402
-                                compile_delays, ranks, span_s)
+from conductor.sequence import (NO_DELAY, SEQUENCES, TABLE_LEN,  # noqa: E402
+                                clean_span, compile_delays, ranks, span_s)
 
 # A little garment: front 3 rows x 3 columns on board 17, back 2 rows on 18.
 MAP = """side,row,col,board_no,socket,label
@@ -33,8 +34,13 @@ def look():
     return LookMap.parse(io.StringIO(MAP), name="m.csv")
 
 
+def unpack(table: bytes) -> "tuple[int, ...]":
+    assert len(table) == TABLE_LEN
+    return struct.unpack(">64H", table)
+
+
 def by_socket(board):
-    return lambda table: {n: table[board][n] for n in range(1, 8)}
+    return lambda tables: {n: unpack(tables[board])[n] for n in range(1, 8)}
 
 
 def test_rows_top_down_and_bottom_up():
@@ -45,7 +51,7 @@ def test_rows_top_down_and_bottom_up():
     assert r[("front", 0, 2)] == 0 and r[("front", 2, 3)] == 2 and r[("back", 1, 3)] == 1
 
 
-def test_left_and_right_are_the_audiences_for_each_side():
+def test_left_and_right_are_still_the_audiences_for_each_side():
     # Columns run towards the wearer's right. Facing the front, the
     # audience's left is the wearer's right: the last column goes first.
     r = ranks(look(), "left_right")
@@ -63,34 +69,62 @@ def test_centre_is_the_fronts_centroid_and_the_back_uses_the_same_point():
     assert r[("back", 1, 1)] == r[("front", 1, 1)]    # straight behind
 
 
-def test_natural_has_no_ranks_and_no_span():
+def test_a_span_of_zero_or_a_single_rank_is_no_sweep():
     assert set(ranks(look(), "natural").values()) == {0}
-    assert span_s(look(), "natural", 0.1) == 0
-    assert span_s(look(), "top_down", 0.1) == pytest.approx(0.2)
-    assert span_s(look(), "top_down", 2.0) == pytest.approx(4.0)
+    assert span_s(look(), "natural", 3.0) == 0
+    assert span_s(look(), "top_down", 0.0) == 0.0
+    assert span_s(look(), "top_down", 3.0) == pytest.approx(3.0)
     assert "natural" in SEQUENCES and len(SEQUENCES) == 6
+    # A map whose ranks never move (one scale: nothing to rank against)
+    # sweeps nothing either - there is nothing for a delay to time.
+    single = LookMap.parse(io.StringIO(
+        "side,row,col,board_no,socket,label\nfront,0,1,5,1,\n"), name="s.csv")
+    assert span_s(single, "top_down", 3.0) == 0.0
+    assert unpack(compile_delays(single, "top_down", 3.0)[1]) == (NO_DELAY,) * 64
 
 
-def test_delay_tables_are_per_board_by_socket_in_tenths_of_a_second():
-    tables = compile_delays(look(), "top_down", 0.5)
+def test_delay_tables_are_uint16_frames_of_ten_ms():
+    tables = compile_delays(look(), "top_down", 2.0)
     front = by_socket(1)(tables)
-    assert front == {1: 0, 2: 0, 3: 0, 4: 5, 5: 5, 6: 5, 7: 10}
-    assert tables[1][0] == NO_DELAY and tables[1][63] == NO_DELAY
-    assert tables[1][8] == NO_DELAY                     # no scale there
-    assert by_socket(2)(tables)[1] == 5 and by_socket(2)(tables)[3] == 10
+    # Ranks 0,0,0 / 1,1,1 / 2 over a 2.0 s span (max rank 2): 0, 100, 200 frames.
+    assert front == {1: 0, 2: 0, 3: 0, 4: 100, 5: 100, 6: 100, 7: 200}
+    assert unpack(tables[1])[0] == NO_DELAY and unpack(tables[1])[63] == NO_DELAY
+    back = by_socket(2)(tables)
+    assert back[1] == 100 and back[3] == 200
+    for table in tables.values():
+        assert len(table) == TABLE_LEN
     # A natural table says "no delay" everywhere - it clears a sweep.
-    assert set(compile_delays(look(), "natural", 0.1)[1]) == {NO_DELAY}
-    # Long sweeps are capped at what a byte can say.
-    capped = compile_delays(look(), "top_down", 5.0)
-    assert by_socket(1)(capped)[7] == min(MAX_UNITS, 100)
-    assert all(v <= MAX_UNITS or v == NO_DELAY for v in capped[1])
+    assert set(unpack(compile_delays(look(), "natural", 2.0)[1])) == {NO_DELAY}
+
+
+def test_the_last_rank_starts_exactly_span_seconds_after_the_first():
+    for span in (0.5, 1.0, 2.37, 12.0):
+        tables = compile_delays(look(), "top_down", span)
+        last = max(v for t in tables.values() for v in unpack(t) if v != NO_DELAY)
+        assert last == round(span / 0.01)              # frames of 10 ms
+    # Equal ranks give byte-identical frames wherever they occur.
+    tables = compile_delays(look(), "top_down", 3.0)
+    front = unpack(tables[1])
+    assert front[4] == front[5] == front[6]
+
+
+def test_sockets_without_a_scale_and_index_0_and_63_are_no_delay():
+    tables = compile_delays(look(), "top_down", 1.0)
+    for table in tables.values():
+        values = unpack(table)
+        assert values[0] == NO_DELAY and values[63] == NO_DELAY
+    assert unpack(tables[1])[8] == NO_DELAY             # board 17 has no socket 8
 
 
 def test_the_unit_wide_addressing_is_honoured():
-    tables = compile_delays(look(), "bottom_up", 0.1, ids={17: 5, 18: 9})
+    tables = compile_delays(look(), "bottom_up", 1.0, ids={17: 5, 18: 9})
     assert set(tables) == {5, 9}
 
 
-def test_step_is_tidied():
-    assert clean_step("0.25") == 0.2 or clean_step("0.25") == 0.3
-    assert clean_step(0) == 0.1 and clean_step(99) == 5.0 and clean_step("x") == 0.1
+def test_span_is_clamped_and_junk_becomes_zero():
+    assert clean_span("3.456") == 3.46
+    assert clean_span(-5) == 0.0
+    assert clean_span(999) == 120.0
+    assert clean_span("nope") == 0.0
+    assert clean_span(None) == 0.0
+    assert clean_span(float("nan")) == 0.0

@@ -2,8 +2,9 @@
 
 A board refreshes its sockets P01 -> P60 about 0.1 s apart, in an order
 the wiring decided. With the per-segment delay table of the firmware
-request (docs/FW_REQUEST_SEGMENT_DELAY.md) the host can say instead when
-each socket starts, so the change sweeps the garment in a direction:
+request (docs/FW_REQUEST_SEGMENT_DELAY.md), which V1.4 (FW_260923)
+shipped as 0x1F/0x25, the host can say instead when each socket starts,
+so the change sweeps the garment in a direction:
 
     natural      as the wiring has it (no table)
     center       outward from the middle of the garment
@@ -12,7 +13,9 @@ each socket starts, so the change sweeps the garment in a direction:
     left_right   column by column from the audience's left
     right_left   column by column from the audience's right
 
-Every scale gets a rank (0, 1, 2 ...); its delay is rank x step. Rows and
+Every scale gets a rank (0, 1, 2 ...); its delay is proportional to that
+rank, scaled so the last rank's delay is exactly the sweep's span (the
+seconds from the first scale's command to the last one's). Rows and
 columns are the grid's own (one row = one step, one column = one step),
 which is what the designer sees in the CSV. Left and right are the
 audience's, for each side as they face it: the CSV is drawn from the
@@ -24,6 +27,7 @@ front's centroid; the back uses the point straight behind it.
 from __future__ import annotations
 
 import math
+import struct
 
 from .look import ARRAY_LEN, LookMap, default_shift
 
@@ -35,25 +39,25 @@ LABELS = {"natural": "Socket order (P01 to P60)",
           "bottom_up": "Bottom to top",
           "left_right": "Left to right (audience)",
           "right_left": "Right to left (audience)"}
-STEP_S = 0.1                    # default: what P01 -> P60 has today
-STEP_RANGE_S = (0.1, 5.0)
-UNIT_S = 0.1                    # the table's unit
-MAX_UNITS = 254                 # 0xFF means "no delay given"
-NO_DELAY = 0xFF
-SPAN_MAX_S = MAX_UNITS * UNIT_S
+FRAME_S = 0.01                  # V1.4's delay table unit (7.4.2)
+NO_DELAY = 0xFFFF               # a socket without a scale; the runner sends 0
+TABLE_LEN = 128                 # 64 sockets x uint16, big-endian
+MAX_DELAY_S = 30.0              # firmware guidance -> validate() problem
+SPAN_HARD_MAX_S = 120.0         # clean_span()'s clamp, so the file stays sane
 
 
 def clean_sequence(value) -> str:
     return value if value in SEQUENCES else "natural"
 
 
-def clean_step(value) -> float:
+def clean_span(value) -> float:
     try:
-        step = round(float(value), 1)
+        span = round(float(value), 2)
     except (TypeError, ValueError):
-        return STEP_S
-    low, high = STEP_RANGE_S
-    return min(high, max(low, step))
+        return 0.0
+    if span != span:                     # NaN: junk, same as an unusable value
+        return 0.0
+    return min(SPAN_HARD_MAX_S, max(0.0, span))
 
 
 def ranks(look_map: LookMap, sequence: str) -> "dict[tuple, int]":
@@ -91,29 +95,41 @@ def ranks(look_map: LookMap, sequence: str) -> "dict[tuple, int]":
     raise ValueError(f"unknown sequence {sequence!r}")
 
 
-def span_s(look_map: LookMap, sequence: str, step: float) -> float:
-    """Seconds the sweep adds to one refresh: the last scale's delay."""
+def span_s(look_map: LookMap, sequence: str, span: float) -> float:
+    """The sweep's effective span: 0 for a natural sequence or a garment
+    whose ranks never move (one scale, or all of a kind) - there is
+    nothing to time. Otherwise `span` itself: the caller already knows
+    the seconds wanted from the first scale to the last."""
     if sequence == "natural":
         return 0.0
-    return round(max(ranks(look_map, sequence).values(), default=0) * step, 1)
+    if max(ranks(look_map, sequence).values(), default=0) == 0:
+        return 0.0
+    return round(float(span), 2)
 
 
-def compile_delays(look_map: LookMap, sequence: str, step: float,
+def compile_delays(look_map: LookMap, sequence: str, span: float,
                    ids: "dict[int, int] | None" = None
                    ) -> "dict[int, bytes]":
-    """bus address -> 64-byte delay table, for every board of the item.
+    """bus address -> 128-byte delay table (64 x uint16, big-endian, V1.4
+    7.4), for every board of the item.
 
-    Index = socket, value = delay in UNIT_S; sockets without a scale, and
-    index 0 and 63, are NO_DELAY. A natural sequence gives every board a
-    table of NO_DELAY, which tells a board that held a sweep to forget it.
+    Index = socket, value = the frame (10 ms) the socket's segment
+    starts on; sockets without a scale, and index 0 and 63, are
+    NO_DELAY. A natural sequence gives every board a table of NO_DELAY,
+    which tells a board that held a sweep to forget it. The highest
+    rank always lands on exactly `span` seconds - not "close to it" -
+    because frames() multiplies before it divides by the rank count.
     """
     ids = ids or look_map.board_ids
-    tables = {ids[no]: bytearray([NO_DELAY] * ARRAY_LEN)
-              for no in look_map.board_nos}
+    tables = {ids[no]: [NO_DELAY] * ARRAY_LEN for no in look_map.board_nos}
     if sequence != "natural":
-        per_unit = step / UNIT_S
-        for scale, rank in ranks(look_map, sequence).items():
-            units = min(MAX_UNITS, int(round(rank * per_unit)))
-            tables[ids[look_map.by_position[scale].board_no]][
-                look_map.by_position[scale].socket] = units
-    return {address: bytes(table) for address, table in tables.items()}
+        rank_of = ranks(look_map, sequence)
+        max_rank = max(rank_of.values(), default=0)
+        if max_rank > 0:
+            for scale, rank in rank_of.items():
+                frame = max(0, min(0xFFFF, int(round(
+                    rank * span / max_rank / FRAME_S))))
+                tables[ids[look_map.by_position[scale].board_no]][
+                    look_map.by_position[scale].socket] = frame
+    return {address: struct.pack(">64H", *table)
+            for address, table in tables.items()}

@@ -9,7 +9,7 @@ a show.
                      and the clock, for the PC's offset measurement
     GET  /clock      the clock alone (smallest, fastest answer)
     POST /prepare    {"cue", "label", "dev_type", "boards": {"1": hex64, ...},
-                      "delays": {"1": hex64, ...}}   (delays optional)
+                      "delays": {"1": hex128, ...}}   (delays optional)
     POST /fire       {"cue", "at"}       at = this unit's monotonic seconds
     POST /cancel     forget the fire time
     POST /standby    white out the panels, keep the unit under remote

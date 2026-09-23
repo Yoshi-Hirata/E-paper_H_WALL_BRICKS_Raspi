@@ -8,6 +8,7 @@ and when - the saves before, the single show at T0 + sent.
 from __future__ import annotations
 
 import json
+import struct
 import sys
 import time
 from pathlib import Path
@@ -538,7 +539,8 @@ def test_starting_again_from_the_top_runs_every_cue_again(rig):
 def test_a_cue_with_delay_tables_hands_them_to_the_session(rig):
     player, session, runner, bus, _ = rig
     show = make_show(duration=30)
-    swept = bytes([0xFF] + [7] * 62 + [0xFF])
+    NO_DELAY = 0xFFFF
+    swept = struct.pack(">64H", *([NO_DELAY] + [70] * 62 + [NO_DELAY]))
     for cue in show["cues"]:
         cue["delays"] = {"1": swept.hex(), "2": swept.hex()}
         cue["span"] = 0.7

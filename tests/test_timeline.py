@@ -13,8 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.timeline import (REFRESH_S, clean, format_clock, min_interval,
-                                parse_clock, times, validate)
+from conductor.timeline import (REFRESH_S, apply_transitions, clean,
+                                format_clock, min_interval, parse_clock,
+                                resolve, times, validate)
 
 OK = {"full": True, "partial": True}
 ITEMS = {
@@ -168,7 +169,8 @@ def test_send_instants_are_compared_to_the_millisecond():
 
 def test_a_sweep_lengthens_the_change_and_the_room_after_it():
     swept = cue("a", "Look22", 60, "g1.csv")
-    swept.update(sequence="top_down", step_s=0.5, span=4.0)
+    swept["sweep"] = {"sequence": "top_down", "span_s": 4.0, "source": "cue"}
+    swept["span"] = 4.0
     sent, complete = times(swept, 7.0)
     assert (sent, complete) == (49.0, 60.0)             # 7 s refresh + 4 s sweep
     swept["align"] = "start"
@@ -188,17 +190,57 @@ def test_a_sweep_lengthens_the_change_and_the_room_after_it():
 
 def test_a_sweep_without_its_map_is_reported_not_guessed():
     swept = cue("a", "Look22", 60, "g1.csv")
-    swept.update(sequence="center", step_s=0.1)          # no span given
+    swept["sweep"] = {"sequence": "center", "span_s": 0.1, "source": "cue"}
+    # No span given: the map that would time it is missing.
     items = {"look22": {"item": "Look22", "unit": None, "boards": 2,
                         "designs": {"g1.csv": {"full": True, "partial": True}}}}
     problems, _ = validate([swept], items, 600, 7.0)
     assert any("map" in p for p in problems["a"])
 
 
-def test_clean_keeps_sequence_and_step_and_tidies_them():
+def test_a_sweep_longer_than_thirty_seconds_is_a_problem_on_the_cue():
+    swept = cue("a", "Look22", 60, "g1.csv")
+    items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
+                        "designs": {"g1.csv": {"full": True, "partial": True}}}}
+    swept["sweep"] = {"sequence": "top_down", "span_s": 30.0, "source": "cue"}
+    swept["span"] = 30.0
+    assert validate([swept], items, 600, 7.0)[0]["a"] == []      # exactly 30 s: fine
+    swept["sweep"]["span_s"] = 30.1
+    swept["span"] = 30.1
+    problems, _ = validate([swept], items, 600, 7.0)
+    assert any("30 s" in p for p in problems["a"])
+
+
+def test_clean_takes_transition_sequence_and_span_and_drops_step_s():
     cues = clean([{"id": "a", "item": "L", "at": 5, "design": "d",
-                   "sequence": "left_right", "step_s": "0.3"},
+                   "transition": "custom", "sequence": "left_right",
+                   "span_s": "3.456", "step_s": 9},
                   {"id": "b", "item": "L", "at": 6, "design": "d",
-                   "sequence": "sideways", "step_s": -1}])
-    assert (cues[0]["sequence"], cues[0]["step_s"]) == ("left_right", 0.3)
-    assert (cues[1]["sequence"], cues[1]["step_s"]) == ("natural", 0.1)
+                   "sequence": "sideways", "span_s": -1},
+                  {"id": "c", "item": "L", "at": 7, "design": "d"}])
+    assert (cues[0]["transition"], cues[0]["sequence"], cues[0]["span_s"]) == \
+        ("custom", "left_right", 3.46)
+    assert "step_s" not in cues[0]
+    assert (cues[1]["transition"], cues[1]["sequence"], cues[1]["span_s"]) == \
+        ("design", "natural", 0.0)
+    assert cues[2]["transition"] == "design"            # the default
+
+
+def test_a_cue_inherits_its_designs_transition_and_may_override_it():
+    transitions = {"g1.csv": {"sequence": "top_down", "span_s": 3.0}}
+    inherited = cue("a", "Look22", 60, "g1.csv")
+    assert resolve(inherited, transitions) == \
+        {"sequence": "top_down", "span_s": 3.0, "source": "design"}
+    custom = cue("b", "Look22", 60, "g1.csv")
+    custom.update(transition="custom", sequence="center", span_s=1.5)
+    assert resolve(custom, transitions) == \
+        {"sequence": "center", "span_s": 1.5, "source": "cue"}
+    # No entry for the design: natural, whatever the design's own default.
+    plain = cue("c", "Look22", 60, "other.csv")
+    assert resolve(plain, transitions)["sequence"] == "natural"
+    cues = [inherited, custom]
+    apply_transitions(cues, transitions)
+    assert cues[0]["sweep"] == {"sequence": "top_down", "span_s": 3.0,
+                               "source": "design"}
+    assert cues[1]["sweep"] == {"sequence": "center", "span_s": 1.5,
+                               "source": "cue"}

@@ -31,7 +31,9 @@ import json
 from . import timeline
 from .look import (ARRAY_LEN, MARKER, NO_REFRESH, Design, LookError, LookMap,
                    compile_design, unit_board_ids)
-from .sequence import compile_delays
+from .sequence import FRAME_S, compile_delays
+
+DELAY_UNIT_MS = round(FRAME_S * 1000)   # 10: what a unit table's frame is
 
 NUMBER_BRAND = 0x03
 
@@ -73,7 +75,8 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
     # any cue of the show has one, every cue carries tables - a natural
     # cue's say "no delay" - so a board never keeps a sweep it should
     # not; the unit only writes a table that differs from the last.
-    sweeps = any(c.get("sequence", "natural") != "natural" for c in cues)
+    sweeps = any(c["sweep"]["sequence"] != "natural" and c["sweep"]["span_s"] > 0
+                for c in cues)
     state = {address: blank() for address in addresses}
     unit_cues = []
     for number, sent in enumerate(sorted(moments)):
@@ -92,8 +95,8 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
             span = max(span, timeline.span_of(cue))
             if sweeps:
                 delays.update(compile_delays(
-                    look_map, cue.get("sequence", "natural"),
-                    float(cue.get("step_s", 0.1)), ids=ids))
+                    look_map, cue["sweep"]["sequence"],
+                    cue["sweep"]["span_s"], ids=ids))
         for address in addresses:
             lay_over(state[address], change[address])
         entry = {
@@ -112,6 +115,7 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
 
     show = {"name": name, "unit": unit, "dev_type": NUMBER_BRAND,
             "refresh_s": refresh, "duration": duration,
+            "delay_unit_ms": DELAY_UNIT_MS,
             "boards": addresses, "cues": unit_cues}
     digest = hashlib.sha1(json.dumps(show, sort_keys=True).encode()).hexdigest()
     show["id"] = digest[:10]

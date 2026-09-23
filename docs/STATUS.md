@@ -18,6 +18,36 @@
 
 ## 2. 直近で完成したもの
 
+**演出側: デザイン単位の遷移・10 ms 単位の遅延表・BGM アップロード・保存/読込(2026-09-24)**
+
+- **遷移(sweep)をデザイン単位に**: `show.json` に `transitions: {デザインファイル名:
+  {sequence, span_s}}` を追加。キューは既定で自分のデザインの遷移を継承し(`transition:
+  "design"`)、`transition: "custom"` のときだけキュー自身の `sequence`/`span_s` を使う。
+  切り替えても両方の値は捨てずに保持する。`/api/state` は `item.designs[n].transition`
+  (常に存在、既定は natural/0)と `cue.sweep` (`{sequence, span_s, source}`)、
+  `state.transitions` を返す。新規 `POST /api/transition` (undo 対応)
+- **`span_s` の意味を変更**: 「最初の柄が変わる指令から最後の柄までの秒数」に統一
+  (旧 `step_s` ×段数 のような掛け算はしない)。30 s 超はキューの問題として警告
+  (ファームウェアの上限)、`clean_span()` は 0〜120 s にクランプしジャンクは 0 に
+- **遅延表を 10 ms のフレーム単位・uint16 に**: `conductor/sequence.py` の
+  `compile_delays()` が 64 ソケット × uint16 ビッグエンディアン(128 バイト、
+  `struct.pack(">64H", ...)`)を作る。`NO_DELAY = 0xFFFF`。最終ランクは必ず
+  span_s ちょうどのフレーム数に一致(テストで assert)。ショーファイルに
+  `delay_unit_ms: 10` を追加。`ui/runner.py._save_delays` は
+  `struct.unpack(">64H", ...)` して 0x1F(`save_pipeline`)/0x25(`clear_pipeline`)
+  にそのまま渡す(フレーム値は掛け算なしで直接使う)。`ui/remote.py` は 128 バイト
+  以外の表を拒否(旧 64 バイトの表も含めて)
+- **ショーの BGM**: `POST /api/music`(生バイト、`X-File-Name` ヘッダ、256 KB ずつ
+  `<workspace>/music/*.part` に書いてから `os.replace`、`Workspace._lock` は
+  ストリーミング中は取らない、64 MB 超は読む前に拒否)、`POST /api/music/remove`、
+  `GET/HEAD /api/music/file` は Range 対応(206/416、`Accept-Ranges`、
+  `Cache-Control: no-cache`)。`state.music` は `{name, size, type, url}` か null
+- **演出の保存とアップロード**: `GET /api/show/export` がタイムライン・遷移・ラベル・
+  ユニット割当・ボード番号(音楽は名前のみ)を 1 つの JSON ファイルとしてダウンロードさせ、
+  `POST /api/show/import` で読み込んだキーだけをまとめて 1 履歴として反映(触れなかった
+  キー・音楽の実体はそのまま)。フォーマット/バージョン不一致は 400 で拒否し、
+  ワークスペースにない項目/デザインは警告として返す(取り込み自体は成功)
+
 **FW VERSION が V1.4(FW_260923)を見分ける(2026-09-24)**
 
 - 0x29 では V1.1 と V1.4 の区別がつかない(どちらも答え、size/crc は再起動後 0)。V1.4 で増えた

@@ -26,6 +26,7 @@ the show and is not undone (the delete asks first).
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import shutil
@@ -44,33 +45,85 @@ from .look import (PALETTE, Design, LookError, LookMap, check,
 WEB_DIR = Path(__file__).resolve().parent / "web"
 UNITS = [f"radxa-{n:02d}" for n in range(1, 11)]
 MAX_UPLOAD = 8 * 1024 * 1024
+MAX_MUSIC = 64 * 1024 * 1024
+MUSIC_CHUNK = 256 * 1024
 HISTORY_DEPTH = 200
 LABEL_MAX = 40
 BOARD_NO_MAX = 9999
 NUMBER_BRAND = 0x03        # the device type the units' UI sends (ui/patterns.py)
+SHOW_FORMAT = "epaper-show"
+SHOW_FORMAT_VERSION = 1
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
 _IS_MAP = re.compile(r"_map$", re.IGNORECASE)
 _IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
 _MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
 _COPY_NO = re.compile(r"-\d+$")
 _LOOK_NO = re.compile(r"look\s*0*(\d+)", re.IGNORECASE)
+_MUSIC_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav",
+                ".ogg": "audio/ogg", ".m4a": "audio/mp4"}
+_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 
 def _key(position) -> str:
     return "|".join(str(part) for part in position)
 
 
+def music_type(name: str) -> str:
+    return _MUSIC_TYPES.get(Path(name).suffix.lower(), "application/octet-stream")
+
+
+def _design_transition(entry) -> dict:
+    """A design's own transition, as the page reads it - always present,
+    natural/0 when nothing was set (conductor/sequence.py's tidying, so
+    a stray show.json entry cannot reach the page unclean)."""
+    if not isinstance(entry, dict):
+        entry = {}
+    return {"sequence": sequence.clean_sequence(entry.get("sequence", "natural")),
+            "span_s": sequence.clean_span(entry.get("span_s", 0.0))}
+
+
+def _parse_range(header: str, size: int):
+    """(start, end) inclusive for one 'Range: bytes=a-b' request; the
+    string "unsatisfiable" for one entirely past the end (416); or None
+    for a header this server does not parse - which is answered as a
+    plain 200, not refused (most player bugs are here, not in a
+    generous fallback)."""
+    match = _RANGE_RE.match((header or "").strip())
+    if not match or size <= 0:
+        return None
+    first, last = match.groups()
+    if first == "" and last == "":
+        return None
+    if first == "":                      # suffix: the last N bytes
+        try:
+            n = int(last)
+        except ValueError:
+            return None
+        if n <= 0:
+            return None
+        start, end = max(0, size - n), size - 1
+    else:
+        start = int(first)
+        end = int(last) if last != "" else size - 1
+    if start > end or start >= size:
+        return "unsatisfiable"
+    return start, min(end, size - 1)
+
+
 def _time_sweeps(cues: "list[dict]", maps: "dict[str, LookMap]") -> None:
-    """Give every cue with a sequence its span (seconds the sweep adds),
-    which only the item's map can say. A cue whose map is missing keeps
-    no span and validate() reports it."""
+    """Give every cue with a sweep its span (seconds it adds to the
+    refresh), which only the item's map can say. A cue whose map is
+    missing keeps no span and validate() reports it. Called after
+    timeline.apply_transitions(), which is what gives each cue its
+    resolved cue["sweep"]."""
     for cue in cues:
         look_map = maps.get(cue["item"].lower())
-        if cue["sequence"] == "natural":
+        sweep = cue["sweep"]
+        if sweep["sequence"] == "natural":
             cue["span"] = 0.0
         elif look_map is not None:
-            cue["span"] = sequence.span_s(look_map, cue["sequence"],
-                                          cue["step_s"])
+            cue["span"] = sequence.span_s(look_map, sweep["sequence"],
+                                          sweep["span_s"])
 
 
 class Workspace:
@@ -81,6 +134,7 @@ class Workspace:
         self.root = Path(root)
         self.files = self.root / "files"
         self.files.mkdir(parents=True, exist_ok=True)
+        self.music = self.root / "music"        # made on the first upload
         self._lock = threading.Lock()
 
     # ---- show.json ----
@@ -305,6 +359,202 @@ class Workspace:
             before = self._load_show()
             self._commit(before, dict(before, **changes))
 
+    def set_transition(self, design: str, sequence_id, span_s) -> None:
+        """A design's own transition (show.json, undoable): every cue that
+        wears it and is not itself "custom" sweeps this way. Natural, or
+        a span of 0, removes the entry - the two are the same thing."""
+        design = Path(str(design or "")).name
+        if self.kind(design) != "grid" or not (self.files / design).is_file():
+            raise ValueError(f"{design}: not a design "
+                             "(*_color_NAME_grid.csv)")
+        sequence_id = sequence.clean_sequence(sequence_id)
+        span = sequence.clean_span(span_s)
+        with self._lock:
+            before = self._load_show()
+            transitions = dict(before.get("transitions", {}))
+            if sequence_id == "natural" or span <= 0:
+                if design not in transitions:
+                    return                       # nothing changed: not a step
+                transitions.pop(design, None)
+            else:
+                transitions[design] = {"sequence": sequence_id, "span_s": span}
+            self._commit(before, dict(before, transitions=transitions))
+
+    # ---- the show's music ----
+    # Bytes live under <root>/music, one file at a time; show.json only
+    # ever points at it by name. Undo covers the pointer, not the file
+    # (docs in the plan): music_info() below is what makes that safe.
+
+    def save_music(self, name: str, stream, length: int) -> dict:
+        """Stream `length` bytes of `name` from `stream` (the request's
+        rfile; the caller has already checked length against MAX_MUSIC)
+        to <root>/music, then point show.json at it as one commit.
+
+        Written to a `.part` file unique to this request - two uploads
+        at once must not collide - and only replaced into place once
+        every byte is down; the lock is taken for that swap and the
+        commit, never for the streaming itself.
+        """
+        safe = _SAFE_NAME.sub("_", Path(name or "music").name) or "music"
+        self.music.mkdir(parents=True, exist_ok=True)
+        part = self.music / f"{safe}.{os.getpid()}-{threading.get_ident()}.part"
+        try:
+            written = 0
+            with open(part, "wb") as handle:
+                remaining = length
+                while remaining > 0:
+                    chunk = stream.read(min(MUSIC_CHUNK, remaining))
+                    if not chunk:
+                        raise ValueError("the upload ended early")
+                    handle.write(chunk)
+                    written += len(chunk)
+                    remaining -= len(chunk)
+            with self._lock:
+                before = self._load_show()
+                old = before.get("music") or {}
+                os.replace(part, self.music / safe)
+                if old.get("name") and old["name"] != safe:
+                    (self.music / Path(old["name"]).name).unlink(missing_ok=True)
+                info = {"name": safe, "size": written, "type": music_type(safe)}
+                self._commit(before, dict(before, music=info))
+            return info
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
+
+    def remove_music(self) -> None:
+        """Forget the show's music and delete its file. Undoable like any
+        other edit of show.json - but an undo of THIS step is the only
+        one that can bring the file back, which is why this asks first
+        on the page, the way deleting a CSV does."""
+        with self._lock:
+            before = self._load_show()
+            info = before.get("music")
+            if not isinstance(info, dict):
+                return
+            name = info.get("name")
+            if name:
+                (self.music / Path(name).name).unlink(missing_ok=True)
+            after = dict(before)
+            after.pop("music", None)
+            self._commit(before, after)
+
+    def music_info(self) -> "dict | None":
+        """The show's music, or None once its entry or its file is gone -
+        an undo cannot restore bytes that were deleted, so this is the
+        one place that checks the file is still really there."""
+        info = self._load_show().get("music")
+        if not isinstance(info, dict) or not info.get("name"):
+            return None
+        try:
+            stat = (self.music / Path(info["name"]).name).stat()
+        except OSError:
+            return None
+        return {"name": info["name"], "size": stat.st_size,
+                "type": info.get("type") or music_type(info["name"]),
+                "url": f"/api/music/file?v={int(stat.st_mtime)}"}
+
+    # ---- exporting and importing the timeline ----
+
+    def export_show(self) -> dict:
+        """The parts of show.json a person would call "the show" - not
+        boards/labels' per-item numbering trivia... actually those too,
+        so a restore is exact; just not the music bytes, which travel
+        separately (only the name is kept, as a reminder)."""
+        show = self._load_show()
+        music = show.get("music")
+        return {
+            "format": SHOW_FORMAT, "version": SHOW_FORMAT_VERSION,
+            "exported": datetime.datetime.now().isoformat(timespec="seconds"),
+            "workspace": self.root.name,
+            "duration": float(show.get("duration", timeline.DEFAULT_DURATION_S)),
+            "refresh_s": float(show.get("refresh_s", timeline.REFRESH_S)),
+            "cues": timeline.clean(show.get("cues")),
+            "transitions": show.get("transitions") or {},
+            "labels": show.get("labels") or {},
+            "units": show.get("units") or {},
+            "boards": show.get("boards") or {},
+            "music": {"name": music["name"]} if isinstance(music, dict)
+                     and music.get("name") else None,
+        }
+
+    def import_show(self, payload: dict) -> "tuple[int, list[str]]":
+        """The reverse of export_show(): one _commit that replaces
+        whatever keys the file mentions and leaves the rest (the music
+        entry included) exactly as it was."""
+        if not isinstance(payload, dict):
+            raise ValueError("not a show file")
+        if payload.get("format") != SHOW_FORMAT:
+            raise ValueError(f"not a show file (format {payload.get('format')!r}, "
+                             f"want {SHOW_FORMAT!r})")
+        if payload.get("version") != SHOW_FORMAT_VERSION:
+            raise ValueError(f"show file version {payload.get('version')!r} "
+                             f"is not supported (want {SHOW_FORMAT_VERSION})")
+        changes: dict = {}
+        if "duration" in payload:
+            duration = timeline.parse_clock(payload["duration"])
+            if not 1 <= duration <= 6 * 3600:
+                raise ValueError("the show lasts between 1 s and 6 h")
+            changes["duration"] = duration
+        if "refresh_s" in payload:
+            try:
+                refresh = round(float(payload["refresh_s"]), 1)
+            except (TypeError, ValueError):
+                raise ValueError(f"not a number of seconds: "
+                                 f"{payload['refresh_s']!r}")
+            low, high = timeline.REFRESH_RANGE_S
+            if not low <= refresh <= high:
+                raise ValueError(f"a refresh takes between {low:.0f} and "
+                                 f"{high:.0f} s")
+            changes["refresh_s"] = refresh
+        cues = None
+        if "cues" in payload:
+            if not isinstance(payload["cues"], list):
+                raise ValueError("cues: must be a list")
+            cues = timeline.clean(payload["cues"])
+            changes["cues"] = cues
+        if "transitions" in payload:
+            if not isinstance(payload["transitions"], dict):
+                raise ValueError("transitions: must be an object")
+            changes["transitions"] = {str(k): v for k, v
+                                      in payload["transitions"].items()}
+        if "labels" in payload:
+            if not isinstance(payload["labels"], dict):
+                raise ValueError("labels: must be an object")
+            changes["labels"] = {str(k): v for k, v in payload["labels"].items()}
+        if "units" in payload:
+            if not isinstance(payload["units"], dict):
+                raise ValueError("units: must be an object")
+            units = {}
+            for item, unit in payload["units"].items():
+                if unit is None or unit == "":
+                    continue
+                if unit not in UNITS:
+                    raise ValueError(f"unknown unit {unit!r}")
+                units[str(item)] = unit
+            changes["units"] = units
+        if "boards" in payload:
+            if not isinstance(payload["boards"], dict):
+                raise ValueError("boards: must be an object")
+            changes["boards"] = {str(k): v for k, v in payload["boards"].items()}
+        with self._lock:
+            paths = sorted(self.files.glob("*.csv"))
+            before = self._load_show()
+            self._commit(before, dict(before, **changes))
+        warnings: "list[str]" = []
+        if cues is not None:
+            items = {(_MAP_ITEM.match(p.name).group(1).lower())
+                     for p in paths if self.kind(p.name) == "map"
+                     and _MAP_ITEM.match(p.name)}
+            designs = {p.name for p in paths if self.kind(p.name) == "grid"}
+            for cue in cues:
+                if cue["item"].lower() not in items:
+                    warnings.append(f"{cue['item']}: no such item here yet")
+                elif cue["design"] not in designs:
+                    warnings.append(f"{cue['item']}: design {cue['design']} "
+                                    "is not in this workspace")
+        return len(cues or []), warnings
+
     # ---- files ----
 
     @staticmethod
@@ -442,6 +692,7 @@ class Workspace:
         refresh = float(show.get("refresh_s", timeline.REFRESH_S))
         duration = float(show.get("duration", timeline.DEFAULT_DURATION_S))
         cues = timeline.clean(show.get("cues"))
+        timeline.apply_transitions(cues, show.get("transitions") or {})
         _time_sweeps(cues, maps)
         cue_problems, _ = timeline.validate(cues, facts, duration, refresh)
         if broken:
@@ -459,6 +710,7 @@ class Workspace:
             history = self._load_history()
             assigned = show.get("units", {})
             labels = show.get("labels", {})
+            transitions = show.get("transitions") or {}
         maps: "dict[str, LookMap]" = {}
         items: "dict[str, dict]" = {}
 
@@ -514,7 +766,8 @@ class Workspace:
                       # design that only passes that way is a partial one,
                       # not a broken one.
                       "problems": problems, "partial_problems": problems,
-                      "colors": {}, "shifts": {}, "undecided": []}
+                      "colors": {}, "shifts": {}, "undecided": [],
+                      "transition": _design_transition(transitions.get(path.name))}
             if design is not None:
                 record["colors"] = {_key(p): c for p, c in design.colors.items()}
                 record["shifts"] = {_key(p): s for p, s in design.shifts.items()}
@@ -576,6 +829,7 @@ class Workspace:
         duration = float(show.get("duration", timeline.DEFAULT_DURATION_S))
         refresh = float(show.get("refresh_s", timeline.REFRESH_S))
         cues = timeline.clean(show.get("cues"))
+        timeline.apply_transitions(cues, transitions)
         _time_sweeps(cues, maps)
         cue_problems, warnings = timeline.validate(cues, facts, duration,
                                                    refresh)
@@ -596,6 +850,7 @@ class Workspace:
                 "sequences": [{"id": name, "label": sequence.LABELS[name]}
                               for name in sequence.SEQUENCES],
                 "palette": [{"name": n, "rgb": list(rgb)} for n, rgb in PALETTE],
+                "transitions": transitions, "music": self.music_info(),
                 "workspace": str(self.root.resolve())}
 
 
@@ -629,6 +884,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/api/music/file":
+            return self._music_file(head=False)
+        if path == "/api/show/export":
+            return self._export_show()
         try:
             if path == "/api/state":
                 return self._json(self.workspace.state())
@@ -647,7 +906,104 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page, "text/html; charset=utf-8")
         self._send(404, b"not found", "text/plain")
 
+    def do_HEAD(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/api/music/file":
+            return self._music_file(head=True)
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _export_show(self) -> None:
+        payload = self.workspace.export_show()
+        body = json.dumps(payload, indent=1).encode("utf-8")
+        stamp = time.strftime("%Y%m%d-%H%M")
+        filename = f"{payload['workspace']}-show-{stamp}.json"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _music_file(self, head: bool) -> None:
+        info = self.workspace.music_info()
+        if info is None:
+            body = b"" if head else json.dumps(
+                {"error": "no music uploaded"}).encode("utf-8")
+            self.send_response(404)
+            if not head:
+                self.send_header("Content-Type",
+                                 "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(body)
+            return
+        path = self.workspace.music / Path(info["name"]).name
+        size, content_type = info["size"], info["type"]
+        status, start, end = 200, 0, max(0, size - 1)
+        range_header = self.headers.get("Range")
+        if range_header:
+            parsed = _parse_range(range_header, size)
+            if parsed == "unsatisfiable":
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if parsed is not None:
+                start, end = parsed
+                status = 206
+        length = max(0, end - start + 1)
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-cache")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        if head:
+            return
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = handle.read(min(MUSIC_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionError, OSError):
+            pass          # the listener went away mid-stream; nothing to do
+
+    def _upload_music(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or -1)
+        except ValueError:
+            length = -1
+        if length < 0:
+            return self._json({"error": "Content-Length required"}, status=400)
+        if length > MAX_MUSIC:
+            # Refused before a single byte is read off the wire.
+            self.close_connection = True
+            return self._json({"error": f"music is at most "
+                               f"{MAX_MUSIC // (1024 * 1024)} MB"}, status=400)
+        name = self.headers.get("X-File-Name") or "music"
+        try:
+            self.workspace.save_music(name, self.rfile, length)
+        except (OSError, ValueError) as exc:
+            return self._json({"error": str(exc)}, status=400)
+        return self._json({"ok": True, "music": self.workspace.music_info()})
+
     def do_POST(self):
+        if self.path == "/api/music":
+            return self._upload_music()
         try:
             body = self._body()
             if self.path == "/api/files":
@@ -679,6 +1035,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.workspace.set_timeline(body.get("duration", 600),
                                             body.get("cues", []),
                                             body.get("refresh_s"))
+                return self._json({"ok": True})
+            if self.path == "/api/show/import":
+                cues, warnings = self.workspace.import_show(body)
+                return self._json({"ok": True, "cues": cues,
+                                   "warnings": warnings})
+            if self.path == "/api/transition":
+                self.workspace.set_transition(body.get("design", ""),
+                                              body.get("sequence", "natural"),
+                                              body.get("span_s", 0))
+                return self._json({"ok": True})
+            if self.path == "/api/music/remove":
+                self.workspace.remove_music()
                 return self._json({"ok": True})
             if self.path.startswith("/api/fleet/"):
                 return self._fleet_command(self.path[len("/api/fleet/"):], body)
