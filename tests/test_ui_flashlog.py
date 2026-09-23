@@ -80,19 +80,20 @@ def test_fw_version_names_the_recorded_image_for_the_usb_board(tmp_path):
     path = tmp_path / "flash-log.json"
     flashlog.record(SERIAL, 2, "FW_260917/MCB_e16_2029.09.17.bin",
                     64188, 0x2008, path=path, when=WHEN)
-    versions = make_versions(tmp_path, bus=alone(2),
+    # A V1.1 board (refuses 0x25) that this unit flashed with FW_260917.
+    versions = make_versions(tmp_path, bus=alone(2, v14=False),
                              serial_of=lambda port: SERIAL, flash_log=path)
     versions.scan()
     assert wait_until(lambda: versions.phase == SCAN_DONE)
-    assert versions.rows == [(2, "V1.1, flashed FW_260917 09-17 17:19")]
+    assert versions.rows == [(2, "V1.1 16-color, flashed FW_260917 09-17 17:19")]
     assert versions.status == f"USB {SERIAL}"
     # A board this unit never flashed says so instead of guessing.
-    other = make_versions(tmp_path, bus=alone(2),
+    other = make_versions(tmp_path, bus=alone(2, v14=False),
                           serial_of=lambda port: "48EB685C324C",
                           flash_log=path)
     other.scan()
     assert wait_until(lambda: other.phase == SCAN_DONE)
-    assert other.rows == [(2, "V1.1, no flash record here")]
+    assert other.rows == [(2, "V1.1 16-color, no flash record here")]
     # A V1.0 board or a real size/crc answer is labelled as before.
     v10 = make_versions(tmp_path, bus=alone(2, v10=True),
                         serial_of=lambda port: SERIAL, flash_log=path)
