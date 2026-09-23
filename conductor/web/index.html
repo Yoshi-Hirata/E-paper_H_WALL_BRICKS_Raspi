@@ -191,6 +191,37 @@ body.busy .go button { opacity: .45; pointer-events: none; }
 .card h2 + .sub { margin: -2px 0 8px; }
 .cue-hold, .cue-band { min-width: 7px; }
 .cue-hold { cursor: grab; } .cue-hold.dragging { cursor: grabbing; opacity: .8; z-index: 4; outline: 2px dashed var(--accent); }
+
+/* ---- designs list (replaces the DESIGNS OF THIS ITEM table: see round 3 plan §1.1) ---- */
+.dsg-list { display: flex; flex-direction: column; gap: 6px; }
+.dsg { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.dsg:hover { background: var(--select); }
+.dsg.hl { background: var(--select); outline: 1px solid var(--accent); }
+.dsg-main { flex: 1 1 200px; min-width: 0; }
+.dsg-top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.dsg-top .use { color: var(--dim); font-size: 12px; }
+.dsg-file { font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.dsg-tr { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; white-space: nowrap; }
+.dsg-tr select { width: 158px; font-size: 12px; }
+.dsg-tr input[type=text] { width: 44px; }
+
+/* ---- show seek bar (Units tab, manual gate: round 3 plan §1.2) ---- */
+.seek-wrap { border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; margin: 10px 0; }
+.seek-wrap.on { border: 2px solid var(--warn); padding: 8px 10px; }
+.seek-cap { color: var(--warn); font-weight: 700; font-size: 11px; letter-spacing: .08em; margin-bottom: 5px; }
+.seek-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.seek-head label { display: flex; align-items: center; gap: 6px; }
+.seek-bar { display: flex; align-items: center; gap: 8px; }
+.seek-bar input[type=range] { flex: 1; }
+.seek-bar span { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.go button.warnbtn { background: var(--warn); border-color: var(--warn); color: #fff; }
+
+/* ---- live LOOK row (Units tab: round 3 plan §1.3) ---- */
+.thumbs.small { height: 120px; }
+.thumbs.small .lk-head { font-size: 11px; }
+.thumbs.small .lk-head .sub { font-size: 9.5px; }
+.lk-head .chg.err { color: var(--err); }
 </style>
 </head>
 <body>
@@ -223,7 +254,10 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
-             playing: false, anchor: 0, startT: 0, simView: false };
+             playing: false, anchor: 0, startT: 0, simView: false,
+             // Manual show-position control (Units tab): client-side only, always off on
+             // reload, off again after a successful START/STOP - see seekBlockHtml().
+             manual: false, seekDrag: null, seekSent: null, seekTimer: null };
 let fleet = null;
 let state = null;
 // The transport's audio element: a singleton that is NEVER inserted into the DOM,
@@ -231,7 +265,14 @@ let state = null;
 const player = new Audio();
 let playerUrl = null;               // the last URL assigned to player.src (reassign only when it changes)
 let seeking = false;                // true while the operator is dragging #ph: the loop must not fight it
-let lookCache = [];                 // one entry per look-cell, built by renderThumbs(), read by updateThumbColors()/layoutLooks()
+// The garment-thumbnail row is drawn in two places (the Timeline simulator and the
+// live LOOK row on the Units tab) from the same functions, parameterised by which
+// view to draw into; each view keeps its own DOM cache so switching tabs never
+// mixes them up.
+const THUMBS = {
+  timeline: { sel: "#thumbs", cache: [], fill: true, cell: 8, head: 34, live: false },
+  fleet: { sel: "#show-thumbs", cache: [], fill: false, height: 120, cell: 6, head: 30, live: true }
+};
 const maxRankCache = new Map();     // "item|sequence" -> max(ranks): hoisted out of the per-frame sweep math
 function syncPlayerSrc() {
   const url = state?.music?.url || null;
@@ -412,6 +453,10 @@ function renderContent() {
   const btn = (key, value, label) =>
     `<button data-set="${key}" data-value="${value}" class="${(key === "mode" ? mode : ui[key]) === value ? "on" : ""}">${label}</button>`;
   const used = state.show.cues.filter(c => c.item === item.item);
+  // The toolbar's own Transition control mirrors the one on each design's row below -
+  // one code path (data-tr-seq/data-tr-span, same change handler) reachable from
+  // whichever place is more convenient. Omitted when the item has no design.
+  const selTr = design ? (design.transition || { sequence: "natural", span_s: 0 }) : null;
 
   root.innerHTML = `
     <div class="toolbar">
@@ -421,6 +466,11 @@ function renderContent() {
           || "<option>(no design CSV)</option>"}</select></div>
       <div class="group"><span>View</span>${btn("mode", "design", "Finished")}${btn("mode", "wiring", "Wiring")}</div>
       <div class="group"><span>Seen from</span>${btn("view", "outside", "Outside (audience)")}${btn("view", "inside", "Inside (as in the CSV)")}</div>
+      ${design ? `<div class="group" data-design="${esc(design.name)}"><span>Transition</span>
+        <select data-tr-seq="${esc(design.name)}">${state.sequences.map(s =>
+          `<option value="${esc(s.id)}" ${s.id === selTr.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
+        <span ${selTr.sequence === "natural" ? 'style="display:none"' : ""}><input type="text" data-tr-span="${esc(design.name)}" size="4" value="${selTr.span_s}" title="Seconds from the command to the first rank to the command to the last"> s</span>
+      </div>` : ""}
     </div>
     <div id="stage">${renderGarment(item, { cell: 22, mode, labels: true, colors: design?.colors || {},
                                           undecided: design?.undecided, shifts: design?.shifts })}</div>
@@ -436,18 +486,23 @@ function renderContent() {
           ${(item.map.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
         </div>
         <div class="card"><h2>DESIGNS OF THIS ITEM (${item.designs.length})</h2>
-          <table><thead><tr><th>LOOK</th><th>FILE</th><th>STATUS</th><th>ON TIMELINE</th><th>TRANSITION</th><th></th></tr></thead><tbody>${item.designs.map(d => {
+          <div class="dsg-list">${item.designs.map(d => {
             const at = used.filter(c => c.design === d.name).map(c => clock(c.at));
             const tr = d.transition || { sequence: "natural", span_s: 0 };
-            return `<tr class="pick ${d.name === ui.design ? "hl" : ""}" data-design="${esc(d.name)}">
-              <td><b>${esc(designLabel(d))}</b></td><td>${esc(d.name)}</td>
-              <td>${designBadge(d)}</td>
-              <td class="meta">${at.length ? "timeline: " + at.join(", ") : "unused"}</td>
-              <td><select data-tr-seq="${esc(d.name)}">${state.sequences.map(s =>
-                `<option value="${esc(s.id)}" ${s.id === tr.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
-                <span ${tr.sequence === "natural" ? 'style="display:none"' : ""}><input type="text" data-tr-span="${esc(d.name)}" size="4" value="${tr.span_s}" title="Seconds from the command to the first rank to the command to the last"> s</span></td>
-              <td><button data-del="${esc(d.name)}" title="Delete from the workspace">×</button></td></tr>`; }).join("")
-            || `<tr><td class="meta">Add design CSV files (*_color_NAME_grid.csv)</td></tr>`}</tbody></table>
+            const usage = at.length ? "timeline " + at.slice(0, 3).join(", ") + (at.length > 3 ? ` +${at.length - 3} more` : "") : "not on the timeline";
+            return `<div class="dsg pick ${d.name === ui.design ? "hl" : ""}" data-design="${esc(d.name)}">
+              <div class="dsg-main">
+                <div class="dsg-top"><b>${esc(designLabel(d))}</b> ${designBadge(d)} <span class="use">${esc(usage)}</span></div>
+                <div class="dsg-file" title="${esc(d.name)}">${esc(d.name)}</div>
+              </div>
+              <div class="dsg-tr">
+                <select data-tr-seq="${esc(d.name)}">${state.sequences.map(s =>
+                  `<option value="${esc(s.id)}" ${s.id === tr.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
+                <span ${tr.sequence === "natural" ? 'style="display:none"' : ""}><input type="text" data-tr-span="${esc(d.name)}" size="4" value="${tr.span_s}" title="Seconds from the command to the first rank to the command to the last"> s</span>
+                <button data-del="${esc(d.name)}" title="Delete from the workspace">×</button>
+              </div>
+            </div>`; }).join("")
+            || `<div class="meta">Add design CSV files (*_color_NAME_grid.csv)</div>`}</div>
           <div class="meta" style="margin-top:8px"><label class="filebtn">Add CSV to this item<input id="pick-own" type="file" accept=".csv" multiple></label>
             <span style="margin-left:6px">whatever look the files are named after, they are saved as ${esc(item.item)}_… and belong to this item alone</span></div>
         </div>
@@ -712,7 +767,7 @@ function renderTimeline() {
       <div class="meta" style="margin-top:6px">Shortest interval per unit (one send to the next): ${Object.entries(show.min_interval).map(([u, s]) => `${esc(u)} ${Math.ceil(s)} s`).join(" · ")}</div>
     </div>
     </div>`;
-  renderThumbs();
+  renderThumbs(THUMBS.timeline, ui.playhead);
 }
 // Items sharing a LOOK number are one outfit (a top and a skirt sewn to the
 // same Radxa) and share one cell, stacked; an item with no LOOK number gets
@@ -755,32 +810,41 @@ function garmentAspect(item) {
   return h / w;
 }
 // Full rebuild: only when the timeline/state actually changes (called from
-// renderTimeline(), a ruler click, or a non-playing scrub). Builds each
-// look's SVGs once and caches their circle nodes so the playback loop never
-// touches innerHTML again - see updateThumbColors() - and lays them out to
-// fill exactly one row, no internal scrolling, at whatever size fits.
-function renderThumbs() {
-  const box = $("#thumbs");
-  if (!box) return;                    // not on the Timeline tab right now
-  const t = ui.playhead;
-  updatePlayheadDom(t);
+// renderTimeline(), a ruler click, a non-playing scrub, renderFleet(), or a
+// window resize). Builds each look's SVGs once and caches their circle nodes
+// so the playback loop never touches innerHTML again - see
+// updateThumbColors() - and lays them out to fill exactly one row, no
+// internal scrolling, at whatever size fits.
+//
+// `view` is one of THUMBS.timeline / THUMBS.fleet (see their declaration
+// above): the same functions draw both the Timeline tab's simulator row and
+// the Units tab's live LOOK row, each keeping its own DOM cache so switching
+// tabs never mixes them up.
+function renderThumbs(view, t) {
+  const box = $(view.sel);
+  if (!box) return;                    // not on that tab right now
+  if (view === THUMBS.timeline) updatePlayheadDom(t);
   const groups = lookGroups();
+  if (!groups.length) { box.innerHTML = ""; box.style.display = "none"; view.cache = []; return; }
+  box.style.display = "";
   // shifts is structural (it moves circles, not just their fill) so it must
   // be right from the first paint; colors is repainted a moment later by
   // updateThumbColors() below regardless, so an empty start is harmless.
-  box.innerHTML = groups.map(g => `<div class="look-cell">
-      <div class="lk-head">${esc(g.look ? "LOOK " + g.look : itemName(g.items[0]))}<span class="chg" style="display:none">refreshing…</span>
+  box.innerHTML = groups.map(g => {
+    const unit = view.live ? (g.items.find(i => i.unit)?.unit || "") : "";
+    return `<div class="look-cell">
+      <div class="lk-head">${esc(g.look ? "LOOK " + g.look : itemName(g.items[0]))}${unit ? ` <span class="meta" style="font-weight:400">${esc(unit)}</span>` : ""}<span class="chg" style="display:none"></span>
         <div class="sub"></div></div>
       ${g.items.map(item => { const worn = wornAt(item, t); return `<div class="lk-item">
-        ${renderGarment(item, { cell: 8, mode: "design", labels: false, tag: true, colors: worn.colors, shifts: worn.shifts })}</div>`; }).join("")}
-    </div>`).join("");
-  buildLookCache(groups);
-  layoutLooks();
-  updateThumbColors(t);
+        ${renderGarment(item, { cell: view.cell, mode: "design", labels: false, tag: true, colors: worn.colors, shifts: worn.shifts })}</div>`; }).join("")}
+    </div>`; }).join("");
+  buildLookCache(groups, view);
+  layoutLooks(view);
+  updateThumbColors(t, view);
 }
-function buildLookCache(groups) {
-  lookCache = [];
-  document.querySelectorAll("#thumbs .look-cell").forEach((cellEl, gi) => {
+function buildLookCache(groups, view) {
+  const box = $(view.sel), cache = [];
+  (box ? box.querySelectorAll(".look-cell") : []).forEach((cellEl, gi) => {
     const g = groups[gi];
     const items = [];
     cellEl.querySelectorAll(".lk-item").forEach((itemEl, ii) => {
@@ -789,26 +853,28 @@ function buildLookCache(groups) {
       itemEl.querySelectorAll("g[data-k]").forEach(el => circles.set(el.dataset.k, el.querySelector("circle")));
       items.push({ item, svg: itemEl.querySelector("svg"), circles, colors: new Map(), ratio: garmentAspect(item) });
     });
-    lookCache.push({ cellEl, sub: cellEl.querySelector(".sub"), chg: cellEl.querySelector(".chg"), items });
+    cache.push({ cellEl, sub: cellEl.querySelector(".sub"), chg: cellEl.querySelector(".chg"), items });
   });
+  view.cache = cache;
 }
 // Sizes (never rebuilds) every look-cell to fill one row without vertical
 // scrolling: width = row width / cell count; height = what is left of the
-// window below the row. Each cell then gets the largest common render width
-// for its garment(s) that fits both budgets - recomputed here only, on
-// resize or a full rebuild, never inside the playback loop.
-function layoutLooks() {
-  const box = $("#thumbs");
-  if (!box || !lookCache.length) return;
+// window below the row (the Timeline simulator, view.fill) or a fixed budget
+// (the Units tab's LOOK row, view.height). Each cell then gets the largest
+// common render width for its garment(s) that fits both budgets - recomputed
+// here only, on resize or a full rebuild, never inside the playback loop.
+function layoutLooks(view) {
+  const box = $(view.sel);
+  if (!box || !view.cache.length) return;
   const rect = box.getBoundingClientRect();
-  const count = lookCache.length;
-  const GAP = 10, CELL_PAD_X = 16, CELL_PAD_Y = 12, HEAD_H = 34, STACK_GAP = 4;
+  const count = view.cache.length;
+  const GAP = 10, CELL_PAD_X = 16, CELL_PAD_Y = 12, HEAD_H = view.head, STACK_GAP = 4;
   const containerWidth = box.clientWidth || rect.width;
   const cellWidth = Math.max(40, (containerWidth - GAP * (count - 1)) / count);
   const wBudget = Math.max(20, cellWidth - CELL_PAD_X);
-  const availableHeight = Math.max(80, window.innerHeight - rect.top - 16);
+  const availableHeight = view.fill ? Math.max(80, window.innerHeight - rect.top - 16) : view.height;
   box.style.height = availableHeight + "px";
-  for (const cell of lookCache) {
+  for (const cell of view.cache) {
     cell.cellEl.style.width = cellWidth + "px";
     const n = cell.items.length;
     const hBudget = Math.max(20, availableHeight - HEAD_H - CELL_PAD_Y - (n - 1) * STACK_GAP);
@@ -821,15 +887,20 @@ function layoutLooks() {
 }
 let resizeScheduled = false;
 window.addEventListener("resize", () => {
-  if (ui.tab !== "timeline" || resizeScheduled) return;
+  if (resizeScheduled) return;
   resizeScheduled = true;
-  requestAnimationFrame(() => { resizeScheduled = false; layoutLooks(); });
+  requestAnimationFrame(() => { resizeScheduled = false;
+    if (ui.tab === "timeline") layoutLooks(THUMBS.timeline);
+    else if (ui.tab === "fleet") layoutLooks(THUMBS.fleet);
+  });
 });
 // Per-frame update: no innerHTML, only the fill of circles whose colour
 // actually changed since the last frame (a full rebuild at 10 Hz was ~12,600
 // SVG nodes for 7 looks - this is a handful of attribute writes instead).
-function updateThumbColors(t) {
-  for (const cell of lookCache) {
+// On the live (fleet) view the state chip additionally reflects the unit's
+// own status (offline/loading), not just whether a sweep is in progress.
+function updateThumbColors(t, view) {
+  for (const cell of view.cache) {
     let changing = false;
     const sub = [];
     for (const entry of cell.items) {
@@ -842,9 +913,30 @@ function updateThumbColors(t) {
         if (entry.colors.get(key) !== fill) { entry.colors.set(key, fill); if (circleEl) circleEl.setAttribute("fill", fill); }
       }
     }
-    if (cell.chg) cell.chg.style.display = changing ? "inline" : "none";
+    if (cell.chg) {
+      if (view.live) {
+        const chip = liveChip(cell, changing);
+        cell.chg.textContent = chip;
+        cell.chg.style.display = chip ? "inline" : "none";
+        cell.chg.classList.toggle("err", chip === "unit offline");
+      } else {
+        cell.chg.textContent = "refreshing…";
+        cell.chg.style.display = changing ? "inline" : "none";
+      }
+    }
     if (cell.sub) cell.sub.textContent = sub.join(" · ");
   }
+}
+// The live LOOK row's state chip (first match wins): a unit of this LOOK
+// offline outranks it still preparing, which outranks a sweep in progress.
+function liveChip(cell, changing) {
+  if (!fleet) return "";
+  const units = [...new Set(cell.items.map(e => e.item.unit).filter(Boolean))]
+    .map(name => fleet.units.find(u => u.name === name)).filter(Boolean);
+  if (units.some(u => !u.online)) return "unit offline";
+  if (units.some(u => ["preparing", "ready", "armed"].includes(u.phase))) return "loading…";
+  if (changing) return "refreshing…";
+  return "";
 }
 
 // ---- transport: play / pause / stop, driven by requestAnimationFrame ----
@@ -868,7 +960,7 @@ function renderTransport() {
 function haltPlaybackAt(t) {
   ui.playhead = t;
   updatePlayheadDom(t);
-  updateThumbColors(t);
+  updateThumbColors(t, THUMBS.timeline);
   pausePlayback();
 }
 let lastThumbAt = 0;
@@ -888,7 +980,7 @@ function tick() {
   ui.playhead = t;
   updatePlayheadDom(t);
   const now = performance.now();
-  if (now - lastThumbAt >= 100) { lastThumbAt = now; updateThumbColors(t); }
+  if (now - lastThumbAt >= 100) { lastThumbAt = now; updateThumbColors(t, THUMBS.timeline); }
   requestAnimationFrame(tick);
 }
 function startPlayback() {
@@ -955,6 +1047,113 @@ async function loadShowFile(file) {
 
 // ---- tab 3: the units ----
 function assignedItems() { return trackItems().filter(i => i.unit && i.designs.length); }
+// `show_duration`/`start_at` are new fields (round 3 §2.1); fall back gracefully
+// so the page works unmodified against an older conductor server.
+function fleetDuration() {
+  if (fleet && fleet.show_duration !== undefined && fleet.show_duration !== null) return fleet.show_duration;
+  return state?.show?.duration ?? 0;
+}
+function fleetStartAt() { return fleet?.start_at ?? 0; }
+// The show position to draw right now: the operator's drag target while they are
+// dragging the seek bar, otherwise the live run position (extrapolated from the
+// last poll with performance.now(), same as showClockText()), the held position
+// while on hold, or start_at when nothing is running.
+function fleetShowPos() {
+  if (ui.seekDrag !== null) return ui.seekDrag;
+  if (!fleet) return 0;
+  const run = fleet.run;
+  if (!run) return fleetStartAt();
+  if (run.state === "holding") return run.now;
+  return run.now + (performance.now() - fleet.at) / 1000;
+}
+// Everything the seek bar's markup needs, computed once and shared between the
+// full build (seekBlockHtml) and the live 250 ms repaint (paintSeek) so the two
+// can never disagree about what state the bar is in.
+function computeSeekState() {
+  const D = fleetDuration(), startAt = fleetStartAt(), run = fleet?.run || null;
+  const uploaded = !!fleet && Object.keys(fleet.shows || {}).length > 0;
+  let disabled = true, val = 0, note = "";
+  if (!uploaded) {
+    note = "Upload the show first.";
+  } else if (!run) {
+    val = startAt; disabled = !ui.manual;
+    note = ui.manual ? "The bar sets where START begins." : (startAt > 0 ? `START will begin at ${clock(startAt)}.` : "");
+  } else if (run.state === "holding") {
+    val = run.now; disabled = !ui.manual;
+    note = `On hold at ${clock(val)}. RESUME continues from here.`;
+  } else {
+    val = fleetShowPos(); disabled = !ui.manual;
+    note = val >= D ? "The show has ended." : (ui.manual ? "Moving the bar moves the running show." : "");
+  }
+  const dragging = ui.seekDrag !== null;
+  if (dragging) { val = ui.seekDrag; note = `Move to ${clock(val)} — let go to move the show.`; disabled = false; }
+  // "Back to 0:00" tracks start_at alone, not the run state (round 3 §1.2,
+  // "Guarding a forgotten start position"): a forgotten non-zero start_at is a
+  // trap for the next START/restart whether or not a show happens to be running
+  // right now, so the escape hatch stays available regardless.
+  return { D, startAt, run, uploaded, disabled, val, note, dragging, showReset: uploaded && startAt > 0 };
+}
+function seekBlockHtml() {
+  const st = computeSeekState();
+  return `<div id="show-seek-wrap" class="seek-wrap ${ui.manual ? "on" : ""}">
+    ${ui.manual ? `<div class="seek-cap">MANUAL — REHEARSAL</div>` : ""}
+    <div class="seek-head">
+      <label><input type="checkbox" id="show-manual" ${ui.manual ? "checked" : ""}> Manual control</label>
+      <span class="meta">move the show position by hand (rehearsal)</span>
+      ${st.showReset ? `<button id="show-seek-reset">Back to 0:00</button>` : ""}
+    </div>
+    <div class="seek-bar">
+      <span id="show-seek-now">${clock(st.val)}</span>
+      <input type="range" id="show-seek" min="0" max="${Math.max(st.D, 0)}" step="1" value="${Math.round(st.val)}" ${st.disabled ? "disabled" : ""}>
+      <span id="show-seek-end">${clock(st.D)}</span>
+    </div>
+    <div class="meta" id="show-seek-note">${esc(st.note)}</div>
+  </div>`;
+}
+// A discrete rebuild (checkbox toggled, show length changed, upload landed) - never
+// called from the 250 ms poll, which only pokes the existing elements (paintSeek).
+function renderSeekBlock() {
+  const wrap = $("#show-seek-wrap");
+  if (wrap) wrap.outerHTML = seekBlockHtml();
+}
+// The 250 ms repaint: text, disabled state and the bar's own value - but never
+// while the operator is dragging it (their thumb owns the value then) or while a
+// fleet command is in flight (a stale poll must not undo what was just sent).
+function paintSeek() {
+  const wrap = $("#show-seek-wrap");
+  if (!wrap || !fleet) return;
+  if (ui.seekDrag !== null || commandInFlight) return;
+  const st = computeSeekState();
+  const bar = $("#show-seek"), now = $("#show-seek-now"), end = $("#show-seek-end"), note = $("#show-seek-note");
+  if (bar) { bar.max = Math.max(st.D, 0); bar.value = Math.round(st.val); bar.disabled = st.disabled; }
+  if (now) now.textContent = clock(st.val);
+  if (end) end.textContent = clock(st.D);
+  if (note) note.textContent = st.note;
+  wrap.classList.toggle("on", ui.manual);
+  if (st.showReset !== !!$("#show-seek-reset")) renderSeekBlock();   // rare structural change
+}
+// input/pointerdown on #show-seek: preview only (text + the live LOOK row's
+// thumbnails) - the command itself only ever goes out on release, see commitSeek().
+function previewSeek(t) {
+  ui.seekDrag = t;
+  const now = $("#show-seek-now"), note = $("#show-seek-note");
+  if (now) now.textContent = clock(t);
+  if (note) note.textContent = `Move to ${clock(t)} — let go to move the show.`;
+  updateThumbColors(t, THUMBS.fleet);
+}
+// change on #show-seek (release): debounced 350 ms, skipped if unchanged since the
+// last commit, and never sent while another fleet command is already in flight -
+// the server refuses a seek without manual:true regardless, but the gate lives on
+// both sides (round 3 §1.2 / §2.2).
+async function commitSeek(t) {
+  ui.seekTimer = null;
+  if (t !== ui.seekSent && !commandInFlight) {
+    ui.seekSent = t;
+    await fleetCommand("seek", { to_s: t, manual: true, lead_s: ui.lead }, `MOVE to ${clock(t)}`, "show");
+  }
+  ui.seekDrag = null;
+  paintSeek();
+}
 function renderFleet() {
   const items = assignedItems();
   for (const item of items)
@@ -968,11 +1167,13 @@ function renderFleet() {
         <div class="showclock" id="show-clock"><small>—</small>0:00</div>
         <div class="shownext" id="show-next"></div>
       </div>
+      <div class="thumbs small" id="show-thumbs" style="margin-top:8px"></div>
+      ${seekBlockHtml()}
       <div class="go">
         <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"}>① Upload</button>
         <button class="big" id="show-preset">② Show preset (the 0:00 look)</button>
         <button class="big fire" id="show-start">③ START</button>
-        <label class="meta">START / NEXT take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
+        <label class="meta">START / NEXT / MOVE take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
         <span style="flex:1"></span>
         <button class="big hold" id="show-hold">HOLD</button>
         <button class="big" id="show-resume">RESUME</button>
@@ -1003,11 +1204,25 @@ function renderFleet() {
     </div>
     <div class="card"><h2>UNITS</h2>
       <div class="meta sub">Every unit is polled every 2 s, and each round trip also measures its clock offset.</div><div class="tiles" id="tiles"></div></div>`;
+  renderThumbs(THUMBS.fleet, fleetShowPos());
   renderTiles();
 }
+let lastFleetThumbPos = null, lastFleetRunState = undefined;
 function showClockText() {
   const box = $("#show-clock");
   if (!box || !fleet) return;
+  paintSeek();
+  // The live LOOK row repaints only when the position moved at least half a
+  // second or the run state itself changed - never at the 4 Hz of this
+  // interval, and not while the operator is dragging the seek bar (previewSeek()
+  // already keeps the thumbnails live then, on every drag event instead).
+  if (ui.seekDrag === null) {
+    const pos = fleetShowPos(), runState = fleet.run?.state || null;
+    if (lastFleetThumbPos === null || Math.abs(pos - lastFleetThumbPos) >= 0.5 || runState !== lastFleetRunState) {
+      lastFleetThumbPos = pos; lastFleetRunState = runState;
+      updateThumbColors(pos, THUMBS.fleet);
+    }
+  }
   const run = fleet.run;
   let now = null, word = "NOT STARTED";
   if (run) {
@@ -1037,6 +1252,14 @@ function showClockText() {
                  "show-next-cue": (running && upcoming.length > 0) || holding, "show-stop": !!run || unitsBusy,
                  "fleet-prepare": !run && !unitsBusy && assignedItems().length > 0, "fleet-fire": !run && !unitsBusy };
   for (const [id, on] of Object.entries(able)) { const b = $("#" + id); if (b) b.disabled = !on; }
+  // Whenever start_at > 0 (a seek moved the "no run" position, or a start from
+  // elsewhere was left behind) START warns where it will actually begin,
+  // regardless of whether Manual control is ticked right now - see round 3 §1.2.
+  const startBtn = $("#show-start"), startAt = fleetStartAt();
+  if (startBtn) {
+    startBtn.textContent = startAt > 0 ? `③ START FROM ${clock(startAt)}` : "③ START";
+    startBtn.classList.toggle("warnbtn", startAt > 0);
+  }
   const hint = $("#show-hint");
   if (hint) hint.textContent = !want ? (unitsBusy
       ? "Units are running a show this conductor did not upload (it was restarted). STOP works; Upload again to take the show over."
@@ -1079,11 +1302,15 @@ async function pollFleet() {
 }
 function unitReport(result) {
   const lines = Object.entries(result.units || {}).sort().map(([unit, r]) => `${unit}: ${r.ok ? "OK" : "FAILED — " + r.error}`);
-  return [...(result.problems || []), ...lines].join("\n") || result.error || result.note || "No unit to send to";
+  const note = result.note ? [result.note] : [];        // e.g. "Started from 3:00." alongside the per-unit lines
+  return [...(result.problems || []), ...note, ...lines].join("\n") || result.error || "No unit to send to";
 }
 let commandInFlight = false;
+// Returns the parsed response (or null on a network/parse failure) so a caller can
+// tell a genuine refusal (result.error set) from success - used by START/STOP to
+// decide whether to turn Manual control back off (round 3 §1.2 rule 2).
 async function fleetCommand(command, body, title, slot = "go") {
-  if (commandInFlight) return;                    // a double click must not send it twice
+  if (commandInFlight) return null;                // a double click must not send it twice
   commandInFlight = true; document.body.classList.add("busy");
   const key = slot === "go" ? "goLog" : "showLog", box = () => $("#" + slot + "-log");
   try {
@@ -1092,10 +1319,12 @@ async function fleetCommand(command, body, title, slot = "go") {
     ui[key] = `${title} (${new Date().toLocaleTimeString()})\n` + unitReport(result);
     if (box()) box().textContent = ui[key];
     fleet = await api("/api/fleet"); fleet.at = performance.now(); renderTiles();
+    return result;
   } catch (err) {
     ui[key] = `${title}: no answer from the conductor server (${err.message})`;
     if (box()) box().textContent = ui[key];
-  } finally { commandInFlight = false; document.body.classList.remove("busy"); }
+    return null;
+  } finally { commandInFlight = false; document.body.classList.remove("busy"); paintSeek(); }
 }
 
 // ---- events ----
@@ -1133,13 +1362,30 @@ document.addEventListener("click", async e => {
     "show-hold": ["hold", "HOLD"], "show-resume": ["resume", "RESUME"] };
   if (showButtons[e.target.id]) { const [command, title] = showButtons[e.target.id]; await fleetCommand(command, {}, title, "show"); return; }
   if (e.target.id === "show-start") {
-    const again = !!fleet?.run;
-    if (again && !confirm("The show is running. Start it again from 0:00?")) return;
-    await fleetCommand("start", { lead_s: ui.lead, force: again }, `③ START (in ${ui.lead} s)`, "show"); return;
+    const again = !!fleet?.run, startAt = fleetStartAt();
+    let msg = null;
+    if (again) msg = `The show is running. Start it again from ${clock(startAt)}?`;
+    else if (startAt > 0) msg = `Start the show at ${clock(startAt)} (not from the beginning)?`;
+    if (msg && !confirm(msg)) return;
+    const result = await fleetCommand("start", { lead_s: ui.lead, force: again }, `③ START (in ${ui.lead} s)`, "show");
+    if (result && !result.error) { ui.manual = false; ui.seekSent = null; renderSeekBlock(); }
+    return;
   }
   if (e.target.id === "show-next-cue") { await fleetCommand("next", { lead_s: ui.lead }, `NEXT (next cue in ${ui.lead} s)`, "show"); return; }
   if (e.target.id === "show-stop") {
-    if (confirm("Stop the show? The panels keep what they are showing.")) await fleetCommand("stop", {}, "STOP", "show");
+    if (confirm("Stop the show? The panels keep what they are showing.")) {
+      const result = await fleetCommand("stop", {}, "STOP", "show");
+      if (result && !result.error) { ui.manual = false; ui.seekSent = null; renderSeekBlock(); }
+    }
+    return;
+  }
+  if (e.target.id === "show-seek-reset") {
+    // An explicit, single action - unlike leaving the checkbox on, this really
+    // does move the remembered start position, so it may as well work whether
+    // or not Manual control happens to be ticked (the server still requires
+    // manual:true on the wire; this button simply always sends it).
+    await fleetCommand("seek", { to_s: 0, manual: true, lead_s: ui.lead }, "Back to 0:00", "show");
+    ui.seekSent = null;
     return;
   }
   if (e.target.id === "fleet-prepare") {
@@ -1172,7 +1418,7 @@ document.addEventListener("click", async e => {
   }
   const set = e.target.closest("[data-set]");
   if (set) { ui[set.dataset.set] = set.dataset.value; renderContent(); return; }
-  const dr = !e.target.closest("select, input") && e.target.closest("tr[data-design]");
+  const dr = !e.target.closest("select, input") && e.target.closest(".dsg[data-design]");
   if (dr) { ui.design = dr.dataset.design; ui.mode = "design"; renderContent(); return; }
   const row = !e.target.closest("input") && e.target.closest("tr[data-board]");
   if (row) { const b = Number(row.dataset.board); ui.board = ui.board === b ? null : b; renderContent(); return; }
@@ -1221,7 +1467,7 @@ document.addEventListener("click", async e => {
   if (ruler) {
     const box = ruler.getBoundingClientRect();
     ui.playhead = Math.max(0, Math.min(state.show.duration, Math.round((e.clientX - box.left) / box.width * state.show.duration)));
-    $("#ph").value = ui.playhead; renderThumbs(); return;
+    $("#ph").value = ui.playhead; renderThumbs(THUMBS.timeline, ui.playhead); return;
   }
   if (e.target.closest("select, input, button, label")) return;
   const card = e.target.closest(".item");
@@ -1239,9 +1485,21 @@ document.addEventListener("change", async e => {
     if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
     return;
   }
+  if (id === "show-manual") { ui.manual = e.target.checked; renderSeekBlock(); return; }
+  if (id === "show-seek") {
+    // Commit on release, never while dragging: debounced so a burst of "change"
+    // events (e.g. arrow-key repeats) only sends the last one, at most once per
+    // 350 ms (round 3 §1.2 rule 5).
+    const t = Number(e.target.value);
+    clearTimeout(ui.seekTimer);
+    ui.seekTimer = setTimeout(() => commitSeek(t), 350);
+    return;
+  }
   if (e.target.dataset.trSeq !== undefined || e.target.dataset.trSpan !== undefined) {
     const design = e.target.dataset.trSeq ?? e.target.dataset.trSpan;
-    const row = e.target.closest("tr");
+    // Reachable from either the per-design row (.dsg[data-design]) or the toolbar's
+    // own Transition group (.group[data-design]) - one code path either way.
+    const row = e.target.closest("[data-design]");
     const seq = row.querySelector("[data-tr-seq]").value;
     const spanEl = row.querySelector("[data-tr-span]");
     let span = 0;
@@ -1396,9 +1654,11 @@ document.addEventListener("dragend", () => { dragged = null; clearDrop();
   document.querySelectorAll(".moving").forEach(p => p.classList.remove("moving")); });
 document.addEventListener("pointerdown", e => {
   if (e.target.id === "ph") seeking = true;    // the loop must not fight an in-progress scrub
+  if (e.target.id === "show-seek") previewSeek(Number(e.target.value));   // preview from the very first touch, not just the first move
 });
 document.addEventListener("pointerup", () => { seeking = false; });
 document.addEventListener("input", e => {
+  if (e.target.id === "show-seek") { previewSeek(Number(e.target.value)); return; }
   if (e.target.id !== "ph") return;
   const t = Number(e.target.value);
   ui.playhead = t;
@@ -1409,7 +1669,7 @@ document.addEventListener("input", e => {
     seeking = false;
   }
   updatePlayheadDom(t);
-  updateThumbColors(t);
+  updateThumbColors(t, THUMBS.timeline);
 });
 // Space toggles play/pause, except while typing, over a control that owns the
 // key, or off the Timeline tab (there is nothing to play/pause to look at).
