@@ -58,8 +58,8 @@ pc_clock = time.perf_counter
 
 
 def default_units() -> "dict[str, str]":
-    """radxa-NN -> 192.168.50.(100+NN), the addresses firstboot.sh gives."""
-    return {f"radxa-{n:02d}": f"192.168.50.{100 + n}:{DEFAULT_AGENT_PORT}"
+    """radxa-NN -> 192.168.51.(100+NN), the addresses firstboot.sh gives."""
+    return {f"radxa-{n:02d}": f"192.168.51.{100 + n}:{DEFAULT_AGENT_PORT}"
             for n in range(1, 11)}
 
 

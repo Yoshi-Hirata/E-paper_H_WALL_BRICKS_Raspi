@@ -5,7 +5,7 @@
 .EXAMPLE
   .\radxa\clone\write_card.ps1 -Unit 5 -Disk 2
     Writes D:\radxa-golden\radxa-01-golden.img to \\.\PhysicalDrive2 and
-    names the card radxa-05 (192.168.50.105 after first boot).
+    names the card radxa-05 (192.168.51.105 after first boot).
 
 .NOTES
   Needs WSL (Ubuntu, with gdisk installed) for the 16 MB /config patch,
@@ -34,7 +34,7 @@ $imgSize = (Get-Item $Image).Length
 if ($imgSize -gt $d.Size) { throw "image ($imgSize B) larger than disk ($($d.Size) B)" }
 Write-Host ("target : disk {0}  {1}  {2:N1} GB  ({3})" -f $Disk, $d.FriendlyName, ($d.Size / 1GB), $d.OperationalStatus)
 Write-Host ("image  : {0}  {1:N2} GB" -f $Image, ($imgSize / 1GB))
-Write-Host ("unit   : radxa-{0}  ->  192.168.50.{1}" -f $nn, (100 + $Unit))
+Write-Host ("unit   : radxa-{0}  ->  192.168.51.{1}" -f $nn, (100 + $Unit))
 if (-not $Force) {
     $answer = Read-Host "Type YES to overwrite disk $Disk"
     if ($answer -ne 'YES') { throw 'aborted' }
@@ -68,4 +68,4 @@ while (-not $p.HasExited) {
 $tail = Get-Content $log -ErrorAction SilentlyContinue
 $tail | Select-Object -Last 4 | ForEach-Object { Write-Host "  $_" }
 if (-not ($tail -match '^DONE ')) { throw "write failed - see $log" }
-Write-Host "radxa-$nn written. Boot it; rsetup applies before.txt, then epaper-firstboot sets 192.168.50.$(100 + $Unit)."
+Write-Host "radxa-$nn written. Boot it; rsetup applies before.txt, then epaper-firstboot sets 192.168.51.$(100 + $Unit)."

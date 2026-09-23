@@ -2,7 +2,7 @@
 # Per-unit network identity for a cloned Radxa: derive the static IPv4
 # from the hostname and apply it to the Wi-Fi profile.
 #
-#   radxa-NN  ->  192.168.50.(100+NN)/24, gateway and DNS 192.168.50.1
+#   radxa-NN  ->  192.168.51.(100+NN)/24, gateway and DNS 192.168.51.1
 #
 # All ten appliances run one and the same microSD image; the only input
 # that differs per unit is the hostname, which rsetup sets from the
@@ -13,7 +13,11 @@
 # a hostname outside the radxa-NN scheme means "not a clone, do nothing".
 set -euo pipefail
 
-SUBNET="192.168.50"
+# 192.168.51: 192.168.50 is what home routers and ISPs hand out by default,
+# and a travel router whose WAN lands on such a network moves its own LAN
+# away from it (seen 2026-09-22: LAN silently became 192.168.51.1 and the
+# units were unreachable). The show router's LAN is 192.168.51.1/24.
+SUBNET="192.168.51"
 BASE=100
 PREFIX=24
 GATEWAY="${SUBNET}.1"

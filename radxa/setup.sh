@@ -70,7 +70,7 @@ sudo cp "$REPO_DIR/raspi/logind-appliance.conf" /etc/systemd/logind.conf.d/10-ap
 sudo systemctl restart systemd-logind || true
 
 echo "== per-unit network identity (cloned units) =="
-# radxa-NN -> 192.168.50.(100+NN); a hostname outside that scheme is a
+# radxa-NN -> 192.168.51.(100+NN); a hostname outside that scheme is a
 # no-op, so enabling it on a one-off machine changes nothing.
 sed "s|@REPO_DIR@|$REPO_DIR|g" "$REPO_DIR/radxa/epaper-firstboot.service.in" \
   | sudo tee /etc/systemd/system/epaper-firstboot.service >/dev/null

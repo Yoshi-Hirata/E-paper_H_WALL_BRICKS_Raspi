@@ -16,7 +16,7 @@ client's, not the repo's):
     history.json    earlier and undone versions of show.json, for undo/redo
     fleet.json      optional: {"units": {"radxa-01": "host:port", ...},
                     "token": "..."} when the units are not at their
-                    usual 192.168.50.1NN:8787 (conductor/fleet.py)
+                    usual 192.168.51.1NN:8787 (conductor/fleet.py)
 
 Undo covers show.json - the timeline, the show's length and the unit
 assignments - and is kept on disk, so it survives a reload of the page

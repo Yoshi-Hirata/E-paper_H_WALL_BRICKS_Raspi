@@ -379,7 +379,7 @@ map とデザインを結び付けるのは従来どおり CSV のファイル�
 2 段階: **Prepare**(アイテムごとに選んだデザインを各機体の基板へ保存。表示は
 変わらない)→ **GO**(N 秒後の同じ瞬間に全機体が表示命令を 1 回だけ送る)。
 ほかに「Cancel the fire」「All units STANDBY (white)」「Release all units to their own menu」。
-機体の宛先は既定で `radxa-NN` = `192.168.50.(100+NN):8787`、変える場合は
+機体の宛先は既定で `radxa-NN` = `192.168.51.(100+NN):8787`、変える場合は
 `showdata/fleet.json`(`{"units": {"radxa-01": "host:port"}, "token": "..."}`)。
 
 **ショーの進行**(Units タブの上段「THE SHOW」、P2): タイムラインを機体ごとの

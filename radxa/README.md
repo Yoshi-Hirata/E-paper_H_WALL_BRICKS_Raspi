@@ -170,7 +170,7 @@ CLI からは `host/ota.py FW/FW_260903/OTA_16c.bin --addr auto` で同じ
 
 10 台の Radxa は **1 種類の microSD イメージ**で運用し、個体差はホスト名
 `radxa-01`〜`radxa-10` だけにする。IP はホスト名から導出する
-(`radxa-NN` → `192.168.50.(100+NN)/24`、GW/DNS `192.168.50.1`)。
+(`radxa-NN` → `192.168.51.(100+NN)/24`、GW/DNS `192.168.51.1`)。
 開発機が `radxa-01` = `.101`。
 
 仕組みは 2 段:
@@ -233,7 +233,7 @@ radxa-02〜10 の 9 台をこの手順で作成し、全台の起動を確認し
 ### クローンの作り方(カード 1 枚ごと)
 
 ```powershell
-.\radxa\clone\write_card.ps1 -Unit 5 -Disk 2     # radxa-05 = 192.168.50.105
+.\radxa\clone\write_card.ps1 -Unit 5 -Disk 2     # radxa-05 = 192.168.51.105
 ```
 
 やること: ディスクが USB でカードサイズであることを確認 → `YES` の入力 →
@@ -250,11 +250,11 @@ resize_root
 パッチ、ディスク末尾のバックアップ GPT を順に書く(5 GB で数分)。
 
 起動すると rsetup がホスト名・SSH ホスト鍵・ルート FS 拡張を行い
-`before.txt` を消す。続いて `epaper-firstboot` が `192.168.50.105` を設定する。
+`before.txt` を消す。続いて `epaper-firstboot` が `192.168.51.105` を設定する。
 `machine-id` は空にしてあるので起動時に固有値が生成される。確認:
 
 ```bash
-ssh radxa@192.168.50.105
+ssh radxa@192.168.51.105
 hostname; df -h /; systemctl is-active epaper-ui
 ```
 

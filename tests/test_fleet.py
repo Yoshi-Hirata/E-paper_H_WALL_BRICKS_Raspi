@@ -83,8 +83,8 @@ def payload(cue, color, boards=(1, 2)):
 def test_default_addresses_are_the_ones_firstboot_assigns():
     units = default_units()
     assert len(units) == 10
-    assert units["radxa-01"] == "192.168.50.101:8787"
-    assert units["radxa-10"] == "192.168.50.110:8787"
+    assert units["radxa-01"] == "192.168.51.101:8787"
+    assert units["radxa-10"] == "192.168.51.110:8787"
 
 
 def test_polling_finds_the_units_and_measures_their_clocks(fleet, units):
