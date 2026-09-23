@@ -275,6 +275,7 @@ LCD 本体は未接続だが、以下は実機で確認済み:
 | `LookNN_color_NAME_grid.csv` | `side,row,shift,1,2,3,…` — 衣装の 1 段 = 1 行。セルは色コード `0x00`〜`0x0F`、**穴の無いマスは `0`、色未指定は `-`**(先方 README の定義)。キューごとに 1 ファイル |
 
 ファイル名の `_map` / `_color_` より前がアイテム名(`Look22`、
+(制作サイトの書き出しに合わせて **型番**を使う: `AZ271SD1305_map.csv`、`AZ271SD1305_B_color_…_grid.csv`)
 デザインの `_color_` と `_grid` の間が、そのデザインの名前(`pattern01` なら `P01`、
 `ref_multicolor_redorange_s22` ならそのまま)。配線ナビの書き出し名がそのまま使える
 (`AZ271SD1305_color_ref_multicolor_redorange_s22_grid_A-1.csv` など。先頭が型番の
