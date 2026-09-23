@@ -62,10 +62,11 @@ python -m conductor serve --open
 すべて `showdata/` フォルダ(リポジトリ直下、Git の管理外):
 
 - `showdata/files/` … 取り込んだ CSV(`LookNN_map.csv`、`LookNN_color_NAME_grid.csv`)
-- `showdata/show.json` … タイムライン、機体の割り当て、LOOK 番号と型番、基板番号の書き換え
+- `showdata/show.json` … タイムライン、遷移の設定、機体の割り当て、LOOK 番号と型番、基板番号の書き換え、音楽ファイル名
+- `showdata/music/` … アップロードしたショーの音楽ファイル
 - `showdata/history.json` … Undo / Redo の履歴
 
-**別の PC でも同じショーを使うには `showdata/` ごとコピーする。** バックアップもこのフォルダを
+**別の PC でも同じショーを使うには `showdata/` ごとコピーする**(演出だけなら Timeline の Save show… / Load show… の JSON でも移せる。音楽は別途)。 バックアップもこのフォルダを
 丸ごと取ればよい。UI を起動したまま `showdata/files/` に CSV を置いても、次の再描画で拾う。
 
 ## 6. ショー当日の順番(要点)

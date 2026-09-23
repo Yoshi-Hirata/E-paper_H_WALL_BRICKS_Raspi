@@ -534,7 +534,7 @@ function renderTimeline() {
         title="Seconds from the command to the finished image. Depends on the firmware (about 7 s on the latest, 16 s on older ones)"><span>s</span></div>
       <div class="group">
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
-        <label class="filebtn" title="Replace the timeline, transitions, labels and unit assignments from a saved JSON file">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
+        <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
         hatched = refreshing (${show.refresh_s} s)</div>
@@ -584,9 +584,9 @@ function renderTimeline() {
         <span style="flex:1"></span>
         ${music
           ? `<span class="meta">${esc(music.name)} (${fmtSize(music.size)})</span>
-             <label class="filebtn">Replace<input type="file" id="tp-music-replace" accept="audio/*"></label>
+             <label class="filebtn" title="Upload another audio file for the show (MP3, WAV, OGG, M4A; up to 64 MB)">Replace music<input type="file" id="tp-music-replace" accept="audio/*"></label>
              <button id="tp-music-remove" class="danger">Remove</button>`
-          : `<label class="filebtn">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`}
+          : `<label class="filebtn" title="Upload the show's audio (MP3, WAV, OGG, M4A; up to 64 MB): playback then follows the music">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`}
       </div>
       <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
       <div class="thumbs" id="thumbs" style="margin-top:8px"></div>
@@ -1026,7 +1026,7 @@ document.addEventListener("change", async e => {
       } else {
         // A sweep: keep the end, and make the sweep last from this start to it.
         const span = Math.max(0, Math.min(30, cue.complete - seconds - refresh));
-        if (Math.abs(span - (cue.complete - seconds - refresh)) > 1e-9) toast(`Clamped the sweep to ${span.toFixed(1)} s (0 to 30 s allowed)`);
+        if (Math.abs(span - (cue.complete - seconds - refresh)) > 1e-9) toast(`Sweep set to ${span.toFixed(1)} s: the boards' firmware allows 0 to 30 s from the first scale to the last`);
         cue.transition = "custom"; cue.sequence = effSweep.sequence;
         cue.span_s = Math.round(span * 10) / 10;
         cue.at = cue.complete; cue.align = "done";
