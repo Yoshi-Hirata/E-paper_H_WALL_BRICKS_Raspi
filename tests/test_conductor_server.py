@@ -1041,3 +1041,26 @@ def test_save_music_does_not_touch_the_old_file_if_the_commit_fails(workspace,
     assert (workspace.music / "old.mp3").read_bytes() == b"aaaaa"
     assert not (workspace.music / "new.mp3").exists()
     assert not list(workspace.music.glob("*.part"))
+
+
+def test_a_manual_prepare_carries_the_designs_delay_tables(workspace):
+    """The Designs tab's Prepare sweeps the way the design says, like a
+    timeline cue does: one 128-byte table per board, the last scale on
+    exactly the span; a natural design sends no tables at all."""
+    import struct
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.assign("Look22", "radxa-01")
+    payloads, problems = workspace.compile_units({"Look22": grid}, "m")
+    assert problems == [] and "delays" not in payloads["radxa-01"]
+    workspace.set_transition(grid, "top_down", 3.0)
+    payloads, problems = workspace.compile_units({"Look22": grid}, "m")
+    assert problems == []
+    body = payloads["radxa-01"]
+    assert sorted(body["delays"]) == sorted(body["boards"])
+    frames = []
+    for table in body["delays"].values():
+        raw = bytes.fromhex(table)
+        assert len(raw) == 128
+        frames += [f for f in struct.unpack(">64H", raw) if f != 0xFFFF]
+    assert min(frames) == 0 and max(frames) == 300      # 3.0 s in 10 ms frames
+

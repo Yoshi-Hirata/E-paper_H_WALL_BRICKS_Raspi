@@ -789,6 +789,15 @@ class DemoRunner:
                     or self._request(bus, frame, label, self.save_attempts)):
                 return False
         self._delays_sent[board] = table
+        # Said once per table, so the operator can see on the unit's
+        # log that the sweep really reached the board (a cached table
+        # is not sent again and not announced again).
+        if all(v == NO_DELAY for v in values):
+            self.emit(f"board {board}: sweep cleared")
+        else:
+            timed = [v for v in values if v != NO_DELAY]
+            self.emit(f"board {board}: sweep table saved, {len(timed)} sockets,"
+                      f" last starts +{max(timed) * 10 / 1000:.2f} s")
         return True
 
     def _fire_at(self, bus, groups: int, session, cue_id: str,

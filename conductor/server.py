@@ -752,6 +752,19 @@ class Workspace:
                                 else "") + f"{look_map.item} {name}"
             payload["boards"].update({str(address): array.hex()
                                       for address, array in arrays.items()})
+            # The design's own transition (Designs tab) sweeps a manual
+            # cue the same way it sweeps a timeline cue: the tables go
+            # with the colours, a natural design sends none and the
+            # boards keep whatever table they hold until the show says.
+            sweep = (show.get("transitions") or {}).get(Path(design_name).name)
+            if isinstance(sweep, dict):
+                seq = sequence.clean_sequence(sweep.get("sequence"))
+                span = sequence.clean_span(sweep.get("span_s"))
+                if seq != "natural" and span > 0:
+                    tables = sequence.compile_delays(look_map, seq, span, ids=ids)
+                    payload.setdefault("delays", {}).update(
+                        {str(address): table.hex()
+                         for address, table in tables.items()})
         return payloads, problems
 
     def compile_show(self) -> "tuple[dict[str, dict], list[str]]":
