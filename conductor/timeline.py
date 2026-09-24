@@ -35,16 +35,28 @@ last longer than one refresh, by that span. The resolved sweep and the
 seconds it actually adds (which needs the garment's map) come from the
 server, as cue["sweep"] and cue["span"].
 
-What one unit can do bounds the timeline. Before a refresh the unit has
-to write every board (about 0.22 s each, docs/SCALING.md), and nothing
-is sent to a bus that is still refreshing, so two refreshes on the same
-unit need
+What one unit can do bounds the timeline. The director wants at least
+GAP_AFTER_REFRESH_S (1 s) between a picture finishing and the next
+refresh starting. That is only safe up to the unit's own prepare lead:
+docs/STATUS.md (2026-09-24 fix round) is explicit that this has NOT
+been confirmed on real hardware - what the 2026-08-14 record actually
+shows is that a command arriving mid-repaint is queued and runs after
+the repaint, not that a save executes during it. So the conductor never
+blesses a spacing tighter than the unit would need to actually prepare
+the next cue, using the UNIT's own constants (ui/showplay.py -
+UNIT_SAVE_S_PER_BOARD/UNIT_PREP_MARGIN_S etc. below, not this module's
+own guesses) - whichever is larger of
 
-    refresh + boards x 0.22 s + margin
+    refresh + gap                                (the director's minimum), or
+    boards x UNIT_SAVE_S_PER_BOARD + UNIT_PREP_MARGIN_S
+                                    (time for the unit to write them all)
 
-between their send times. Items sharing a unit (Look 20's top and
-skirt) share that budget - unless their cues fall on the same instant,
-which is one refresh for both.
+doubled for the write term when the next cue sweeps (its delay tables
+are written too), and floored further still for the very first cue
+after the preset, when the unit may still be rejoining (see validate()).
+Items sharing a unit (Look 20's top and skirt) share that budget -
+unless their cues fall on the same instant, which is one refresh for
+both.
 
 Pure data in, problems out: no files, no clock, so the rules are
 testable and the web page and the units can both rely on them.
@@ -64,8 +76,28 @@ from .sequence import MAX_DELAY_S, clean_sequence, clean_span
 # argument. A unit still on older firmware needs the older, longer value.
 REFRESH_S = 7.0
 REFRESH_RANGE_S = (1.0, 60.0)
-SAVE_S_PER_BOARD = 0.22    # stop + save, measured
-MARGIN_S = 3.0
+# The director's minimum from "picture complete" to the next send
+# (2026-09-24: "Reflesh が終わった後、1 秒後に次のデザインへの refresh に
+# 入ることができるようにしたい") - a show setting one day (gap_s), taken
+# as an argument here meanwhile, same as refresh.
+GAP_AFTER_REFRESH_S = 1.0
+
+# The UNIT's own timing constants (ui/showplay.py), mirrored here rather
+# than imported - conductor/ and ui/ do not import each other, and
+# ui/showplay.py imports nothing from conductor/. These four MUST match
+# ui/showplay.py's SAVE_S_PER_BOARD, PREP_MARGIN_S, SETUP_S and
+# SETUP_S_PER_BOARD exactly (tests/test_timeline.py imports ui.showplay
+# and asserts the equality) - the conductor must floor a spacing at what
+# the unit really needs, never at its own, more optimistic guess.
+UNIT_SAVE_S_PER_BOARD = 0.25    # ui/showplay.py SAVE_S_PER_BOARD
+UNIT_PREP_MARGIN_S = 2.0        # ui/showplay.py PREP_MARGIN_S
+UNIT_SETUP_S = 1.0              # ui/showplay.py SETUP_S
+UNIT_SETUP_S_PER_BOARD = 0.15   # ui/showplay.py SETUP_S_PER_BOARD
+# conductor/fleet.py calls run() this long before T0 - mirrored (not
+# imported: fleet.py imports this module) so a unit that only rejoins
+# right around the start is still accounted for below.
+DEFAULT_LEAD_S = 3.0            # conductor/fleet.py DEFAULT_LEAD_S
+
 DEFAULT_DURATION_S = 600.0
 
 _CLOCK = re.compile(r"^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)\s*$")
@@ -93,9 +125,27 @@ def format_clock(seconds: float) -> str:
     return f"{sign}{total // 60}:{total % 60:02d}"
 
 
-def min_interval(boards: int, refresh: float = REFRESH_S) -> float:
-    """Seconds one unit needs between the send times of two refreshes."""
-    return refresh + boards * SAVE_S_PER_BOARD + MARGIN_S
+def min_interval(boards: int, refresh: float = REFRESH_S,
+                 gap: float = GAP_AFTER_REFRESH_S,
+                 sweep: bool = False) -> float:
+    """Seconds one unit needs between the send times of two refreshes:
+    long enough after the previous picture completes (refresh + gap), or
+    long enough for the unit to actually write every board first (its
+    own constants, not this module's - see UNIT_SAVE_S_PER_BOARD above),
+    doubled when the cue sweeps and has to write its delay tables too -
+    whichever is larger. The two are not added: the write happens while
+    the previous refresh is still under way, not after it.
+
+    This is what conductor/server.py shows as the show's "shortest
+    interval per unit" (`sweep` defaults to False there: the page shows
+    the ordinary figure, not the higher one a sweeping cue may need -
+    see docs/STATUS.md). validate() below applies the same floor cue by
+    cue, with the previous cue's own refresh time and a further floor
+    for the very first cue after the preset.
+    """
+    write_term = (boards * UNIT_SAVE_S_PER_BOARD * (2 if sweep else 1)
+                 + UNIT_PREP_MARGIN_S)
+    return max(refresh + gap, write_term)
 
 
 def span_of(cue: dict) -> float:
@@ -232,7 +282,8 @@ def apply_transitions(cues: "list[dict]", transitions: dict) -> None:
 
 def validate(cues: "list[dict]", items: "dict[str, dict]",
              duration: float = DEFAULT_DURATION_S,
-             refresh: float = REFRESH_S) -> "tuple[dict, list[str]]":
+             refresh: float = REFRESH_S,
+             gap: float = GAP_AFTER_REFRESH_S) -> "tuple[dict, list[str]]":
     """({cue id: [problems]}, [warnings about the whole show]).
 
     `items` maps the lower-cased item name to
@@ -310,27 +361,74 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
     for unit, unit_cues in by_unit.items():
         boards = sum(item["boards"] for item in items.values()
                      if (item.get("unit") or f"({item['item']})") == unit)
-        need = min_interval(boards, refresh)
         unit_cues.sort(key=lambda c: times(c, refresh)[0])
         previous = before = None
         for cue in unit_cues:
             sent = times(cue, refresh)[0]
             if previous is not None and sent != previous:
-                # The previous change occupies the bus for its own span,
-                # and a sweep has its delay tables to write as well.
-                gap = sent - previous
-                extra = span_of(before) + (
-                    boards * SAVE_S_PER_BOARD if sweeps(cue) else 0.0)
+                spacing = sent - previous
+                sweep_next = sweeps(cue)
+                # Three candidates; the largest wins ("need"). The
+                # director's gap after the PREVIOUS cue's own refresh
+                # (plus its sweep's span, if it had one) - the unit's own
+                # write time, doubled when this cue sweeps and needs its
+                # delay tables written too - and, only right after the
+                # preset, the unit's full rejoin lead: it only starts
+                # writing once /show/run actually arrives
+                # (conductor/fleet.py's DEFAULT_LEAD_S before T0), so a
+                # unit that is only just rejoining there pays setup too,
+                # not just a write.
+                before_refresh = effective_refresh(before, refresh)
+                refresh_term = before_refresh + span_of(before) + gap
+                write_term = (boards * UNIT_SAVE_S_PER_BOARD
+                             * (2 if sweep_next else 1) + UNIT_PREP_MARGIN_S)
+                candidates = [("write", write_term)]
+                if before["at"] <= 0:          # before is the preset
+                    candidates.append(("rejoin", write_term + UNIT_SETUP_S
+                                       + boards * UNIT_SETUP_S_PER_BOARD
+                                       + gap))
+                candidates.append(("refresh", refresh_term))
+                need = max(value for _, value in candidates)
+                # Ties prefer a non-"refresh" label: only the refresh
+                # reason may be silenced by the same-item overlap rule
+                # below, and a write/rejoin problem must never be lost
+                # to a coincidental tie.
+                binding = next(label for label, value in candidates
+                              if value == need)
                 same_item = (before is not None
                             and cue["item"].lower() == before["item"].lower())
-                if gap < need + extra and not (
-                        same_item and cue["id"] in overlapped):
-                    problems[cue["id"]].append(
-                        f"only {gap:.0f} s after the previous refresh on {unit}; "
-                        f"its {boards} boards need {need + extra:.0f} s "
-                        f"({refresh:.0f} s refresh"
-                        + (f" + {span_of(before):.0f} s sweep" if span_of(before)
-                           else "") + " + writing the boards)")
+                suppressed = (binding == "refresh" and same_item
+                             and cue["id"] in overlapped)
+                if spacing < need and not suppressed:
+                    if binding == "refresh":
+                        detail = f"{before_refresh:.1f} s refresh"
+                        if span_of(before):
+                            detail += f" + {span_of(before):.1f} s sweep"
+                        detail += f" + {gap:.1f} s gap"
+                        problems[cue["id"]].append(
+                            f"only {spacing:.1f} s after the previous send "
+                            f"on {unit}; at least {need:.1f} s is needed "
+                            f"({detail})")
+                    elif binding == "write":
+                        boardterm = f"{boards} × {UNIT_SAVE_S_PER_BOARD:.2f} s"
+                        if sweep_next:
+                            boardterm += " × 2 (its delay tables)"
+                        problems[cue["id"]].append(
+                            f"only {spacing:.1f} s after the previous send "
+                            f"on {unit}; writing its {boards} boards needs "
+                            f"{need:.1f} s ({boardterm} + "
+                            f"{UNIT_PREP_MARGIN_S:.1f} s)")
+                    else:                       # rejoin
+                        problems[cue["id"]].append(
+                            f"only {spacing:.1f} s after the previous send "
+                            f"on {unit}; the unit may still be rejoining and "
+                            f"needs at least {need:.1f} s ({boards} × "
+                            f"{UNIT_SAVE_S_PER_BOARD:.2f} s"
+                            + (" × 2" if sweep_next else "")
+                            + f" + {UNIT_PREP_MARGIN_S:.1f} s prep + "
+                            f"{UNIT_SETUP_S:.1f} s setup + {boards} × "
+                            f"{UNIT_SETUP_S_PER_BOARD:.2f} s probe + "
+                            f"{gap:.1f} s gap)")
             previous, before = sent, cue
 
     for key, item in sorted(items.items()):

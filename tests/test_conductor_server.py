@@ -181,8 +181,9 @@ def test_timeline_is_stored_cleaned_and_returned_with_its_times(workspace):
     assert second["end"] == 600 and second["end_source"] == "show"
     assert preset["problems"] == second["problems"] == []
     assert show["warnings"] == []
-    # 3 boards: 7 s refresh + 3 x 0.22 s + 3 s margin.
-    assert round(show["min_interval"]["(Look22)"], 2) == 10.66
+    # 3 boards: refresh-bound - 7 s refresh + the director's 1 s gap is
+    # more than writing 3 boards (3 x 0.22 s + 1 s margin) would need.
+    assert round(show["min_interval"]["(Look22)"], 2) == 8.0
 
 
 def test_refresh_time_is_a_setting_of_the_show(workspace):
@@ -192,7 +193,8 @@ def test_refresh_time_is_a_setting_of_the_show(workspace):
     show = workspace.state()["show"]
     assert show["refresh_s"] == 16
     assert (show["cues"][0]["sent"], show["cues"][0]["complete"]) == (120, 136)
-    assert round(show["min_interval"]["(Look22)"], 2) == 19.66
+    # Still refresh-bound at 16 s: 16 + 1 s gap.
+    assert round(show["min_interval"]["(Look22)"], 2) == 17.0
     workspace.set_timeline(600, cues)                   # not given: kept
     assert workspace.state()["show"]["refresh_s"] == 16
     assert workspace.undo() and workspace.state()["show"]["refresh_s"] == 7

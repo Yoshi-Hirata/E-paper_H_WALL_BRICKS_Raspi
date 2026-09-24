@@ -634,3 +634,56 @@ def test_a_cue_with_delay_tables_hands_them_to_the_session(rig):
     # Its lead counts the tables: each board is written twice.
     assert player._lead(show["cues"][1]) > player._lead(
         dict(show["cues"][1], delays={}))
+
+
+# ---- the director's 1 s gap (conductor/timeline.py min_interval/validate) ----
+
+def test_the_write_is_issued_right_after_the_previous_fire(tmp_path):
+    """ui/showplay.py's _plan() branch 1 starts writing the next cue's
+    boards the moment it is due, whatever the previous cue is still
+    doing - it does not wait for the previous picture to complete first.
+
+    This only checks that: the write for q02 is issued after q01 fires,
+    and q02 still fires exactly on time (refresh + the director's 1 s
+    gap after q01's send). It deliberately does NOT assert anything
+    about q01's own refresh completing, nor claim the write overlaps a
+    live repaint - docs/STATUS.md (2026-09-24 fix round) is explicit
+    that whether a save actually executes during one has not been
+    confirmed on real hardware (a unit-side fix for pre-empting an
+    unfired cue is being done separately); the window here is widened to
+    q02's own send so this cannot flake on a loaded machine.
+    """
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, save_s=0.5, margin_s=0.1,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        gap = 1.0                                    # the director's minimum
+        show = make_show(sents=(-REFRESH, 0.0, REFRESH + gap), duration=5.0)
+        player.load(show)
+        player.preset()
+        assert wait_until(lambda: player.applied == "q00")
+
+        t0 = time.monotonic() + 0.1
+        player.run(t0)
+        assert wait_until(lambda: player.applied == "q01")
+        fire_q01 = show_times(bus)[1]
+
+        assert wait_until(lambda: player.applied == "q02", timeout=4)
+        fire_q02 = show_times(bus)[2]
+
+        saves = [(frame.dest, frame.data[3], t)
+                for frame, t in zip(bus.log, bus.times) if frame.cmd == SAVE]
+        prepare_q02 = next(t for dest, colour, t in saves
+                           if dest == 1 and colour == 3)
+
+        # The write for q02 is issued after q01 actually fired...
+        assert prepare_q02 > fire_q01
+        # ...and, safely, before q02's own send (not some tighter window
+        # relative to q01's refresh completing, which is not confirmed).
+        assert prepare_q02 < fire_q02
+        # And still fires q02 on time: refresh + the 1 s gap after q01.
+        assert 0 <= fire_q02 - (t0 + REFRESH + gap) < 0.05
+    finally:
+        player.close()
+        runner.stop()
