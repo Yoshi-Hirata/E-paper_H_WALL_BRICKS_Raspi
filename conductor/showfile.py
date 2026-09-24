@@ -59,13 +59,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 
 from . import timeline
 from .look import (ARRAY_LEN, MARKER, NO_REFRESH, Design, LookError, LookMap,
                    compile_design, unit_board_ids)
-from .sequence import FRAME_S, compile_delays
+from .sequence import FRAME_S, NO_DELAY, compile_delays
 
 DELAY_UNIT_MS = round(FRAME_S * 1000)   # 10: what a unit table's frame is
+# The delay table of a board that sweeps nothing: every socket NO_DELAY.
+# The unit writes it as "forget the sweep" (0x25) into the cue's slot.
+NO_SWEEP_TABLE = struct.pack(">64H", *([NO_DELAY] * ARRAY_LEN))
 
 NUMBER_BRAND = 0x03
 
@@ -103,16 +107,19 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
         sent, _ = timeline.times(cue, refresh)
         moments.setdefault(sent, []).append(cue)
 
-    # A sweep is a delay table per board (the firmware request). Once
-    # any cue of the show has one, every cue carries tables - a natural
-    # cue's say "no delay" - so a board never keeps a sweep it should
-    # not; the unit only writes a table that differs from the last.
-    sweeps = any(timeline.sweeps(c) for c in cues)
+    # A sweep is a delay table per board (the firmware request). EVERY
+    # cue carries a table for EVERY board of the unit - a cue (or an
+    # item sharing the unit) without a sweep says "no delay" for its
+    # boards - so a board never keeps a sweep it should not, whether
+    # from an earlier cue or from an earlier upload that had one where
+    # this show has none (found in review: the tables used to be left
+    # out of a show without sweeps, and the boards kept the old ones).
+    # The unit only writes a table that differs from the last it sent.
     state = {address: blank() for address in addresses}
     unit_cues = []
     for number, sent in enumerate(sorted(moments)):
         change = {address: blank() for address in addresses}
-        delays: "dict[int, bytes]" = {}
+        delays = {address: NO_SWEEP_TABLE for address in addresses}
         labels = []
         span = 0.0
         for cue in sorted(moments[sent], key=lambda c: c["item"].lower()):
@@ -124,7 +131,7 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
                 change[address] = bytearray(array)
             labels.append(design_label(look_map, design, cue["partial"]))
             span = max(span, timeline.span_of(cue))
-            if sweeps:
+            if timeline.sweeps(cue):
                 delays.update(compile_delays(
                     look_map, cue["sweep"]["sequence"],
                     cue["sweep"]["span_s"], ids=ids))
@@ -142,13 +149,11 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
             "refresh_s": max(timeline.effective_refresh(c, refresh)
                              for c in moments[sent]),
             "label": " + ".join(labels),
+            "span": span,
             "boards": {str(a): bytes(change[a]).hex() for a in addresses},
             "state": {str(a): bytes(state[a]).hex() for a in addresses},
+            "delays": {str(a): delays[a].hex() for a in addresses},
         }
-        if sweeps:
-            entry["span"] = span
-            entry["delays"] = {str(a): delays[a].hex()
-                               for a in addresses if a in delays}
         unit_cues.append(entry)
 
     show = {"name": name, "unit": unit, "dev_type": NUMBER_BRAND,
