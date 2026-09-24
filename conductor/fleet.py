@@ -67,6 +67,32 @@ pc_clock = time.perf_counter
 # pre-burn design - as opposed to a `burn` of None, which a current agent
 # uses to say "nothing is written" (see Fleet._burn_problems).
 _NO_BURN_KEY = object()
+# How many board numbers a "not written" message names before it rounds
+# the rest up as "+k more" (the page uses the same three).
+_NAME_BOARDS = 3
+
+
+def pictures_not_written(burn: dict) -> str:
+    """"10 of 12 pictures not written on boards 1, 2, 3" for a burn that
+    failed on live boards.
+
+    The unit counts PAIRS - one picture per (board, slot) - and a wall
+    of 12 boards x 18 cues loses 18 pictures when one board refuses, not
+    "1 board". Saying "3 board(s) not written" made a whole garment's
+    worth of missing pictures sound like a footnote (review round 2,
+    2026-09-25)."""
+    failed = [pair for pair in (burn.get("failed") or [])
+              if isinstance(pair, (list, tuple)) and pair]
+    boards = sorted({pair[0] for pair in failed})
+    total = burn.get("total")
+    count = len(failed) or len(boards)
+    named = ", ".join(str(b) for b in boards[:_NAME_BOARDS])
+    if len(boards) > _NAME_BOARDS:
+        named += f" +{len(boards) - _NAME_BOARDS} more"
+    return (f"{count} of {total if isinstance(total, int) else '?'} "
+            f"pictures not written"
+            + (f" on board{'' if len(boards) == 1 else 's'} {named}"
+               if boards else ""))
 
 
 def default_units() -> "dict[str, str]":
@@ -331,7 +357,8 @@ class Fleet:
         reporting = [b for b in reporting if b is not _NO_BURN_KEY]
         burned = sum(1 for b in reporting
                      if isinstance(b, dict) and b.get("state") == "burned")
-        return {"units": [link.snapshot() for link in self.links.values()],
+        return {"units": [self._unit_snapshot(link)
+                          for link in self.links.values()],
                 "last_fire": self.last_fire, "run": run,
                 "shows": {unit: {"id": show["id"], "cues": len(show["cues"])}
                           for unit, show in self.shows.items()},
@@ -339,6 +366,17 @@ class Fleet:
                 "start_at": start_at,
                 "show_duration": duration if self.shows else None,
                 "burn": {"burned": burned, "total": len(reporting)}}
+
+    def _unit_snapshot(self, link) -> dict:
+        """The unit's tile, plus the last thing it refused this
+        conductor's supervision ("run refused: still writing 12/48").
+        The corrections log scrolls and is shared by ten units; the tile
+        is where the operator looks when THAT unit is the one holding
+        the show up (review round 2, 2026-09-25)."""
+        refused = self._refused.get(link.name)
+        return dict(link.snapshot(),
+                    refused=None if refused is None
+                    else f"{refused[0]} refused: {refused[1]}")
 
     def _raw_burn(self, name: str):
         """Whatever this unit currently reports as `status.show.burn`,
@@ -420,16 +458,15 @@ class Fleet:
             elif state == "failed":
                 if force:
                     continue
-                failed = burn.get("failed") or []
-                boards = sorted({pair[0] for pair in failed
-                                if isinstance(pair, (list, tuple)) and pair})
-                problems.append(
-                    f"{name}: {len(boards) or len(failed)} board(s) not "
-                    f"written" + (f" ({', '.join(map(str, boards))})"
-                                 if boards else ""))
+                problems.append(f"{name}: {pictures_not_written(burn)}")
             elif state == "cancelled":
-                problems.append(f"{name}: pictures not written (cancelled) "
-                                "- Upload again")
+                # The unit says WHY it gave up (no boards answering, the
+                # port taken, the bus busy); a plain STOP needs no reason.
+                why = burn.get("reason")
+                problems.append(
+                    f"{name}: pictures not written "
+                    f"(cancelled{': ' + str(why) if why else ''})"
+                    " - Upload again")
             elif state == "none":
                 problems.append(f"{name}: pictures not written since it "
                                 "restarted - Upload again")
@@ -900,8 +937,15 @@ class Fleet:
             if found:
                 found.sort()
                 self._may_adopt = False
+                # "force": the show on the units is ALREADY running, so
+                # it passed the burn gate when it was started - by this
+                # conductor before it restarted, or by another PC. A
+                # supervision /show/run posting force=False into that
+                # would be refused by a unit whose burn merely failed on
+                # a board, and the unit would sit out the show it is
+                # already in (review round 2, 2026-09-25).
                 self.run = {"t0": found[len(found) // 2], "state": "running",
-                            "held_at": None, "adopted": True}
+                            "held_at": None, "adopted": True, "force": True}
                 # Whatever a SEEK remembered before this conductor came
                 # up (or restarted) is not where THIS run began - the
                 # units, not the page, decided that (found in review).

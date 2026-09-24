@@ -382,7 +382,8 @@ def test_start_needs_an_upload_and_does_not_restart_by_accident(tmp_path):
         link.posted.clear()
         status, refused = _post(port, "/api/fleet/preset", {})
         assert status == 400
-        assert "radxa-01: 1 board(s) not written (3)" in refused["error"]
+        assert ("radxa-01: 1 of 2 pictures not written on board 3"
+                in refused["error"])
         assert link.posted == []
         shown = post("/api/fleet/preset", {"force": True})
         assert shown["units"]["radxa-01"]["ok"]
