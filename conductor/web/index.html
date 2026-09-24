@@ -2059,9 +2059,7 @@ document.addEventListener("click", async e => {
     // write nothing - the unit skips what its cache knows is in place.
     let body = {};
     if (fleet?.run) {
-      if (!confirm("The show is running. Re-write the pictures on every unit now?
-
-"
+      if (!confirm("The show is running. Re-write the pictures on every unit now?\n\n"
         + "Every unit briefly leaves the show and rejoins by itself a few seconds "
         + "later. Units already holding this show write nothing; a unit that lost "
         + `its pictures writes them again (~${burnSeconds()} s) and rejoins after `
