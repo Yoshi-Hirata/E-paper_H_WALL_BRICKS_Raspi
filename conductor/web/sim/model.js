@@ -913,11 +913,15 @@
   const REFRESH_S = 7.0;
   const REFRESH_RANGE_S = [1.0, 60.0];
   const GAP_AFTER_REFRESH_S = 1.0;
-  const UNIT_SAVE_S_PER_BOARD = 0.25;
-  const UNIT_PREP_MARGIN_S = 2.0;
-  const UNIT_SETUP_S = 1.0;
-  const UNIT_SETUP_S_PER_BOARD = 0.15;
-  const DEFAULT_LEAD_S = 3.0;
+  // Pre-burn conductor (main, 2026-09-25+): every picture is written to
+  // its on-board slot at Upload time (showfile.py), so nothing is
+  // written any more while the show runs - a running send is one
+  // broadcast trigger, not a write, and the unit's old per-board write
+  // time no longer bounds the timeline. SLOT_CAPACITY/MAX_CUES_PER_UNIT
+  // replace it: a board has 20 slots (0 the standby white, 19 the
+  // manual one-shot), so at most 18 distinct sends fit a show.
+  const SLOT_CAPACITY = 20;
+  const MAX_CUES_PER_UNIT = 18;
   const DEFAULT_DURATION_S = 600.0;
 
   const _CLOCK = /^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)\s*$/;
@@ -944,12 +948,13 @@
     return `${sign}${m}:${pad2(s)}`;
   }
 
-  function minInterval(boards, refresh, gap, sweep) {
+  // `boards` is kept (unused) so callers built for the old, per-board
+  // write term do not need to change - matching conductor/timeline.py's
+  // own min_interval() signature note.
+  function minInterval(boards, refresh, gap) {
     if (refresh === undefined) refresh = REFRESH_S;
     if (gap === undefined) gap = GAP_AFTER_REFRESH_S;
-    if (sweep === undefined) sweep = false;
-    const writeTerm = boards * UNIT_SAVE_S_PER_BOARD * (sweep ? 2 : 1) + UNIT_PREP_MARGIN_S;
-    return pyMax2(refresh + gap, writeTerm);
+    return refresh + gap;
   }
 
   function spanOf(cue) {
@@ -1111,6 +1116,8 @@
       }
     });
 
+    // Each unit's bus: refreshes need room between their send times, and
+    // a board holds only MAX_CUES_PER_UNIT pictures.
     const byUnit = Object.create(null);
     cues.forEach(cue => {
       const item = items[cue.item.toLowerCase()];
@@ -1120,46 +1127,58 @@
       }
     });
     Object.keys(byUnit).forEach(unit => {
-      let boards = 0;
-      Object.keys(items).forEach(k => {
-        const it = items[k];
-        if ((it.unit || `(${it.item})`) === unit) boards += it.boards;
-      });
-      const unitCues = byUnit[unit].slice().sort((a, b) => times(a, refresh)[0] - times(b, refresh)[0]);
-      let previous = null, before = null;
-      unitCues.forEach(cue => {
+      // Grouped by send instant, matching showfile.py's own broadcasts:
+      // items sharing a unit and an instant (Look 20's top and skirt)
+      // are ONE send, and the room needed after it is set by ALL of
+      // them together (the slowest refresh, the longest sweep).
+      const momentCues = Object.create(null);
+      byUnit[unit].forEach(cue => {
         const sent = times(cue, refresh)[0];
-        if (previous !== null && sent !== previous) {
-          const spacing = sent - previous;
-          const sweepNext = sweeps(cue);
-          const beforeRefresh = effectiveRefresh(before, refresh);
-          const refreshTerm = beforeRefresh + spanOf(before) + gap;
-          const writeTerm = boards * UNIT_SAVE_S_PER_BOARD * (sweepNext ? 2 : 1) + UNIT_PREP_MARGIN_S;
-          const candidates = [["write", writeTerm]];
-          if (before.at <= 0) candidates.push(["rejoin", writeTerm + UNIT_SETUP_S + boards * UNIT_SETUP_S_PER_BOARD + gap]);
-          candidates.push(["refresh", refreshTerm]);
-          const need = Math.max(...candidates.map(c => c[1]));
-          const binding = candidates.find(c => c[1] === need)[0];
-          const sameItem = before !== null && cue.item.toLowerCase() === before.item.toLowerCase();
-          const suppressed = binding === "refresh" && sameItem && overlapped.has(cue.id);
-          if (spacing < need && !suppressed) {
-            if (binding === "refresh") {
-              let detail = `${fmt.fixed(beforeRefresh, 1)} s refresh`;
-              if (spanOf(before)) detail += ` + ${fmt.fixed(spanOf(before), 1)} s sweep`;
-              detail += ` + ${fmt.fixed(gap, 1)} s gap`;
-              problems[cue.id].push(`only ${fmt.fixed(spacing, 1)} s after the previous send on ${unit}; at least ${fmt.fixed(need, 1)} s is needed (${detail})`);
-            } else if (binding === "write") {
-              let boardterm = `${boards} × ${fmt.fixed(UNIT_SAVE_S_PER_BOARD, 2)} s`;
-              if (sweepNext) boardterm += " × 2 (its delay tables)";
-              problems[cue.id].push(`only ${fmt.fixed(spacing, 1)} s after the previous send on ${unit}; writing its ${boards} boards needs ${fmt.fixed(need, 1)} s (${boardterm} + ${fmt.fixed(UNIT_PREP_MARGIN_S, 1)} s)`);
-            } else {
-              problems[cue.id].push(`only ${fmt.fixed(spacing, 1)} s after the previous send on ${unit}; the unit may still be rejoining and needs at least ${fmt.fixed(need, 1)} s (${boards} × ${fmt.fixed(UNIT_SAVE_S_PER_BOARD, 2)} s` +
-                (sweepNext ? " × 2" : "") +
-                ` + ${fmt.fixed(UNIT_PREP_MARGIN_S, 1)} s prep + ${fmt.fixed(UNIT_SETUP_S, 1)} s setup + ${boards} × ${fmt.fixed(UNIT_SETUP_S_PER_BOARD, 2)} s probe + ${fmt.fixed(gap, 1)} s gap)`);
-            }
+        (momentCues[sent] = momentCues[sent] || []).push(cue);
+      });
+      const moments = Object.keys(momentCues).map(Number).sort((a, b) => a - b);
+
+      // A board has MAX_CUES_PER_UNIT usable slots for the show (0 is
+      // the standby white, 19 the manual one-shot): more distinct sends
+      // than that do not fit, whatever their spacing.
+      if (moments.length > MAX_CUES_PER_UNIT) {
+        const order = Object.create(null);
+        moments.forEach((sent, index) => { order[sent] = index; });
+        byUnit[unit].forEach(cue => {
+          if (order[times(cue, refresh)[0]] >= MAX_CUES_PER_UNIT) {
+            problems[cue.id].push(`${unit} carries ${moments.length} pictures but a board `
+              + `holds ${MAX_CUES_PER_UNIT} show pictures (slot 0 is the white standby, `
+              + "slot 19 the manual one-shot) - merge or remove cues");
+          }
+        });
+      }
+
+      let previousSent = null, previousGroup = null;
+      moments.forEach(sent => {
+        const group = momentCues[sent];
+        if (previousSent !== null) {
+          const spacing = sent - previousSent;
+          // Every picture is already burned into its slot at Upload
+          // time: a running send is one broadcast trigger, nothing is
+          // written - so the only floor left is the director's gap
+          // after the PREVIOUS send's own refresh (plus its sweep's
+          // span, if any of its cues had one), for every pair.
+          const beforeRefresh = Math.max(...previousGroup.map(c => effectiveRefresh(c, refresh)));
+          const beforeSpan = Math.max(...previousGroup.map(c => spanOf(c)));
+          const need = beforeRefresh + beforeSpan + gap;
+          if (spacing < need) {
+            let detail = `${fmt.fixed(beforeRefresh, 1)} s refresh`;
+            if (beforeSpan) detail += ` + ${fmt.fixed(beforeSpan, 1)} s sweep`;
+            detail += ` + ${fmt.fixed(gap, 1)} s gap`;
+            group.forEach(cue => {
+              const sameItem = previousGroup.some(prev => cue.item.toLowerCase() === prev.item.toLowerCase());
+              if (sameItem && overlapped.has(cue.id)) return;
+              problems[cue.id].push(`only ${fmt.fixed(spacing, 1)} s after the previous send on ${unit}; `
+                + `at least ${fmt.fixed(need, 1)} s is needed (${detail})`);
+            });
           }
         }
-        previous = sent; before = cue;
+        previousSent = sent; previousGroup = group;
       });
     });
 
@@ -1175,8 +1194,7 @@
 
   const timeline = {
     REFRESH_S, REFRESH_RANGE_S, GAP_AFTER_REFRESH_S,
-    UNIT_SAVE_S_PER_BOARD, UNIT_PREP_MARGIN_S, UNIT_SETUP_S, UNIT_SETUP_S_PER_BOARD,
-    DEFAULT_LEAD_S, DEFAULT_DURATION_S,
+    SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S,
     parseClock, formatClock, cleanRefresh, effectiveRefresh, spanOf,
     sweeps, clean, resolve, applyTransitions, times, ends, minInterval, validate,
   };

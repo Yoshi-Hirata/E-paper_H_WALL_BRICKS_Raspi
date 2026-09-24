@@ -9237,9 +9237,7 @@
     },
     "problems": {
      "a": [],
-     "b": [
-      "only 8.0 s after the previous send on radxa-03; the unit may still be rejoining and needs at least 10.4 s (16 \u00d7 0.25 s + 2.0 s prep + 1.0 s setup + 16 \u00d7 0.15 s probe + 1.0 s gap)"
-     ]
+     "b": []
     },
     "warnings": []
    },
@@ -9769,13 +9767,11 @@
      }
     ],
     "minInterval": {
-     "radxa-05": 10.0
+     "radxa-05": 8.0
     },
     "problems": {
      "a": [],
-     "b": [
-      "only 8.0 s after the previous send on radxa-05; writing its 32 boards needs 10.0 s (32 \u00d7 0.25 s + 2.0 s)"
-     ]
+     "b": []
     },
     "warnings": [
      "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
@@ -9857,9 +9853,7 @@
     },
     "problems": {
      "a": [],
-     "b": [
-      "only 8.0 s after the previous send on radxa-06; writing its 16 boards needs 10.0 s (16 \u00d7 0.25 s \u00d7 2 (its delay tables) + 2.0 s)"
-     ]
+     "b": []
     },
     "warnings": [
      "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
@@ -10444,7 +10438,7 @@
      }
     ],
     "minInterval": {
-     "radxa-02": 10.0
+     "radxa-02": 8.0
     },
     "problems": {
      "a": [],
@@ -10538,12 +10532,12 @@
      }
     ],
     "minInterval": {
-     "radxa-02": 10.0
+     "radxa-02": 8.0
     },
     "problems": {
      "a": [],
      "b": [
-      "only 6.0 s after the previous send on radxa-02; writing its 32 boards needs 10.0 s (32 \u00d7 0.25 s + 2.0 s)"
+      "only 6.0 s after the previous send on radxa-02; at least 8.0 s is needed (7.0 s refresh + 1.0 s gap)"
      ]
     },
     "warnings": [
@@ -10586,6 +10580,492 @@
    },
    "kind": "timeline",
    "name": "items_share_a_unit_staggered",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p0",
+     "id": "c0",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 20.0,
+     "design": "p1",
+     "id": "c1",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 40.0,
+     "design": "p2",
+     "id": "c2",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 60.0,
+     "design": "p3",
+     "id": "c3",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 80.0,
+     "design": "p4",
+     "id": "c4",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 100.0,
+     "design": "p5",
+     "id": "c5",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 120.0,
+     "design": "p6",
+     "id": "c6",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 140.0,
+     "design": "p7",
+     "id": "c7",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 160.0,
+     "design": "p8",
+     "id": "c8",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 180.0,
+     "design": "p9",
+     "id": "c9",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 200.0,
+     "design": "p10",
+     "id": "c10",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 220.0,
+     "design": "p11",
+     "id": "c11",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 240.0,
+     "design": "p12",
+     "id": "c12",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 260.0,
+     "design": "p13",
+     "id": "c13",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 280.0,
+     "design": "p14",
+     "id": "c14",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 300.0,
+     "design": "p15",
+     "id": "c15",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 320.0,
+     "design": "p16",
+     "id": "c16",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 340.0,
+     "design": "p17",
+     "id": "c17",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 360.0,
+     "design": "p18",
+     "id": "c18",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 20.0,
+      "end_source": "next",
+      "id": "c0",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": -7.0
+     },
+     {
+      "complete": 27.0,
+      "end": 40.0,
+      "end_source": "next",
+      "id": "c1",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 20.0
+     },
+     {
+      "complete": 47.0,
+      "end": 60.0,
+      "end_source": "next",
+      "id": "c2",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 40.0
+     },
+     {
+      "complete": 67.0,
+      "end": 80.0,
+      "end_source": "next",
+      "id": "c3",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 87.0,
+      "end": 100.0,
+      "end_source": "next",
+      "id": "c4",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 80.0
+     },
+     {
+      "complete": 107.0,
+      "end": 120.0,
+      "end_source": "next",
+      "id": "c5",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 100.0
+     },
+     {
+      "complete": 127.0,
+      "end": 140.0,
+      "end_source": "next",
+      "id": "c6",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 120.0
+     },
+     {
+      "complete": 147.0,
+      "end": 160.0,
+      "end_source": "next",
+      "id": "c7",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 140.0
+     },
+     {
+      "complete": 167.0,
+      "end": 180.0,
+      "end_source": "next",
+      "id": "c8",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 160.0
+     },
+     {
+      "complete": 187.0,
+      "end": 200.0,
+      "end_source": "next",
+      "id": "c9",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 180.0
+     },
+     {
+      "complete": 207.0,
+      "end": 220.0,
+      "end_source": "next",
+      "id": "c10",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 200.0
+     },
+     {
+      "complete": 227.0,
+      "end": 240.0,
+      "end_source": "next",
+      "id": "c11",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 220.0
+     },
+     {
+      "complete": 247.0,
+      "end": 260.0,
+      "end_source": "next",
+      "id": "c12",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 240.0
+     },
+     {
+      "complete": 267.0,
+      "end": 280.0,
+      "end_source": "next",
+      "id": "c13",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 260.0
+     },
+     {
+      "complete": 287.0,
+      "end": 300.0,
+      "end_source": "next",
+      "id": "c14",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 280.0
+     },
+     {
+      "complete": 307.0,
+      "end": 320.0,
+      "end_source": "next",
+      "id": "c15",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 300.0
+     },
+     {
+      "complete": 327.0,
+      "end": 340.0,
+      "end_source": "next",
+      "id": "c16",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 320.0
+     },
+     {
+      "complete": 347.0,
+      "end": 360.0,
+      "end_source": "next",
+      "id": "c17",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 340.0
+     },
+     {
+      "complete": 367.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "c18",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 360.0
+     }
+    ],
+    "minInterval": {
+     "radxa-08": 8.0
+    },
+    "problems": {
+     "c0": [],
+     "c1": [],
+     "c10": [],
+     "c11": [],
+     "c12": [],
+     "c13": [],
+     "c14": [],
+     "c15": [],
+     "c16": [],
+     "c17": [],
+     "c18": [
+      "radxa-08 carries 19 pictures but a board holds 18 show pictures (slot 0 is the white standby, slot 19 the manual one-shot) - merge or remove cues"
+     ],
+     "c2": [],
+     "c3": [],
+     "c4": [],
+     "c5": [],
+     "c6": [],
+     "c7": [],
+     "c8": [],
+     "c9": []
+    },
+    "warnings": []
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "p0": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p10": {
+       "full": true,
+       "partial": true
+      },
+      "p11": {
+       "full": true,
+       "partial": true
+      },
+      "p12": {
+       "full": true,
+       "partial": true
+      },
+      "p13": {
+       "full": true,
+       "partial": true
+      },
+      "p14": {
+       "full": true,
+       "partial": true
+      },
+      "p15": {
+       "full": true,
+       "partial": true
+      },
+      "p16": {
+       "full": true,
+       "partial": true
+      },
+      "p17": {
+       "full": true,
+       "partial": true
+      },
+      "p18": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      },
+      "p3": {
+       "full": true,
+       "partial": true
+      },
+      "p4": {
+       "full": true,
+       "partial": true
+      },
+      "p5": {
+       "full": true,
+       "partial": true
+      },
+      "p6": {
+       "full": true,
+       "partial": true
+      },
+      "p7": {
+       "full": true,
+       "partial": true
+      },
+      "p8": {
+       "full": true,
+       "partial": true
+      },
+      "p9": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-08"
+    }
+   },
+   "kind": "timeline",
+   "name": "slot_capacity_overflow",
    "refresh": 7.0
   },
   {
@@ -12293,7 +12773,7 @@
    }
   },
   {
-   "expect": "6a1faafb37ab0683",
+   "expect": "5cb96799da02777d",
    "kind": "state-digest",
    "name": "starter-AZ271SD1301",
    "project": {

@@ -527,6 +527,14 @@ def timeline_cases() -> list:
     staggered = [_cue("a", "Look20-Top", 53, "t1"), _cue("b", "Look20-Skirt", 59, "s1")]
     cases.append(_run_timeline_case("items_share_a_unit_staggered", staggered, shared_items))
 
+    # Pre-burn: a board has MAX_CUES_PER_UNIT (18) usable slots - 19
+    # distinct, well-spaced sends still overflow it, naming how many
+    # pictures the unit actually carries.
+    overflow_items = {"look22": {"item": "Look22", "unit": "radxa-08", "boards": 16,
+                                 "designs": {f"p{n}": OK for n in range(19)}}}
+    overflow_cues = [_cue(f"c{n}", "Look22", n * 20, f"p{n}") for n in range(19)]
+    cases.append(_run_timeline_case("slot_capacity_overflow", overflow_cues, overflow_items))
+
     return cases
 
 

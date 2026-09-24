@@ -50,6 +50,46 @@ def test_goldens_are_current():
         f"run python tools/make_goldens.py\nstdout={result.stdout}\nstderr={result.stderr}")
 
 
+def test_generator_ignores_showdata(tmp_path):
+    """The generator must depend ONLY on committed inputs (tests/fixtures/
+    sim/*.csv and conductor/web/starter/*.csv) - a populated, git-ignored
+    showdata/files/ (real client data that only exists on the show PC)
+    must not change a single golden case, or `--check` fails on any
+    machine that happens to have it. Regression test for the bug Coder Q
+    found: an extra showdata-derived digest case the committed goldens
+    (built on a machine without showdata/) did not have."""
+    before = mg.dumps_sorted(mg.build_goldens())
+
+    showdata_files = ROOT / "showdata" / "files"
+    already_there = showdata_files.is_dir()
+    if not already_there:
+        showdata_files.mkdir(parents=True)
+    marker = showdata_files / "ZZZ_generator_ignores_showdata_probe_map.csv"
+    try:
+        marker.write_text(
+            "side,row,col,board_no,socket,label\nfront,0,1,1,1,\n", encoding="utf-8")
+        (showdata_files / "ZZZ_generator_ignores_showdata_probe_color_pattern01_grid.csv"
+        ).write_text("side,row,shift,1\nfront,0,0,0x01\n", encoding="utf-8")
+        after = mg.dumps_sorted(mg.build_goldens())
+    finally:
+        marker.unlink(missing_ok=True)
+        probe_grid = showdata_files / "ZZZ_generator_ignores_showdata_probe_color_pattern01_grid.csv"
+        probe_grid.unlink(missing_ok=True)
+        if not already_there:
+            showdata_files.rmdir()
+            showdata_files.parent.rmdir()
+
+    assert before == after, "a populated showdata/files/ changed the generated goldens"
+
+    # And the same, run out-of-process (the actual `--check` entry
+    # point), so a stray CWD-relative glob elsewhere in main() would
+    # still be caught even if build_goldens() itself looks clean.
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "make_goldens.py"), "--check"],
+        cwd=str(ROOT), capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_goldens_js_is_well_formed(golden):
     text = (SIM_DIR / "goldens.js").read_text(encoding="utf-8")
     assert text.endswith("\n")
@@ -121,7 +161,7 @@ def test_goldens_cover_every_sequence_and_rule(golden):
         for plist in c["expect"]["problems"].values() for p in plist)
     all_warnings = " ".join(
         w for c in golden["cases"] if c["kind"] == "timeline" for w in c["expect"]["warnings"])
-    for phrase in ("refresh + ", "writing its", "may still be rejoining",
+    for phrase in ("refresh + ", "a board holds", "merge or remove cues",
                   "is not loaded", "make this a partial cue", "after the end of the show",
                   "already has a cue sent at the same moment",
                   "previous picture is complete", "sweep is at most 30 s",
