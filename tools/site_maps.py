@@ -28,6 +28,10 @@ STEM_ITEM = {
     "look24": "AZ271SD1307",
     "az271sd1305b": "AZ271SD1305_B",
     "eink01": "AZ271SD1305",
+    # Bags 01-03 (added to the site 2026-09-24): named after the item
+    "az271sg1035": "AZ271SG1035",
+    "az271sg1036": "AZ271SG1036",
+    "az271sg3037": "AZ271SG3037",
 }
 
 
@@ -56,17 +60,28 @@ def main():
               len(links), "| keys", sorted(links[0].keys()),
               "| FILE", file_const.group(1)[:60] if file_const else None)
 
+        # Two address schemes: "F-12-L03" / "B-04-C" (columns counted
+        # left/right of a centre, the garments) and "W-00-07" (one face,
+        # columns simply numbered - the AZ271SG3037 bag). The page's own
+        # colOf() only knows the first; the second is read literally.
+        def plain(c):
+            return c.isdigit()
+
         def col_no(c):
-            return 0 if c == "C" else int(c[1:])
+            return 0 if c == "C" else int(c) if plain(c) else int(c[1:])
         m = max(col_no(l["addr"].split("-")[2]) for l in links)
         has_c = set()
         for l in links:
             s, r, c = l["addr"].split("-")
-            assert int(r) == l["row"] and s[0] == l["side"], l["addr"]
+            # The side letter comes from the link ("F"/"B"); the address
+            # prefix may be another letter for a single-face item ("W").
+            assert int(r) == l["row"], l["addr"]
             if c == "C":
                 has_c.add(l["side"] + r)
 
         def col_of(c, centre):
+            if plain(c):
+                return int(c)
             if c == "C":
                 return m + 1
             if c[0] == "L":
