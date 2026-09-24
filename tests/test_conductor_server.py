@@ -1789,3 +1789,70 @@ def test_get_fleet_demos_separates_offline_from_a_unit_that_answered_with_an_err
         server.shutdown()
         server.server_close()
 
+
+
+# ---- the page itself: "Write to units…" ----
+#
+# The page is one file of vanilla JS served as it is, so what it offers can
+# be read straight out of it. These are not a substitute for looking at it
+# (that is the browser check in the commit message) - they are the guard
+# that an id a handler talks to, or the words that tell the operator which
+# of the two ways they are choosing, do not quietly disappear in an edit.
+
+@pytest.fixture
+def page(tmp_path):
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as r:
+            yield r.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_page_opens_the_write_dialog_from_all_three_doors(page):
+    # The Timeline toolbar, THE SHOW's ④, and the demo card - the whole
+    # point of the round: one obvious entry point, reachable from wherever
+    # the operator happens to be standing.
+    for opener in ('id="tl-write"', 'id="show-write"', 'id="demo-open"'):
+        assert opener in page
+    assert "Write to units…" in page
+    assert "④ Save on units (plays without this PC)" in page
+    assert "PLAY WITHOUT THIS PC (DEMO STORED ON THE UNITS)" in page
+    # The card that hid the feature is gone by that name, and so is the
+    # name field it used to carry (it lives in the dialog now).
+    assert "<h2>STANDALONE DEMO</h2>" not in page
+    assert 'id="demo-name"' not in page
+
+
+def test_the_page_dialog_is_two_choices_with_their_consequence(page):
+    for part in ('id="write-back"', 'id="write-dialog"', 'id="write-choice-upload"',
+                 'id="write-choice-demo"', 'id="write-upload"', 'id="write-demo"',
+                 'id="write-name"', 'id="write-loop"', 'id="write-close"',
+                 'id="write-upload-why"', 'id="write-demo-why"', 'id="write-progress"'):
+        assert part in page, part
+    assert "Upload for the show" in page and "Save on the units" in page
+    assert "This PC then runs the show" in page
+    assert "The unit plays it from KEY1 with no PC at all" in page
+    # The estimate is the measured one, per picture (docs/STATUS.md).
+    assert "const BURN_S_PER_PICTURE = 0.31;" in page
+    assert "on the slowest unit," in page
+    # The steps on the unit, after a demo is written.
+    assert "KEY2</b> opens the menu" in page and "KEY1</b> plays it" in page
+    # Every reason a choice cannot be taken says so where the choice is.
+    for why in ("The timeline has no cues yet", "fix them on the Timeline tab",
+                "The show is running — press STOP first.",
+                "playing a demo", "Type a name for the demo first."):
+        assert why in page, why
+
+
+def test_the_page_chips_say_what_the_units_hold(page):
+    assert 'class="unit-chips"' in page and "function writeChipsHtml()" in page
+    for words in ("not uploaded yet", "no demo on the units", "uploaded <b>",
+                  "· up to date", "· changed since", "<span>On unit</span>"):
+        assert words in page, words
+    # The chips read the snapshot's own fields - the ids the units report
+    # against the ids this conductor wrote (units[].demos, /api/fleet shows).
+    assert "u.demos" in page and "fleet.shows" in page

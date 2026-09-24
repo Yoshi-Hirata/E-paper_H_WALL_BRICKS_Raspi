@@ -18,6 +18,48 @@
 
 ## 2. 直近で完成したもの
 
+**「Write to units…」- 機体への書き込みを 1 つの入口に(2026-09-25、依頼者の指摘から)**
+
+依頼者の指摘:「Timeline で作成したシナリオを各機体に焼き込む機能について、UI 上で
+書き込みボタンが見つけられなかった」。実際、書き込みの道は 2 つあるのに、① Upload は
+「ショーの手順の 1 つ」に見え、もう一方は Units タブのいちばん下の「STANDALONE DEMO」という
+名前のカードの中にしか無かった。Timeline タブには入口が 1 つも無かった。
+
+- **入口は 1 つ、ダイアログも 1 つ**: Timeline ツールバーの **Write to units…**、
+  THE SHOW カードの **④ Save on units (plays without this PC)**、
+  「PLAY WITHOUT THIS PC (DEMO STORED ON THE UNITS)」(旧 STANDALONE DEMO)カードの
+  ボタン ― どれも同じダイアログを開く(④ とカードは 2 つめの選択肢に焦点を当てて開く)
+- **ダイアログは「書式」ではなく「選択」**: 2 つの選択肢を並べ、それぞれ一文で結果を言う。
+  **Upload for the show**(いま絵を焼き、タイムラインを渡す。以後この PC が START / HOLD /
+  STOP を出す)と **Save on the units**(各機体のメニューに名前つきで保存。KEY1 で PC 無しに
+  再生)。所要時間(1 枚 **0.31 秒** × いちばん重い機体の枚数。枚数はいまのタイムラインから
+  数える ― 基板数 × その機体のキュー時刻の数)、送り先の機体一覧(online / offline /
+  デモ再生中)、押せない理由(キュー無し・タイムラインの問題・ショー進行中・デモ再生中・
+  名前未入力)をその場に書く。実行後は機体ごとの結果、Upload ならタイルと同じ
+  `picturesText()` による焼き込みの進み(同じポーリングの同じデータ)、デモなら機体側の
+  手順(KEY2 → DEMO → 名前 → KEY1 で再生、KEY2 で停止)。Esc / 背景クリックで閉じ、
+  名前欄の Enter は「Save on the units」だけを実行する
+- **チップ 2 つ**(Timeline の THE LOOKS AT バーと Units の THE SHOW 見出し、ダイアログの頭):
+  `uploaded 10 / 10 · up to date` / `demo PARIS SS26 10 / 10 · changed since`。
+  「up to date」「changed since」は**分かるときだけ**言う ― 機体が報告する
+  `units[].show.id` ・ `units[].demos[].show_id` と、この PC が書いた `/api/fleet` の
+  `shows[unit].id` の照合、それにページ自身が覚えている「書き込み後にタイムラインを
+  編集したか」(再読み込みで忘れ、id の比較だけに戻る)
+- **API**: `GET /api/fleet` の各機体に **`demos`**(`[{slug,name,cues,duration,loop,show_id,
+  current}]`。`current` は上と同じ照合、比較材料が無ければ `null`)を追加。
+  一覧はポーリングループが機体ごと **10 秒に 1 回**(`DEMO_LIST_EVERY_S`)取り、
+  `/demo/save` `/demo/delete` の応答(どちらも機体のメニュー全体を返す)でも更新するので、
+  **タイル 1 枚につき 1 リクエストにはならない**。答えられない機体(旧エージェントの 404、
+  無応答)は `null` =「分からない」で、`[]` =「1 つも無い」とは区別する。
+  機体が自分で数えている個数は `demo_count` に移した(旧 `demos` の整数)
+- **`POST /api/fleet/write_demo` はショー進行中に 400 `stop the show first`**(Upload と同じ。
+  ただしデモに `force` は無い ― 走っているショーへの復帰手段ではないので)
+- タイルの「Demos」行は「**On unit**」行になり、個数ではなく
+  `PARIS SS26 (4 cues · 1:30 · loop)` と中身を出す(`no demo stored` / 分からないときは「—」)
+- **テスト: 686 件 + skip 1**(+11: fleet のデモキャッシュ 6、サーバの snapshot と
+  write_demo 拒否 2、ページの id と文言 3)。ページは msedge の
+  `--headless=new --dump-dom` と実ブラウザで、偽機体 2 台(127.0.0.1:19101/19104)相手に確認
+
 **pre-burn 統合ラウンド完了(U2 + V2 + 第 2 巡レビューの修正、2026-09-25)- 実機 radxa-01 で確認済み**
 
 このラウンドで pre-burn(Upload の時点で全部の絵をスロットへ焼き込み、本番中はトリガだけ)は
