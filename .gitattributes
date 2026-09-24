@@ -11,6 +11,7 @@
 # forever the moment any of those scripts re-wrote them "\n"-only
 # (adversarial review round 2 - F7).
 dist/** text eol=lf
+conductor/web/designer.html text eol=lf
 conductor/web/sim/*.js text eol=lf
 conductor/web/sim/*.css text eol=lf
 conductor/web/starter/*.csv text eol=lf
