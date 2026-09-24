@@ -41,12 +41,12 @@
   (`scratchpad/site_maps3.py` が元、shift 列を追加しただけで座標の計算式は同一)を追加。
   新旧マップは shift 列以外すべて一致することを確認済み(行数・side/row/col/board_no/socket/label
   とも 0 件の不一致)。実際に `showdata/files/` へ反映するのは別途。
-- 残作業: `conductor/preview.py`(CLI の PNG プレビュー)と `conductor/sequence.py` の
-  `ranks()`(重心 `center` の x 座標)がまだ `default_shift()` のままで、`look_map.shift()` に
-  切り替える必要がある(このセッションはファイル権限で `conductor/look.py`・
-  `conductor/server.py`(state() のみ)・`conductor/web/index.html`・`tools/` 配下・
-  `tests/test_look.py`・`tests/test_conductor_server.py` しか触れなかったため)。切り替えると
-  `sequence.ranks()` の重心の値が変わるので `tests/test_sequence.py` の更新も併せて必要。
+- `conductor/preview.py`(CLI の PNG プレビュー、配線ビュー)と `conductor/sequence.py` の
+  `ranks()`(重心 `center` の x 座標)も `look_map.shift()` に切り替え済み(コミット
+  09d205c、2026-09-24)。マップに shift 列を持つルック(AZ271SD1301 ほか)では重心の値が変わり、
+  ランクの入れ替わる鱗が出る(AZ271SD1301 は 1482 枚中 215 枚)。`tests/test_sequence.py` に
+  `test_centre_uses_the_maps_own_shift`(shift 列ありのマップと無しのマップで `ranks()` を
+  比べる)を追加済み。
 
 **Timeline: 赤い再生ヘッドがシーク操作そのものに(2026-09-24)**
 

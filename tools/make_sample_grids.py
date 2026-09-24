@@ -2,6 +2,7 @@
 their map CSVs in the site's grid format (side,row,shift,1..N; "0" = no
 hole, "0xNN" = palette colour). Two per item, checked with the repo's own
 check() before they are uploaded through the running conductor."""
+import io
 import json
 import sys
 import urllib.request
@@ -46,9 +47,16 @@ def main(repo: Path, url: str) -> None:
             f"{item}_color_sampleB_grid.csv": grid_csv(look_map, lambda s: diag[(s.row + s.col) % 4]),
         }
         for name, text in designs.items():
-            tmp = Path(__file__).parent / name
-            tmp.write_text(text, encoding="utf-8")
-            design = Design.from_csv(tmp)
+            # Parsed straight from the string - Design.from_csv only needs a
+            # real file to read the item/pattern out of its name, both of
+            # which name_parts() already gives from the name alone, so there
+            # is no need to write a scratch file next to this script (fix
+            # round finding 15: that used to leave *_grid.csv files behind
+            # in tools/).
+            item_, pattern, label = Design.name_parts(name)
+            design = Design.parse(io.StringIO(text), name=name, item=item_,
+                                  pattern=pattern)
+            design.label = label
             problems = check(look_map, design)
             print(f"{name}: {len(design.colors)} colours, problems: {problems[:2] or 'none'}")
             if problems:

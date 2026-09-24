@@ -146,6 +146,28 @@ def test_map_shift_must_be_a_number():
     assert any("0 or 0.5" in p for p in problems)
 
 
+def test_map_shift_must_be_exactly_0_or_0_5():
+    # A number that parses fine but isn't one of the site's own two values
+    # (a full scale or a half-scale stagger) is still a typo, not a third
+    # kind of offset (fix round finding 10).
+    bad = MAP_SHIFT.replace("020-05,0\n", "020-05,0.3\n")
+    problems = problems_of(lambda: LookMap.parse(io.StringIO(bad), name="m"))
+    assert any("0 or 0.5" in p and "0.3" in p for p in problems)
+
+
+def test_map_shift_blank_on_every_line_of_a_row_warns_and_falls_back():
+    blank = MAP_SHIFT.replace("020-05,0\n", "020-05,\n")
+    look_map = LookMap.parse(io.StringIO(blank), name="m.csv")
+    # front row 0 (020-05) is the only row left blank - it still falls back
+    # to the odd/even rule instead of erroring.
+    assert look_map.shift("front", 0) == default_shift(0)
+    assert any("shift is blank" in w and "front row 0" in w
+               for w in look_map.warnings)
+    # The rows that DO carry a shift are unaffected.
+    assert look_map.shift("front", 1) == 0.0
+    assert look_map.shift("back", 0) == 0.5
+
+
 # ---- the grid ----
 
 def test_grid_reads_colours_and_shifts_and_skips_empty_cells():
@@ -228,6 +250,24 @@ def test_partial_cue_leaves_uncoloured_scales_as_they_are():
     arrays = compile_design(look_map, design, partial=True)
     assert arrays[1][1] == 0x03
     assert arrays[1][60] == NO_REFRESH
+
+
+def test_check_warns_not_errors_when_the_design_disagrees_with_the_maps_shift():
+    # GRID's own shift for front row 1 is 0.5 (its own grid CSV, unrelated
+    # to the map); MAP_SHIFT's own column says 0 for that row, and 0.5 for
+    # back row 0 where GRID says 0 - two rows disagree. Wiring view and the
+    # sweep both use the map's value regardless, so this is a warning on
+    # the map, not a problem with the design (fix round finding 12).
+    look_map = LookMap.parse(io.StringIO(MAP_SHIFT), name="m.csv")
+    design = Design.parse(io.StringIO(GRID), name="g.csv")
+    assert check(look_map, design) == []
+    assert any("differs from the map on 2 rows" in w for w in look_map.warnings)
+
+
+def test_check_says_nothing_when_the_design_agrees_with_the_map():
+    look_map, design = parse()          # MAP has no shift column at all
+    assert check(look_map, design) == []
+    assert look_map.warnings == []
 
 
 def test_colour_where_the_map_has_no_scale_is_an_error_even_when_partial():
