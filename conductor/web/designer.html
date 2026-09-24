@@ -32,20 +32,20 @@
 
 <!-- Script order is the dependency order (plan_designer_sim.md §1.1):
      model → state → render → flicker → looks → transport → starter →
-     goldens → designer-app → selftest.
-     model.js / state.js (Coder P) and goldens.js / selftest.js (Coder P,
-     generated) are not wired in yet - see model.stub.js's own header comment.
-     When they land: swap the one script tag below for
-     <script src="sim/model.js"></script><script src="sim/state.js"></script>,
-     delete sim/model.stub.js, and add
-     <script src="sim/goldens.js"></script> before designer-app.js and
-     <script src="sim/selftest.js"></script> after it. -->
-<script src="sim/model.stub.js" data-stub="dev-only"></script>
+     goldens → designer-app → selftest. Coder P's model.js/state.js/
+     goldens.js/selftest.js landed 2026-09-24 (commit ed37ba1); this page no
+     longer needs sim/model.stub.js (kept in the tree only as documentation
+     of the seam - see its own header comment - and never shipped, since
+     build_designer.py refuses anything carrying data-stub). -->
+<script src="sim/model.js"></script>
+<script src="sim/state.js"></script>
 <script src="sim/render.js"></script>
 <script src="sim/flicker.js"></script>
 <script src="sim/looks.js"></script>
 <script src="sim/transport.js"></script>
 <script src="sim/starter.js"></script>
+<script src="sim/goldens.js"></script>
 <script src="sim/designer-app.js"></script>
+<script src="sim/selftest.js"></script>
 </body>
 </html>

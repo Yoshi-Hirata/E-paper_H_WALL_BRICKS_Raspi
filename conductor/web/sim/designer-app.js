@@ -129,8 +129,25 @@
         ${bad ? ` · <span style="color:var(--err)">${bad} problem${bad === 1 ? "" : "s"}</span>` : ""}</div>
     </div>`;
   }
+  // plan_designer_sim.md §3.3: "the LOOK number is the only ordering control
+  // (list and looks row both order by LOOK number)". SIM.buildState (P's
+  // model) sorts state.items by unit-then-name, matching the operator page's
+  // own state() - since the sim's unit is always null, that is really just
+  // alphabetical by item name. SIM.looks.lookGroups() already does its own
+  // LOOK-first sort for the looks row (see looks.js); this is the same
+  // comparator applied to the raw item list, for the ITEMS sidebar and the
+  // Timeline's tracks/cue table.
+  function orderByLook(items) {
+    return items.slice().sort((a, b) => {
+      const an = a.look ? Number(a.look) : NaN, bn = b.look ? Number(b.look) : NaN;
+      const aNum = Number.isFinite(an), bNum = Number.isFinite(bn);
+      if (aNum && bNum && an !== bn) return an - bn;
+      if (aNum !== bNum) return aNum ? -1 : 1;
+      return a.item < b.item ? -1 : a.item > b.item ? 1 : 0;
+    });
+  }
   function renderSidebar() {
-    const ordered = state.items.slice();     // already LOOK-then-name ordered by buildState
+    const ordered = orderByLook(state.items);
     $("#items").innerHTML = ordered.map(itemCard).join("") || `<div class="meta">Drop CSV files to begin.</div>`;
     $("#orphans").innerHTML = state.orphans.length
       ? `<h2>DESIGNS WAITING FOR A MAP</h2>` + state.orphans.map(o =>
@@ -242,7 +259,7 @@
   // ==================================================================
   // Timeline tab (plan §3.5)
   // ==================================================================
-  function trackItems() { return state.items.filter(i => i.map && i.map.scales.length); }
+  function trackItems() { return orderByLook(state.items.filter(i => i.map && i.map.scales.length)); }
   function cuesOf(item) { return state.show.cues.filter(c => c.item === item.item).sort((a, b) => a.sent - b.sent); }
   const ctx = () => ({ cuesOf, palette: state.palette });
 
