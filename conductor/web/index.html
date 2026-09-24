@@ -76,7 +76,10 @@ td input.bno { width: 56px; padding: 1px 4px; font: inherit; }
 .dot.none { background: var(--line); }
 #content { padding: 14px 18px 40px; min-width: 0; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin-bottom: 10px; }
-.group { display: flex; gap: 4px; align-items: center; }
+.group { display: flex; gap: 4px; align-items: center; min-width: 0; max-width: 100%; }
+/* A <select> sizes itself to its longest option (design CSV names are long); cap it so the
+   toolbar wraps instead of forcing horizontal page scroll. The native dropdown still shows full text. */
+.group select { flex: 1 1 auto; min-width: 0; max-width: 100%; }
 .group > span { color: var(--dim); font-size: 12px; margin-right: 4px; }
 .group button { border-radius: 0; margin-left: -1px; }
 .group button:first-of-type { border-radius: 6px 0 0 6px; margin-left: 0; }
