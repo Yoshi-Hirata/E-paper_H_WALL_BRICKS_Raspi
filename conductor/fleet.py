@@ -312,10 +312,14 @@ class Fleet:
             mark = run["held_at"] if run["state"] == "holding" else self._clock()
             run["now"] = round(mark - run["t0"], 2)
         duration = self.show_duration()
-        targets = list(self.shows)
-        burned = sum(1 for name in targets
-                    if self._burn(name) is not None
-                    and self._burn(name).get("state") == "burned")
+        # The summary line is purely informational (unlike the strict,
+        # id-matched `_burn()` that gates START below): any unit currently
+        # reporting a burn dict at all counts towards `total`, whichever
+        # show it is about - so a unit still catching up to a brand new
+        # upload is not silently left out of the denominator.
+        reporting = [self._raw_burn(name) for name in self.shows]
+        reporting = [b for b in reporting if b is not None]
+        burned = sum(1 for b in reporting if b.get("state") == "burned")
         return {"units": [link.snapshot() for link in self.links.values()],
                 "last_fire": self.last_fire, "run": run,
                 "shows": {unit: {"id": show["id"], "cues": len(show["cues"])}
@@ -323,40 +327,77 @@ class Fleet:
                 "corrections": self.corrections[-5:],
                 "start_at": start_at,
                 "show_duration": duration if self.shows else None,
-                # Every picture is written into its slot at Upload time
-                # (conductor/showfile.py): "burned" once a unit is done
-                # writing the show it was just given. Only units with a
-                # show uploaded this session count - a unit that has not
-                # answered yet (burn still None) is not counted burned.
-                "burn": {"burned": burned, "total": len(targets)}}
+                "burn": {"burned": burned, "total": len(reporting)}}
 
-    def _burn(self, name: str) -> "dict | None":
-        """The unit's own `status.show.burn` (ui/showplay.py):
-        {"done", "total", "failed": [[board, slot], ...],
-        "state": "burning"|"burned"|"failed"} - `None` before it has
-        said anything (not yet polled, or an older agent)."""
+    def _raw_burn(self, name: str) -> "dict | None":
+        """Whatever this unit currently reports as `status.show.burn`,
+        regardless of which show it is about - for the informational
+        summary in snapshot() only; START gating uses the stricter,
+        id-matched `_burn()` below."""
         link = self.links.get(name)
         if link is None:
             return None
-        return ((link.status or {}).get("show") or {}).get("burn")
+        show = (link.status or {}).get("show")
+        show = show if isinstance(show, dict) else {}
+        burn = show.get("burn")
+        return burn if isinstance(burn, dict) else None
 
-    def _burn_problems(self, names) -> "list[str]":
-        """One message per unit (of `names`) still burning or that
-        failed to - what start_show() refuses on."""
+    def _burn(self, name: str) -> "tuple[dict, dict] | None":
+        """(the unit's own `status.show`, its `.burn`) for a unit that is
+        online AND currently holds the show THIS conductor uploaded under
+        `name` - `None` for anything else (offline, never polled, or
+        simply holding some other show), so a stale or foreign burn
+        report is never mistaken for this show's own (found in review:
+        an offline unit's last-known "burned", or a unit still showing a
+        PREVIOUS upload's "burned", must never wave START through).
+        `.burn` itself may then still be `None` - an older agent that
+        says nothing about burning at all, which start_show() must not
+        hold up either."""
+        link = self.links.get(name)
+        if link is None or not link.online:
+            return None
+        show = (link.status or {}).get("show")
+        show = show if isinstance(show, dict) else {}
+        expected = (self.shows.get(name) or {}).get("id")
+        if expected is None or show.get("id") != expected:
+            return None
+        return show, show.get("burn")
+
+    def _burn_problems(self, names, force: bool = False) -> "list[str]":
+        """One message per unit (of `names`) START must wait on: offline
+        or not yet holding this show (always blocking), still burning or
+        playing its own demo while burning (always blocking), or failed
+        to burn some boards (blocking unless `force` - the operator may
+        choose to start anyway, missing boards and all)."""
         problems = []
         for name in names:
-            burn = self._burn(name)
-            if burn is None:
+            found = self._burn(name)
+            if found is None:
+                link = self.links.get(name)
+                if link is None or not link.online:
+                    problems.append(f"{name}: not answering")
+                else:
+                    problems.append(f"{name}: has not taken this show yet")
                 continue
+            show, burn = found
+            if not isinstance(burn, dict):
+                continue                    # older agent: not held up
             state = burn.get("state")
+            done, total = burn.get("done", 0), burn.get("total", "?")
             if state == "burning":
-                problems.append(f"{name}: still writing "
-                                f"{burn.get('done', 0)}/"
-                                f"{burn.get('total', '?')}")
-            elif state == "failed":
+                if show.get("demo"):
+                    problems.append(f"{name}: writing its demo pictures "
+                                    f"({done}/{total}) - wait or STOP it")
+                else:
+                    problems.append(f"{name}: still writing {done}/{total}")
+            elif state == "failed" and not force:
                 failed = burn.get("failed") or []
-                problems.append(f"{name}: {len(failed)} board(s) failed to "
-                                "write their pictures")
+                boards = sorted({pair[0] for pair in failed
+                                if isinstance(pair, (list, tuple)) and pair})
+                problems.append(
+                    f"{name}: {len(boards) or len(failed)} board(s) not "
+                    f"written" + (f" ({', '.join(map(str, boards))})"
+                                 if boards else ""))
         return problems
 
     def show_duration(self) -> float:
@@ -486,7 +527,7 @@ class Fleet:
         return value
 
     def start_show(self, lead_s: float = DEFAULT_LEAD_S,
-                   at: float = 0.0) -> "dict[str, dict]":
+                   at: float = 0.0, force: bool = False) -> "dict[str, dict]":
         """Begin the show `lead_s` from now, `at` seconds into it (0.0 for
         the top). The caller resolves `at` itself - normally
         `fleet.start_at`, where a SEEK made before the show started (or
@@ -494,16 +535,22 @@ class Fleet:
         never `self.start_at` again: the note a caller builds from `at`
         and the T0 this actually runs on can then never disagree (found
         in review). Out of range is the same ValueError seek() raises. A
-        successful START always forgets `self.start_at` (§2.3)."""
+        successful START always forgets `self.start_at` (§2.3).
+
+        `force` (also what re-starts an already-running show, see
+        server.py) additionally waves through a unit that failed to burn
+        some boards - never one still burning, offline, or holding some
+        other show: see `_burn_problems`."""
         duration = self.show_duration()
         at = self._clamped(at, 0.0, duration)
         if not 0 <= at <= duration:
             raise ValueError(f"The show is {timeline.format_clock(0)} to "
                              f"{timeline.format_clock(duration)}.")
         # Every picture is meant to already be sitting in its slot: START
-        # refuses while any unit is still writing them, or failed to
-        # (2026-09-24, the pre-burn design - see conductor/timeline.py).
-        burning = self._burn_problems(self._targets())
+        # refuses while any unit is still writing them, offline, not yet
+        # holding this show, or (unless `force`) failed to write some
+        # boards (2026-09-24, the pre-burn design - see timeline.py).
+        burning = self._burn_problems(self._targets(), force=force)
         if burning:
             raise ValueError("; ".join(burning))
         with self._run_lock:

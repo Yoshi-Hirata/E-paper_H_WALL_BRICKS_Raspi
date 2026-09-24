@@ -1689,6 +1689,15 @@ async function commitSeek(t) {
   ui.seekDrag = null;
   paintSeek();
 }
+// A cue's slot is 1 + its position in send order (conductor/showfile.py), so
+// appending a cue, or editing one in place, only rewrites its own slot
+// (seconds) - but inserting or removing one earlier in the show shifts every
+// slot after it, and Upload then rewrites the whole show again on every unit.
+const UPLOAD_TITLE = "Writes every picture into the boards now (one per cue, "
+  + "its own slot) - the show itself then only sends triggers. Appending a "
+  + "cue, or editing one in place, only rewrites its own slot (seconds); "
+  + "inserting or removing a cue earlier in the show rewrites every slot "
+  + "after it (~3 min per unit). START waits for every unit to finish writing.";
 function renderFleet() {
   const items = assignedItems();
   for (const item of items)
@@ -1705,7 +1714,7 @@ function renderFleet() {
       <div class="thumbs small" id="show-thumbs" style="margin-top:8px"></div>
       ${seekBlockHtml()}
       <div class="go">
-        <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"} title="Writes every picture into the boards now (one per cue, its own slot) - the show itself then only sends triggers. START waits for every unit to finish writing.">① Upload</button>
+        <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"} title="${esc(UPLOAD_TITLE)}">① Upload</button>
         <button class="big" id="show-preset">② Show preset (the 0:00 look)</button>
         <button class="big fire" id="show-start">③ START</button>
         <label class="meta">START / NEXT / MOVE take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
@@ -1804,9 +1813,14 @@ function showClockText() {
   const able = { "show-preset": want > 0 && !run && !unitsBusy, "show-start": want > 0,
                  "show-hold": running, "show-resume": holding,
                  "show-next-cue": (running && upcoming.length > 0) || holding, "show-stop": !!run || unitsBusy,
+                 "show-upload": !run && state.show.cues.length && !demoCueBad,
                  "fleet-prepare": !run && !unitsBusy && assignedItems().length > 0, "fleet-fire": !run && !unitsBusy,
                  "demo-write": !run && state.show.cues.length && !demoCueBad && !!ui.demoName.trim() };
   for (const [id, on] of Object.entries(able)) { const b = $("#" + id); if (b) b.disabled = !on; }
+  // Upload while a run exists would write into boards a running show may
+  // still be reading from - refused server-side too (§ "stop the show first").
+  const uploadBtn = $("#show-upload");
+  if (uploadBtn) uploadBtn.title = run ? "Stop the show first." : UPLOAD_TITLE;
   // Whenever start_at > 0 (a seek moved the "no run" position, or a start from
   // elsewhere was left behind) START warns where it will actually begin,
   // regardless of whether Manual control is ticked right now - see round 3 §1.2.
@@ -1829,6 +1843,24 @@ function showClockText() {
     + (want > 0 && loaded < want ? " (workspace timeline)" : "");
 }
 setInterval(showClockText, 250);
+// When a unit's Pictures row first shows "burning" (this browser tab's own
+// wall clock, not the unit's) it is timestamped here, purely to show an
+// elapsed count alongside "writing n / N" - cheap, and forgotten the moment
+// that unit stops burning (a fresh burn, or a different show, starts over).
+const burnStarted = {};
+function picturesText(u) {
+  const burn = u.show && typeof u.show.burn === "object" ? u.show.burn : null;
+  if (!burn) { delete burnStarted[u.name]; return "—"; }
+  if (burn.state === "burning") {
+    if (!burnStarted[u.name]) burnStarted[u.name] = Date.now();
+    const elapsed = Math.round((Date.now() - burnStarted[u.name]) / 1000);
+    return `writing ${esc(burn.done)} / ${esc(burn.total)} (${elapsed} s)`;
+  }
+  delete burnStarted[u.name];
+  if (burn.state === "failed")
+    return `✗ FAILED (${esc((burn.failed || []).length)} board·slot)`;
+  return "written";
+}
 function renderTiles() {
   showClockText();
   const box = $("#tiles");
@@ -1850,10 +1882,7 @@ function renderTiles() {
       <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
-      <div class="row"><span>Pictures</span><b>${(() => { const burn = u.show && u.show.burn; if (!burn) return "—";
-          if (burn.state === "burning") return `writing ${burn.done} / ${burn.total}`;
-          if (burn.state === "failed") return `✗ FAILED (${(burn.failed || []).length} board·slot)`;
-          return "written"; })()}</b></div>
+      <div class="row"><span>Pictures</span><b>${picturesText(u)}</b></div>
       <div class="row"><span>Demos</span><b>${u.demos ?? "—"}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
       ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}
@@ -1944,11 +1973,25 @@ document.addEventListener("click", async e => {
   if (showButtons[e.target.id]) { const [command, title] = showButtons[e.target.id]; await fleetCommand(command, {}, title, "show"); return; }
   if (e.target.id === "show-start") {
     const again = !!fleet?.run, startAt = fleetStartAt();
-    let msg = null;
+    // A unit that failed to burn some boards does not block START outright -
+    // the operator may choose to start anyway, missing boards and all - but
+    // is asked first, the same way an already-running show asks before it
+    // is restarted (the server refuses this same case without `force` too:
+    // this is a courtesy, not the only guard).
+    const failed = (fleet?.units || []).filter(u => u.show
+      && u.show.burn && u.show.burn.state === "failed");
+    let msg = null, force = again;
     if (again) msg = `The show is running. Start it again from ${clock(startAt)}?`;
-    else if (startAt > 0) msg = `Start the show at ${clock(startAt)} (not from the beginning)?`;
+    else if (failed.length) {
+      msg = failed.map(u => {
+        const boards = [...new Set((u.show.burn.failed || []).map(f => f[0]))];
+        return `${u.name}: ${boards.length} board(s) not written`
+          + (boards.length ? ` (${boards.join(", ")})` : "");
+      }).join("; ") + " — start anyway?";
+      force = true;
+    } else if (startAt > 0) msg = `Start the show at ${clock(startAt)} (not from the beginning)?`;
     if (msg && !confirm(msg)) return;
-    const result = await fleetCommand("start", { lead_s: ui.lead, force: again }, `③ START (in ${ui.lead} s)`, "show");
+    const result = await fleetCommand("start", { lead_s: ui.lead, force }, `③ START (in ${ui.lead} s)`, "show");
     // A 200 with a "nothing uploaded"/"already running" note also has
     // result.error unset, so !result.error alone is not "it actually started" -
     // a real start always carries from_s and at least tried to send somewhere

@@ -1434,6 +1434,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("lead time is 0.5-60 s")
             return self._json({"units": fleet.fire(cues, lead), "lead_s": lead})
         if command == "upload":
+            # Every picture is written at Upload time now: doing that while
+            # a show is running would rewrite slots a unit may be reading
+            # from for its next trigger (found in review).
+            if fleet.run is not None and not body.get("force"):
+                raise ValueError("stop the show first")
             shows, problems = self.workspace.compile_show()
             results = fleet.upload(shows) if shows else {}
             return self._json({"units": results, "problems": problems,
@@ -1524,8 +1529,11 @@ class Handler(BaseHTTPRequestHandler):
                 # start_show() range-checks `at` itself (the same
                 # ValueError seek() raises) and uses exactly this value -
                 # never re-reading fleet.start_at - so the note below and
-                # the T0 actually run on can never disagree.
-                results = fleet.start_show(lead, at)
+                # the T0 actually run on can never disagree. The same
+                # `force` that waves through a second START also waves
+                # through a unit that merely failed to burn some boards
+                # (never one still burning, offline, or on another show).
+                results = fleet.start_show(lead, at, force=bool(body.get("force")))
                 response = {"units": results, "lead_s": lead, "from_s": at}
                 if at > 0:
                     response["note"] = (f"Started from "
