@@ -197,6 +197,7 @@ class LookMap:
         shifts: "dict[tuple[str, int], float]" = {}
         seen_pos: "dict[tuple, int]" = {}
         seen_socket: "dict[tuple, int]" = {}
+        all_rows: "set[tuple[str, int]]" = set()
         for line_no, raw in enumerate(reader, start=2):
             row = {(k or "").strip(): (v or "").strip() for k, v in raw.items()}
             if not any(row.values()):
@@ -232,12 +233,20 @@ class LookMap:
             if scale.label and scale.label != expected:
                 warnings.append(f"{where}: label {scale.label!r} does not "
                                 f"match board/socket ({expected})")
+            all_rows.add((scale.side, scale.row))
             if has_shift and row.get(_SHIFT_COLUMN):
+                raw_shift = row[_SHIFT_COLUMN]
                 try:
-                    shift_val = float(row[_SHIFT_COLUMN])
+                    shift_val = float(raw_shift)
                 except ValueError:
+                    shift_val = None
+                # The site's own rule only ever writes 0 or 0.5 (a full scale
+                # or a half-scale stagger) - anything else is a typo, not a
+                # third kind of offset the renderer or the sweep math knows
+                # how to place (fix round finding 10).
+                if shift_val not in (0, 0.5):
                     problems.append(f"{where}: shift must be 0 or 0.5, not "
-                                    f"{row[_SHIFT_COLUMN]!r}")
+                                    f"{raw_shift!r}")
                 else:
                     shift_key = (scale.side, scale.row)
                     if shift_key in shifts and shifts[shift_key] != shift_val:
@@ -250,6 +259,17 @@ class LookMap:
             scales.append(scale)
         if not scales and not problems:
             problems.append(f"{name}: no scales")
+        if has_shift:
+            # A row the shift column leaves blank on every one of its lines
+            # silently falls back to default_shift() - worth a warning, since
+            # that is usually a row the designer forgot rather than one that
+            # genuinely matches the odd/even rule (fix round finding 10).
+            blank_rows = sorted(all_rows - set(shifts))
+            if blank_rows:
+                listed = ", ".join(f"{side} row {row}" for side, row in blank_rows[:8])
+                more = f" (+{len(blank_rows) - 8} more)" if len(blank_rows) > 8 else ""
+                warnings.append(f"{name}: shift is blank for {listed}{more} - "
+                                "falls back to the odd/even rule there")
         boards = {s.board_no for s in scales}
         if len(boards) > MAX_BOARDS:
             problems.append(f"{name}: {len(boards)} boards, but one unit "
@@ -424,6 +444,21 @@ def check(look_map: LookMap, design: Design, partial: bool = False
                 problems.append(
                     f"{design.name}: no colour for {_pos(position)} "
                     f"{wiring} - 0 means no hole, white is 0x00")
+    # The design's own row shift (its grid CSV's own shift column) only ever
+    # draws its own preview; the map's shift (its optional column, or
+    # default_shift()) is what actually places the scale on the garment and
+    # feeds sequence.ranks(). A mismatch is not wrong - Wiring view and the
+    # sweep still use the map's own value - but worth flagging, so it goes
+    # on look_map.warnings (surfaced as item.map.warnings) rather than the
+    # problems this function returns (fix round finding 12).
+    mismatched = [(s.side, s.row) for s in look_map.scales
+                  if design.shift(s.side, s.row) != look_map.shift(s.side, s.row)]
+    if mismatched:
+        rows = len(set(mismatched))
+        note = (f"{design.name}: the design's row shift differs from the "
+                f"map on {rows} row{'s' if rows != 1 else ''}")
+        if note not in look_map.warnings:
+            look_map.warnings.append(note)
     return problems
 
 

@@ -124,7 +124,7 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .tl-name { font-size: 13px; font-weight: 600; padding-right: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-name small { display: block; font-weight: 400; color: var(--dim); font-size: 11px; }
 .tl-track { position: relative; height: 30px; background: var(--bg); border-radius: 4px; cursor: copy; }
-.tl-ruler { position: relative; height: 20px; font-size: 11px; color: var(--dim); cursor: ew-resize; }
+.tl-ruler { position: relative; height: 20px; font-size: 11px; color: var(--dim); cursor: ew-resize; touch-action: none; }
 .tl-ruler i { position: absolute; top: 0; height: 20px; border-left: 1px solid var(--line); pointer-events: none; }
 .tl-ruler span { position: absolute; top: 1px; transform: translateX(3px); pointer-events: none; }
 .cue-band { position: absolute; top: 3px; bottom: 3px; border-radius: 3px 0 0 3px; cursor: pointer;
@@ -147,13 +147,14 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
    side pad each way on top of the 14px triangle clears the "hit area >= 24px"
    ask without widening what is actually drawn. */
 #ph-head { position: absolute; top: -11px; left: 50%; transform: translateX(-50%); z-index: 4;
-  cursor: ew-resize; pointer-events: auto; padding: 0 6px; }
+  cursor: ew-resize; pointer-events: auto; padding: 0 6px; touch-action: none; }
 /* Only the triangle is centred on the red line; the time label hangs off
    its right side (absolutely positioned) so it never shifts the triangle. */
 #ph-head svg { display: block; }
 #ph-time { position: absolute; left: 100%; top: -1px; margin-left: 2px; font-size: 10.5px;
   font-variant-numeric: tabular-nums; background: var(--panel); color: var(--err);
-  padding: 1px 4px; border-radius: 3px; line-height: 1.3; white-space: nowrap; }
+  padding: 1px 4px; border-radius: 3px; line-height: 1.3; white-space: nowrap;
+  pointer-events: none; }   /* grabbing it still grabs #ph-head, its parent - see grabOffset */
 .editor { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .editor label { font-size: 12px; color: var(--dim); display: flex; gap: 6px; align-items: center; }
 .editor input[type=text] { width: 70px; }
@@ -261,9 +262,15 @@ body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-ev
   #tl-editing { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 12px; align-items: start; }
   /* Sticks while the tracks/cues scroll past it; capped so it can grow no
      taller than the gap above the dock, with its own scrollbar past that -
-     never behind the fixed dock. --tl-dock-h is measured, not guessed
-     (see syncDockSpacing()); the 150px fallback only covers the first paint. */
-  #tl-editor-card { position: sticky; top: 12px; max-height: calc(100vh - 24px - var(--tl-dock-h, 150px));
+     never behind the fixed dock. Both custom properties are measured, not
+     guessed (see syncDockSpacing()); the fallbacks only cover the first
+     paint. --tl-editor-top used to be a flat 24px (top:12px + a little
+     slack), which only holds once the card is actually stuck - before that,
+     still in flow below the toolbar/header, its real top is much further
+     down, so the card could grow past the dock before it ever reached
+     top:12 (fix round finding 14). */
+  #tl-editor-card { position: sticky; top: 12px;
+    max-height: calc(100vh - var(--tl-editor-top, 220px) - var(--tl-dock-h, 150px));
     overflow-y: auto; }
   /* In the 400px side column the explanation goes UNDER the controls,
      not squeezed beside them into a one-word-per-line ribbon. */
@@ -425,6 +432,7 @@ async function refresh() {
   if (!state.items.some(i => i.item === ui.item)) ui.item = state.items[0]?.item ?? null;
   maxRankCache.clear();               // ranks/maps may have changed under us
   refreshModelCache.clear();          // cue ids may now mean different cues
+  tintedHexCache.clear();             // the palette may now mean different codes
   syncPlayerSrc();
   render();
 }
@@ -585,7 +593,14 @@ function renderContent() {
       </div>` : ""}
     </div>
     <div id="stage">${renderGarment(item, { cell: 22, mode, labels: true, colors: design?.colors || {},
-                                          undecided: design?.undecided, shifts: design?.shifts })}</div>
+                                          undecided: design?.undecided,
+                                          // Wiring view draws where the scale actually sits on the
+                                          // e-paper (the map's own shift), never the design's own
+                                          // row shift - passing the design's here left the map's
+                                          // shift column inert whenever a design existed at all
+                                          // (fix round finding 12); renderGarment() falls back to
+                                          // item.map.shifts when this is undefined.
+                                          shifts: mode === "wiring" ? undefined : design?.shifts })}</div>
     <div id="info">Hover a scale for its position, board, socket and colour.</div>
     <div class="cols">
       <div>
@@ -696,11 +711,25 @@ function hash32(a, b) {
 }
 const hexOfCode = code => { const [r, g, b] = state.palette[code].rgb; return "#" + [r, g, b].map(v => Math.round(v).toString(16).padStart(2, "0")).join(""); };
 const hexToRgb = hex => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
-// target tinted towards REFRESH_TINT by weight w (0..1)
+// target tinted towards REFRESH_TINT by weight w (0..1): the weight varies
+// continuously frame to frame, so quantise it to a handful of steps and
+// memoise the result per code+step - otherwise this rebuilds the same few
+// hex strings from scratch some 1,000 times a frame with 7 looks firing
+// together (fix round finding 2).
+const TINT_STEPS = 8;
+const tintedHexCache = new Map();           // "code|step" -> "#rrggbb"
 function tintedHex(targetCode, w) {
-  const target = hexToRgb(hexOfCode(targetCode));
-  const mixed = target.map((v, i) => Math.round(v * (1 - w) + REFRESH_TINT[i] * w));
-  return "#" + mixed.map(v => v.toString(16).padStart(2, "0")).join("");
+  const step = Math.max(0, Math.min(TINT_STEPS, Math.round(w * TINT_STEPS)));
+  const key = targetCode + "|" + step;
+  let out = tintedHexCache.get(key);
+  if (out === undefined) {
+    const target = hexToRgb(hexOfCode(targetCode));
+    const ww = step / TINT_STEPS;
+    const mixed = target.map((v, i) => Math.round(v * (1 - ww) + REFRESH_TINT[i] * ww));
+    out = "#" + mixed.map(v => v.toString(16).padStart(2, "0")).join("");
+    tintedHexCache.set(key, out);
+  }
+  return out;
 }
 // Per item+cue, each scale's sweep delay and jitter, in item.map.scales order -
 // computed once (typed arrays) and reused every frame; cleared alongside
@@ -736,18 +765,23 @@ function refreshPhaseColor(n, tau, frac, targetCode) {
     const w = 0.45 * (1 - (frac - 0.72) / 0.23);
     return tintedHex(targetCode, w);
   }
-  return hexOfCode(targetCode);
+  // The settled state (below) also returns the numeric code, not a hex
+  // string - matching it here means updateThumbColors() sees the same fill
+  // both sides of "settled" and skips the redundant setAttribute at the
+  // instant a cue completes (fix round finding 13).
+  return targetCode;
 }
-// The scales a cue in flight is showing at t: each scale starts its own
-// refresh at sent + delay (sweep) + jitter, runs through the flicker phases
-// above, and reaches its target one refresh after it started - replacing the
-// old flat "revealed once sent+delay+refresh <= t" cut with the wave itself.
-// A scale the design does not colour (partial cue) is left out untouched.
-function sweptColors(item, cue, design, t) {
+// The scales a cue in flight is showing at t, written directly into `out`
+// (mutated, not spread) - a fresh {...colors, ...swept} of a ~1,000-key
+// object every frame for every in-flight cue was the main cost measured
+// here (fix round finding 2). Each scale starts its own refresh at
+// sent + delay (sweep) + jitter, runs through the flicker phases above, and
+// reaches its target one refresh after it started. A scale the design does
+// not colour (partial cue) is left untouched.
+function applySweptColors(item, cue, design, t, out) {
   const sweep = sweepOf(cue);
   const refresh = refreshOf(cue).value;
   const model = refreshModelFor(item, cue, sweep);
-  const out = {};
   item.map.scales.forEach((s, n) => {
     const key = `${s[0]}|${s[1]}|${s[2]}`;
     const targetCode = design.colors[key];
@@ -756,20 +790,44 @@ function sweptColors(item, cue, design, t) {
     if (tau < 0) return;                                      // not started yet: keep showing the old colour
     out[key] = tau >= refresh ? targetCode : refreshPhaseColor(n, tau, tau / refresh, targetCode);
   });
-  return out;
 }
-function wornAt(item, t) {
+// The old, flat simulator: a scale simply cuts to its target once its own
+// refresh finishes (sent + delay + refresh <= t) - no phases, no jitter, no
+// wave. Used by the Units tab's live LOOK row (wornAt's flicker:false),
+// which shows what the real e-paper does, not the simulator's dramatisation
+// of how it gets there (fix round finding 5).
+function applyFlatColors(item, cue, design, t, out) {
+  const sweep = sweepOf(cue);
+  const refresh = refreshOf(cue).value;
+  const model = refreshModelFor(item, cue, sweep);
+  item.map.scales.forEach((s, n) => {
+    const key = `${s[0]}|${s[1]}|${s[2]}`;
+    const targetCode = design.colors[key];
+    if (targetCode === undefined) return;
+    if (t >= cue.sent + model.delay[n] + refresh) out[key] = targetCode;
+  });
+}
+// opts.flicker (default true): the e-paper refresh flicker simulation is for
+// the Timeline's own simulator only - the Units tab's live LOOK row calls
+// this with flicker:false to show the old flat cut instead (fix round
+// finding 5).
+function wornAt(item, t, opts) {
+  const flicker = !opts || opts.flicker !== false;
   // Designs complete by t, in order: a full cue replaces, a partial one overlays;
-  // a cue in flight overlays each scale's own refresh flicker (sweptColors),
-  // whose per-scale start already carries the sweep delay - natural included,
-  // via jitter alone, so every cue refreshes as a wave and not a flat cut.
+  // a cue in flight overlays each scale's own refresh (flicker wave or flat
+  // cut, see above), whose per-scale start already carries the sweep delay -
+  // natural included, via jitter alone in the flicker case, so every cue
+  // refreshes as a wave and not a flat cut there.
   let colors = {}, shifts = null, label = "(as before the show)", changing = false;
   for (const cue of cuesOf(item)) {
     const design = item.designs.find(d => d.name === cue.design);
     if (cue.sent <= t && t < cue.complete) changing = true;
     if (!design) continue;
     if (cue.complete > t) {
-      if (cue.sent <= t) colors = { ...colors, ...sweptColors(item, cue, design, t) };
+      if (cue.sent <= t) {
+        if (flicker) applySweptColors(item, cue, design, t, colors);
+        else applyFlatColors(item, cue, design, t, colors);
+      }
       continue;
     }
     colors = cue.partial ? { ...colors, ...design.colors } : { ...design.colors };
@@ -1018,6 +1076,17 @@ function syncDockSpacing() {
   const h = dock ? Math.ceil(dock.getBoundingClientRect().height) : 0;
   content.style.paddingBottom = dock ? (h + 24) + "px" : "";
   document.documentElement.style.setProperty("--tl-dock-h", h + "px");
+  // The sticky EDIT CUE card's own top offset before it is actually stuck -
+  // #tl-editing starts at the same row (align-items:start), so its top is
+  // the card's own top while still in flow below the toolbar/header.
+  // Measured "as if scrolled to the top" (cancel the current scroll, like
+  // updateDockThumbHeight does for the tracks card) so a stray scroll
+  // position never shrinks the budget (fix round finding 14).
+  const editing = $("#tl-editing");
+  if (editing) {
+    const topAtTop = editing.getBoundingClientRect().top + window.scrollY;
+    document.documentElement.style.setProperty("--tl-editor-top", Math.round(topAtTop) + "px");
+  }
 }
 // Auto mode: the looks row is as large as the space actually left under the
 // tracks allows (the user's own complaint about the fixed 90px row being too
@@ -1094,9 +1163,12 @@ function garmentAspect(item) {
 // the Units tab's live LOOK row, each keeping its own DOM cache so switching
 // tabs never mixes them up.
 function renderThumbs(view, t) {
+  // Update the playhead marker/label even when the dock is collapsed (no
+  // #thumbs in the DOM) - otherwise every re-render while collapsed dropped
+  // the marker to 0 and blanked #ph-label (fix round finding 3).
+  if (view === THUMBS.timeline) updatePlayheadDom(t);
   const box = $(view.sel);
   if (!box) return;                    // not on that tab right now
-  if (view === THUMBS.timeline) updatePlayheadDom(t);
   const groups = lookGroups();
   if (!groups.length) { box.innerHTML = ""; box.style.display = "none"; view.cache = []; return; }
   box.style.display = "";
@@ -1108,7 +1180,7 @@ function renderThumbs(view, t) {
     return `<div class="look-cell">
       <div class="lk-head">${esc(g.look ? "LOOK " + g.look : itemName(g.items[0]))}${unit ? ` <span class="meta" style="font-weight:400">${esc(unit)}</span>` : ""}<span class="chg" style="display:none"></span>
         <div class="sub"></div></div>
-      ${g.items.map(item => { const worn = wornAt(item, t); return `<div class="lk-item">
+      ${g.items.map(item => { const worn = wornAt(item, t, { flicker: !view.live }); return `<div class="lk-item">
         ${renderGarment(item, { cell: view.cell, mode: "design", labels: false, tag: true, colors: worn.colors, shifts: worn.shifts })}</div>`; }).join("")}
     </div>`; }).join("");
   buildLookCache(groups, view);
@@ -1179,7 +1251,7 @@ function updateThumbColors(t, view) {
     let changing = false;
     const sub = [];
     for (const entry of cell.items) {
-      const worn = wornAt(entry.item, t);
+      const worn = wornAt(entry.item, t, { flicker: !view.live });
       if (worn.changing) changing = true;
       sub.push(`${entry.item.model || entry.item.item}: ${worn.label}`);
       for (const [key, circleEl] of entry.circles) {
@@ -1885,7 +1957,16 @@ document.addEventListener("change", async e => {
       // Number("3,5") (a comma decimal) is NaN, not 0 - do not let that
       // silently post span_s: 0 and delete the transition. Refuse instead.
       span = Number(spanEl.value.trim());
-      if (!(span >= 0 && span <= 30)) { toast("Span: 0 to 30 seconds (use a period for decimals, e.g. 3.5)"); renderContent(); return; }
+      if (!(span >= 0 && span <= 30)) {
+        toast("Span: 0 to 30 seconds (use a period for decimals, e.g. 3.5)");
+        // Reachable from both the Designs tab's own row (renderContent) and
+        // the Timeline's EDIT CUE "this design" control (renderTimeline) -
+        // re-rendering the wrong one used to swap the whole Timeline (tracks,
+        // dock, transport) for the Designs tab's content while the tab bar
+        // still said Timeline (fix round finding 1, BLOCKER).
+        ui.tab === "timeline" ? renderTimeline() : renderContent();
+        return;
+      }
       span = Math.round(span * 10) / 10;
     }
     const result = await api("/api/transition", { design, sequence: seq, span_s: span });
@@ -2074,6 +2155,15 @@ function rulerSeconds(clientX) {
   const box = ruler.getBoundingClientRect();
   return Math.max(0, Math.min(D, (clientX - box.left) / box.width * D));
 }
+// The inverse of rulerSeconds: where t sits on the ruler right now, in
+// clientX pixels - used to find the offset between the pointer and the
+// triangle at grab time (see #ph-head's pointerdown below).
+function rulerX(t) {
+  const ruler = $("#ruler"), D = state.show.duration;
+  if (!ruler || !D) return 0;
+  const box = ruler.getBoundingClientRect();
+  return box.left + (t / D) * box.width;
+}
 // No innerHTML, no layout read/write beyond what updatePlayheadDom/
 // updateThumbColors already do per playback frame - safe to call on every
 // pointermove.
@@ -2083,18 +2173,29 @@ function scrubTo(t) {
   updateThumbColors(t, THUMBS.timeline);
 }
 let phDrag = null;
+function endPhDrag() {
+  phDrag = null;
+  seeking = false;
+}
 document.addEventListener("pointerdown", e => {
-  const target = e.target.closest("#ph-head, #ruler");
+  const head = e.target.closest("#ph-head");
+  const target = head || e.target.closest("#ruler");
   if (!target || e.button !== 0) return;
   e.preventDefault();
   seeking = true;                    // tick() must not fight this drag - see its own guard
-  phDrag = { lastSeekAt: 0 };
-  scrubTo(rulerSeconds(e.clientX));
+  // Grabbing the head anywhere inside it - including the time label hanging
+  // off its right side, inside the same pointer-events:auto box - keeps
+  // whatever offset the pointer grabbed it at, so the triangle follows the
+  // hand instead of snapping under the cursor (fix round finding 8). A press
+  // on the ruler itself still jumps straight to that spot, as before.
+  const grabOffset = head ? e.clientX - rulerX(ui.playhead) : 0;
+  phDrag = { lastSeekAt: 0, grabOffset };
+  scrubTo(rulerSeconds(e.clientX - grabOffset));
   try { target.setPointerCapture(e.pointerId); } catch {}
 });
 document.addEventListener("pointermove", e => {
   if (!phDrag) return;
-  const t = rulerSeconds(e.clientX);
+  const t = rulerSeconds(e.clientX - phDrag.grabOffset);
   scrubTo(t);
   // Seeking an <audio> element is not free - throttle it while dragging (a
   // "scrub preview", playing or not) and do the exact final seek on release.
@@ -2113,6 +2214,12 @@ document.addEventListener("pointerup", () => {
     seeking = false;
   }
 });
+// A cancelled pointer (e.g. a touch interrupted by a system gesture) left
+// phDrag set and seeking true forever - every later mouse move kept
+// scrubbing, and tick() stayed parked waiting for a "seeked" that would
+// never come (fix round finding 4).
+document.addEventListener("pointercancel", endPhDrag);
+window.addEventListener("blur", endPhDrag);
 // Space toggles play/pause, except while typing, over a control that owns the
 // key, or off the Timeline tab (there is nothing to play/pause to look at).
 document.addEventListener("keydown", e => {
@@ -2125,19 +2232,29 @@ document.addEventListener("keydown", e => {
   togglePlayback();
 });
 // Arrow keys nudge the playhead (1 s, 5 s with Shift); Home jumps to 0:00 -
-// same guard as Space, so typing in a field never gets hijacked.
+// same guard as Space, so typing in a field never gets hijacked. A focused
+// radio/checkbox (or a button) has nothing of its own worth ←/→ for other
+// than moving a radio's selection within its group (which fires change ->
+// saveShow -> a silent cue edit) - steal the keys back there too, but leave
+// text/number inputs, selects and textareas alone (fix round finding 6).
 document.addEventListener("keydown", e => {
   if (!["ArrowLeft", "ArrowRight", "Home"].includes(e.key)) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const tag = (e.target.tagName || "").toLowerCase();
-  if (["input", "select", "textarea", "button"].includes(tag)) return;
+  const type = (e.target.type || "").toLowerCase();
+  const stealsArrows = tag === "select" || tag === "textarea"
+    || (tag === "input" && !["radio", "checkbox"].includes(type));
+  if (stealsArrows) return;
   if (ui.tab !== "timeline" || !state) return;
   e.preventDefault();
   const D = state.show.duration;
   const t = e.key === "Home" ? 0
     : Math.max(0, Math.min(D, ui.playhead + (e.shiftKey ? 5 : 1) * (e.key === "ArrowLeft" ? -1 : 1)));
   scrubTo(t);
-  if (playerUrl) player.currentTime = t;
+  // Set before the seek, not after - otherwise tick() can yank the playhead
+  // back to the pre-seek position in the frame between assigning
+  // currentTime and the "seeked" event landing (fix round finding 9).
+  if (playerUrl) { seeking = true; player.currentTime = t; }
   else if (ui.playing) { ui.anchor = performance.now(); ui.startT = t; }
 });
 document.addEventListener("mouseover", e => {
@@ -2217,13 +2334,21 @@ document.addEventListener("pointerdown", e => {
   const handle = e.target.closest("#tl-dock-handle");
   if (!handle || e.button !== 0) return;
   e.preventDefault();
-  dockDrag = { startY: e.clientY, startH: THUMBS.timeline.height, pending: null, raf: false };
-  handle.classList.add("dragging");
+  dockDrag = { startY: e.clientY, startH: THUMBS.timeline.height, pending: null, raf: false, moved: false };
   try { handle.setPointerCapture(e.pointerId); } catch {}
 });
 document.addEventListener("pointermove", e => {
   if (!dockDrag) return;
-  const target = Math.round(Math.max(90, Math.min(600, dockDrag.startH + (dockDrag.startY - e.clientY))));
+  const dy = dockDrag.startY - e.clientY;
+  // A no-move release (below) must commit nothing and never re-render, so a
+  // dblclick on the handle still has the same element to fire on - like the
+  // cue drag's own `moved` flag (fix round finding 7).
+  if (!dockDrag.moved) {
+    if (Math.abs(dy) < 3) return;
+    dockDrag.moved = true;
+    const handle = $("#tl-dock-handle"); if (handle) handle.classList.add("dragging");
+  }
+  const target = Math.round(Math.max(90, Math.min(600, dockDrag.startH + dy)));
   dockDrag.pending = target;
   if (dockDrag.raf) return;
   dockDrag.raf = true;
@@ -2242,14 +2367,17 @@ document.addEventListener("pointermove", e => {
 document.addEventListener("pointerup", e => {
   if (!dockDrag) return;
   const handle = $("#tl-dock-handle");
-  if (handle) { handle.classList.remove("dragging"); try { handle.releasePointerCapture(e.pointerId); } catch {} }
-  // dockDrag.pending covers a release so quick the throttled rAF above never
-  // got to run - without this a fast flick would commit the pre-drag height.
-  ui.dockCells = dockDrag.pending ?? THUMBS.timeline.height;
+  if (handle) { try { handle.releasePointerCapture(e.pointerId); } catch {} }
+  const done = dockDrag;
+  dockDrag = null;
+  if (!done.moved) return;            // a click that never moved the handle pins nothing
+  if (handle) handle.classList.remove("dragging");
+  // done.pending covers a release so quick the throttled rAF above never got
+  // to run - without this a fast flick would commit the pre-drag height.
+  ui.dockCells = done.pending ?? THUMBS.timeline.height;
   THUMBS.timeline.height = ui.dockCells;
   layoutLooks(THUMBS.timeline);
   saveDockCellsPref();
-  dockDrag = null;
   renderTimeline();                  // picks up the "manual" label
 });
 document.addEventListener("dblclick", e => {

@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.look import LookMap  # noqa: E402
+from conductor.look import LookMap, default_shift  # noqa: E402
 from conductor.sequence import (NO_DELAY, SEQUENCES, TABLE_LEN,  # noqa: E402
                                 clean_span, compile_delays, ranks, span_s)
 
@@ -67,6 +67,38 @@ def test_centre_is_the_fronts_centroid_and_the_back_uses_the_same_point():
     assert r[("front", 1, 2)] == 0                    # the middle scale
     assert r[("front", 2, 1)] >= 1 and r[("front", 0, 2)] >= 1
     assert r[("back", 1, 1)] == r[("front", 1, 1)]    # straight behind
+
+
+def test_centre_uses_the_maps_own_shift():
+    # Row 1 defaults to 0.5 (odd); a map whose own shift column pins it to 0
+    # moves the centroid enough that at least one scale's rank changes (real
+    # data: AZ271SD1301, 215 of 1482 scales change rank - fix round
+    # finding 11). The two maps agree on everything else.
+    plain = """side,row,col,board_no,socket,label
+front,0,1,1,1,
+front,0,2,1,2,
+front,1,1,1,3,
+front,1,2,1,4,
+front,1,3,1,5,
+front,1,4,1,6,
+front,2,2,1,7,
+"""
+    with_shift = """side,row,col,board_no,socket,label,shift
+front,0,1,1,1,,0
+front,0,2,1,2,,0
+front,1,1,1,3,,0
+front,1,2,1,4,,0
+front,1,3,1,5,,0
+front,1,4,1,6,,0
+front,2,2,1,7,,0
+"""
+    plain_map = LookMap.parse(io.StringIO(plain), name="p.csv")
+    shift_map = LookMap.parse(io.StringIO(with_shift), name="s.csv")
+    assert shift_map.shift("front", 1) == 0.0 != default_shift(1)
+    plain_ranks = ranks(plain_map, "center")
+    shift_ranks = ranks(shift_map, "center")
+    assert plain_ranks != shift_ranks
+    assert plain_ranks[("front", 0, 1)] != shift_ranks[("front", 0, 1)]
 
 
 def test_a_span_of_zero_or_a_single_rank_is_no_sweep():
