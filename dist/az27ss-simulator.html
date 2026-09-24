@@ -1273,7 +1273,11 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       return sec;
     };
     input.addEventListener("input", paint);
-    input.addEventListener("change", () => { const sec = paint(); if (sec !== null) onChange(sec); else input.value = input.defaultValue; });
+    input.addEventListener("change", () => {
+      const sec = paint();
+      if (sec !== null) onChange(sec);
+      else { input.value = input.defaultValue; paint(); }   // revert AND re-paint, so the red/bad state clears with it
+    });
     paint();
   }
 
