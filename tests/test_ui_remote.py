@@ -103,6 +103,36 @@ def test_a_fire_time_already_past_fires_at_once_and_says_how_late():
     runner.stop()
 
 
+def test_prepare_refuses_to_displace_a_cue_about_to_fire():
+    # Found in the timing review: _fire_at() (ui/runner.py) sends the
+    # broadcast and only then calls session.fired(cue_id, ...); fired()
+    # matches on cue_id, so a prepare() landing in that gap moves cue_id
+    # on first and the fire is never tallied - applied stays stale and
+    # the fire silently never happened as far as the session is concerned.
+    session, runner, bus = make_session()
+    session.prepare("c1", {1: array(1)})
+    assert wait_until(lambda: session.phase == READY)
+    session.fire("c1", time.monotonic() + 0.02)      # inside FIRE_IMMINENT_S
+    with pytest.raises(RemoteError, match="about to fire"):
+        session.prepare("c2", {1: array(2)})
+    assert session.cue_id == "c1" and session.phase == ARMED   # not displaced
+    assert wait_until(lambda: session.phase == FIRED)
+    assert len(shows(bus)) == 1
+    # Once it has actually fired, a new prepare is not blocked.
+    session.prepare("c2", {1: array(2)})
+    assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
+    runner.stop()
+
+
+def test_prepare_is_not_blocked_before_a_fire_time_is_even_set():
+    session, runner, bus = make_session()
+    session.prepare("c1", {1: array(1)})
+    assert wait_until(lambda: session.phase == READY)      # no fire() yet
+    session.prepare("c2", {1: array(2)})                   # not ARMED: fine
+    assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
+    runner.stop()
+
+
 def test_cancel_disarms_and_a_new_time_rearms():
     session, runner, bus = make_session()
     session.prepare("c1", {1: array(1)})

@@ -19,6 +19,7 @@ from epaper.transport import find_port
 
 from .agent import DEFAULT_PORT, Agent
 from .app import App
+from .demos import DemoStore
 from .display import make_display
 from .inputs import make_input
 from .patterns import PATTERNS
@@ -349,20 +350,22 @@ def main() -> int:
     versions = BoardVersions(boards=args.boards, port=args.port)
     host = socket.gethostname() or None
 
-    remote = agent = None
+    remote = agent = demo_store = None
     if not args.no_remote:
         remote = RemoteSession(runner)
         player = ShowPlayer(remote)
+        demo_store = DemoStore()
         remote.on_release = player.stop
         agent = Agent(remote, port=args.remote_port, token=args.remote_token,
-                      commit=puller.before.commit, name=host, player=player)
+                      commit=puller.before.commit, name=host, player=player,
+                      demos=demo_store)
         try:
             print(f"remote agent on port {agent.start()}", flush=True)
         except OSError as exc:
             # A second instance, or the port taken: the unit still works
             # from its own buttons, which matters more than the agent.
             print(f"remote agent not started: {exc}", flush=True)
-            remote = agent = None
+            remote = agent = demo_store = None
         else:
             # A unit that restarted in the middle of a show rejoins it.
             player.restore()
@@ -376,7 +379,9 @@ def main() -> int:
         app_kwargs = {"port_label": port, "locked": args.locked,
                       "updater": updater, "puller": puller, "host": host,
                       "versions": versions, "rebooter": rebooter,
-                      "remote": remote}
+                      "remote": remote,
+                      "player": player if remote is not None else None,
+                      "demos": demo_store}
         if args.blank_after is not None:
             app_kwargs["blank_after"] = args.blank_after
         app = App(display, inputs, runner, **app_kwargs)

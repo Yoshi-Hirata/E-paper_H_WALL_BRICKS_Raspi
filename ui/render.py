@@ -139,7 +139,12 @@ def menu_screen(patterns, selected: int, port: str | None = None,
         if chosen:
             draw.rectangle((4, y - 2, WIDTH - 4, y + row_h - 6), fill=SELECT)
             draw.rectangle((4, y - 2, 7, y + row_h - 6), fill=ACCENT)
-        draw.text((14, y), patterns[index].label, font=FONT_M,
+        # Built-in patterns keep to <=14 chars by convention, but a demo's
+        # name is only capped on the way in (ui/demos.py's MAX_NAME_LEN,
+        # server-side too) - ellipsize rather than let a long one run
+        # into the row's right edge or the selection highlight.
+        draw.text((14, y), _ellipsize(patterns[index].label, FONT_M,
+                                      WIDTH - 14 - 8), font=FONT_M,
                   fill=FG if chosen else DIM)
 
     detail = patterns[selected].detail if patterns else ""
@@ -347,16 +352,20 @@ _REMOTE_STATUS = {
 
 def remote_screen(status: dict, log_lines: list[str], now: float = 0.0,
                   locked: bool = False,
-                  host: str | None = None) -> Image.Image:
+                  host: str | None = None, title: str = "REMOTE",
+                  hint: "str | None" = None) -> Image.Image:
     """The unit under the show PC: what is loaded and when it fires.
 
     `status` is ui.remote.RemoteSession.status(); `now` is the monotonic
-    clock its fire time is written in.
+    clock its fire time is written in. A standalone demo (ui/app.py's
+    Screen.DEMO) reuses this screen with its own `title` ("DEMO <name>")
+    and `hint` (KEY1 does nothing, KEY2 stops it) - everything else about
+    what is loaded and when it fires reads exactly the same.
     """
     image, draw = _blank()
     word, color = _REMOTE_STATUS.get(status["phase"],
                                      (status["phase"].upper(), DIM))
-    _header(draw, "REMOTE", status=word, status_color=color, host=host)
+    _header(draw, title, status=word, status_color=color, host=host)
 
     label = status["label"] or status["cue"] or "waiting for a cue"
     draw.text((8, 30), _ellipsize(label, FONT_L, WIDTH - 16), font=FONT_L,
@@ -413,7 +422,8 @@ def remote_screen(status: dict, log_lines: list[str], now: float = 0.0,
                   font=FONT_S, fill=tint)
         y += 15
 
-    _hint(draw, "buttons locked" if locked else "KEY2 local menu  KEY3 off")
+    _hint(draw, hint if hint is not None else
+          ("buttons locked" if locked else "KEY2 local menu  KEY3 off"))
     return image
 
 

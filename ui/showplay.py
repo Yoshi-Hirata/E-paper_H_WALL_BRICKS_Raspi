@@ -65,6 +65,31 @@ LOADED, RUNNING, HOLDING, STOPPED, ENDED = (
 DELAY_UNIT_MS = 10        # conductor/showfile.py's DELAY_UNIT_MS (10 ms frames)
 
 
+def validate_show(show: dict) -> None:
+    """What `ShowPlayer.load()` needs a show file to have - also used by
+    ui/demos.py so a bad show is refused at /demo/save, not at KEY1."""
+    if not isinstance(show, dict) or not show.get("id"):
+        raise RemoteError("the show has no id")
+    cues = show.get("cues")
+    if not isinstance(cues, list) or not cues:
+        raise RemoteError("the show has no cues")
+    try:
+        float(show["refresh_s"]), float(show["duration"])
+    except (KeyError, TypeError, ValueError):
+        raise RemoteError("the show needs refresh_s and duration")
+    unit_ms = show.get("delay_unit_ms")
+    if unit_ms is not None and unit_ms != DELAY_UNIT_MS:
+        raise RemoteError(f"this unit's delay tables are "
+                          f"{DELAY_UNIT_MS} ms frames; the show says "
+                          f"{unit_ms!r}")
+    for cue in cues:
+        if not isinstance(cue, dict):
+            raise RemoteError("a cue must be an object")
+        for key in ("id", "sent", "boards", "state"):
+            if key not in cue:
+                raise RemoteError(f"cue without {key}")
+
+
 class ShowPlayer:
     def __init__(self, session, store: "Path | None" = STORE,
                  clock=time.monotonic, wall=time.time,
@@ -86,6 +111,12 @@ class ShowPlayer:
         self.state = STOPPED
         self.t0: "float | None" = None
         self.synced = False            # T0 came from the PC, not from disk
+        # A show loaded with load(show, demo=True) - ui/demos.py's stored
+        # standalone shows, played from the unit's own menu. Only changes
+        # what restore() does after a reboot (see there); everything else
+        # about running one is identical to a PC-driven show.
+        self.is_demo = False
+        self.demo_name = ""            # the name it was written under
         self.applied: "str | None" = None      # cue id on the garment now
         self.dirty = False             # some board does not show `applied`
         self.note = ""
@@ -109,31 +140,17 @@ class ShowPlayer:
 
     # ---- commands (from the agent) ----
 
-    def load(self, show: dict) -> None:
-        if not isinstance(show, dict) or not show.get("id"):
-            raise RemoteError("the show has no id")
-        cues = show.get("cues")
-        if not isinstance(cues, list) or not cues:
-            raise RemoteError("the show has no cues")
-        try:
-            float(show["refresh_s"]), float(show["duration"])
-        except (KeyError, TypeError, ValueError):
-            raise RemoteError("the show needs refresh_s and duration")
-        unit_ms = show.get("delay_unit_ms")
-        if unit_ms is not None and unit_ms != DELAY_UNIT_MS:
-            raise RemoteError(f"this unit's delay tables are "
-                              f"{DELAY_UNIT_MS} ms frames; the show says "
-                              f"{unit_ms!r}")
-        for cue in cues:
-            if not isinstance(cue, dict):
-                raise RemoteError("a cue must be an object")
-            for key in ("id", "sent", "boards", "state"):
-                if key not in cue:
-                    raise RemoteError(f"cue without {key}")
+    def load(self, show: dict, demo: bool = False, name: str = "") -> None:
+        validate_show(show)
         with self._lock:
             self._epoch += 1
             self._disarm()
             self.show = show
+            self.is_demo = bool(demo)
+            # The name it was written under (ui/demos.py), not show["name"]
+            # (the look's own name from the timeline) - the PC's Units
+            # tile labels a unit "demo: <name>" from /status.show.
+            self.demo_name = str(name) if demo else ""
             self.state, self.t0, self.synced = LOADED, None, False
             self._forget_garment()
             self.note = ""
@@ -170,9 +187,10 @@ class ShowPlayer:
             # the new one - its `sent` is now in the past. Left alone it
             # would just fire as scheduled (or the moment it is ready),
             # showing that skipped cue while the true current one waits
-            # behind it (_plan()'s branch 2 is blocked by `in_flight`
-            # until this fires). Disarming it lets that branch repaint
-            # the picture this new T0 actually wants.
+            # behind it (_plan()'s branch 2 is blocked by `owned_unfired`
+            # until this fires). Disarming it clears fire_at, which is
+            # exactly what lets that branch repaint the picture this new
+            # T0 actually wants (owned_unfired requires a fire_at).
             session = self.session
             if (self._owns(session.cue_id)
                     and session.phase in (PREPARING, READY, ARMED)):
@@ -256,6 +274,7 @@ class ShowPlayer:
             self._write("show-run.json", {
                 "show": self.show["id"] if self.show else None,
                 "state": self.state, "applied": self.applied,
+                "demo": self.is_demo, "demo_name": self.demo_name,
                 # T0 as wall time: what survives a reboot.
                 "t0_wall": (None if self.t0 is None else
                             self._wall() + (self.t0 - self._clock()))})
@@ -278,7 +297,21 @@ class ShowPlayer:
         with self._lock:
             self.show = show
             self.state = LOADED
+            self.is_demo = bool(run.get("demo"))
+            self.demo_name = run.get("demo_name", "") if self.is_demo else ""
             if run.get("show") != show.get("id"):
+                return
+            if self.is_demo:
+                # A demo is simpler and safer left alone: it restarts only
+                # when the operator presses KEY1 again, never on its own
+                # after a power cut (a PC-driven show still resumes below).
+                # Cleared to a plain LOADED show (not re-marked as a demo)
+                # so a *second* reboot, mid-SHOW this time, does not take
+                # this same branch again - a demo's show id is a content
+                # digest, so without this the PC would never see reason to
+                # reload it and the show would simply sit un-restored.
+                self.is_demo, self.demo_name = False, ""
+                self._persist()
                 return
             t0_wall = run.get("t0_wall")
             if run.get("state") != RUNNING or t0_wall is None:
@@ -336,6 +369,21 @@ class ShowPlayer:
         cue_id = key.rsplit(":", 1)[1]
         return (cue_id[:-1], True) if cue_id.endswith("+") else (cue_id, False)
 
+    def _run_no_of(self, key: str) -> "int | None":
+        """The run number a session key was made under, by stripping the
+        known "<show id>:" prefix rather than counting colons - a show
+        id is never expected to contain one, but this way nothing breaks
+        if it ever does."""
+        if not self.show:
+            return None
+        prefix = self.show["id"] + ":"
+        if not key.startswith(prefix):
+            return None
+        try:
+            return int(key[len(prefix):].split(":", 1)[0])
+        except ValueError:
+            return None
+
     def _send(self, show: dict, cue: dict, whole: bool, fire_at: float,
               epoch: int) -> None:
         """Make the session hold this cue, timed for `fire_at`.
@@ -375,7 +423,16 @@ class ShowPlayer:
         whether or not the show runs (the preset comes first)."""
         session = self.session
         key = session.cue_id
-        if session.phase != FIRED or not self._owns(key) or key == self._counted:
+        if (session.phase != FIRED or not self._owns(key)
+                or key == self._counted
+                # A FIRED cue left over from a run that has since been
+                # restarted (run() bumps _run_no every time T0 starts a
+                # fresh top) must not be mistaken for this run's - most
+                # visibly on a one-cue show, where the last cue of the
+                # old run and the first of the new one are the same id
+                # and _forget_garment() has just cleared `applied` and
+                # `_counted`, so nothing else here tells them apart.
+                or self._run_no_of(key) != self._run_no):
             return
         self._counted = key
         cue_id, whole = self._parse(key)
@@ -410,15 +467,36 @@ class ShowPlayer:
             ahead = [c for c in cues if c["sent"] > now]
             current = past[-1] if past else None
             nxt = ahead[0] if ahead else None
-            # A cue only counts as "busy" if it is still the one that
-            # belongs here - current or next. One a forward jump left
-            # behind (run() disarms it, but READY/ARMED stays on the
-            # session until something re-decides it) must not block this
-            # branch from repainting what the new T0 actually wants.
+            # An owned cue with a fire_at set (ARMED, or still PREPARING
+            # but already given one by _send() - see below) carries a
+            # promise to fire at that instant; session.prepare() for any
+            # OTHER cue would displace it outright (its cue_id, its
+            # fire_at), and the runner's own session.fired() for the
+            # displaced cue would then find a different cue_id and drop
+            # the tally with no error - the cue is simply never shown.
+            # A cue that is merely READY, or PREPARING with no fire_at
+            # yet (freshly prepared, or disarmed on purpose - run()'s own
+            # forward-jump handling cancel()s a stale armed cue this same
+            # way), has no such promise and is fine to preempt; requiring
+            # fire_at is what tells the two apart.
+            #
+            # Every branch below waits for a genuinely promised cue
+            # instead: it fires at its own time once this clears, or at
+            # once if that time has already passed by then (found in the
+            # timing review, 2026-09-24). Two ways this opens: branch 1 -
+            # the interval between cues shorter than the next one's own
+            # _lead() (32 boards 8 s apart on real hardware, or a short
+            # lead right after a NEXT/SEEK) sends the next cue before the
+            # current one has fired; branch 2 - a save slow enough to
+            # overrun its own _lead() estimate can leave a cue neither
+            # "current" nor "next" by the time it finally resolves (both
+            # have already moved past it), which a plain current/next
+            # membership check does not see.
             owned = self._parse(session.cue_id)[0] if self._owns(
                 session.cue_id) else None
-            in_flight = (owned in {c["id"] for c in (current, nxt) if c}
-                         and session.phase in (PREPARING, READY, ARMED))
+            owned_unfired = (owned is not None
+                             and session.phase in (PREPARING, READY, ARMED)
+                             and session.fire_at is not None)
             duration = float(show["duration"])
             if nxt is None and now > duration + END_SLACK_S:
                 # Over on the clock - even if the last cue never made it
@@ -436,7 +514,8 @@ class ShowPlayer:
             #    it is on the garment already (the preset, shown before a
             #    START whose T0 is still ahead).
             if (nxt is not None and nxt["sent"] - now <= self._lead(nxt)
-                    and not (self.applied == nxt["id"] and not self.dirty)):
+                    and not (self.applied == nxt["id"] and not self.dirty)
+                    and not (owned_unfired and owned != nxt["id"])):
                 index = cues.index(nxt)
                 before = cues[index - 1]["id"] if index else None
                 if self._latched is None or self._latched[0] != nxt["id"]:
@@ -450,9 +529,16 @@ class ShowPlayer:
                 action = (show, nxt, self._latched[1], self.t0 + nxt["sent"])
             # 2. Not showing what it should, and room before the next cue
             #    needs the bus: put the whole picture up now.
-            elif current is not None and not in_flight and (
-                    self.applied != current["id"]
-                    or (self.dirty and self._healed_for != current["id"])):
+            #
+            # Blocked by ANY owned unfired cue, even this same `current`
+            # once armed - unlike branch 1, this send's fire_at is
+            # "now_mono + a lead", not a fixed instant, so re-deciding it
+            # every tick while ARMED would keep moving its own fire time
+            # forward and it would never actually fire (a livelock found
+            # while testing the owned_unfired guard itself).
+            elif (current is not None and not owned_unfired
+                    and (self.applied != current["id"]
+                        or (self.dirty and self._healed_for != current["id"]))):
                 room = (nxt["sent"] - now) if nxt else float("inf")
                 # The unit compiled this moment's own refresh (the
                 # slowest of the cues sharing it, conductor/showfile.py)
@@ -467,7 +553,7 @@ class ShowPlayer:
                     action = (show, current, True,
                               now_mono + self._lead(current) + CATCH_UP_LEAD_S)
 
-            if (nxt is None and action is None and not in_flight
+            if (nxt is None and action is None and not owned_unfired
                     and current is not None and self.applied == current["id"]
                     and now > duration):
                 self.state = ENDED
@@ -503,7 +589,12 @@ class ShowPlayer:
                    "t0": self.t0, "synced": self.synced,
                    "applied": self.applied, "dirty": self.dirty,
                    "note": self.note, "now": None, "next": None,
-                   "duration": show.get("duration")}
+                   "duration": show.get("duration"),
+                   # ui/demos.py's standalone shows: the conductor's own
+                   # supervise()/_adopt() should leave one of these alone
+                   # rather than mistake it for its own show; the Units
+                   # tile labels a unit "demo: <name>" from demo_name.
+                   "demo": self.is_demo, "demo_name": self.demo_name}
             if self.t0 is not None and self.state in (RUNNING, ENDED):
                 now = self._clock() - self.t0
                 out["now"] = round(now, 2)
