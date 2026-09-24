@@ -104,6 +104,48 @@ def test_more_boards_than_a_bus_holds_is_refused():
     assert "61 boards" in problems[0]
 
 
+# ---- the map's own shift column (the site's per-row rule) ----
+
+MAP_SHIFT = """side,row,col,board_no,socket,label,shift
+front,1,1,17,1,017-01,0
+front,1,2,17,60,017-60,0
+front,0,1,20,5,020-05,0
+back,0,2,18,12,018-12,0.5
+"""
+
+
+def test_map_without_a_shift_column_defaults_row_by_row():
+    look_map, _ = parse()
+    assert look_map.shifts == {}
+    assert look_map.shift("front", 1) == default_shift(1) == 0.5
+    assert look_map.shift("front", 0) == default_shift(0) == 0.0
+
+
+def test_map_shift_column_is_read_and_wins_over_the_default():
+    look_map = LookMap.parse(io.StringIO(MAP_SHIFT))
+    # front row 1 would default to 0.5 (odd) - the map says 0 instead.
+    assert look_map.shift("front", 1) == 0.0
+    # back row 0 would default to 0.0 (even) - the map says 0.5 instead.
+    assert look_map.shift("back", 0) == 0.5
+    assert look_map.shifts == {("front", 1): 0.0, ("front", 0): 0.0,
+                               ("back", 0): 0.5}
+    # A row the map never mentions still falls back to the default.
+    assert look_map.shift("front", 9) == default_shift(9)
+
+
+def test_map_shift_must_agree_across_every_line_of_the_same_row():
+    bad = MAP_SHIFT.replace("front,1,2,17,60,017-60,0",
+                            "front,1,2,17,60,017-60,0.5")
+    problems = problems_of(lambda: LookMap.parse(io.StringIO(bad), name="m"))
+    assert any("does not match" in p for p in problems)
+
+
+def test_map_shift_must_be_a_number():
+    bad = MAP_SHIFT.replace("020-05,0\n", "020-05,x\n")
+    problems = problems_of(lambda: LookMap.parse(io.StringIO(bad), name="m"))
+    assert any("0 or 0.5" in p for p in problems)
+
+
 # ---- the grid ----
 
 def test_grid_reads_colours_and_shifts_and_skips_empty_cells():
@@ -364,3 +406,23 @@ def test_a_design_is_named_after_what_the_designer_typed():
         "AZ271SD1305_color_ref_multicolor_redorange_s22_grid-2_A-2.csv"
     ) == ("AZ271SD1305", None, "ref_multicolor_redorange_s22")
     assert Design.name_parts("notes.csv") == (None, None, "notes")
+
+
+# ---- tools/make_sample_grids.py: sample grids follow the map's own shift ----
+
+def test_sample_grid_rows_carry_the_maps_own_shift():
+    import importlib.util
+
+    tools_path = Path(__file__).resolve().parents[1] / "tools" / "make_sample_grids.py"
+    spec = importlib.util.spec_from_file_location("make_sample_grids", tools_path)
+    make_sample_grids = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(make_sample_grids)
+
+    look_map = LookMap.parse(io.StringIO(MAP_SHIFT))
+    text = make_sample_grids.grid_csv(look_map, lambda s: 0x01)
+    rows = {line.split(",")[0] + "|" + line.split(",")[1]: line.split(",")[2]
+            for line in text.splitlines()[1:]}
+    # front row 1 is 0 in the map (would default to 0.5, odd row).
+    assert rows["front|1"] == str(look_map.shift("front", 1)) == "0.0"
+    # back row 0 is 0.5 in the map (would default to 0.0, even row).
+    assert rows["back|0"] == str(look_map.shift("back", 0)) == "0.5"

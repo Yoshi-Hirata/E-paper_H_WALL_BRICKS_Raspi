@@ -18,6 +18,36 @@
 
 ## 2. 直近で完成したもの
 
+**マップが制作サイトの行ごとの shift を持つように(2026-09-24)**
+
+- 制作サイト(vglabjp.synology.me の配線ページ、csvMap())の実際のルールは「中央セル(穴アドレスに
+  `C`)を持つ行は shift 0、それ以外の行は shift 0.5」で、`conductor/look.py` の
+  `default_shift()`(奇数行 0.5・偶数行 0)とは食い違う行があった: AZ271SD1301 の 33 行、
+  AZ271SC6302 の 19 行、AZ271SB2303 の 24 行、AZ271SD1307 の 1 行(front 32)。サイト製のデザイン
+  グリッドは行ごとの shift を自分で運ぶので正しく描けていたが、Wiring 表示・デザイン未投入のサムネ・
+  こちらで作ったサンプルデザインは奇数/偶数の仮定のまま段違いに描いていた
+  (AZ271SD1306・AZ271SD1305・AZ271SD1305_B の 3 点は元々ズレ 0 件で影響なし)。
+- `LookMap` が `side,row,col,board_no,socket,label` に続く 7 列目 `shift` を任意で読むようになった
+  (無ければ全行 `default_shift()` のまま、6 列の既存マップは無変更でロードできる)。
+  `LookMap.shift(side, row)` はマップの値、無ければ `default_shift(row)` を返す。
+  `Design.shift()` は変更なし(デザイン自身の shift が常に優先)。
+- `Workspace.state()` の `map` payload に `shifts`(`"side|row": 0.5` の形、`default_shift()` と
+  一致する行は送らない)を追加。ページの `renderGarment()`/`shiftOf()` は `opts.shifts` が
+  null(デザイン未選択、`wornAt()` の初期値)のとき `item.map.shifts` にフォールバックするので、
+  Wiring 表示とデザイン前のサムネもマップの shift で描かれる。
+- `tools/make_sample_grids.py` のサンプルグリッドも `default_shift(row)` ではなく
+  `look_map.shift(side, row)` から shift 列を書くようにした。
+- サイトの配線ページから 7 枚の `<item>_map.csv` を作り直すツール `tools/site_maps.py`
+  (`scratchpad/site_maps3.py` が元、shift 列を追加しただけで座標の計算式は同一)を追加。
+  新旧マップは shift 列以外すべて一致することを確認済み(行数・side/row/col/board_no/socket/label
+  とも 0 件の不一致)。実際に `showdata/files/` へ反映するのは別途。
+- 残作業: `conductor/preview.py`(CLI の PNG プレビュー)と `conductor/sequence.py` の
+  `ranks()`(重心 `center` の x 座標)がまだ `default_shift()` のままで、`look_map.shift()` に
+  切り替える必要がある(このセッションはファイル権限で `conductor/look.py`・
+  `conductor/server.py`(state() のみ)・`conductor/web/index.html`・`tools/` 配下・
+  `tests/test_look.py`・`tests/test_conductor_server.py` しか触れなかったため)。切り替えると
+  `sequence.ranks()` の重心の値が変わるので `tests/test_sequence.py` の更新も併せて必要。
+
 **Timeline: 赤い再生ヘッドがシーク操作そのものに(2026-09-24)**
 
 - ドックのスライダー(ドック全幅)とトラック上の再生ヘッド(名前列 150 px の右から)が同じ時刻で別の x に
