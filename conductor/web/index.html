@@ -145,6 +145,7 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .cue-row .lbl { font-weight: 600; font-size: 13px; }
 .cue-row .ctl { display: flex; gap: 6px 12px; align-items: center; flex-wrap: wrap; }
 .cue-row .ctl input[type=text] { width: 64px; }
+.cue-row label.rad { flex-wrap: wrap; row-gap: 4px; }
 .cue-row .why { color: var(--dim); font-size: 12px; }
 .cue-row label.rad { display: flex; gap: 5px; align-items: center; font-size: 13px; color: var(--ink); font-weight: 400; }
 .cue-computed { grid-column: 2 / 4; color: var(--dim); font-size: 13px; margin-left: 0; }
@@ -231,6 +232,41 @@ body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-ev
    .thumbs{overflow:hidden} and clip it (fix round: LOOK row head pinned). */
 .thumbs.small .lk-head { height: 30px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .thumbs.small .lk-head .chg { float: none; margin-left: 6px; }
+
+/* ---- Timeline: EDIT CUE beside the tracks + a bottom dock for THE LOOKS AT
+   (plan_timeline_layout.md, 2026-09-24) - so an open cue editor can never
+   push the looks row off screen. Below 1400 px the editor still stacks under
+   the tracks (single column); the dock is fixed either way. */
+#tl-editing { display: flex; flex-direction: column; gap: 12px; }
+#tl-editing .tl-left { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+@media (min-width: 1400px) {
+  #tl-editing { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 12px; align-items: start; }
+  /* Sticks while the tracks/cues scroll past it; capped so it can grow no
+     taller than the gap above the dock, with its own scrollbar past that -
+     never behind the fixed dock. --tl-dock-h is measured, not guessed
+     (see syncDockSpacing()); the 150px fallback only covers the first paint. */
+  #tl-editor-card { position: sticky; top: 12px; max-height: calc(100vh - 24px - var(--tl-dock-h, 150px));
+    overflow-y: auto; }
+}
+.card-head-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+.card-head-toggle h2 { margin: 0; }
+.card-head-toggle:hover h2 { color: var(--accent); }
+.card-head-toggle .chev { border: 0; background: transparent; color: var(--dim); font-size: 13px;
+  padding: 0 2px; line-height: 1; }
+.card-head-toggle .chev:hover { color: var(--accent); }
+
+/* The dock: always on screen while the Timeline tab is open, like a DAW
+   transport - EDIT CUE can never push it away. Simulator view instead reuses
+   the old in-flow "THE LOOKS AT" card (view.fill fills the window), since
+   the tracks/editor/cues are hidden then and there is nothing to dock over. */
+#tl-dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+  background: var(--panel); border-top: 1px solid var(--line); padding: 6px 18px; }
+.tl-dock-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tl-dock-title { font-size: 11px; letter-spacing: .08em; color: var(--dim); font-weight: 600; white-space: nowrap; }
+.tl-dock-title b { font-size: 13px; letter-spacing: normal; color: var(--ink); font-weight: 600;
+  font-variant-numeric: tabular-nums; margin-left: 6px; }
+#tl-dock input[type=range] { margin-top: 6px; }
+#tl-dock .thumbs { margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -261,9 +297,15 @@ body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-ev
 "use strict";
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// The Timeline dock's fold state (compact/collapsed) is the one piece of this
+// screen's layout worth remembering across reloads - everything else (which
+// cue is selected, Simulator view) starts fresh like the rest of `ui`.
+function loadDockPref() { try { return localStorage.getItem("tl.dock") === "collapsed" ? "collapsed" : "compact"; } catch { return "compact"; } }
+function saveDockPref() { try { localStorage.setItem("tl.dock", ui.dock); } catch {} }
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
              playing: false, anchor: 0, startT: 0, simView: false,
+             dock: loadDockPref(), editorOpen: true,
              // Manual show-position control (Units tab): client-side only, always off on
              // reload, off again after a successful START/STOP - see seekBlockHtml().
              manual: false, seekDrag: null, seekSent: null, seekTimer: null };
@@ -279,7 +321,10 @@ let seeking = false;                // true while the operator is dragging #ph: 
 // view to draw into; each view keeps its own DOM cache so switching tabs never
 // mixes them up.
 const THUMBS = {
-  timeline: { sel: "#thumbs", cache: [], fill: true, cell: 8, head: 34, live: false },
+  // fill: true only in Simulator view (the tracks/editor/cues are hidden, so the
+  // looks row may as well take the whole window); the bottom dock instead gets a
+  // fixed cell height like the Units tab's row - renderTimeline() flips this flag.
+  timeline: { sel: "#thumbs", cache: [], fill: false, height: 90, cell: 8, head: 34, live: false },
   fleet: { sel: "#show-thumbs", cache: [], fill: false, height: 120, cell: 6, head: 30, live: true }
 };
 const maxRankCache = new Map();     // "item|sequence" -> max(ranks): hoisted out of the per-frame sweep math
@@ -348,8 +393,12 @@ function render() {
   $("#main").classList.toggle("wide", ui.tab !== "items");
   renderSidebar();
   if (ui.tab === "timeline") renderTimeline();
-  else if (ui.tab === "fleet") renderFleet();
-  else renderContent();
+  else {
+    // Only the Timeline tab's #content carries the dock's bottom padding -
+    // drop it here so a leftover value never bleeds into another tab.
+    syncDockSpacing();
+    if (ui.tab === "fleet") renderFleet(); else renderContent();
+  }
 }
 // A design is ok (every scale coloured), partial (some left "-": fine as a
 // partial cue) or bad (wrong even as a partial cue).
@@ -696,8 +745,13 @@ function renderCueEditor(cue, item) {
   const isPreset = cue.at <= 0;
   const design = item?.designs.find(d => d.name === cue.design);
   const designTr = design?.transition || { sequence: "natural", span_s: 0 };
-  const trText = tr => (tr.sequence === "natural" || tr.span_s <= 0) ? "no sweep" : `${esc(seqLabel(tr.sequence))} · ${tr.span_s.toFixed(1)} s`;
   const transitionMode = cue.transition || "design";
+  // "this design" edits state.show.cues' shared design.transition (same wire call
+  // and change handler as the Designs tab's per-design row/toolbar - one code
+  // path, see the data-tr-seq/data-tr-span change handler) - so whichever side
+  // it is changed from, the other follows on the next refresh(). "this cue only"
+  // is the existing custom sequence/span_s on the cue itself.
+  const sameDesignCues = design ? state.show.cues.filter(c => c.design === cue.design).length : 0;
   const sweep = sweepOf(cue);
   const refr = refreshOf(cue);
   const cuesOnItem = item ? cuesOf(item) : [];
@@ -732,13 +786,18 @@ function renderCueEditor(cue, item) {
     </div>
     <div class="cue-row">
       <div class="lbl">Transition</div>
-      <div class="ctl">
-        <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-design" value="design" ${transitionMode === "design" ? "checked" : ""}> design default: ${trText(designTr)}</label>
-        <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-custom" value="custom" ${transitionMode === "custom" ? "checked" : ""}> custom</label>
-        ${transitionMode === "custom" ? `
-        <select id="cue-seq">${state.sequences.map(s =>
-          `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
-        <span ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}><input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" title="Seconds from the command to the first rank to the command to the last"> s</span>` : ""}
+      <div class="ctl" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-design" value="design" ${transitionMode === "design" ? "checked" : ""}> this design (every cue wearing it)
+          ${design ? `<span data-design="${esc(cue.design)}" style="display:inline-flex;gap:8px;align-items:center;margin-left:4px">
+            <select data-tr-seq="${esc(cue.design)}">${state.sequences.map(s =>
+              `<option value="${esc(s.id)}" ${s.id === designTr.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
+            <span ${designTr.sequence === "natural" ? 'style="display:none"' : ""}><input type="text" data-tr-span="${esc(cue.design)}" size="4" value="${designTr.span_s}" title="Seconds from the command to the first rank to the command to the last"> s</span>
+          </span>` : ""}</label>
+        <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-custom" value="custom" ${transitionMode === "custom" ? "checked" : ""}> this cue only
+          <select id="cue-seq" ${transitionMode !== "custom" ? "disabled" : ""} style="margin-left:4px">${state.sequences.map(s =>
+            `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
+          <span ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}><input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" ${transitionMode !== "custom" ? "disabled" : ""} title="Seconds from the command to the first rank to the command to the last"> s</span></label>
+        ${design ? `<div class="meta" style="font-size:11px">"this design" changes ${esc(designLabel(design))} everywhere it is used (${sameDesignCues} cue${sameDesignCues === 1 ? "" : "s"}); "this cue only" affects just this one</div>` : ""}
       </div>
       <div class="why"></div>
     </div>
@@ -758,7 +817,11 @@ function renderCueEditor(cue, item) {
 }
 function renderTimeline() {
   const root = $("#content"), show = state.show, D = show.duration, items = trackItems();
-  if (!items.length) { root.innerHTML = `<div class="empty">Add the map and design CSV files on the Designs tab first.</div>`; return; }
+  if (!items.length) { root.innerHTML = `<div class="empty">Add the map and design CSV files on the Designs tab first.</div>`; syncDockSpacing(); return; }
+  // Simulator view fills the window (view.fill, as before); the bottom dock
+  // gets the fixed 90 px cell height that layoutLooks() otherwise uses for
+  // the Units tab's LOOK row.
+  THUMBS.timeline.fill = ui.simView;
   const pct = t => (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
   const step = D <= 180 ? 10 : D <= 900 ? 30 : 60;
   let ruler = "";
@@ -792,6 +855,44 @@ function renderTimeline() {
   const all = [...show.cues].sort((a, b) => a.at - b.at || a.item.localeCompare(b.item));
   const bad = all.reduce((n, c) => n + c.problems.length, 0);
   const music = state.music || null;
+  const musicHtml = music
+    ? `<span class="meta">${esc(music.name)} (${fmtSize(music.size)})</span>
+       <label class="filebtn" title="Upload another audio file for the show (MP3, WAV, OGG, M4A; up to 64 MB)">Replace music<input type="file" id="tp-music-replace" accept="audio/*"></label>
+       <button id="tp-music-remove" class="danger">Remove</button>`
+    : `<label class="filebtn" title="Upload the show's audio (MP3, WAV, OGG, M4A; up to 64 MB): playback then follows the music">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`;
+  const playBtns = `<button id="tp-play" title="Play/Pause (Space)">${ui.playing ? "⏸ Pause" : "▶ Play"}</button>
+        <button id="tp-stop" title="Stop and rewind to 0:00">⏹ Stop</button>
+        <span class="meta" id="tp-time">${clock(ui.playhead)} / ${clock(D)}</span>`;
+  // THE LOOKS AT: in Simulator view it is the old in-flow card that fills the
+  // window (the tracks/editor/cues are hidden, so there is nothing beneath it
+  // to protect); otherwise it is the fixed bottom dock - always on screen, in
+  // "compact" (transport + seek + looks row) or "collapsed" (transport only).
+  const looksHtml = ui.simView ? `
+    <div class="card"><h2>THE LOOKS AT — <span id="ph-label"></span></h2>
+      <div class="editor" id="transport" style="margin-bottom:8px">
+        ${playBtns}
+        <button id="tl-simview" title="Return the tracks and cue list to the screen">Timeline view</button>
+        <span style="flex:1"></span>
+        ${musicHtml}
+      </div>
+      <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
+      <div class="thumbs" id="thumbs" style="margin-top:8px"></div>
+    </div>` : `
+    <div id="tl-dock" class="${ui.dock === "collapsed" ? "collapsed" : "compact"}">
+      <div class="tl-dock-head">
+        <span class="tl-dock-title">THE LOOKS AT<b id="ph-label"></b></span>
+        ${playBtns}
+        ${ui.dock === "collapsed" ? "" : `
+        <button id="tl-simview" title="Hide the tracks and cue list so the looks and transport fill the screen">Simulator view</button>
+        <span style="flex:1"></span>
+        ${musicHtml}`}
+        <button id="tl-dock-toggle" title="${ui.dock === "collapsed" ? "Expand the looks row" : "Collapse to just the transport bar"}">
+          ${ui.dock === "collapsed" ? "▴ Looks" : "▾ Collapse"}</button>
+      </div>
+      ${ui.dock === "collapsed" ? "" : `
+      <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
+      <div class="thumbs" id="thumbs"></div>`}
+    </div>`;
 
   root.innerHTML = `
     <div class="toolbar">
@@ -803,56 +904,60 @@ function renderTimeline() {
         <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
-        hatched = refreshing · solid = held until End</div>
+        hatched = refreshing · solid = held until End · Esc deselects</div>
     </div>
     <div id="tl-editing"${ui.simView ? ' style="display:none"' : ""}>
-      <div class="card">
-        <div class="tl-wrap">
-          <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div></div>
-          ${rows}
-          <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"></div></div>
+      <div class="tl-left">
+        <div class="card">
+          <div class="tl-wrap">
+            <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div></div>
+            ${rows}
+            <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"></div></div>
+          </div>
+        </div>
+        <div class="card"><h2>CUES (${all.length}) ${bad ? `<span style="color:var(--err)">— ${bad} PROBLEMS</span>` : all.length ? `<span class="okline">— ✓ NO PROBLEMS</span>` : ""}</h2>
+          ${show.warnings.map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
+          <table><thead><tr><th>START</th><th>COMPLETE</th><th>END</th><th>ITEM</th><th>UNIT</th><th>DESIGN</th><th>TRANSITION</th><th>STATUS</th></tr></thead><tbody>
+          ${all.map(c => { const it = state.items.find(i => i.item === c.item); const d = it?.designs.find(x => x.name === c.design);
+            const sw = sweepOf(c);
+            const endInfo = it ? endOf(it, c) : { value: state.show.duration };
+            return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}">
+            <td><b>${c.at <= 0 ? "preset" : clock(c.at)}</b></td>
+            <td>${c.at <= 0 ? clock(0) : clock(c.complete)}</td>
+            <td>${clock(endInfo.value)}</td>
+            <td>${esc(itemFull(it) || c.item)}</td>
+            <td>${esc(it?.unit || "-")}</td>
+            <td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}</td>
+            <td>${sw.sequence !== "natural" && sw.span_s > 0 ? `${esc(seqLabel(sw.sequence))} ${sw.span_s.toFixed(1)} s${c.transition === "custom" ? " (custom)" : " (design)"}` : "—"}</td>
+            <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
+            || `<tr><td class="meta" colspan="8">No cues yet</td></tr>`}
+          </tbody></table>
+          <div class="meta" style="margin-top:6px">Shortest interval per unit (one send to the next): ${Object.entries(show.min_interval).map(([u, s]) => `${esc(u)} ${Math.ceil(s)} s`).join(" · ")}</div>
         </div>
       </div>
-      <div class="card"><h2>EDIT CUE</h2>${renderCueEditor(cue, cueItem)}</div>
-    </div>
-    <div class="card"><h2>THE LOOKS AT — <span id="ph-label"></span></h2>
-      <div class="editor" id="transport" style="margin-bottom:8px">
-        <button id="tp-play" title="Play/Pause (Space)">${ui.playing ? "⏸ Pause" : "▶ Play"}</button>
-        <button id="tp-stop" title="Stop and rewind to 0:00">⏹ Stop</button>
-        <span class="meta" id="tp-time">${clock(ui.playhead)} / ${clock(D)}</span>
-        <button id="tl-simview" title="Hide the tracks and cue list so the looks and transport fill the screen">${ui.simView ? "Timeline view" : "Simulator view"}</button>
-        <span style="flex:1"></span>
-        ${music
-          ? `<span class="meta">${esc(music.name)} (${fmtSize(music.size)})</span>
-             <label class="filebtn" title="Upload another audio file for the show (MP3, WAV, OGG, M4A; up to 64 MB)">Replace music<input type="file" id="tp-music-replace" accept="audio/*"></label>
-             <button id="tp-music-remove" class="danger">Remove</button>`
-          : `<label class="filebtn" title="Upload the show's audio (MP3, WAV, OGG, M4A; up to 64 MB): playback then follows the music">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`}
+      <div class="card" id="tl-editor-card">
+        <div class="card-head-toggle" id="tl-editor-toggle" title="${ui.editorOpen ? "Fold" : "Expand"} EDIT CUE">
+          <h2>EDIT CUE${cue ? ` · ${esc(itemFull(cueItem))}` : ""}</h2>
+          <button class="chev" id="tl-editor-fold" tabindex="-1">${ui.editorOpen ? "▾" : "▸"}</button>
+        </div>
+        ${ui.editorOpen ? renderCueEditor(cue, cueItem) : ""}
       </div>
-      <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
-      <div class="thumbs" id="thumbs" style="margin-top:8px"></div>
     </div>
-    <div id="tl-cues"${ui.simView ? ' style="display:none"' : ""}>
-    <div class="card"><h2>CUES (${all.length}) ${bad ? `<span style="color:var(--err)">— ${bad} PROBLEMS</span>` : all.length ? `<span class="okline">— ✓ NO PROBLEMS</span>` : ""}</h2>
-      ${show.warnings.map(w => `<div class="warn">⚠ ${esc(w)}</div>`).join("")}
-      <table><thead><tr><th>START</th><th>COMPLETE</th><th>END</th><th>ITEM</th><th>UNIT</th><th>DESIGN</th><th>TRANSITION</th><th>STATUS</th></tr></thead><tbody>
-      ${all.map(c => { const it = state.items.find(i => i.item === c.item); const d = it?.designs.find(x => x.name === c.design);
-        const sw = sweepOf(c);
-        const endInfo = it ? endOf(it, c) : { value: state.show.duration };
-        return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}">
-        <td><b>${c.at <= 0 ? "preset" : clock(c.at)}</b></td>
-        <td>${c.at <= 0 ? clock(0) : clock(c.complete)}</td>
-        <td>${clock(endInfo.value)}</td>
-        <td>${esc(itemFull(it) || c.item)}</td>
-        <td>${esc(it?.unit || "-")}</td>
-        <td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}</td>
-        <td>${sw.sequence !== "natural" && sw.span_s > 0 ? `${esc(seqLabel(sw.sequence))} ${sw.span_s.toFixed(1)} s${c.transition === "custom" ? " (custom)" : " (design)"}` : "—"}</td>
-        <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
-        || `<tr><td class="meta" colspan="8">No cues yet</td></tr>`}
-      </tbody></table>
-      <div class="meta" style="margin-top:6px">Shortest interval per unit (one send to the next): ${Object.entries(show.min_interval).map(([u, s]) => `${esc(u)} ${Math.ceil(s)} s`).join(" · ")}</div>
-    </div>
-    </div>`;
+    ${looksHtml}`;
   renderThumbs(THUMBS.timeline, ui.playhead);
+  syncDockSpacing();
+}
+// The dock is `position: fixed`, so #content's own bottom padding must grow to
+// match it or the last card that scrolls (CUES) would end up hidden underneath
+// it; measured (not hard-coded) so a head row that wraps on a narrow window
+// still gets the right amount of room. Also feeds the sticky EDIT CUE card's
+// max-height (--tl-dock-h), so it can never grow down behind the dock either.
+function syncDockSpacing() {
+  const content = $("#content"), dock = $("#tl-dock");
+  if (!content) return;
+  const h = dock ? Math.ceil(dock.getBoundingClientRect().height) : 0;
+  content.style.paddingBottom = dock ? (h + 24) + "px" : "";
+  document.documentElement.style.setProperty("--tl-dock-h", h + "px");
 }
 // Items sharing a LOOK number are one outfit (a top and a skirt sewn to the
 // same Radxa) and share one cell, stacked; an item with no LOOK number gets
@@ -975,7 +1080,9 @@ window.addEventListener("resize", () => {
   if (resizeScheduled) return;
   resizeScheduled = true;
   requestAnimationFrame(() => { resizeScheduled = false;
-    if (ui.tab === "timeline") layoutLooks(THUMBS.timeline);
+    // A head row that wraps to two lines at a narrow width changes the dock's
+    // own height, so re-measure it (and the sticky editor's budget) too.
+    if (ui.tab === "timeline") { layoutLooks(THUMBS.timeline); syncDockSpacing(); }
     else if (ui.tab === "fleet") layoutLooks(THUMBS.fleet);
   });
 });
@@ -1050,7 +1157,7 @@ function renderTransport() {
 function haltPlaybackAt(t) {
   ui.playhead = t;
   updatePlayheadDom(t);
-  updateThumbColors(t, THUMBS.timeline);
+  if ($("#thumbs")) updateThumbColors(t, THUMBS.timeline);   // absent while the dock is collapsed
   pausePlayback();
 }
 let lastThumbAt = 0;
@@ -1070,7 +1177,9 @@ function tick() {
   ui.playhead = t;
   updatePlayheadDom(t);
   const now = performance.now();
-  if (now - lastThumbAt >= 100) { lastThumbAt = now; updateThumbColors(t, THUMBS.timeline); }
+  // While the dock is collapsed #thumbs isn't in the DOM at all - skip the
+  // (otherwise harmless but pointless) write to a detached cache.
+  if (now - lastThumbAt >= 100 && $("#thumbs")) { lastThumbAt = now; updateThumbColors(t, THUMBS.timeline); }
   requestAnimationFrame(tick);
 }
 function startPlayback() {
@@ -1483,12 +1592,24 @@ document.addEventListener("keydown", e => {
   e.preventDefault();
   step(key === "y" || e.shiftKey ? "redo" : "undo");
 });
+// Esc deselects the cue (closes EDIT CUE back to its hint) - not while typing
+// in one of its own fields, where Esc should stay ordinary browser behaviour.
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (["input", "textarea", "select"].includes(tag)) return;
+  if (ui.tab !== "timeline" || ui.cue === null) return;
+  ui.cue = null;
+  renderTimeline();
+});
 document.addEventListener("click", async e => {
   if (Date.now() - draggedAt < 400) return;   // the tail of a drag, not a click
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
+  if (e.target.id === "tl-dock-toggle") { ui.dock = ui.dock === "collapsed" ? "compact" : "collapsed"; saveDockPref(); renderTimeline(); return; }
+  if (e.target.closest("#tl-editor-toggle")) { ui.editorOpen = !ui.editorOpen; renderTimeline(); return; }
   if (e.target.id === "tp-music-remove") {
     if (confirm("Remove the loaded music?")) {
       const result = await api("/api/music/remove", {});
@@ -1586,6 +1707,7 @@ document.addEventListener("click", async e => {
   const cueEl = e.target.closest("[data-cue]");
   if (cueEl) {
     ui.cue = cueEl.dataset.cue;
+    ui.editorOpen = true;               // clicking a cue always opens its editor
     const c = state.show.cues.find(x => x.id === ui.cue);
     if (c) ui.playhead = Math.min(state.show.duration, Math.round(c.complete));
     renderTimeline(); return;
@@ -1618,7 +1740,7 @@ document.addEventListener("click", async e => {
     const mine = cuesOf(item);
     const next = item.designs.find(d => !mine.some(c => c.design === d.name)) || item.designs[0];
     const id = "c" + Math.random().toString(36).slice(2, 10);
-    ui.cue = id; ui.playhead = at;
+    ui.cue = id; ui.playhead = at; ui.editorOpen = true;
     await saveShow([...state.show.cues, { id, item: item.item, at, design: next.name,
                                           partial: designState(next) === "partial" }]);
     return;
@@ -1924,6 +2046,7 @@ document.addEventListener("pointerup", async () => {
   if (!done || !done.moved) return;
   draggedAt = Date.now();                     // the click that follows is part of the drag
   ui.cue = done.cue.id;
+  ui.editorOpen = true;
   if (done.at === undefined || done.at === done.cue.at) { renderTimeline(); return; }
   ui.playhead = done.at;
   await saveShow(state.show.cues.map(c => c.id === done.cue.id ? { ...c, at: done.at } : c));
