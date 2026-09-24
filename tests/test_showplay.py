@@ -175,6 +175,44 @@ def test_next_is_t0_moved_earlier(rig):
     assert 0 <= show_times(bus)[1] - (t0_next + 5.0) < 0.05
 
 
+def test_a_forward_jump_over_an_armed_cue_disarms_it_instead_of_firing_it(rig):
+    # SEEK/NEXT can jump clean past a cue that was already armed for the
+    # old T0. Left alone it would fire as scheduled - the wrong picture,
+    # since the new T0 says a later cue (q02) is the one due now.
+    player, session, runner, bus, _ = rig
+    player.load(make_show(sents=(-REFRESH, 0.8, 1.7), duration=30))
+    player.preset()
+    assert wait_until(lambda: player.applied == "q00")
+    t0 = time.monotonic() + 0.2
+    player.run(t0)
+    assert wait_until(lambda: session.phase == "armed")     # q01 loaded, not yet due
+    assert session.fire_at is not None
+    # Forward past BOTH q01 and q02: current is q02, and without the fix
+    # the stale, still-armed q01 would fire first regardless.
+    player.run(time.monotonic() - 2.0)
+    assert session.fire_at is None                          # disarmed at once
+    assert wait_until(lambda: player.applied == "q02", timeout=4)
+    # q01 was never actually shown: just the preset, then q02 directly.
+    assert len(show_times(bus)) == 2
+
+
+def test_a_backward_seek_re_times_an_armed_cue_instead_of_disarming_it(rig):
+    # The mirror case (§2.4: a backward seek lands units inside the show,
+    # never skipping a cue): the armed cue keeps its identity, only its
+    # fire time moves - _send()'s own re-timing, not the new disarm above.
+    player, session, runner, bus, _ = rig
+    player.load(make_show(sents=(-REFRESH, 5.0, 9.0), duration=30))
+    player.run(time.monotonic() + 0.1)
+    t0_close = time.monotonic() + 0.4 - 5.0                 # q01 due in 0.4 s: armed
+    player.run(t0_close)
+    assert wait_until(lambda: session.phase == "armed"
+                      and session.cue_id.endswith(("q01", "q01+")))
+    t0_back = t0_close - 3.0                                # backward: q01 now 3.4 s away
+    player.run(t0_back)
+    assert wait_until(lambda: session.phase == "armed"
+                      and abs((session.fire_at or 0) - (t0_back + 5.0)) < 0.05)
+
+
 def test_joining_mid_show_sends_the_whole_picture(rig):
     player, session, runner, bus, _ = rig
     # Cue q02 (partial) is already past: what must show is 3s on board 1
