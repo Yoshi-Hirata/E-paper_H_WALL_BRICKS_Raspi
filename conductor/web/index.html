@@ -9,11 +9,13 @@
   --bg: #f4f4f6; --panel: #ffffff; --ink: #1d1d24; --dim: #6b6b78;
   --line: #dcdce3; --accent: #0a62c9; --ok: #12834a; --err: #c62828;
   --warn: #a15c00; --select: #e6f0fc; --garment: #ececf0; --hold: #dfe7f3;
+  --ph-outline: none;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #15161a; --panel: #1e2026; --ink: #ececf1; --dim: #9a9aa8;
     --line: #33353f; --accent: #6db3ff; --ok: #5fd896; --err: #ff7b7b;
-    --warn: #ffb860; --select: #243347; --garment: #2a2c35; --hold: #2b3444; }
+    --warn: #ffb860; --select: #243347; --garment: #2a2c35; --hold: #2b3444;
+    --ph-outline: #fff; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.5 "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
@@ -122,7 +124,7 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .tl-name { font-size: 13px; font-weight: 600; padding-right: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-name small { display: block; font-weight: 400; color: var(--dim); font-size: 11px; }
 .tl-track { position: relative; height: 30px; background: var(--bg); border-radius: 4px; cursor: copy; }
-.tl-ruler { position: relative; height: 20px; font-size: 11px; color: var(--dim); cursor: pointer; }
+.tl-ruler { position: relative; height: 20px; font-size: 11px; color: var(--dim); cursor: ew-resize; }
 .tl-ruler i { position: absolute; top: 0; height: 20px; border-left: 1px solid var(--line); pointer-events: none; }
 .tl-ruler span { position: absolute; top: 1px; transform: translateX(3px); pointer-events: none; }
 .cue-band { position: absolute; top: 3px; bottom: 3px; border-radius: 3px 0 0 3px; cursor: pointer;
@@ -136,6 +138,20 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .cue-hold .chips b { width: 7px; height: 10px; display: inline-block; border: 1px solid rgba(128,128,128,.5); }
 .tl-wrap { position: relative; }
 #playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--err); pointer-events: none; z-index: 3; }
+/* The playhead IS the seek control (round: playhead-as-seek, replacing the
+   dock's #ph slider, which never lined up with this line - the ruler starts
+   150px in for the name column, the old slider spanned the whole dock).
+   #ph-head sits only near the ruler's own height, well clear of the track
+   rows below (which keep their own click-to-add-cue/drag-to-move-cue
+   behaviour) - pointer-events:auto here, none on #playhead itself. A 6px
+   side pad each way on top of the 14px triangle clears the "hit area >= 24px"
+   ask without widening what is actually drawn. */
+#ph-head { position: absolute; top: -11px; left: 50%; transform: translateX(-50%); z-index: 4;
+  display: flex; align-items: flex-start; gap: 4px; cursor: ew-resize; pointer-events: auto;
+  padding: 0 6px; margin: 0 -6px; }
+#ph-head svg { display: block; flex: none; }
+#ph-time { font-size: 10.5px; font-variant-numeric: tabular-nums; background: var(--panel); color: var(--err);
+  padding: 1px 4px; border-radius: 3px; line-height: 1.3; white-space: nowrap; margin-top: -1px; }
 .editor { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .editor label { font-size: 12px; color: var(--dim); display: flex; gap: 6px; align-items: center; }
 .editor input[type=text] { width: 70px; }
@@ -270,7 +286,6 @@ body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-ev
 .tl-dock-title { font-size: 11px; letter-spacing: .08em; color: var(--dim); font-weight: 600; white-space: nowrap; }
 .tl-dock-title b { font-size: 13px; letter-spacing: normal; color: var(--ink); font-weight: 600;
   font-variant-numeric: tabular-nums; margin-left: 6px; }
-#tl-dock input[type=range] { margin-top: 6px; }
 #tl-dock .thumbs { margin-top: 6px; }
 #tl-dock-mode { white-space: nowrap; }
 /* A 6px grab strip across the very top of the dock, inside its own top
@@ -337,7 +352,10 @@ let state = null;
 // so renderTimeline()'s innerHTML= (fired by every edit) can never interrupt it.
 const player = new Audio();
 let playerUrl = null;               // the last URL assigned to player.src (reassign only when it changes)
-let seeking = false;                // true while the operator is dragging #ph: the loop must not fight it
+// true while the operator is dragging a seek control - the playhead's own
+// head, the ruler (Timeline view), or #ph (Simulator view, the only place it
+// still exists): the tick loop must not fight an in-progress scrub.
+let seeking = false;
 // The garment-thumbnail row is drawn in two places (the Timeline simulator and the
 // live LOOK row on the Units tab) from the same functions, parameterised by which
 // view to draw into; each view keeps its own DOM cache so switching tabs never
@@ -921,9 +939,7 @@ function renderTimeline() {
         <button id="tl-dock-toggle" title="${ui.dock === "collapsed" ? "Expand the looks row" : "Collapse to just the transport bar"}">
           ${ui.dock === "collapsed" ? "▴ Looks" : "▾ Collapse"}</button>
       </div>
-      ${ui.dock === "collapsed" ? "" : `
-      <input type="range" id="ph" min="0" max="${D}" step="1" value="${ui.playhead}">
-      <div class="thumbs" id="thumbs"></div>`}
+      ${ui.dock === "collapsed" ? "" : `<div class="thumbs" id="thumbs"></div>`}
     </div>`;
 
   root.innerHTML = `
@@ -944,7 +960,12 @@ function renderTimeline() {
           <div class="tl-wrap">
             <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div></div>
             ${rows}
-            <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"></div></div>
+            <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead">
+              <div id="ph-head" title="Drag to scrub, or press and drag anywhere on the ruler">
+                <svg width="14" height="12" viewBox="0 0 14 12"><path d="M1 1 H13 L7 11 Z" fill="var(--err)" stroke="var(--ph-outline)" stroke-width="1"/></svg>
+                <span id="ph-time"></span>
+              </div>
+            </div></div>
           </div>
         </div>
         <div class="card"><h2>CUES (${all.length}) ${bad ? `<span style="color:var(--err)">— ${bad} PROBLEMS</span>` : all.length ? `<span class="okline">— ✓ NO PROBLEMS</span>` : ""}</h2>
@@ -1203,6 +1224,7 @@ function updatePlayheadDom(t) {
   const label = $("#ph-label"); if (label) label.textContent = clock(t);
   const marker = $("#playhead"); if (marker) marker.style.left = (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
   const tpTime = $("#tp-time"); if (tpTime) tpTime.textContent = `${clock(t)} / ${clock(D)}`;
+  const phTime = $("#ph-time"); if (phTime) phTime.textContent = clock(t);
 }
 function renderTransport() {
   const btn = $("#tp-play"); if (btn) btn.textContent = ui.playing ? "⏸ Pause" : "▶ Play";
@@ -1227,6 +1249,12 @@ function tick() {
   // treat that the same as our own pause instead of spinning forever on a
   // currentTime that no longer advances.
   if (playerUrl && player.paused) { pausePlayback(); return; }
+  // A manual scrub (the playhead head, or the ruler) is the sole source of
+  // truth for ui.playhead while it's in progress - the audio seek behind it
+  // is throttled, so without this guard tick() would yank the marker back to
+  // the last-seeked position every frame in between (fight round: playhead
+  // is the seek control).
+  if (seeking) { requestAnimationFrame(tick); return; }
   const D = state.show.duration;
   let t = playerUrl ? player.currentTime : (performance.now() - ui.anchor) / 1000 + ui.startT;
   if (t >= D) { haltPlaybackAt(D); return; }
@@ -1801,12 +1829,10 @@ document.addEventListener("click", async e => {
                                           partial: designState(next) === "partial" }]);
     return;
   }
-  const ruler = e.target.closest("#ruler");
-  if (ruler) {
-    const box = ruler.getBoundingClientRect();
-    ui.playhead = Math.max(0, Math.min(state.show.duration, Math.round((e.clientX - box.left) / box.width * state.show.duration)));
-    $("#ph").value = ui.playhead; renderThumbs(THUMBS.timeline, ui.playhead); return;
-  }
+  // The ruler (click-to-seek and drag-to-scrub) and the playhead's own head
+  // are handled on pointerdown/pointermove now, not here - see "playhead is
+  // the seek control" below; a plain click on either is just a zero-distance
+  // drag and was already applied there.
   if (e.target.closest("select, input, button, label")) return;
   const card = e.target.closest(".item");
   if (card) { ui.item = card.dataset.item; ui.design = null; ui.board = null; ui.mode = "design"; render(); }
@@ -2029,6 +2055,58 @@ document.addEventListener("input", e => {
   updatePlayheadDom(t);
   updateThumbColors(t, THUMBS.timeline);
 });
+// The playhead IS the seek control (round: playhead is the seek control) -
+// its own head, or a press anywhere on the ruler, scrubs by mapping pointer
+// x through the same px -> seconds the ruler's old click-to-seek used. The
+// dock's #ph slider is gone everywhere this is visible (its position never
+// lined up with the red line, which starts 150px in for the name column)
+// and lives on only in Simulator view, where there is nothing to misalign
+// with - see looksHtml in renderTimeline().
+function rulerSeconds(clientX) {
+  const ruler = $("#ruler"), D = state.show.duration;
+  if (!ruler) return ui.playhead;
+  const box = ruler.getBoundingClientRect();
+  return Math.max(0, Math.min(D, (clientX - box.left) / box.width * D));
+}
+// No innerHTML, no layout read/write beyond what updatePlayheadDom/
+// updateThumbColors already do per playback frame - safe to call on every
+// pointermove.
+function scrubTo(t) {
+  ui.playhead = t;
+  updatePlayheadDom(t);
+  updateThumbColors(t, THUMBS.timeline);
+}
+let phDrag = null;
+document.addEventListener("pointerdown", e => {
+  const target = e.target.closest("#ph-head, #ruler");
+  if (!target || e.button !== 0) return;
+  e.preventDefault();
+  seeking = true;                    // tick() must not fight this drag - see its own guard
+  phDrag = { lastSeekAt: 0 };
+  scrubTo(rulerSeconds(e.clientX));
+  try { target.setPointerCapture(e.pointerId); } catch {}
+});
+document.addEventListener("pointermove", e => {
+  if (!phDrag) return;
+  const t = rulerSeconds(e.clientX);
+  scrubTo(t);
+  // Seeking an <audio> element is not free - throttle it while dragging (a
+  // "scrub preview", playing or not) and do the exact final seek on release.
+  const now = performance.now();
+  if (playerUrl && now - phDrag.lastSeekAt >= 250) { phDrag.lastSeekAt = now; player.currentTime = t; }
+});
+document.addEventListener("pointerup", () => {
+  if (!phDrag) return;
+  phDrag = null;
+  const t = ui.playhead;
+  if (playerUrl) player.currentTime = t;   // exact final seek; the "seeked" listener clears `seeking`
+  else {
+    // No music: play (if running) from the dropped spot via the virtual
+    // clock tick() reads - the old slider's own resume behaviour.
+    if (ui.playing) { ui.anchor = performance.now(); ui.startT = t; }
+    seeking = false;
+  }
+});
 // Space toggles play/pause, except while typing, over a control that owns the
 // key, or off the Timeline tab (there is nothing to play/pause to look at).
 document.addEventListener("keydown", e => {
@@ -2039,6 +2117,22 @@ document.addEventListener("keydown", e => {
   if (ui.tab !== "timeline") return;
   e.preventDefault();
   togglePlayback();
+});
+// Arrow keys nudge the playhead (1 s, 5 s with Shift); Home jumps to 0:00 -
+// same guard as Space, so typing in a field never gets hijacked.
+document.addEventListener("keydown", e => {
+  if (!["ArrowLeft", "ArrowRight", "Home"].includes(e.key)) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (["input", "select", "textarea", "button"].includes(tag)) return;
+  if (ui.tab !== "timeline" || !state) return;
+  e.preventDefault();
+  const D = state.show.duration;
+  const t = e.key === "Home" ? 0
+    : Math.max(0, Math.min(D, ui.playhead + (e.shiftKey ? 5 : 1) * (e.key === "ArrowLeft" ? -1 : 1)));
+  scrubTo(t);
+  if (playerUrl) player.currentTime = t;
+  else if (ui.playing) { ui.anchor = performance.now(); ui.startT = t; }
 });
 document.addEventListener("mouseover", e => {
   const g = e.target.closest("g[data-k]");
