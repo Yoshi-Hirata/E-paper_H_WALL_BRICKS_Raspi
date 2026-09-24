@@ -93,9 +93,18 @@ def test_goldens_cover_every_sequence_and_rule(golden):
     assert seq_covered == set(sequence.SEQUENCES)
 
     kinds = {c["kind"] for c in golden["cases"]}
-    for expected_kind in ("fmt", "clock", "mmss", "map", "design", "check", "ranks",
+    for expected_kind in ("fmt", "canonical", "clock", "mmss", "map", "design", "check", "ranks",
                           "timeline", "state"):
         assert expected_kind in kinds, f"no golden cases of kind {expected_kind!r}"
+
+    # state-digest cases come from conductor/web/starter/*.csv (Q's
+    # committed real maps), not showdata/ - they must always be present
+    # and reproducible on any machine, one per starter item.
+    digest_cases = [c for c in golden["cases"] if c["kind"] == "state-digest"]
+    assert len(digest_cases) >= 10, "expected one state-digest case per starter item"
+    for case in digest_cases:
+        for name in case["project"]["files"]:
+            assert "showdata" not in name.lower()
 
     # The exact half-to-even landmark: Python rounds 2.25 to one decimal
     # as "2.2" (even), not the "2.3" a naive JS Math.round-based toFixed
@@ -122,27 +131,23 @@ def test_goldens_cover_every_sequence_and_rule(golden):
 
 
 def test_canonical_and_digest_match_a_recorded_table():
-    """A pinned table (computed once, by hand-inspecting the output) that
-    both tools/make_goldens.py's canonical()/digest64() and model.js's
-    SIM.fmt.canonical()/digest64() must reproduce - this is the browser
-    self-test's real cross-check, recorded here so a Python-only run
-    still catches a regression in the Python half."""
-    table = [
-        (0, "0", "af63ad4c86019caf"),
-        (5, "5", "af63a84c86019430"),
-        (-5, "-5", "07d00f07b497d7f7"),
-        (2.5, "2.500", "ac5b7dc41134559c"),
-        (0.5, "0.500", "d45564b0f53aea22"),
-        ("a", '"a"', "d4272417d7c77eea"),
-        ('a"b', '"a\\"b"', "aea405f405787fda"),
-        (True, "true", "5b5c98ef514dbfa5"),
-        (False, "false", "b5fae2c14238b978"),
-        (None, "null", "5b9bc4ba528108e4"),
-        ([1, 2, "x"], '[1,2,"x"]', "6893ac5ba04fa4f2"),
-        ({"b": 1, "a": 2}, '{"a":2,"b":1}', "f85f5878cbf2dc03"),
-        ("\u65e5\u672c\u8a9e", '"\\u65e5\\u672c\\u8a9e"', "9a5893e1cdc4beb6"),
+    """A pinned table (computed once, by hand-inspecting the output;
+    mg.CANONICAL_TABLE is the same list make_goldens.py turns into the
+    golden "canonical" cases, so there is exactly one list of inputs)
+    that both tools/make_goldens.py's canonical()/digest64() and
+    model.js's SIM.fmt.canonical()/digest64() must reproduce - the
+    browser self-test is the real cross-check; this catches a
+    regression in the Python half even without a browser."""
+    expect = [
+        ("0", "af63ad4c86019caf"), ("5", "af63a84c86019430"), ("-5", "07d00f07b497d7f7"),
+        ("2.500", "ac5b7dc41134559c"), ("0.500", "d45564b0f53aea22"),
+        ('"a"', "d4272417d7c77eea"), ('"a\\"b"', "aea405f405787fda"),
+        ("true", "5b5c98ef514dbfa5"), ("false", "b5fae2c14238b978"),
+        ("null", "5b9bc4ba528108e4"), ('[1,2,"x"]', "6893ac5ba04fa4f2"),
+        ('{"a":2,"b":1}', "f85f5878cbf2dc03"), ('"\\u65e5\\u672c\\u8a9e"', "9a5893e1cdc4beb6"),
     ]
-    for value, expect_canonical, expect_digest in table:
+    assert len(expect) == len(mg.CANONICAL_TABLE)
+    for value, (expect_canonical, expect_digest) in zip(mg.CANONICAL_TABLE, expect):
         got_canonical = mg.canonical(value)
         assert got_canonical == expect_canonical, value
         assert mg.digest64(got_canonical) == expect_digest, value

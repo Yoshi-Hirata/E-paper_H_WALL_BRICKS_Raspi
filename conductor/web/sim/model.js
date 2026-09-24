@@ -211,11 +211,21 @@
     if (v === true) return "true";
     if (v === false) return "false";
     if (typeof v === "number") {
-      return Number.isInteger(v) ? String(v === 0 ? 0 : v) : fixed(v, 3);
+      // Matches tools/make_goldens.py's canonical() exactly: a whole
+      // number under 1e15 prints as an int, anything else as
+      // fixed(x,3) - and, like Python's int(v) on inf/nan, a
+      // non-finite number is refused rather than silently printed.
+      if (!Number.isFinite(v)) throw new Error(`canonical: not a finite number: ${v}`);
+      return (Number.isInteger(v) && Math.abs(v) < 1e15) ? String(v === 0 ? 0 : v) : fixed(v, 3);
     }
     if (typeof v === "string") return canonicalString(v);
     if (Array.isArray(v)) return "[" + v.map(canonical).join(",") + "]";
     if (typeof v === "object") {
+      // Object.keys().sort() compares by UTF-16 code unit, which is
+      // code-point order only within the BMP - every key this model
+      // ever sorts (item/design names, "side|row|col" position keys)
+      // is ASCII, so this never matters in practice; never
+      // localeCompare regardless.
       const keys = Object.keys(v).sort();
       return "{" + keys.map(k => canonicalString(k) + ":" + canonical(v[k])).join(",") + "}";
     }
@@ -321,6 +331,15 @@
     return out + quote;
   }
 
+  // Python's str(v), for a raw JSON value that might be null/bool -
+  // str(None) is "None", not JS's String(null) === "null".
+  function pyStr(v) {
+    if (v === null || v === undefined) return "None";
+    if (v === true) return "True";
+    if (v === false) return "False";
+    return String(v);
+  }
+
   function pyRepr(v) {
     if (v === null || v === undefined) return "None";
     if (v === true) return "True";
@@ -415,6 +434,15 @@
     return null;
   }
 
+  // Python's two-argument max(a,b)/min(a,b) are `b if b>a else a` / `b if
+  // b<a else a` - order-dependent and NOT the same as Math.max/Math.min
+  // when NaN is involved (Math.max/min(NaN, x) is always NaN, regardless
+  // of argument order; Python's is not). Used at every boundary clamp
+  // that touches a value which could be junk (an unparsed "at"/span/
+  // refresh from hostile JSON).
+  function pyMax2(a, b) { return b > a ? b : a; }
+  function pyMin2(a, b) { return b < a ? b : a; }
+
   // ============================================================
   // SIM.look - port of conductor/look.py.
   //
@@ -495,7 +523,7 @@
     const sides = [];
     for (const s of base.scales) if (sides.indexOf(s.side) === -1) sides.push(s.side);
     const byPosition = {};
-    for (const s of base.scales) byPosition[s.position] = s;
+    for (const s of base.scales) byPosition[s.key] = s;
     return Object.assign({}, base, { boardNos, sides, byPosition });
   }
 
@@ -577,7 +605,10 @@
           }
         }
       }
-      scales.push({ side, row: rowNum, col, board_no: boardNo, socket, label, position: posKey });
+      // `key` is the §2.3 field name; `position` is kept as an alias
+      // (same string) in case anything still reads the older name.
+      scales.push({ side, row: rowNum, col, board_no: boardNo, socket, label,
+                    key: posKey, position: posKey });
     }
 
     if (!scales.length && !problems.length) problems.push(`${name}: no scales`);
@@ -738,7 +769,11 @@
   function dipSheet(map, ids) {
     const counts = {};
     map.scales.forEach(s => { counts[s.board_no] = (counts[s.board_no] || 0) + 1; });
-    const useIds = ids || boardIds(map);
+    // `ids or self.board_ids` in Python: an empty dict is falsy there,
+    // so {} (not just null/undefined) must also fall back - a plain
+    // JS `ids || boardIds(map)` would keep an empty object (objects are
+    // always truthy in JS).
+    const useIds = (ids && Object.keys(ids).length) ? ids : boardIds(map);
     return map.boardNos.map(boardNo => {
       const address = useIds[boardNo];
       const switches = [];
@@ -796,24 +831,28 @@
     if (num === null) return 0.0;
     const span = fmt.round(num, 2);
     if (Number.isNaN(span)) return 0.0;
-    return Math.min(SPAN_HARD_MAX_S, Math.max(0.0, span));
+    return pyMin2(SPAN_HARD_MAX_S, pyMax2(0.0, span));
   }
 
-  function ranks(map, sequence) {
+  // position key ("side|row|col") -> rank. This is conductor/sequence.py's
+  // own ranks() return shape (a dict); SIM.sequence.ranks() (below) is the
+  // §2.3 JS-facing form, an array in map.scales order, which is what
+  // render.js/flicker.js actually want to zip against map.scales.
+  function ranksByKey(map, sequence) {
     const scales = map.scales;
     const result = {};
     if (sequence === "natural" || !scales.length) {
-      scales.forEach(s => { result[s.position] = 0; });
+      scales.forEach(s => { result[s.key] = 0; });
       return result;
     }
     if (sequence === "top_down") {
       const top = Math.max(...scales.map(s => s.row));
-      scales.forEach(s => { result[s.position] = top - s.row; });
+      scales.forEach(s => { result[s.key] = top - s.row; });
       return result;
     }
     if (sequence === "bottom_up") {
       const hem = Math.min(...scales.map(s => s.row));
-      scales.forEach(s => { result[s.position] = s.row - hem; });
+      scales.forEach(s => { result[s.key] = s.row - hem; });
       return result;
     }
     if (sequence === "left_right" || sequence === "right_left") {
@@ -822,7 +861,7 @@
         const first = Math.min(...cols), last = Math.max(...cols);
         const fromWearersRight = (side === "front") === (sequence === "left_right");
         scales.forEach(s => {
-          if (s.side === side) result[s.position] = fromWearersRight ? last - s.col : s.col - first;
+          if (s.side === side) result[s.key] = fromWearersRight ? last - s.col : s.col - first;
         });
       });
       return result;
@@ -837,22 +876,29 @@
       scales.forEach(s => {
         const dx = s.col + shiftAt(map, s.side, s.row) - cx;
         const dy = s.row - cy;
-        result[s.position] = fmt.roundInt(Math.hypot(dx, dy));
+        result[s.key] = fmt.roundInt(Math.hypot(dx, dy));
       });
       return result;
     }
     throw new Error(`unknown sequence ${sequence}`);
   }
 
-  function ranksByKey(map, sequence) { return ranks(map, sequence); }
+  function ranks(map, sequence) {
+    const byKey = ranksByKey(map, sequence);
+    return map.scales.map(s => byKey[s.key]);
+  }
 
   function spanS(map, sequence, span) {
     if (sequence === "natural") return 0.0;
-    const values = Object.values(ranks(map, sequence));
+    const values = Object.values(ranksByKey(map, sequence));
     const maxRank = values.length ? Math.max(...values) : 0;
     if (maxRank === 0) return 0.0;
+    // Python's `round(float(span), 2)` never catches float()'s own
+    // TypeError/ValueError here - junk `span` must throw, not silently
+    // become 0 or NaN.
     const num = toNumber(span);
-    return fmt.round(num === null ? NaN : num, 2);
+    if (num === null) throw new Error(`not a number: ${JSON.stringify(span)}`);
+    return fmt.round(num, 2);
   }
 
   const sequenceApi = {
@@ -903,7 +949,7 @@
     if (gap === undefined) gap = GAP_AFTER_REFRESH_S;
     if (sweep === undefined) sweep = false;
     const writeTerm = boards * UNIT_SAVE_S_PER_BOARD * (sweep ? 2 : 1) + UNIT_PREP_MARGIN_S;
-    return Math.max(refresh + gap, writeTerm);
+    return pyMax2(refresh + gap, writeTerm);
   }
 
   function spanOf(cue) {
@@ -911,7 +957,7 @@
     if (!raw) return 0.0;             // falsy: undefined/null/0/""/false, same as Python's `or 0.0`
     const num = toNumber(raw);
     if (num === null) return 0.0;
-    return Math.max(0.0, num);
+    return pyMax2(0.0, num);
   }
 
   function cleanRefresh(value) {
@@ -940,8 +986,8 @@
   function ends(cues, refresh, duration) {
     if (refresh === undefined) refresh = REFRESH_S;
     if (duration === undefined) duration = DEFAULT_DURATION_S;
-    const result = {};
-    const byItem = {};
+    const result = Object.create(null);     // cue ids are attacker-influenced; never a plain {}
+    const byItem = Object.create(null);
     cues.forEach(c => { const k = c.item.toLowerCase(); (byItem[k] = byItem[k] || []).push(c); });
     Object.keys(byItem).forEach(k => {
       const ordered = byItem[k].slice().sort((a, b) => times(a, refresh)[0] - times(b, refresh)[0]);
@@ -966,13 +1012,13 @@
     (cuesRaw || []).forEach(raw => {
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return;
       const transition = raw.transition;
-      const id = String(raw.id || `c${result.length}`).slice(0, 40);
-      const item = String(raw.item !== undefined ? raw.item : "");
+      const id = pyStr(raw.id || `c${result.length}`).slice(0, 40);
+      const item = pyStr(raw.item !== undefined ? raw.item : "");
       const atParsed = parseClock(raw.at !== undefined ? raw.at : 0);
-      const at = Math.max(0.0, fmt.round(atParsed, 1));
+      const at = pyMax2(0.0, fmt.round(atParsed, 1));
       result.push({
         id, item, at,
-        design: String(raw.design !== undefined ? raw.design : ""),
+        design: pyStr(raw.design !== undefined ? raw.design : ""),
         partial: Boolean(raw.partial !== undefined ? raw.partial : false),
         refresh_s: cleanRefresh(raw.refresh_s),
         transition: (transition === "design" || transition === "custom") ? transition : "design",
@@ -1010,7 +1056,7 @@
     if (duration === undefined) duration = DEFAULT_DURATION_S;
     if (refresh === undefined) refresh = REFRESH_S;
     if (gap === undefined) gap = GAP_AFTER_REFRESH_S;
-    const problems = {};
+    const problems = Object.create(null);   // cue ids are attacker-influenced; never a plain {}
     cues.forEach(c => { problems[c.id] = []; });
     const warnings = [];
 
@@ -1044,13 +1090,13 @@
 
     const seen = {};
     cues.forEach(cue => {
-      const key = cue.item.toLowerCase() + " " + times(cue, refresh)[0];
+      const key = JSON.stringify([cue.item.toLowerCase(), times(cue, refresh)[0]]);
       if (key in seen) problems[cue.id].push(`${cue.item} already has a cue sent at the same moment`);
       else seen[key] = cue.id;
     });
 
     const overlapped = new Set();
-    const byItem2 = {};
+    const byItem2 = Object.create(null);
     cues.forEach(c => { const k = c.item.toLowerCase(); (byItem2[k] = byItem2[k] || []).push(c); });
     Object.keys(byItem2).forEach(k => {
       const ordered = byItem2[k].slice().sort((a, b) => times(a, refresh)[0] - times(b, refresh)[0]);
@@ -1065,7 +1111,7 @@
       }
     });
 
-    const byUnit = {};
+    const byUnit = Object.create(null);
     cues.forEach(cue => {
       const item = items[cue.item.toLowerCase()];
       if (item) {

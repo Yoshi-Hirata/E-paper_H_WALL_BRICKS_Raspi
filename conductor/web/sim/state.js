@@ -29,7 +29,7 @@
   const timeline = SIM.timeline;
   const _int = SIM._internal;
 
-  const LOOK_NO = /look\s*0*(\d+)/i;
+  const LOOK_NO = /^look\s*0*(\d+)/i;   // Python's re.match anchors at the start only
   const DEFAULT_DURATION_S = timeline.DEFAULT_DURATION_S;
   const REFRESH_S = timeline.REFRESH_S;
 
@@ -76,18 +76,31 @@
     });
   }
 
+  // Python int(x): truncates an already-numeric x, parses a strict
+  // whole-number string, else null (matching int()'s ValueError).
+  function pyIntCoerce(v) {
+    if (typeof v === "number") return Number.isFinite(v) ? Math.trunc(v) : null;
+    if (typeof v === "string") return _int.pyIntStrict(v);
+    return null;
+  }
+
   // {old board_no in the map CSV: the number the garment really has},
   // for one item - Workspace._own_boards, restricted to one item and
   // taking `show` (project.show) rather than a loaded show.json.
+  // Python's version is all-or-nothing: a dict comprehension that hits
+  // one bad int() aborts entirely (its except clause returns {}), it
+  // does not keep the entries that happened to convert.
   function ownBoardsFor(show, item) {
+    const perItem = show && show.boards && typeof show.boards === "object"
+      && !Array.isArray(show.boards) ? show.boards[item] : null;
+    if (!perItem || typeof perItem !== "object" || Array.isArray(perItem)) return {};
     const result = {};
-    const perItem = show && show.boards && typeof show.boards === "object" ? show.boards[item] : null;
-    if (!perItem || typeof perItem !== "object") return result;
-    Object.keys(perItem).forEach(oldKey => {
-      const old = Number(oldKey);
-      const neu = Number(perItem[oldKey]);
-      if (Number.isFinite(old) && Number.isFinite(neu)) result[old] = neu;
-    });
+    for (const oldKey of Object.keys(perItem)) {
+      const old = pyIntCoerce(oldKey);
+      const neu = pyIntCoerce(perItem[oldKey]);
+      if (old === null || neu === null) return {};
+      result[old] = neu;
+    }
     return result;
   }
 
@@ -98,7 +111,13 @@
     const names = Object.keys(files).sort();
 
     const labels = show.labels && typeof show.labels === "object" ? show.labels : {};
-    const transitions = cleanTransitions(show.transitions);
+    // server.py's state() uses `show.get("transitions") or {}` RAW - no
+    // _clean_transitions() there (that only runs on import_show). Every
+    // consumer (designTransition() per design, timeline.resolve() per
+    // cue via applyTransitions()) does its own per-entry cleaning, so
+    // the show's own unclean entries (a zero span, a span over 30 s)
+    // still show up in state.transitions exactly as authored.
+    const transitions = show.transitions || {};
 
     const items = Object.create(null);      // lower(item) -> entry
     const maps = Object.create(null);       // lower(item) -> map
@@ -211,11 +230,11 @@
     // ---- sweep sequences, for the page's own sweep preview ----
     Object.keys(maps).forEach(key => {
       const map = maps[key];
-      const order = map.scales.map(s => s.position);
+      const order = map.scales.map(s => s.key);
       items[key].sequences = {};
       sequence.SEQUENCES.forEach(name => {
         if (name === "natural") return;
-        const ranked = sequence.ranks(map, name);
+        const ranked = sequence.ranksByKey(map, name);
         items[key].sequences[name] = order.map(p => ranked[p]);
       });
     });
@@ -248,10 +267,18 @@
       facts[key] = { item: entry.item, unit: entry.unit, boards: entry.boards.length, designs };
     });
 
-    const duration = typeof show.duration === "number" && Number.isFinite(show.duration)
-      ? show.duration : (_int.toNumber(show.duration) !== null ? _int.toNumber(show.duration) : DEFAULT_DURATION_S);
-    const refresh = typeof show.refresh_s === "number" && Number.isFinite(show.refresh_s)
-      ? show.refresh_s : (_int.toNumber(show.refresh_s) !== null ? _int.toNumber(show.refresh_s) : REFRESH_S);
+    // `float(show.get("duration", DEFAULT))`: the default only applies
+    // when the KEY IS ABSENT - a present-but-junk value (a string that
+    // isn't a number, null, an object) must throw, not silently fall
+    // back to the default.
+    function numberOr(key, defaultValue) {
+      if (!Object.prototype.hasOwnProperty.call(show, key)) return defaultValue;
+      const num = _int.toNumber(show[key]);
+      if (num === null) throw new Error(`not a number: ${JSON.stringify(show[key])}`);
+      return num;
+    }
+    const duration = numberOr("duration", DEFAULT_DURATION_S);
+    const refresh = numberOr("refresh_s", REFRESH_S);
 
     const cues = timeline.clean(show.cues);
     timeline.applyTransitions(cues, transitions);

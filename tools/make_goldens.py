@@ -1,7 +1,10 @@
 """tools/make_goldens.py - the Python side of the JS/Python cross-check.
 
-Reads tests/fixtures/sim/*.csv (and, when present, showdata/files/*.csv)
-and writes tests/goldens/model.json and conductor/web/sim/goldens.js -
+Reads tests/fixtures/sim/*.csv and, when present, conductor/web/starter/
+*.csv (the 10 items' committed real maps and sample grids - never
+showdata/, which is git-ignored and only exists on the show PC: the
+goldens must reproduce identically from committed files alone), and
+writes tests/goldens/model.json and conductor/web/sim/goldens.js -
 the SAME data, so a browser that never runs Python can still prove its
 JS model matches conductor/look.py, conductor/sequence.py and
 conductor/timeline.py exactly, digit for digit and string for string.
@@ -33,7 +36,12 @@ from conductor.look import Design, LookError, LookMap  # noqa: E402
 from conductor.server import Workspace  # noqa: E402
 
 FIXTURES_DIR = ROOT / "tests" / "fixtures" / "sim"
-SHOWDATA_FILES = ROOT / "showdata" / "files"
+# The real-data state-digest cases come from the committed starter files
+# (Coder Q's conductor/web/starter/*.csv - the 10 items' maps and sample
+# grids), never from showdata/ (git-ignored, client data that only
+# exists on the show PC): goldens must be reproducible from committed
+# files alone, or `make_goldens.py --check` fails on any other machine.
+STARTER_DIR = ROOT / "conductor" / "web" / "starter"
 GOLDEN_JSON = ROOT / "tests" / "goldens" / "model.json"
 GOLDEN_JS = ROOT / "conductor" / "web" / "sim" / "goldens.js"
 
@@ -99,8 +107,9 @@ def canonical(v) -> str:
         return "false"
     if isinstance(v, (int, float)):
         fv = float(v)
-        if fv == int(fv) and abs(fv) < 1e15:
-            return str(int(fv))
+        iv = int(fv)               # raises OverflowError/ValueError on inf/nan,
+        if fv == iv and abs(fv) < 1e15:  # matching model.js's explicit throw there
+            return str(iv)
         return fixed(fv, 3)
     if isinstance(v, str):
         return canonical_string(v)
@@ -111,6 +120,23 @@ def canonical(v) -> str:
         return "{" + ",".join(f"{canonical_string(str(k))}:{canonical(v2)}"
                               for k, v2 in items) + "}"
     return canonical_string(str(v))
+
+
+# A pinned table both sides must reproduce: tests/test_sim_goldens.py's
+# own Python-only check imports this list directly (DRY with the golden
+# "canonical" cases below, which are what actually exercises model.js's
+# SIM.fmt.canonical()/digest64() in the browser self-test).
+CANONICAL_TABLE = [0, 5, -5, 2.5, 0.5, "a", 'a"b', True, False, None,
+                   [1, 2, "x"], {"b": 1, "a": 2}, "日本語"]
+
+
+def canonical_cases() -> list:
+    cases = []
+    for value in CANONICAL_TABLE:
+        text = canonical(value)
+        cases.append({"kind": "canonical", "value": value,
+                      "expectCanonical": text, "expectDigest": digest64(text)})
+    return cases
 
 
 def load_fixture(name: str) -> str:
@@ -329,7 +355,7 @@ def check_cases() -> list:
 def ranks_cases() -> list:
     cases = []
     for map_fixture in ["Seq_map.csv", "OneBoard_map.csv", "SingleScale_map.csv",
-                        "CenterPlain_map.csv", "CenterShift_map.csv"]:
+                        "CenterPlain_map.csv", "CenterShift_map.csv", "CenterTie_map.csv"]:
         m, problems, used_item = parse_map_fixture(map_fixture)
         if m is None:
             continue
@@ -546,6 +572,27 @@ def _small_project_cases() -> list:
            "transitions": {}, "labels": {}, "boards": {}, "music": None}
     projects.append(("single_item_preset", {"files": files, "show": show}))
 
+    # state.transitions is the RAW show.transitions dict (server.py's
+    # state() never runs _clean_transitions on it) - a span of 0 leaves
+    # the sequence visible but times no sweep (sweeps() needs span>0);
+    # a span over MAX_DELAY_S (30 s) is still shown as authored AND
+    # produces the cue's ">30 s" validate() problem.
+    show_zero = {"duration": 120.0, "refresh_s": 7.0,
+                "cues": [{"id": "a", "item": "Sample", "at": 0,
+                         "design": "Sample_color_pattern01_grid.csv"}],
+                "transitions": {"Sample_color_pattern01_grid.csv":
+                                {"sequence": "top_down", "span_s": 0}},
+                "labels": {}, "boards": {}, "music": None}
+    projects.append(("transition_span_zero", {"files": files, "show": show_zero}))
+
+    show_over = {"duration": 120.0, "refresh_s": 7.0,
+                "cues": [{"id": "a", "item": "Sample", "at": 0,
+                         "design": "Sample_color_pattern01_grid.csv"}],
+                "transitions": {"Sample_color_pattern01_grid.csv":
+                                {"sequence": "top_down", "span_s": 45}},
+                "labels": {}, "boards": {}, "music": None}
+    projects.append(("transition_span_over_max", {"files": files, "show": show_over}))
+
     return projects
 
 
@@ -558,20 +605,35 @@ def state_cases() -> list:
 
 
 def state_digest_cases() -> list:
+    """One case per starter item (conductor/web/starter/*.csv - Coder Q's
+    committed copy of the 10 garments' real maps and sample grids).
+    Never showdata/ (git-ignored, only exists on the show PC): goldens
+    must reproduce identically from committed files on any machine, or
+    `make_goldens.py --check` fails wherever showdata/ is absent."""
     cases = []
-    if not SHOWDATA_FILES.is_dir():
+    if not STARTER_DIR.is_dir():
         return cases
-    files = {}
-    for path in sorted(SHOWDATA_FILES.glob("*.csv")):
-        files[path.name] = path.read_text(encoding="utf-8", errors="replace")
-    if not files:
-        return cases
-    project = {"files": files, "show": {}}
-    expected_state = build_reference_state(project)
-    cases.append({
-        "kind": "state-digest", "name": "showdata-files", "project": project,
-        "expect": digest64(canonical(expected_state)),
-    })
+    groups: "dict[str, dict]" = {}   # item.lower() -> {"item": item, "files": {name: text}}
+
+    def group_for(item):
+        return groups.setdefault(item.lower(), {"item": item, "files": {}})
+
+    for path in sorted(STARTER_DIR.glob("*.csv")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if Workspace.kind(path.name) == "map":
+            item = auto_map_item(path.name) or Path(path.name).stem
+            group_for(item)["files"][path.name] = text
+        elif Workspace.kind(path.name) == "grid":
+            item, _pattern, _label = Design.name_parts(path.name)
+            group_for(item or Path(path.name).stem)["files"][path.name] = text
+    for key in sorted(groups):
+        group = groups[key]
+        project = {"files": group["files"], "show": {}}
+        expected_state = build_reference_state(project)
+        cases.append({
+            "kind": "state-digest", "name": f"starter-{group['item']}", "project": project,
+            "expect": digest64(canonical(expected_state)),
+        })
     return cases
 
 
@@ -599,6 +661,7 @@ def fixture_text() -> dict:
 def build_goldens() -> dict:
     cases = []
     cases += fmt_cases()
+    cases += canonical_cases()
     cases += clock_cases()
     cases += mmss_cases()
     cases += map_cases()
@@ -620,18 +683,21 @@ def dumps_sorted(data) -> str:
     return json.dumps(data, sort_keys=True, ensure_ascii=True, indent=1) + "\n"
 
 
+def render_js(data: dict) -> str:
+    return ("/*\n"
+           " * conductor/web/sim/goldens.js - GENERATED by tools/make_goldens.py.\n"
+           " * Do not hand-edit; re-run the generator after changing a fixture CSV\n"
+           " * or conductor/look.py, conductor/sequence.py or conductor/timeline.py.\n"
+           " */\n"
+           "globalThis.SIM = Object.assign(globalThis.SIM || {}, {\n"
+           f"  GOLDENS: {dumps_sorted(data).rstrip()}\n"
+           "});\n")
+
+
 def write_files(data: dict) -> None:
     GOLDEN_JSON.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN_JSON.write_text(dumps_sorted(data), encoding="utf-8", newline="\n")
-    js = ("/*\n"
-         " * conductor/web/sim/goldens.js - GENERATED by tools/make_goldens.py.\n"
-         " * Do not hand-edit; re-run the generator after changing a fixture CSV\n"
-         " * or conductor/look.py, conductor/sequence.py or conductor/timeline.py.\n"
-         " */\n"
-         "globalThis.SIM = Object.assign(globalThis.SIM || {}, {\n"
-         f"  GOLDENS: {dumps_sorted(data).rstrip()}\n"
-         "});\n")
-    GOLDEN_JS.write_text(js, encoding="utf-8", newline="\n")
+    GOLDEN_JS.write_text(render_js(data), encoding="utf-8", newline="\n")
 
 
 def main(argv=None) -> int:
@@ -642,9 +708,10 @@ def main(argv=None) -> int:
     data = build_goldens()
     if args.check:
         current_json = GOLDEN_JSON.read_text(encoding="utf-8") if GOLDEN_JSON.exists() else ""
-        if current_json != dumps_sorted(data):
-            print("tests/goldens/model.json is stale - run "
-                 "python tools/make_goldens.py", file=sys.stderr)
+        current_js = GOLDEN_JS.read_text(encoding="utf-8") if GOLDEN_JS.exists() else ""
+        if current_json != dumps_sorted(data) or current_js != render_js(data):
+            print("tests/goldens/model.json or conductor/web/sim/goldens.js is "
+                 "stale - run python tools/make_goldens.py", file=sys.stderr)
             return 1
         return 0
     write_files(data)

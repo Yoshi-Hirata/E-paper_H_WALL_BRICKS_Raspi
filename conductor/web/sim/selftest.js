@@ -79,6 +79,21 @@
   }
 
   const RUNNERS = {
+    canonical(c) {
+      let got;
+      try {
+        got = SIM.fmt.canonical(c.value);
+      } catch (e) {
+        return `canonical(${short(c.value)}) threw ${e && e.message ? e.message : e}`;
+      }
+      if (got !== c.expectCanonical) {
+        return `canonical(${short(c.value)}) got ${short(got)} want ${short(c.expectCanonical)}`;
+      }
+      const digest = SIM.fmt.digest64(got);
+      return digest === c.expectDigest ? null
+        : `digest64(canonical(${short(c.value)})) got ${digest} want ${c.expectDigest}`;
+    },
+
     fmt(c) {
       const fmt = SIM.fmt;
       let got;
@@ -152,7 +167,7 @@
       const mapResult = SIM.look.parseMap(text, c.opts || { name: c.mapFixture });
       if (!mapResult.ok) return `ranks ${c.mapFixture}: fixture did not parse`;
       const map = mapResult.map;
-      const ranked = SIM.sequence.ranks(map, c.sequence);
+      const ranked = SIM.sequence.ranksByKey(map, c.sequence);
       const spanS = SIM.sequence.spanS(map, c.sequence, c.span);
       const got = { ranks: ranked, spanS };
       return deepEqual(got, c.expect) ? null : `ranks ${c.mapFixture}/${c.sequence}/${c.span} got ${short(got)} want ${short(c.expect)}`;
