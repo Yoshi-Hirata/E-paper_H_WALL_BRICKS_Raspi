@@ -802,9 +802,70 @@ def test_a_manual_prepare_invalidates_the_burn_cache_for_its_slot():
 def test_cancel_burn_stops_a_burn_in_progress():
     session, runner, bus = make_session()
     cues = [{"slot": n, "boards": {1: array(1)}, "delays": {}}
-            for n in range(1, 20)]
+            for n in range(1, 19)]
     session.burn(cues, dev_type=3)
     session.cancel_burn()
     time.sleep(0.2)
-    assert session.burn_status() is None or session.burn_status()["state"] != "burning"
+    # "cancelled", never back to None (review F1: None read as "nothing
+    # to worry about" to ShowPlayer's gate).
+    assert session.burn_status()["state"] == "cancelled"
+    assert session.status()["burn"]["state"] == "cancelled"
     runner.stop()
+
+
+def test_cancel_burn_leaves_a_finished_burn_alone():
+    session, runner, bus = make_session()
+    session.burn([{"slot": 1, "boards": {1: array(1)}, "delays": {}}], dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    session.cancel_burn()                # STOP on a running show
+    assert session.burn_status()["state"] == "burned"
+    runner.stop()
+
+
+class _SlowBurnBus(FakeBus):
+    def request(self, frame, retries=3):
+        if frame.cmd == SAVE:
+            time.sleep(0.05)
+        return super().request(frame, retries)
+
+
+def test_a_worker_stopped_mid_burn_reports_the_rest_as_failed():
+    # Review F4: the worker used to return on _stop with the state left
+    # at "burning" for ever.
+    session, runner, bus = make_session(_SlowBurnBus())
+    cues = [{"slot": n, "boards": {1: array(n)}, "delays": {}}
+            for n in range(1, 19)]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("done", 0) > 0)
+    runner.stop()                        # KEY2, KEY1 on a pattern, shutdown
+    status, complete = session.burn_record()
+    assert status["state"] == "failed" and complete
+    assert status["done"] == status["total"] == 18
+    written = {f.data[0] for f in bus.requested if f.cmd == SAVE}
+    assert written and [pair for pair in status["failed"]] == [
+        [1, slot] for slot in range(1, 19) if slot not in written]
+    assert any("burn interrupted" in line for line in runner.recent(20))
+
+
+def test_a_burn_queued_while_the_worker_is_stopping_is_failed_not_stuck():
+    # runner.stop() waits for the worker to leave the bus; a burn() that
+    # lands meanwhile still sees `runner.remote` set and only queues its
+    # job - for a worker that is on its way out and, before this fix,
+    # would never have said so.
+    import threading
+
+    session, runner, bus = make_session(_SlowBurnBus())
+    cues = [{"slot": n, "boards": {1: array(n)}, "delays": {}}
+            for n in range(1, 19)]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("done", 0) > 0)
+    stopper = threading.Thread(target=runner.stop)
+    stopper.start()                      # joins the worker mid-save
+    session.burn([{"slot": 2, "boards": {1: array(2)}, "delays": {}}], dev_type=3)
+    stopper.join(timeout=5)
+    assert wait_until(lambda: session.burn_status()["state"] != "burning")
+    status, complete = session.burn_record()
+    assert status["state"] == "failed" and status["failed"] == [[1, 2]]
+    assert complete
+    assert any("burn never started" in line for line in runner.recent(20))
