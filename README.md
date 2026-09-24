@@ -271,7 +271,7 @@ LCD 本体は未接続だが、以下は実機で確認済み:
 
 | ファイル | 内容 |
 |---|---|
-| `LookNN_map.csv` | `side,row,col,board_no,socket,label` — 鱗 1 枚 = 1 行。衣装上の位置と、どの基板のどのソケットか |
+| `LookNN_map.csv` | `side,row,col,board_no,socket,label[,shift]` — 鱗 1 枚 = 1 行。衣装上の位置と、どの基板のどのソケットか。7 列目 `shift`(0 / 0.5)は制作サイトの行ごとの半マスずらし(中央マスのある行 0、ない行 0.5)。無い map は奇数行 0.5 の既定で描く。配線ビューとデザイン前のサムネイルはこの値、デザイン表示はデザイン CSV 自身の shift を使う |
 | `LookNN_color_NAME_grid.csv` | `side,row,shift,1,2,3,…` — 衣装の 1 段 = 1 行。セルは色コード `0x00`〜`0x0F`、**穴の無いマスは `0`、色未指定は `-`**(先方 README の定義)。キューごとに 1 ファイル |
 
 ファイル名の `_map` / `_color_` より前がアイテム名(`Look22`、
