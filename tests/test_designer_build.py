@@ -33,12 +33,15 @@ def run(*args):
 
 
 def test_build_is_current():
-    # --no-goldens (DIST SIZE, adversarial review round 2): the committed
-    # dist/az27ss-simulator.html is the SHIPPED variant, built without
-    # goldens.js/selftest.js (Python-cross-check data no designer's
-    # double-click needs, over half the page's weight) - --check must be
-    # told the same flag or it will always report the committed file stale.
-    result = run(str(BUILD_SCRIPT), "--check", "--no-goldens")
+    # Plain --check, no flags (adversarial review round 2's third pass -
+    # N1): the shipped variant (no goldens.js/selftest.js - Python-cross-
+    # check data no designer's double-click needs, over half the page's
+    # weight) is now build_designer.py's DEFAULT, exactly because the
+    # committed dist/az27ss-simulator.html IS that variant - a --check that
+    # needed a flag to agree with it would report it stale, and its own
+    # "run `python tools/build_designer.py`" advice would then silently
+    # overwrite the committed 550 KB dist with the 1.1 MB dev/CI one.
+    result = run(str(BUILD_SCRIPT), "--check")
     assert result.returncode == 0, result.stdout + result.stderr
 
 

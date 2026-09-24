@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+
+<script>window.__az27ssOldBrowser = !(typeof BigInt !== "undefined"
+  && typeof File !== "undefined" && File.prototype && typeof File.prototype.text === "function"
+  && typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("gap", "1px"));</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AZ-27SS Show Simulator</title>
 <style>/* designer.css — the designers' simulator page.
@@ -240,6 +244,28 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 <div id="fps"></div>
 
 
+<script defer>
+  if (window.__az27ssOldBrowser) {
+    // Removal is best-effort (some engines still fire an already-removed
+    // deferred script's own top-level code with no visible effect, per
+    // testing) - what actually has to be reliable is that nothing that
+    // slips through can be SEEN. A fixed, full-viewport, opaque, top-
+    // z-index overlay PREPENDED to body (not a body.innerHTML replacement,
+    // which raced against the parser still inserting the remaining
+    // original stream and could leave a script's own text content visible
+    // underneath) covers the real UI regardless of what else lands in the
+    // document after this runs.
+    document.querySelectorAll("script[data-guarded]").forEach(function (s) { s.remove(); });
+    document.body.insertAdjacentHTML("afterbegin",
+      "<div style=\"position:fixed;inset:0;z-index:99999;background:#f4f4f6;" +
+      "font:16px -apple-system,'Segoe UI',sans-serif;color:#1d1d24;" +
+      "display:flex;align-items:center;justify-content:center;padding:20px\">" +
+      "<div style=\"max-width:640px;line-height:1.8\">" +
+      "このブラウザは古すぎます。Safari 14.1 以降、または最新の Chrome か Edge で開いてください。<br><br>" +
+      "This browser is too old. Please open this file in Safari 14.1+, Chrome, or Edge." +
+      "</div></div>");
+  }
+</script>
 <script>/*
  * conductor/web/sim/model.js
  *
@@ -2940,6 +2966,24 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     const label = (it && lookDisplay(it)) || name;
     return `${label} has ${carries} pictures but an item can hold ${holds} in one show - merge or remove cues`;
   }
+  // look.py's malformed-row message, hand-rendered rather than left to
+  // deJargon's word-for-word swap (adversarial review round 2, third pass -
+  // N2): the message is "<file>:<line>: row/col/board_no/socket must be
+  // whole numbers: {'side': …, 'socket': 'x', …}" - a LITERAL column-name
+  // list plus a Python dict repr using those same names as its own quoted
+  // keys. deJargon()'s \bsocket\b -> "position" swap does not know "socket"
+  // here is a column name, not prose, so it renamed the column (and the
+  // dict's key, though not its value) while "board_no" merely survived by
+  // luck (no word boundary inside it for \bboard\b to match) - either way
+  // the result no longer named a real CSV column at all. This drops the raw
+  // dict entirely along with the ambiguity: a designer needs the line
+  // number and which columns to check, not a Python repr.
+  function rewriteMalformedRowMessage(msg) {
+    const m = /^(.+):(\d+): row\/col\/board_no\/socket must be whole numbers\b/.exec(String(msg));
+    if (!m) return null;
+    const [, , lineNo] = m;
+    return `line ${lineNo}: row, col, board_no and socket must be whole numbers`;
+  }
   // Adversarial review (2026-09-25): labelize() only ever rewrote the one
   // "on (<item>)" bus fallback - real problem/warning strings ported
   // verbatim from conductor/look.py and conductor/timeline.py still say
@@ -2960,7 +3004,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       .replace(/\bdip\b/gi, "").replace(/\bradxa\b/gi, "controller")
       .replace(/[ \t]{2,}/g, " ").trim();
   }
-  const clean = msg => rewriteCueLimitMessage(msg) ?? deJargon(labelize(msg));
+  const clean = msg => rewriteCueLimitMessage(msg) ?? rewriteMalformedRowMessage(msg) ?? deJargon(labelize(msg));
   // The "natural" sequence's real label, ported verbatim from
   // conductor/sequence.py's LABELS ("Socket order (P01 to P60)"), is exactly
   // the kind of string plan_designer_sim.md §3 bans from this UI - unlike
@@ -2993,6 +3037,17 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     // number detail need the hand-written rewrite, not a word swap.
     const cleanDirty = ["(AZ271SD1301) carries 21 pictures but a board holds 18 show pictures "
       + "(slot 0 is the white standby, slot 19 the manual one-shot) - merge or remove cues"];
+    // look.py's malformed-row message (adversarial review round 2, third
+    // pass - N2) checked separately, for correctness rather than for the
+    // absence of banned words: "socket" and "board_no" are the CSV format's
+    // OWN column names (side,row,col,board_no,socket,label,shift - the
+    // literal header row of a *_map.csv), not hardware jargon about this
+    // show's equipment, and a designer fixing a bad row needs to see the
+    // real column name their spreadsheet uses, not a renamed one that no
+    // longer matches what is actually in the file.
+    const malformedRowDirty = [["AZ271SD1301_map.csv:5: row/col/board_no/socket must be whole numbers: "
+      + "{'side': 'front', 'row': 'x', 'col': '3', 'board_no': '12', 'socket': '5', 'label': ''}",
+      "line 5: row, col, board_no and socket must be whole numbers"]];
     const banned = /\b(unit|units|radxa|bus|buses|board|boards|dip|socket|sockets)\b/i;
     const failures = [];
     for (const msg of dirty) {
@@ -3004,12 +3059,16 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       if (banned.test(got)) failures.push(`clean(${JSON.stringify(msg)}) -> ${JSON.stringify(got)} still has banned vocabulary`);
       if (/slot 0|slot 19|one-shot/.test(got)) failures.push(`clean(${JSON.stringify(msg)}) -> ${JSON.stringify(got)} still leaks the internal slot numbering`);
     }
+    for (const [msg, expect] of malformedRowDirty) {
+      const got = clean(msg);
+      if (got !== expect) failures.push(`clean(${JSON.stringify(msg)}) -> ${JSON.stringify(got)}, expected ${JSON.stringify(expect)}`);
+    }
     const seqs = (globalThis.SIM.sequence && globalThis.SIM.sequence.LABELS) || {};
     Object.keys(seqs).forEach(id => {
       const got = seqLabel({ id, label: seqs[id] });
       if (banned.test(got)) failures.push(`seqLabel(${id}) -> ${JSON.stringify(got)} still has banned vocabulary`);
     });
-    const result = { ok: failures.length === 0, total: dirty.length + cleanDirty.length + Object.keys(seqs).length, failed: failures.length, failures };
+    const result = { ok: failures.length === 0, total: dirty.length + cleanDirty.length + malformedRowDirty.length + Object.keys(seqs).length, failed: failures.length, failures };
     try {
       let pre = document.getElementById("displaycheck-out");
       if (!pre) { pre = document.createElement("pre"); pre.id = "displaycheck-out"; document.body.appendChild(pre); }
@@ -3620,11 +3679,11 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     </div>`;
     $("#run-selftest").onclick = () => {
       if (typeof globalThis.__selftest !== "function") {
-        // The shipped dist/az27ss-simulator.html is built with
-        // --no-goldens (DIST SIZE, adversarial review round 2): the
-        // Python-cross-check data alone was over half the page's weight, of
-        // no use to a designer double-clicking this file. The developer
-        // build (conductor/web/designer.html) always has it.
+        // The shipped dist/az27ss-simulator.html is build_designer.py's
+        // DEFAULT (no --with-goldens - DIST SIZE, adversarial review round
+        // 2): the Python-cross-check data alone was over half the page's
+        // weight, of no use to a designer double-clicking this file. The
+        // developer build (conductor/web/designer.html) always has it.
         const out = $("#selftest-result");
         out.textContent = "not in this file - the self-test lives in the developer build (conductor/web/designer.html), not the one designers open";
         out.className = ""; return;
@@ -3943,11 +4002,23 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
         // F2's other half in rebuild()/render() below).
         if ("duration" in show) {
           const d = Number(show.duration);
-          if (Number.isFinite(d)) project.show.duration = Math.max(1, Math.min(MAX_SHOW_DURATION_S, d));
+          if (Number.isFinite(d)) {
+            const clamped = Math.max(1, Math.min(MAX_SHOW_DURATION_S, d));
+            // Said out loud, not just applied silently (adversarial review
+            // round 2, third pass - N3): a project file that asked for
+            // something out of range got the clamp with no sign anything
+            // had changed from what it actually said.
+            if (clamped !== d) toast(`Show length clamped to ${globalThis.SIM.mmss.format(clamped)}.`);
+            project.show.duration = clamped;
+          }
         }
         if ("refresh_s" in show) {
           const r = Number(show.refresh_s);
-          if (Number.isFinite(r)) project.show.refresh_s = Math.max(1, Math.min(60, r));
+          if (Number.isFinite(r)) {
+            const clamped = Math.max(1, Math.min(60, r));
+            if (clamped !== r) toast(`Default refresh time clamped to ${clamped.toFixed(1)} s.`);
+            project.show.refresh_s = clamped;
+          }
         }
         if ("cues" in show) {
           if (Array.isArray(show.cues)) {

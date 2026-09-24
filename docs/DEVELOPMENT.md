@@ -306,7 +306,7 @@ Raspberry Pi Zero 2 W ──USB CDC── 基板 ID:1 ──4芯(TTL UART)──
 |---|---|---|
 | `python tools/make_goldens.py` | `tests/goldens/model.json` と `conductor/web/sim/goldens.js`(Python 版 `look.py`/`sequence.py`/`timeline.py` の答え合わせ用) | `tests/fixtures/sim/*.csv` を足す/変えたとき、Python 側の該当モジュールを変えたとき |
 | `python tools/make_starter.py` | `conductor/web/sim/starter.js`(`conductor/web/starter/*.csv` を JS の定数に固めたもの。初回起動時の既定データ) | `conductor/web/starter/*.csv` を足す/変えたとき |
-| `python tools/build_designer.py` | `dist/az27ss-simulator.html`(`conductor/web/designer.html` と `conductor/web/sim/*.css/*.js` を 1 個の HTML に inline したもの。`--no-starter` で初期データ抜きのビルドも作れる) | `conductor/web/designer.html`・`conductor/web/sim/*` のいずれかを変えたとき(上の 2 つを先に作り直してから) |
+| `python tools/build_designer.py` | `dist/az27ss-simulator.html`(`conductor/web/designer.html` と `conductor/web/sim/*.css/*.js` を 1 個の HTML に inline したもの。**フラグなしが出荷版**(`goldens.js`/`selftest.js` 抜き、550 KB 前後) - コミットされている `dist/` はこれ。`--with-goldens` を付けると自己テスト付きの開発版(1.1 MB 前後、Python 側との答え合わせ用)が作れる。`--no-starter` で初期データ抜きのビルドも作れる) | `conductor/web/designer.html`・`conductor/web/sim/*` のいずれかを変えたとき(上の 2 つを先に作り直してから) |
 
 3 つとも `--check` モードで「コミットされているものと同じか」を確認できる
 (`tests/test_sim_goldens.py::test_goldens_are_current`、
@@ -329,5 +329,7 @@ index.html の該当箇所を直したときは:
    変えたときは、`conductor/web/sim/*.js` の該当関数(ファイル先頭のコメントに
    「index.html のどの行から移植したか」が書いてある)も同じロジックに直す。片方だけ直すと、
    ショー PC の画面とシミュレーターで書き換え中の見え方が食い違う
-3. 直したら `python tools/build_designer.py` を実行して `dist/az27ss-simulator.html` を
-   作り直し、`python -m pytest tests/test_designer_build.py tests/test_sim_goldens.py` を通す
+3. 直したら `python tools/build_designer.py` を実行して `dist/az27ss-simulator.html`(出荷版)を
+   作り直し、`python -m pytest tests/test_designer_build.py tests/test_sim_goldens.py` を通す。
+   ブラウザで直接 `#selftest` を確認したいときは `--with-goldens` を付けた別ファイルを
+   一時的に作る(コミットするのは出荷版だけ)

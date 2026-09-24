@@ -2,6 +2,25 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Too-old-browser guard (adversarial review round 2, third pass - N5):
+     feature-tests the three things this page cannot run without at all
+     (BigInt - SIM.fmt.digest64's FNV-1a; File.prototype.text() - reading a
+     dropped CSV; CSS.supports("gap") - the layout itself). This first
+     script only sets a flag; it must NOT use document.write to try to cut
+     the rest of the document off mid-parse - that classic trick does not
+     reliably stop later script tags from still running in every engine
+     (confirmed empirically: a script placed after the write still ran).
+     The reliable way is below, at the top of the script list: give every
+     real script `defer` (so none of them can execute before the whole
+     document, including this flag, exists) plus a shared marker attribute,
+     and let a `defer` gatekeeper - which then runs FIRST, since defer
+     preserves document order - remove every marked script from the DOM
+     before its own turn if the flag is set (a deferred script already
+     removed from the document when its turn comes is simply skipped, per
+     spec - this is the part that is actually reliable). -->
+<script>window.__az27ssOldBrowser = !(typeof BigInt !== "undefined"
+  && typeof File !== "undefined" && File.prototype && typeof File.prototype.text === "function"
+  && typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("gap", "1px"));</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AZ-27SS Show Simulator</title>
 <link rel="stylesheet" href="sim/designer.css">
@@ -42,16 +61,45 @@
      goldens.js/selftest.js landed 2026-09-24 (commit ed37ba1); this page no
      longer needs sim/model.stub.js (kept in the tree only as documentation
      of the seam - see its own header comment - and never shipped, since
-     build_designer.py refuses anything carrying data-stub). -->
-<script src="sim/model.js"></script>
-<script src="sim/state.js"></script>
-<script src="sim/render.js"></script>
-<script src="sim/flicker.js"></script>
-<script src="sim/looks.js"></script>
-<script src="sim/transport.js"></script>
-<script src="sim/starter.js"></script>
-<script src="sim/goldens.js"></script>
-<script src="sim/designer-app.js"></script>
-<script src="sim/selftest.js"></script>
+     build_designer.py refuses anything carrying data-stub).
+     All `defer` (see the too-old-browser guard above for why), which keeps
+     this same document-order dependency chain - defer preserves relative
+     order - and runs it after the document is fully parsed instead of
+     inline; every module here already tolerates that (each one that needs
+     the DOM ready checks document.readyState itself). The gatekeeper is
+     first, and NOT marked data-guarded, precisely so it is never one of the
+     scripts it might remove. -->
+<script defer>
+  if (window.__az27ssOldBrowser) {
+    // Removal is best-effort (some engines still fire an already-removed
+    // deferred script's own top-level code with no visible effect, per
+    // testing) - what actually has to be reliable is that nothing that
+    // slips through can be SEEN. A fixed, full-viewport, opaque, top-
+    // z-index overlay PREPENDED to body (not a body.innerHTML replacement,
+    // which raced against the parser still inserting the remaining
+    // original stream and could leave a script's own text content visible
+    // underneath) covers the real UI regardless of what else lands in the
+    // document after this runs.
+    document.querySelectorAll("script[data-guarded]").forEach(function (s) { s.remove(); });
+    document.body.insertAdjacentHTML("afterbegin",
+      "<div style=\"position:fixed;inset:0;z-index:99999;background:#f4f4f6;" +
+      "font:16px -apple-system,'Segoe UI',sans-serif;color:#1d1d24;" +
+      "display:flex;align-items:center;justify-content:center;padding:20px\">" +
+      "<div style=\"max-width:640px;line-height:1.8\">" +
+      "このブラウザは古すぎます。Safari 14.1 以降、または最新の Chrome か Edge で開いてください。<br><br>" +
+      "This browser is too old. Please open this file in Safari 14.1+, Chrome, or Edge." +
+      "</div></div>");
+  }
+</script>
+<script defer data-guarded src="sim/model.js"></script>
+<script defer data-guarded src="sim/state.js"></script>
+<script defer data-guarded src="sim/render.js"></script>
+<script defer data-guarded src="sim/flicker.js"></script>
+<script defer data-guarded src="sim/looks.js"></script>
+<script defer data-guarded src="sim/transport.js"></script>
+<script defer data-guarded src="sim/starter.js"></script>
+<script defer data-guarded src="sim/goldens.js"></script>
+<script defer data-guarded src="sim/designer-app.js"></script>
+<script defer data-guarded src="sim/selftest.js"></script>
 </body>
 </html>
