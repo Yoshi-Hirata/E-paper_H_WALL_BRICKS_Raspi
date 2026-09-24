@@ -272,6 +272,14 @@ body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-ev
   font-variant-numeric: tabular-nums; margin-left: 6px; }
 #tl-dock input[type=range] { margin-top: 6px; }
 #tl-dock .thumbs { margin-top: 6px; }
+#tl-dock-mode { white-space: nowrap; }
+/* A 6px grab strip across the very top of the dock, inside its own top
+   padding so it never steals height from the layout the operator sees. */
+#tl-dock-handle { position: absolute; left: 0; right: 0; top: 0; height: 6px; cursor: ns-resize;
+  display: flex; align-items: center; justify-content: center; touch-action: none; }
+#tl-dock-handle::before { content: ""; width: 44px; height: 3px; border-radius: 2px;
+  background: var(--line); transition: background .15s, width .15s; }
+#tl-dock-handle:hover::before, #tl-dock-handle.dragging::before { background: var(--accent); width: 64px; }
 </style>
 </head>
 <body>
@@ -307,10 +315,19 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">"
 // cue is selected, Simulator view) starts fresh like the rest of `ui`.
 function loadDockPref() { try { return localStorage.getItem("tl.dock") === "collapsed" ? "collapsed" : "compact"; } catch { return "compact"; } }
 function saveDockPref() { try { localStorage.setItem("tl.dock", ui.dock); } catch {} }
+// The looks row's cell height: null = auto (fills the space left under the
+// tracks, recomputed on every render/resize - see updateDockThumbHeight());
+// a number = the operator dragged the dock's own handle to a fixed height.
+function loadDockCellsPref() {
+  try { const v = Number(localStorage.getItem("tl.dockCells")); return v >= 90 && v <= 600 ? v : null; } catch { return null; }
+}
+function saveDockCellsPref() {
+  try { if (ui.dockCells) localStorage.setItem("tl.dockCells", String(ui.dockCells)); else localStorage.removeItem("tl.dockCells"); } catch {}
+}
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
              playing: false, anchor: 0, startT: 0, simView: false,
-             dock: loadDockPref(), editorOpen: true,
+             dock: loadDockPref(), editorOpen: true, dockCells: loadDockCellsPref(),
              // Manual show-position control (Units tab): client-side only, always off on
              // reload, off again after a successful START/STOP - see seekBlockHtml().
              manual: false, seekDrag: null, seekSent: null, seekTimer: null };
@@ -399,10 +416,13 @@ function render() {
   renderSidebar();
   if (ui.tab === "timeline") renderTimeline();
   else {
-    // Only the Timeline tab's #content carries the dock's bottom padding -
-    // drop it here so a leftover value never bleeds into another tab.
-    syncDockSpacing();
     if (ui.tab === "fleet") renderFleet(); else renderContent();
+    // Only the Timeline tab's #content carries the dock's bottom padding - drop
+    // it here, once the tab's own render has replaced #content and #tl-dock is
+    // actually gone, so a leftover value never bleeds into another tab (calling
+    // this before the re-render would still see the stale dock and reset
+    // nothing).
+    syncDockSpacing();
   }
 }
 // A design is ok (every scale coloured), partial (some left "-": fine as a
@@ -824,9 +844,14 @@ function renderTimeline() {
   const root = $("#content"), show = state.show, D = show.duration, items = trackItems();
   if (!items.length) { root.innerHTML = `<div class="empty">Add the map and design CSV files on the Designs tab first.</div>`; syncDockSpacing(); return; }
   // Simulator view fills the window (view.fill, as before); the bottom dock
-  // gets the fixed 90 px cell height that layoutLooks() otherwise uses for
-  // the Units tab's LOOK row.
+  // instead gets a computed cell height - as large as the space left under
+  // the tracks allows, or a manual override - see updateDockThumbHeight().
   THUMBS.timeline.fill = ui.simView;
+  // Provisional cell height for this pass: a manual override always wins;
+  // "auto" starts from whatever was last computed (or the 90px default) and
+  // is corrected below by updateDockThumbHeight(), once the tracks card and
+  // the dock's own chrome exist in the DOM to measure.
+  if (!ui.simView) THUMBS.timeline.height = ui.dockCells || THUMBS.timeline.height || 90;
   const pct = t => (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
   const step = D <= 180 ? 10 : D <= 900 ? 30 : 60;
   let ruler = "";
@@ -884,11 +909,13 @@ function renderTimeline() {
       <div class="thumbs" id="thumbs" style="margin-top:8px"></div>
     </div>` : `
     <div id="tl-dock" class="${ui.dock === "collapsed" ? "collapsed" : "compact"}">
+      ${ui.dock === "collapsed" ? "" : `<div id="tl-dock-handle" title="Drag to resize the looks row (double-click to reset to auto)"></div>`}
       <div class="tl-dock-head">
         <span class="tl-dock-title">THE LOOKS AT<b id="ph-label"></b></span>
         ${playBtns}
         ${ui.dock === "collapsed" ? "" : `
         <button id="tl-simview" title="Hide the tracks and cue list so the looks and transport fill the screen">Simulator view</button>
+        <span class="meta" id="tl-dock-mode" style="font-size:11px">${ui.dockCells ? "manual · double-click the handle to reset" : "auto"}</span>
         <span style="flex:1"></span>
         ${musicHtml}`}
         <button id="tl-dock-toggle" title="${ui.dock === "collapsed" ? "Expand the looks row" : "Collapse to just the transport bar"}">
@@ -960,9 +987,33 @@ function renderTimeline() {
 function syncDockSpacing() {
   const content = $("#content"), dock = $("#tl-dock");
   if (!content) return;
+  if (dock && !ui.dockCells) updateDockThumbHeight(dock);   // auto mode only - a drag already set the exact height
   const h = dock ? Math.ceil(dock.getBoundingClientRect().height) : 0;
   content.style.paddingBottom = dock ? (h + 24) + "px" : "";
   document.documentElement.style.setProperty("--tl-dock-h", h + "px");
+}
+// Auto mode: the looks row is as large as the space actually left under the
+// tracks allows (the user's own complaint about the fixed 90px row being too
+// small to read) - clamp(90, available, 360). "available" measures the
+// tracks card's position as it sits with the page scrolled to the TOP
+// (rect.bottom + scrollY cancels out the current scroll offset, so a dropped
+// scroll position never shrinks the dock), minus everything in the dock
+// besides the thumbs row itself (measured, not summed by hand, so it stays
+// right even if the head row wraps to two lines on a narrow window). Only
+// ever called from renderTimeline()/resize via syncDockSpacing() - never
+// from the playback loop.
+function updateDockThumbHeight(dock) {
+  const tracksCard = document.querySelector("#tl-editing .tl-left .card");
+  const thumbs = $("#thumbs");
+  if (!tracksCard || !thumbs || ui.dock === "collapsed") return;
+  const trackBottomAtTop = tracksCard.getBoundingClientRect().bottom + window.scrollY;
+  const chrome = dock.getBoundingClientRect().height - thumbs.getBoundingClientRect().height;
+  const available = window.innerHeight - (trackBottomAtTop + 12) - chrome;
+  const target = Math.round(Math.max(90, Math.min(360, available)));
+  if (Math.abs(target - THUMBS.timeline.height) >= 1) {
+    THUMBS.timeline.height = target;
+    layoutLooks(THUMBS.timeline);
+  }
 }
 // Items sharing a LOOK number are one outfit (a top and a skirt sewn to the
 // same Radxa) and share one cell, stacked; an item with no LOOK number gets
@@ -2055,6 +2106,57 @@ document.addEventListener("pointerup", async () => {
   if (done.at === undefined || done.at === done.cue.at) { renderTimeline(); return; }
   ui.playhead = done.at;
   await saveShow(state.show.cues.map(c => c.id === done.cue.id ? { ...c, at: done.at } : c));
+});
+// Dragging the dock's own handle overrides the auto-sized looks row with a
+// fixed height (clamp 90-600, wider than auto's 360 cap - the operator may
+// want it bigger than what "fits" would give). Throttled to one layoutLooks
+// per frame; #content's padding follows via syncDockSpacing() each frame too,
+// so the tracks never end up hidden behind a dock that grew mid-drag.
+let dockDrag = null;
+document.addEventListener("pointerdown", e => {
+  const handle = e.target.closest("#tl-dock-handle");
+  if (!handle || e.button !== 0) return;
+  e.preventDefault();
+  dockDrag = { startY: e.clientY, startH: THUMBS.timeline.height, pending: null, raf: false };
+  handle.classList.add("dragging");
+  try { handle.setPointerCapture(e.pointerId); } catch {}
+});
+document.addEventListener("pointermove", e => {
+  if (!dockDrag) return;
+  const target = Math.round(Math.max(90, Math.min(600, dockDrag.startH + (dockDrag.startY - e.clientY))));
+  dockDrag.pending = target;
+  if (dockDrag.raf) return;
+  dockDrag.raf = true;
+  requestAnimationFrame(() => {
+    dockDrag && (dockDrag.raf = false);
+    if (!dockDrag || dockDrag.pending === null) return;
+    THUMBS.timeline.height = dockDrag.pending;
+    // Set ui.dockCells now, not just on pointerup: syncDockSpacing() treats a
+    // null ui.dockCells as "auto" and would otherwise recompute and overwrite
+    // the height set above on every one of these frames, fighting the drag.
+    ui.dockCells = dockDrag.pending;
+    layoutLooks(THUMBS.timeline);
+    syncDockSpacing();
+  });
+});
+document.addEventListener("pointerup", e => {
+  if (!dockDrag) return;
+  const handle = $("#tl-dock-handle");
+  if (handle) { handle.classList.remove("dragging"); try { handle.releasePointerCapture(e.pointerId); } catch {} }
+  // dockDrag.pending covers a release so quick the throttled rAF above never
+  // got to run - without this a fast flick would commit the pre-drag height.
+  ui.dockCells = dockDrag.pending ?? THUMBS.timeline.height;
+  THUMBS.timeline.height = ui.dockCells;
+  layoutLooks(THUMBS.timeline);
+  saveDockCellsPref();
+  dockDrag = null;
+  renderTimeline();                  // picks up the "manual" label
+});
+document.addEventListener("dblclick", e => {
+  if (!e.target.closest("#tl-dock-handle")) return;
+  ui.dockCells = null;
+  saveDockCellsPref();
+  renderTimeline();                  // back to auto - updateDockThumbHeight() resizes it
 });
 let depth = 0;
 // Files from outside only: a card dragged within the list is not an upload.
