@@ -1449,6 +1449,16 @@ class Handler(BaseHTTPRequestHandler):
             loop = body.get("loop", False)
             if not isinstance(loop, bool):
                 raise ValueError("loop must be true or false")
+            # Saving a demo writes every picture on every unit, exactly as
+            # Upload does - during a run that would rewrite slots a unit
+            # is about to trigger. The unit itself refuses /demo/save
+            # while it plays anything ("a show is running - stop it
+            # first"), and the page's dialog says so before it offers the
+            # choice; this is the same rule where every client meets it.
+            # Unlike Upload there is no `force`: a demo is never the way
+            # back into a running show.
+            if fleet.run is not None:
+                raise ValueError("stop the show first")
             # The same "whole show or not at all" rule as Upload: a
             # timeline with a problem writes nothing, and the page shows
             # exactly the problems Upload itself would have refused on.

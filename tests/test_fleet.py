@@ -19,7 +19,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.fleet import SUPERVISE_EVERY_S, Fleet, UnitLink, default_units
+from conductor.fleet import (DEMO_LIST_EVERY_S, SUPERVISE_EVERY_S, Fleet,
+                             UnitLink, default_units)
 from conductor.server import Workspace, make_server
 from tests.test_look import GRID, MAP, SKIRT_GRID, SKIRT_MAP
 from tests.test_ui_remote import SHOW, make_session, wait_until
@@ -1409,3 +1410,125 @@ def test_upload_refuses_a_unit_playing_a_demo_like_start_does():
     assert results["radxa-03"]["ok"] is True
     assert busy.posted == [] and idle.posted[0][0] == "/show/load"
 
+
+
+# ---- the demo cache behind the tiles (fleet.demos_of / _poll_demos) ----
+
+def _demo_entry(slug, name, show_id, **extra):
+    return dict({"slug": slug, "name": name, "cues": 4, "duration": 90.0,
+                 "loop": False, "saved_at": 1.0, "show_id": show_id}, **extra)
+
+
+def test_the_poll_asks_each_unit_for_its_demos_at_most_every_ten_seconds():
+    # Every tile shows what its unit holds, and ten tiles repainting once
+    # a second must not become ten requests a second: the poll loop
+    # refreshes the list per unit every DEMO_LIST_EVERY_S, the snapshot
+    # only reads the cache.
+    now = [1000.0]
+    fleet = Fleet({}, clock=lambda: now[0])
+    link = StubLink("radxa-01", "stopped")
+    link.demos = [_demo_entry("demo-paris", "DEMO PARIS", "showA")]
+    fleet.links = {"radxa-01": link}
+
+    fleet._poll_demos(link)
+    assert fleet.demos_of("radxa-01")[0]["name"] == "DEMO PARIS"
+    assert link.learned is False          # an eMMC read is not a clock sample
+    link.demos = [_demo_entry("demo-paris", "RENAMED", "showA")]
+    now[0] += DEMO_LIST_EVERY_S - 0.1
+    fleet._poll_demos(link)
+    assert fleet.demos_of("radxa-01")[0]["name"] == "DEMO PARIS"   # not asked again
+    now[0] += 0.2
+    fleet._poll_demos(link)
+    assert fleet.demos_of("radxa-01")[0]["name"] == "RENAMED"
+
+
+def test_a_unit_that_cannot_list_its_demos_is_not_known_rather_than_empty():
+    # An older agent (404 on /demo/list) or a unit that dropped the
+    # connection must never read as "no demo stored" - the tile says
+    # nothing rather than something false, and it is asked again on the
+    # very next poll instead of ten seconds later.
+    now = [1000.0]
+    fleet = Fleet({}, clock=lambda: now[0])
+    link = FailingLink("radxa-01", "stopped")
+    fleet.links = {"radxa-01": link}
+    fleet._poll_demos(link)
+    assert fleet.demos_of("radxa-01") is None
+    assert fleet.snapshot()["units"][0]["demos"] is None
+    link.demos = [_demo_entry("demo-a", "DEMO A", "showA")]
+    link.get = StubLink.get.__get__(link, StubLink)      # the unit comes back
+    fleet._poll_demos(link)                              # no ten-second wait
+    assert [d["name"] for d in fleet.demos_of("radxa-01")] == ["DEMO A"]
+
+
+def test_the_snapshot_says_which_stored_demo_is_the_show_that_was_uploaded():
+    # "current" is the whole point of the chips: True only when the demo
+    # was written from the show this conductor last uploaded to THAT unit,
+    # False when it is older, None when there is nothing to compare
+    # against (nothing uploaded, or a demo with no show_id of its own).
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = StubLink("radxa-01", "stopped")
+    link.demos = [_demo_entry("demo-a", "DEMO A", "showA"),
+                  _demo_entry("demo-b", "DEMO B", "older-hash"),
+                  _demo_entry("demo-c", "DEMO C", None)]
+    fleet.links = {"radxa-01": link}
+    fleet._poll_demos(link)
+    assert [d["current"] for d in fleet.demos_of("radxa-01")] == [None] * 3
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 60}}
+    demos = fleet.snapshot()["units"][0]["demos"]
+    assert [d["current"] for d in demos] == [True, False, None]
+    assert demos[0] == {"slug": "demo-a", "name": "DEMO A", "cues": 4,
+                        "duration": 90.0, "loop": False, "show_id": "showA",
+                        "current": True}
+
+
+def test_a_write_and_a_delete_update_the_cache_from_their_own_answer():
+    # /demo/save and /demo/delete both answer with the unit's whole menu:
+    # the tiles are right at once, without waiting out the ten seconds or
+    # spending a request of their own.
+    class MenuLink(StubLink):
+        def post(self, path, body, learn=True, timeout=None):
+            StubLink.post(self, path, body, learn, timeout)
+            if path == "/demo/save":
+                self.demos = [_demo_entry("demo-paris", body["name"], "showA")]
+            elif path == "/demo/delete":
+                self.demos = []
+            return {"slug": "demo-paris", "demos": self.demos}
+
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = MenuLink("radxa-01", "stopped")
+    fleet.links = {"radxa-01": link}
+    fleet.write_demo("DEMO PARIS", False,
+                     {"radxa-01": {"id": "showA", "cues": [], "duration": 60}})
+    assert [d["name"] for d in fleet.demos_of("radxa-01")] == ["DEMO PARIS"]
+    fleet.delete_demo("demo-paris")
+    assert fleet.demos_of("radxa-01") == []
+
+
+def test_a_write_whose_answer_carries_no_menu_leaves_the_cache_to_the_poll():
+    # An agent that answers /demo/save without the list (or a unit that
+    # failed): "not known", and asked again on the next poll rather than
+    # ten seconds later - never a stale menu shown as the truth.
+    now = [1000.0]
+    fleet = Fleet({}, clock=lambda: now[0])
+    link = StubLink("radxa-01", "stopped")          # post() answers {}
+    link.demos = [_demo_entry("demo-old", "DEMO OLD", "showA")]
+    fleet.links = {"radxa-01": link}
+    fleet._poll_demos(link)
+    fleet.write_demo("DEMO NEW", False,
+                     {"radxa-01": {"id": "showA", "cues": [], "duration": 60}})
+    assert fleet.demos_of("radxa-01") is None
+    link.demos = [_demo_entry("demo-new", "DEMO NEW", "showA")]
+    fleet._poll_demos(link)
+    assert [d["name"] for d in fleet.demos_of("radxa-01")] == ["DEMO NEW"]
+
+
+def test_listing_the_demos_on_demand_also_fills_the_cache_the_tiles_read():
+    # Refresh in the demo table and the tiles must not disagree about
+    # what a unit holds a second later.
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = StubLink("radxa-01", "stopped")
+    link.demos = [_demo_entry("demo-a", "DEMO A", "showA")]
+    fleet.links = {"radxa-01": link}
+    assert fleet.demos_of("radxa-01") is None
+    fleet.list_demos()
+    assert [d["name"] for d in fleet.demos_of("radxa-01")] == ["DEMO A"]

@@ -1568,6 +1568,70 @@ def test_write_demo_is_blocked_the_same_way_upload_is(tmp_path):
         server.server_close()
 
 
+def test_write_demo_is_refused_while_the_show_runs(tmp_path):
+    # Saving a demo writes every picture, exactly as Upload does - during
+    # a run that would rewrite slots a unit is about to trigger. Unlike
+    # Upload there is no `force`: a demo is never the way back into a
+    # running show.
+    from conductor.fleet import Fleet
+
+    _demo_workspace(tmp_path)
+    fleet = Fleet({"radxa-01": "127.0.0.1:1"})
+    fleet.run = {"t0": 0.0, "state": "running", "held_at": None}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/write_demo",
+                                {"name": "DEMO", "loop": False})
+        assert status == 400 and payload["error"] == "stop the show first"
+        status, payload = _post(port, "/api/fleet/write_demo",
+                                {"name": "DEMO", "loop": False, "force": True})
+        assert status == 400 and payload["error"] == "stop the show first"
+        # The name is still checked first, so a run never hides a typo.
+        status, payload = _post(port, "/api/fleet/write_demo", {"name": ""})
+        assert status == 400 and payload["error"] != "stop the show first"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_fleet_snapshot_carries_what_each_unit_holds_in_its_menu(tmp_path):
+    # The tiles and the "Write to units…" chips are drawn from /api/fleet
+    # alone: every unit's stored demos ride along with its tile, already
+    # marked against the show this conductor uploaded to it.
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    _demo_workspace(tmp_path)
+    holder = StubLink("radxa-01", "stopped")
+    holder.demos = [{"slug": "demo-paris", "name": "DEMO PARIS", "cues": 4,
+                     "duration": 90.0, "loop": True, "saved_at": 1.0,
+                     "show_id": "showA"},
+                    {"slug": "demo-old", "name": "DEMO OLD", "cues": 4,
+                     "duration": 90.0, "loop": False, "saved_at": 2.0,
+                     "show_id": "an-older-hash"}]
+    never_asked = StubLink("radxa-02", "stopped")
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": holder, "radxa-02": never_asked}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 90}}
+    fleet._poll_demos(holder)
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        units = {u["name"]: u for u in _get(port, "/api/fleet")["units"]}
+        assert [(d["name"], d["cues"], d["duration"], d["loop"], d["current"])
+                for d in units["radxa-01"]["demos"]] == [
+            ("DEMO PARIS", 4, 90.0, True, True),
+            ("DEMO OLD", 4, 90.0, False, False)]
+        # Not asked yet is "not known" (null), never "no demo stored".
+        assert units["radxa-02"]["demos"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_delete_demo_validates_the_slug(tmp_path):
     from conductor.fleet import Fleet
 
