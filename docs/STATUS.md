@@ -36,7 +36,18 @@
 - テスト 636 件 + skip 1(Windows)。**実機未検証**: 焼き込みの所要時間(見積り 36 基板 × 10 キュー
   ≈ 90 秒)、8 秒間隔の 0x1D、12 V レール。Radxa 復帰後に `git pull` と `epaper-ui` 再起動が全台に必要
   (`ui/*` が大きく変わった。conductor と unit は常に同時更新)。
-- 統合版の敵対的レビュー(Opus)は進行中。
+- **統合版の敵対的レビュー(Opus, 2026-09-25)の判定は Block。機体への配布・本番使用は F1〜F5 の修正まで禁止。**
+  要点(全文はセッションのスクラッチパッド `review_preburn_findings.md`):
+  F1 焼き込み状態がセッション限りで `burn: null` が「旧エージェント」と「未焼き込み」を区別できない →
+  (a) 焼き込み中に STOP → `cancel_burn()` が None にするので run/START が通る(スロットには前のショーの絵)、
+  (b) Upload 後に機体が再起動 → `restore()` は再焼き込みせず完了記録もない、(c) 機体ビジー中の `/show/load` で
+  新 id + 旧「burned」。修正: cancel は "cancelled"、`burn_finished` が show id を永続化、`load()` は変更前に状態を
+  立てる、fleet は「burn キーなし」と「None」を区別。F2 START の `force` が unit に届かない(`/show/run` に force を
+  運び `_burn_gate(force)` へ)。F3 PRESET に force がなく不在基板 1 枚で 0:00 が出せない。F4 ワーカーが焼き込みを
+  放棄すると "burning" のまま固まる(`_stop` 分岐で `burn_finished`)。F5 スイープを全部外した再 Upload で古い
+  0x1F テーブルが残る(delays を常に出して clear)。F6〜F11 は中程度以下(監視の連打、デモ焼き込み中の unit を
+  `_playing_demo` が見ない、1-19 と書き残したドキュメント、死にコード、スレッド越しの set 反復、flaky e2e)。
+  合格した点: スロット契約 0/1-18/19 は全経路で厳密、partial キューも全体像を焼く、RUNNING 中の 0x13 なし。
 
 **本体側(unit): 事前焼き込み(pre-burn)方式への全面移行 - ショー中は 0x13 を一切送らない(2026-09-25)**
 
