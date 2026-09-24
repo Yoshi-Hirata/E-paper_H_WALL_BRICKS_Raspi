@@ -1029,7 +1029,7 @@ function renderTimeline() {
       <div class="group">
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
         <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
-        <label class="filebtn" title="Load a project sent by the designers: their CSVs are added to the workspace and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
+        <label class="filebtn" title="Load a project sent by the designers: their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
         hatched = refreshing · solid = held until End · Esc deselects</div>
@@ -1426,16 +1426,32 @@ async function loadBundleFile(file) {
   let data;
   try { data = JSON.parse(await file.text()); } catch { toast("Not a bundle file"); return; }
   if (!data || data.format !== "epaper-show-bundle") { toast("Not a bundle file"); return; }
-  if (!confirm(`Load the project ${file.name} sent by the designers? Their CSVs are added to the workspace and their timeline replaces the current one. The unit assignments here are kept.`)) return;
+  // A version the page does not speak yet: say so and stop before the
+  // confirm dialog even asks - there is nothing useful to confirm.
+  if (data.version !== 1) { toast(`Bundle version ${data.version} is not supported (want 1)`); return; }
+  if (!confirm(`Load the project ${file.name} sent by the designers? Their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.`)) return;
   if (ui.playing) stopPlayback(false);
   try {
     const result = await api("/api/bundle/import", data);
     if (result?.error) toast(result.error);
     else {
       const bits = [`${result.cues ?? 0} cue(s)`, `${result.saved?.length ?? 0} file(s) saved`];
-      if (result.refused?.length) bits.push(`${result.refused.length} refused`);
+      if (result.overwritten?.length) bits.push(`${result.overwritten.length} overwritten`);
       if (result.music) bits.push(`music: ${result.music} — pick the audio file again on this PC`);
-      toast(`Loaded ${file.name}: ` + bits.join(" · ") + (result.warnings?.length ? " · " + result.warnings.join(" · ") : ""));
+      // The refused sentences and warnings can each run long (one line per
+      // bad file / per problem) - the full text always goes to the
+      // console; the toast gets it too unless that would make the toast
+      // itself unreadable, in which case the toast points at the console.
+      const lines = [`Loaded ${file.name}: ` + bits.join(" · ")];
+      if (result.refused?.length) lines.push("Refused: " + result.refused.join(" · "));
+      if (result.warnings?.length) lines.push("Warnings: " + result.warnings.join(" · "));
+      const full = lines.join(" · ");
+      if (full.length > 240) {
+        console.warn(full);
+        toast(lines[0] + ` (${(result.refused?.length || 0)} refused, ${(result.warnings?.length || 0)} warning(s) - see console)`);
+      } else {
+        toast(full);
+      }
     }
   } catch (err) { toast("Import failed: " + err.message); }
   await refresh();

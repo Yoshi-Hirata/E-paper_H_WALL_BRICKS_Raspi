@@ -56,6 +56,7 @@ SHOW_FORMAT = "epaper-show"
 SHOW_FORMAT_VERSION = 1
 BUNDLE_FORMAT = "epaper-show-bundle"      # the designers' simulator export
 BUNDLE_FORMAT_VERSION = 1
+BUNDLE_MAX_FILES = 200
 DEMO_NAME_MAX = 14        # the unit's LCD menu row
 # The unit's LCD font (ui/render.py, DejaVu) has no Japanese glyphs, so a
 # demo's name must be plain ASCII the unit can actually draw - the same
@@ -600,10 +601,12 @@ class Workspace:
                      and music.get("name") else None,
         }
 
-    def import_show(self, payload: dict) -> "tuple[int, list[str]]":
-        """The reverse of export_show(): one _commit that replaces
-        whatever keys the file mentions and leaves the rest (the music
-        entry included) exactly as it was."""
+    def _validate_show(self, payload: dict) -> "tuple[dict, list[dict] | None]":
+        """The validating half of import_show(): raises on a bad payload,
+        otherwise returns (changes, cues) without touching disk. Split
+        out so import_bundle() can check a show is good *before* writing
+        a single CSV - a bad bundle must leave the workspace exactly as
+        it found it."""
         if not isinstance(payload, dict):
             raise ValueError("not a show file")
         if payload.get("format") != SHOW_FORMAT:
@@ -671,6 +674,14 @@ class Workspace:
             if not isinstance(payload["boards"], dict):
                 raise ValueError("boards: must be an object")
             changes["boards"] = {str(k): v for k, v in payload["boards"].items()}
+        return changes, cues
+
+    def _apply_show_changes(self, changes: dict, cues: "list[dict] | None"
+                            ) -> "tuple[int, list[str]]":
+        """The committing half of import_show(): one _commit, then
+        warnings computed against whatever CSVs are on disk *right now*
+        (import_bundle() calls this after its own CSVs have been saved,
+        so a cue can reference a design that arrived in the same bundle)."""
         with self._lock:
             paths = sorted(self.files.glob("*.csv"))
             before = self._load_show()
@@ -689,15 +700,30 @@ class Workspace:
                                     "is not in this workspace")
         return len(cues or []), warnings
 
+    def import_show(self, payload: dict) -> "tuple[int, list[str]]":
+        """The reverse of export_show(): one _commit that replaces
+        whatever keys the file mentions and leaves the rest (the music
+        entry included) exactly as it was."""
+        changes, cues = self._validate_show(payload)
+        return self._apply_show_changes(changes, cues)
+
     def import_bundle(self, payload: dict) -> dict:
         """The designers' project file (conductor/web/sim's "Save
-        project..."): their CSVs and their timeline in one file. The CSVs
-        save first, the same as /api/files (a bad name is refused, not
-        fatal); the timeline then replaces itself exactly as
-        import_show() does - one _commit - except that a bundle with no
-        unit assignments of its own (the normal case: the designers'
-        simulator never has any) leaves the operator's assignments here
-        untouched instead of wiping them to {}.
+        project..."): their CSVs and their timeline in one file.
+
+        Whole or nothing: every file name and the show itself are
+        validated *before* a single byte is written (a name that fails
+        the same safety check /api/files applies goes straight to
+        `refused`, never renamed and never saved; a bad show raises
+        before any CSV lands). The timeline then replaces itself exactly
+        as import_show() does - one _commit - except that a bundle with
+        no unit/board changes of its own (the normal case: the
+        designers' simulator has no notion of either) leaves the
+        operator's assignments and board renumbering here untouched
+        instead of wiping them to {}. `units: {"<item>": null}` clears
+        that one item at most - it can never wipe every assignment, the
+        way an empty `units: {}` would if it were not told apart from
+        "no units key at all".
 
         The bundle's own "music" entry is a name only, same as the show
         file's - the actual bytes always travel by hand and are picked
@@ -719,25 +745,62 @@ class Workspace:
         files = payload.get("files") or {}
         if not isinstance(files, dict):
             raise ValueError("bundle: files must be an object")
-        saved: "list[str]" = []
+        if len(files) > BUNDLE_MAX_FILES:
+            raise ValueError(f"bundle: at most {BUNDLE_MAX_FILES} files "
+                             f"(got {len(files)})")
+        to_save: "list[tuple[str, str]]" = []
         refused: "list[str]" = []
         for name in sorted(files):
             text = files[name]
             if not isinstance(name, str) or not isinstance(text, str):
                 raise ValueError("bundle: files must be name -> text")
             try:
-                saved.append(self.save(name, text))
-            except ValueError as exc:
-                refused.append(str(exc))
+                # The same rule /api/files applies through Workspace.save()
+                # - but checked here without ever calling it, so a bad
+                # name is refused outright instead of silently renamed.
+                safe = (_SAFE_NAME.search(name) is None
+                        and Path(name).name == name
+                        and self.kind(name) is not None)
+            except (OSError, ValueError):     # e.g. an embedded NUL byte
+                safe = False
+            if not safe:
+                refused.append(f"{name}: unusable file name")
+                continue
+            to_save.append((name, text))
         show = dict(show)
-        units_kept = not show.get("units")
+        # units: only a *populated* mapping counts as "the bundle brought
+        # its own" - {"Look22": null} cleans to {}, same as no units key
+        # at all, so it cannot wipe every other assignment the operator
+        # made here.
+        cleaned_units = {k: v for k, v in (show.get("units") or {}).items() if v}
+        units_kept = not cleaned_units
         if units_kept:
             show.pop("units", None)
-        cues, warnings = self.import_show(show)
-        music = payload.get("music")
+        boards_kept = not show.get("boards")
+        if boards_kept:
+            show.pop("boards", None)
+        # Validate the whole timeline before a single CSV is written.
+        changes, cues = self._validate_show(show)
+        with self._lock:
+            existing = {p.name for p in self.files.glob("*.csv")}
+        saved: "list[str]" = []
+        overwritten: "list[str]" = []
+        for name, text in to_save:
+            try:
+                saved_name = self.save(name, text)
+            except OSError as exc:
+                raise ValueError(
+                    f"could not save {name}: {exc} - {len(saved)} file(s) "
+                    f"already saved, {len(refused)} refused before this")
+            if saved_name in existing:
+                overwritten.append(saved_name)
+            saved.append(saved_name)
+        cue_count, warnings = self._apply_show_changes(changes, cues)
+        music = payload.get("music") or show.get("music")
         return {"ok": True, "saved": saved, "refused": refused,
-                "cues": cues, "warnings": warnings,
-                "units_kept": units_kept,
+                "overwritten": overwritten, "cues": cue_count,
+                "warnings": warnings, "units_kept": units_kept,
+                "boards_kept": boards_kept,
                 "music": music.get("name") if isinstance(music, dict) else None}
 
     # ---- files ----
