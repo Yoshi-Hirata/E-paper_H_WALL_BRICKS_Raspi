@@ -1434,7 +1434,7 @@ async function loadBundleFile(file) {
     else {
       const bits = [`${result.cues ?? 0} cue(s)`, `${result.saved?.length ?? 0} file(s) saved`];
       if (result.refused?.length) bits.push(`${result.refused.length} refused`);
-      if (result.music) bits.push(`music: ${result.music} (pick the audio again)`);
+      if (result.music) bits.push(`music: ${result.music} — pick the audio file again on this PC`);
       toast(`Loaded ${file.name}: ` + bits.join(" · ") + (result.warnings?.length ? " · " + result.warnings.join(" · ") : ""));
     }
   } catch (err) { toast("Import failed: " + err.message); }
