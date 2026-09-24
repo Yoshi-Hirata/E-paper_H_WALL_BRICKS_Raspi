@@ -139,7 +139,12 @@ def menu_screen(patterns, selected: int, port: str | None = None,
         if chosen:
             draw.rectangle((4, y - 2, WIDTH - 4, y + row_h - 6), fill=SELECT)
             draw.rectangle((4, y - 2, 7, y + row_h - 6), fill=ACCENT)
-        draw.text((14, y), patterns[index].label, font=FONT_M,
+        # Built-in patterns keep to <=14 chars by convention, but a demo's
+        # name is only capped on the way in (ui/demos.py's MAX_NAME_LEN,
+        # server-side too) - ellipsize rather than let a long one run
+        # into the row's right edge or the selection highlight.
+        draw.text((14, y), _ellipsize(patterns[index].label, FONT_M,
+                                      WIDTH - 14 - 8), font=FONT_M,
                   fill=FG if chosen else DIM)
 
     detail = patterns[selected].detail if patterns else ""

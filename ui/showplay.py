@@ -116,6 +116,7 @@ class ShowPlayer:
         # what restore() does after a reboot (see there); everything else
         # about running one is identical to a PC-driven show.
         self.is_demo = False
+        self.demo_name = ""            # the name it was written under
         self.applied: "str | None" = None      # cue id on the garment now
         self.dirty = False             # some board does not show `applied`
         self.note = ""
@@ -139,13 +140,17 @@ class ShowPlayer:
 
     # ---- commands (from the agent) ----
 
-    def load(self, show: dict, demo: bool = False) -> None:
+    def load(self, show: dict, demo: bool = False, name: str = "") -> None:
         validate_show(show)
         with self._lock:
             self._epoch += 1
             self._disarm()
             self.show = show
             self.is_demo = bool(demo)
+            # The name it was written under (ui/demos.py), not show["name"]
+            # (the look's own name from the timeline) - the PC's Units
+            # tile labels a unit "demo: <name>" from /status.show.
+            self.demo_name = str(name) if demo else ""
             self.state, self.t0, self.synced = LOADED, None, False
             self._forget_garment()
             self.note = ""
@@ -268,7 +273,7 @@ class ShowPlayer:
             self._write("show-run.json", {
                 "show": self.show["id"] if self.show else None,
                 "state": self.state, "applied": self.applied,
-                "demo": self.is_demo,
+                "demo": self.is_demo, "demo_name": self.demo_name,
                 # T0 as wall time: what survives a reboot.
                 "t0_wall": (None if self.t0 is None else
                             self._wall() + (self.t0 - self._clock()))})
@@ -292,12 +297,20 @@ class ShowPlayer:
             self.show = show
             self.state = LOADED
             self.is_demo = bool(run.get("demo"))
+            self.demo_name = run.get("demo_name", "") if self.is_demo else ""
             if run.get("show") != show.get("id"):
                 return
             if self.is_demo:
                 # A demo is simpler and safer left alone: it restarts only
                 # when the operator presses KEY1 again, never on its own
                 # after a power cut (a PC-driven show still resumes below).
+                # Cleared to a plain LOADED show (not re-marked as a demo)
+                # so a *second* reboot, mid-SHOW this time, does not take
+                # this same branch again - a demo's show id is a content
+                # digest, so without this the PC would never see reason to
+                # reload it and the show would simply sit un-restored.
+                self.is_demo, self.demo_name = False, ""
+                self._persist()
                 return
             t0_wall = run.get("t0_wall")
             if run.get("state") != RUNNING or t0_wall is None:
@@ -355,11 +368,19 @@ class ShowPlayer:
         cue_id = key.rsplit(":", 1)[1]
         return (cue_id[:-1], True) if cue_id.endswith("+") else (cue_id, False)
 
-    @staticmethod
-    def _run_no_of(key: str) -> "int | None":
+    def _run_no_of(self, key: str) -> "int | None":
+        """The run number a session key was made under, by stripping the
+        known "<show id>:" prefix rather than counting colons - a show
+        id is never expected to contain one, but this way nothing breaks
+        if it ever does."""
+        if not self.show:
+            return None
+        prefix = self.show["id"] + ":"
+        if not key.startswith(prefix):
+            return None
         try:
-            return int(key.split(":", 2)[1])
-        except (IndexError, ValueError):
+            return int(key[len(prefix):].split(":", 1)[0])
+        except ValueError:
             return None
 
     def _send(self, show: dict, cue: dict, whole: bool, fire_at: float,
@@ -538,7 +559,12 @@ class ShowPlayer:
                    "t0": self.t0, "synced": self.synced,
                    "applied": self.applied, "dirty": self.dirty,
                    "note": self.note, "now": None, "next": None,
-                   "duration": show.get("duration")}
+                   "duration": show.get("duration"),
+                   # ui/demos.py's standalone shows: the conductor's own
+                   # supervise()/_adopt() should leave one of these alone
+                   # rather than mistake it for its own show; the Units
+                   # tile labels a unit "demo: <name>" from demo_name.
+                   "demo": self.is_demo, "demo_name": self.demo_name}
             if self.t0 is not None and self.state in (RUNNING, ENDED):
                 now = self._clock() - self.t0
                 out["now"] = round(now, 2)

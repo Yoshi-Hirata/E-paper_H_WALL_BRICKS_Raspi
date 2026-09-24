@@ -586,6 +586,48 @@ def test_starting_again_from_the_top_runs_every_cue_again(rig):
     assert 0 <= show_times(bus)[-2] - (t0 + 0.8) < 0.05
 
 
+def test_restarting_a_one_cue_show_refires_it(rig):
+    # Found in the stage-safety review: _tally() could mistake the old
+    # run's FIRED session cue for the new run's whenever the two share a
+    # cue id - always true for a one-cue show, where the only cue is both
+    # the first and the last of every run. _run_no_of() (embedded in the
+    # session key alongside the cue id) is what tells the runs apart.
+    player, session, runner, bus, _ = rig
+    show = make_show(sents=(-REFRESH,), duration=0.3)
+    player.load(show)
+    player.run(time.monotonic() + 0.3)
+    assert wait_until(lambda: player.state == ENDED, timeout=4)
+    first_run = len(show_times(bus))
+    assert first_run == 1
+    # A fresh load(), as ui/app.py's _start_demo_show() does for KEY1 and
+    # KEY1-hold (unlike run() alone, which - correctly - does not forget
+    # an unchanged one-cue garment and so would not resend it either).
+    player.load(show)
+    player.run(time.monotonic() + 0.3)          # from the top again
+    assert wait_until(lambda: player.state == ENDED, timeout=4)
+    assert len(show_times(bus)) == first_run + 1     # refired, not stuck
+    assert player.applied == "q00"
+
+
+def test_preset_survives_a_run_no_bump_and_is_not_repainted_at_start(rig):
+    # PRESET, then START: run() bumps _run_no even though nothing but the
+    # T0 changed, so the preset's own FIRED session key (from preset(),
+    # an earlier run number) must still read as "already applied" - not
+    # as some other run's leftover to distrust and repaint.
+    player, session, runner, bus, _ = rig
+    player.load(make_show())
+    player.preset()
+    assert wait_until(lambda: player.applied == "q00")
+    preset_run_no = player._run_no
+    t0 = time.monotonic() + 0.5
+    player.run(t0, "abc1234567")
+    assert player._run_no != preset_run_no          # the bump happened
+    assert wait_until(lambda: player.state == ENDED, timeout=6)
+    # Exactly one "show" for the preset - START never re-sent it.
+    assert events(bus)[:3] == [("save", 1, 1), ("save", 2, 1), ("show",)]
+    assert len([e for e in events(bus) if e == ("show",)]) == 3
+
+
 def test_a_cue_with_its_own_refresh_time_spaces_the_next_write_by_it(rig):
     player, session, runner, bus, _ = rig
     current = make_show(sents=(-REFRESH, 0.0, 1.0))["cues"][1]

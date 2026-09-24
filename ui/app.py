@@ -158,7 +158,14 @@ class App:
         self._demo_name = ""
         self._demo_loop = False
         self._demo_ended_at: float | None = None
+        self._demo_show_id: str | None = None
         self._last_demo_poll = 0.0
+        # A short-lived note on the MENU screen (e.g. a refused KEY1 on a
+        # demo row while the PC's own show is loaded) - _standby_status()
+        # shows it in place of the usual standby/port line until it times
+        # out, same slot, no new screen needed.
+        self._menu_note = ""
+        self._menu_note_until = 0.0
         self.host = host
         self.selected = 0
         self.screen = Screen.MENU
@@ -254,9 +261,15 @@ class App:
             if event == "key2":
                 self._stop_demo()
             elif event == "key1_hold":
-                # Restart from 0:00: the row is still `selected`, so this
-                # is exactly _enter_demo() again on the same show.
-                self._restart()
+                # Restart from 0:00 - never _restart()/patterns[selected]:
+                # if the playing demo's row was deleted from the PC while
+                # it played, the cursor has since been clamped onto a
+                # neighbour, and going through the menu would start THAT
+                # one instead (a different demo, a pattern, even STANDBY -
+                # whitening every panel on stage).
+                if self._playing_demo is not None and not self._start_demo_show(
+                        self._playing_demo):
+                    self._stop_demo()
             return                      # KEY1 alone does nothing here
 
         if event == "key1_hold":
@@ -408,14 +421,22 @@ class App:
 
     # ---- standalone demos (ui/demos.py) ----
 
-    def _start_demo_show(self, slug: str) -> bool:
-        """Load the stored show and run it from 0:00. False if it could
-        not be (a corrupt file on disk - validated at /demo/save, so
-        this is not expected in practice); the row is left on the menu
-        rather than opening a screen with nothing to show."""
+    def _start_demo_show(self, slug: str, name: "str | None" = None) -> bool:
+        """Load the stored show fresh and run it from 0:00 (KEY1, and
+        KEY1-hold's restart - the operator may have just re-written this
+        very slug). False if it could not be (a corrupt or since-deleted
+        file - /demo/save validates, so this is mainly the "deleted from
+        the PC while it played" case); the caller falls back to the menu
+        rather than opening a screen with nothing to show.
+
+        `name` (the row's label) is what /status.show.demo_name carries
+        for the PC's Units tile; a restart that does not pass one again
+        (KEY1-hold) keeps whatever _enter_demo() set the first time."""
         try:
             show = self.demo_store.load(slug)
-            self.player.load(show, demo=True)
+            self.player.load(show, demo=True,
+                             name=self._demo_name if name is None else name)
+            self._demo_show_id = show["id"]
             # Far enough ahead that the preset cue's own lead (its boards'
             # save time plus the port setup, ShowPlayer._lead) has room to
             # land before its instant - the same margin preset() itself
@@ -426,10 +447,34 @@ class App:
         except RemoteError:
             return False
 
+    def _loop_demo_show(self) -> bool:
+        """ENDED, loop set: run the already-loaded show again from 0:00 -
+        no reload, no re-write of the ~100-300 KB show file to disk every
+        lap (run() starting a new top forgets the garment on its own, so
+        nothing about a stale load would show)."""
+        show = self.player.show if self.player else None
+        if show is None or not self.player.is_demo:
+            return False
+        try:
+            lead = self.player._lead(show["cues"][0]) + 1.0
+            self.player.run(self._clock() + lead)
+            return True
+        except RemoteError:
+            return False
+
     def _enter_demo(self, row: "DemoRow") -> None:
         if self.player is None or self.demo_store is None:
             return
-        if not self._start_demo_show(row.slug):
+        player = self.player
+        if (player.show is not None and not player.is_demo
+                and player.state != STOPPED):
+            # A PC show is loaded (or ended and not yet let go of) - the
+            # PC always wins; loading over it here would either fight a
+            # show in progress or make the PC's own next /show/load see a
+            # mismatched id and refuse itself pointlessly.
+            self._note_on_menu("PC show loaded - use the PC")
+            return
+        if not self._start_demo_show(row.slug, row.label):
             return
         self._standby = False
         self._playing_demo = row.slug
@@ -437,6 +482,11 @@ class App:
         self._demo_loop = row.loop
         self._demo_ended_at = None
         self.screen = Screen.DEMO
+        self._dirty = True
+
+    def _note_on_menu(self, text: str, seconds: float = 3.0) -> None:
+        self._menu_note = text
+        self._menu_note_until = self._clock() + seconds
         self._dirty = True
 
     def _stop_demo(self) -> None:
@@ -455,10 +505,23 @@ class App:
         self._dirty = True
 
     def _track_demo(self) -> None:
-        """Loop a finished demo, or notice the PC ended it from afar."""
+        """Loop a finished demo, or notice that the player no longer
+        belongs to it - the PC took over (a mismatched id, or is_demo
+        turned False under an id that happens to match, both possible
+        the moment a demo sits ENDED and /show/load is no longer
+        refused) or a reboot cleared it. Either way this demo must never
+        fire into what is on the garment now - it is not ours any more."""
         if self._playing_demo is None or self.player is None:
             return
-        status = self.player.status()
+        player = self.player
+        if not player.is_demo or (player.show or {}).get("id") != self._demo_show_id:
+            self._playing_demo = None
+            self._demo_ended_at = None
+            if self.screen is Screen.DEMO:
+                self.screen = Screen.MENU
+            self._dirty = True
+            return
+        status = player.status()
         state = status["state"] if status else None
         if state == STOPPED:
             # /show/stop reached the player directly (the PC's STOP button
@@ -473,7 +536,8 @@ class App:
             elif (self._demo_loop
                   and self._clock() - self._demo_ended_at >= LOOP_GAP_S):
                 self._demo_ended_at = None
-                self._start_demo_show(self._playing_demo)
+                if not self._loop_demo_show():
+                    self._stop_demo()       # e.g. the session went busy
         else:
             self._demo_ended_at = None
 
@@ -564,8 +628,11 @@ class App:
 
         Doubles as the link-check report: standby probes every
         configured board, so the count of boards answering - and any
-        error - is the state of the wall.
+        error - is the state of the wall. A demo-row refusal's note
+        (_note_on_menu) takes this same slot for a few seconds first.
         """
+        if self._menu_note and self._clock() < self._menu_note_until:
+            return self._menu_note
         if not self._standby:
             return ""
         if self.runner.error:
@@ -738,12 +805,17 @@ class App:
         remote = self.remote
         if remote is None:
             return
-        if self._playing_demo is not None:
+        if (self._playing_demo is not None and self.player is not None
+                and self.player.is_demo):
             # A demo we started ourselves fires its cues through this
             # very session, so `remote.active` is true too - must not
             # read as the PC taking the unit over (that would bounce the
             # screen straight to REMOTE). _stop_demo()/_track_demo() are
-            # the only ways off the DEMO screen while this is set.
+            # the only ways off the DEMO screen while this holds.
+            # `player.is_demo` is also checked (not just `_playing_demo`)
+            # so that the moment the PC actually does take over - a
+            # /show/load turns it False - this stops overriding at once,
+            # instead of waiting for _track_demo()'s own next tick.
             return
         if remote.active and self.screen is not Screen.REMOTE:
             self.screen = Screen.REMOTE
