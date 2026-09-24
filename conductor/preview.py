@@ -19,7 +19,7 @@ import colorsys
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .look import PALETTE, Design, LookMap, default_shift
+from .look import PALETTE, Design, LookMap
 
 BG = (245, 245, 247)
 INK = (40, 40, 48)
@@ -85,7 +85,7 @@ def render(look_map: LookMap, design: "Design | None" = None,
                         key=lambda s: (s.row, s.col))      # hem first
         for scale in scales:
             shift = (design.shift(side, scale.row) if design
-                     else default_shift(scale.row))
+                     else look_map.shift(scale.side, scale.row))
             cx = x0 + (MARGIN + scale.col - low_col + shift + 0.5) * cell
             cy = header + (MARGIN + (top_row - scale.row) * ROW_PITCH
                            + 0.5) * cell

@@ -22,7 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conductor.server import MAX_MUSIC, Workspace, make_server
-from tests.test_look import GRID, MAP, SKIRT_GRID, SKIRT_MAP
+from tests.test_look import GRID, MAP, MAP_SHIFT, SKIRT_GRID, SKIRT_MAP
 
 
 @pytest.fixture
@@ -42,12 +42,25 @@ def test_state_joins_a_map_with_its_designs(workspace):
     look = item(state, "Look22")
     assert len(look["map"]["scales"]) == 4
     assert look["map"]["sides"] == ["front", "back"]
+    # MAP has no shift column, so every row agrees with default_shift():
+    # nothing to send, and the page's shiftOf() falls back on its own.
+    assert look["map"]["shifts"] == {}
     assert [d["pattern"] for d in look["designs"]] == [1]
     assert look["designs"][0]["colors"]["front|1|1"] == 0x03
     assert look["designs"][0]["problems"] == [] and look["problems"] == []
     assert [b["dip_id"] for b in look["boards"]] == [1, 2, 3]
     assert state["palette"][5]["name"] == "Green"
     assert len(state["units"]) == 10
+
+
+def test_state_carries_the_maps_own_shift_where_it_differs_from_default(tmp_path):
+    ws = Workspace(tmp_path / "ws")
+    ws.save("Look19_map.csv", MAP_SHIFT)
+    look = item(ws.state(), "Look19")
+    # front row 1 (0 in the map, would default to 0.5) and back row 0
+    # (0.5 in the map, would default to 0.0) are the two that differ;
+    # front row 0 (0 in the map, matches the 0.0 default) is left out.
+    assert look["map"]["shifts"] == {"front|1": 0.0, "back|0": 0.5}
 
 
 def test_problems_reach_the_page_instead_of_failing_the_request(workspace):

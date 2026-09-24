@@ -496,8 +496,12 @@ function shiftOf(shifts, side, row) {
   return s !== undefined ? s : (row % 2 ? 0.5 : 0);
 }
 // opts: {cell, mode, colors, undecided, shifts, labels}
+// opts.shifts is a design's own per-row shifts; null/undefined (no design
+// yet, or a design that carries none) falls back to the map's own shifts -
+// the site's per-row rule for looks where it differs from odd/even.
 function renderGarment(item, opts) {
   const cell = opts.cell, scales = item.map.scales;
+  const shifts = opts.shifts ?? item.map.shifts;
   const rows = scales.map(s => s[1]), cols = scales.map(s => s[2]);
   const top = Math.max(...rows), low = Math.min(...rows);
   const lowCol = Math.min(...cols), span = Math.max(...cols) - lowCol + 1.5;
@@ -518,7 +522,7 @@ function renderGarment(item, opts) {
     }
     const here = scales.filter(s => s[0] === side).sort((a, b) => a[1] - b[1] || a[2] - b[2]);
     for (const [sd, row, col, boardNo, socket] of here) {
-      let cx = (margin + col - lowCol + shiftOf(opts.shifts, side, row) + 0.5) * cell;
+      let cx = (margin + col - lowCol + shiftOf(shifts, side, row) + 0.5) * cell;
       if (ui.view === "outside") cx = sideW - cx;            // the files are drawn from the inside
       const cy = head + (margin + (top - row) * PITCH + 0.5) * cell;
       const key = `${side}|${row}|${col}`;
@@ -963,7 +967,7 @@ function renderTimeline() {
             <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div></div>
             ${rows}
             <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead">
-              <div id="ph-head" title="Drag to scrub, or press and drag anywhere on the ruler">
+              <div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler · ← → 1 s · Shift 5 s · Home 0:00">
                 <svg width="14" height="12" viewBox="0 0 14 12"><path d="M1 1 H13 L7 11 Z" fill="var(--err)" stroke="var(--ph-outline)" stroke-width="1"/></svg>
                 <span id="ph-time"></span>
               </div>

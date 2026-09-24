@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 import struct
 
-from .look import ARRAY_LEN, LookMap, default_shift
+from .look import ARRAY_LEN, LookMap
 
 SEQUENCES = ("natural", "center", "top_down", "bottom_up",
              "left_right", "right_left")
@@ -87,11 +87,11 @@ def ranks(look_map: LookMap, sequence: str) -> "dict[tuple, int]":
         return result
     if sequence == "center":
         front = [s for s in scales if s.side == "front"] or scales
-        xs = [s.col + default_shift(s.row) for s in front]
+        xs = [s.col + look_map.shift(s.side, s.row) for s in front]
         ys = [s.row for s in front]
         cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
         return {s.position: int(round(math.hypot(
-            s.col + default_shift(s.row) - cx, s.row - cy))) for s in scales}
+            s.col + look_map.shift(s.side, s.row) - cx, s.row - cy))) for s in scales}
     raise ValueError(f"unknown sequence {sequence!r}")
 
 

@@ -4,7 +4,12 @@ Two files, as delivered by the designers (2026-09-21, Look22):
 
   LookNN_map.csv                    side,row,col,board_no,socket,label
       one line per scale: where it sits on the garment and which
-      board/socket drives it. Written once per garment.
+      board/socket drives it. Written once per garment. An optional 7th
+      column, `shift`, carries the production site's own per-row stagger
+      (0 or 0.5, the site's csvMap() rule: a row with a centre cell gets
+      0, every other row gets 0.5) - most looks stagger odd/even rows
+      as LookMap.default_shift() already assumes, but not all of them.
+      Missing column: every row falls back to default_shift().
 
   LookNN_color_patternMM_grid.csv   side,row,shift,1,2,3,...
       one line per garment row, one column per position; a cell is the
@@ -88,6 +93,7 @@ _GRID_NAME = re.compile(r"(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$",
                         re.IGNORECASE)
 _PATTERN_NO = re.compile(r"pattern\s*0*(\d+)$", re.IGNORECASE)
 _MAP_COLUMNS = ("side", "row", "col", "board_no", "socket")
+_SHIFT_COLUMN = "shift"
 _EMPTY_CELLS = ("", "0")       # no hole here
 _UNDECIDED = "-"               # a hole, colour not chosen yet
 
@@ -125,6 +131,10 @@ class LookMap:
     scales: "list[Scale]"
     item: "str | None" = None
     warnings: "list[str]" = field(default_factory=list)
+    # (side, row) -> the site's own shift for that row (0 or 0.5), only
+    # for maps exported with the 7th `shift` column. Read with shift(),
+    # which falls back to default_shift() for anything not here.
+    shifts: "dict[tuple[str, int], float]" = field(default_factory=dict)
 
     @property
     def board_nos(self) -> "list[int]":
@@ -152,6 +162,11 @@ class LookMap:
                 seen.append(s.side)
         return seen
 
+    def shift(self, side: str, row: int) -> float:
+        """This row's half-scale offset: the site's own value if the map
+        carries one, default_shift() otherwise."""
+        return self.shifts.get((side, row), default_shift(row))
+
     @classmethod
     def from_csv(cls, path) -> "LookMap":
         path = Path(path)
@@ -175,9 +190,11 @@ class LookMap:
         if missing:
             raise LookError([f"{name}: missing column(s) {', '.join(missing)}"
                              f" - expected {', '.join(_MAP_COLUMNS)},label"])
+        has_shift = _SHIFT_COLUMN in header
         problems: "list[str]" = []
         warnings: "list[str]" = []
         scales: "list[Scale]" = []
+        shifts: "dict[tuple[str, int], float]" = {}
         seen_pos: "dict[tuple, int]" = {}
         seen_socket: "dict[tuple, int]" = {}
         for line_no, raw in enumerate(reader, start=2):
@@ -215,6 +232,21 @@ class LookMap:
             if scale.label and scale.label != expected:
                 warnings.append(f"{where}: label {scale.label!r} does not "
                                 f"match board/socket ({expected})")
+            if has_shift and row.get(_SHIFT_COLUMN):
+                try:
+                    shift_val = float(row[_SHIFT_COLUMN])
+                except ValueError:
+                    problems.append(f"{where}: shift must be 0 or 0.5, not "
+                                    f"{row[_SHIFT_COLUMN]!r}")
+                else:
+                    shift_key = (scale.side, scale.row)
+                    if shift_key in shifts and shifts[shift_key] != shift_val:
+                        problems.append(
+                            f"{where}: shift {shift_val} for {scale.side} "
+                            f"row {scale.row} does not match "
+                            f"{shifts[shift_key]} already seen for that row")
+                    else:
+                        shifts[shift_key] = shift_val
             scales.append(scale)
         if not scales and not problems:
             problems.append(f"{name}: no scales")
@@ -224,7 +256,8 @@ class LookMap:
                             f"drives at most {MAX_BOARDS}")
         if problems:
             raise LookError(problems)
-        return cls(name=name, scales=scales, item=item, warnings=warnings)
+        return cls(name=name, scales=scales, item=item, warnings=warnings,
+                   shifts=shifts)
 
     def dip_sheet(self, ids: "dict[int, int] | None" = None) -> "list[dict]":
         """One line per board for whoever sets the DIP switches.

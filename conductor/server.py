@@ -41,7 +41,7 @@ from pathlib import Path
 from . import sequence, showfile, timeline
 from .fleet import DEFAULT_LEAD_S, Fleet, default_units
 from .look import (PALETTE, Design, LookError, LookMap, check,
-                   compile_design, unit_board_ids)
+                   compile_design, default_shift, unit_board_ids)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 UNITS = [f"radxa-{n:02d}" for n in range(1, 11)]
@@ -849,15 +849,23 @@ class Workspace:
                 look_map = LookMap.from_csv(path)
             except (OSError, LookError) as exc:
                 entry = item_entry(Path(path.stem[:-4]).name)
-                entry["map"] = {"name": path.name, "scales": [], "sides": []}
+                entry["map"] = {"name": path.name, "scales": [], "sides": [],
+                                "shifts": {}}
                 entry["problems"] += getattr(exc, "problems", [str(exc)])
                 continue
             look_map = self._renumbered(look_map, show)
             entry = item_entry(look_map.item or path.stem)
             maps[entry["item"].lower()] = look_map
+            # Only the rows where the map disagrees with default_shift() -
+            # the page's shiftOf() already falls back to that same rule,
+            # so a look with no shift column (or none of its rows differ)
+            # sends none of this and draws exactly as before.
+            rows = {(s.side, s.row) for s in look_map.scales}
+            shifts = {_key(pos): look_map.shift(*pos) for pos in rows
+                      if look_map.shift(*pos) != default_shift(pos[1])}
             entry["map"] = {
                 "name": path.name, "sides": look_map.sides,
-                "warnings": look_map.warnings,
+                "warnings": look_map.warnings, "shifts": shifts,
                 "scales": [[s.side, s.row, s.col, s.board_no, s.socket]
                            for s in look_map.scales]}
 
