@@ -18,6 +18,54 @@
 
 ## 2. 直近で完成したもの
 
+**SEEK のレビュー指摘の修正: 覚えた開始位置の検証漏れ、供給側の競合、スキップされたキュー(2026-09-24)**
+
+- **START が検証していなかった経路を修正(重大)**: `from_s` を渡さない START は
+  `fleet.start_at`(SEEK が覚えた位置)をそのまま使い、`show_duration()` との
+  範囲チェックを一切していなかった。ページは `from_s` を送らない経路しか使わない
+  ため、実際には**常に無検証**だった: 12:00 の位置まで SEEK → 5:00 のショーへ
+  再アップロード → START で `"Started from 9:00."` の 200 が返り、全機体が最初の
+  ティックで ENDED になって何も発火しない、という筋。`fleet.start_show()` が
+  `at`(呼び出し側が解決した値、SEEK の再読み込みはしない)自身を必ず範囲検証する
+  ように統一し、`fleet.upload()` も新しいショーの受け入れ時に `start_at` を忘れる
+  ようにした
+- **既存の run に紛れ込む `start_at` を除去**: `snapshot()` は run が無いときだけ
+  `start_at` を返す(run 中は常に 0)。`_adopt()`(再起動した conductor が機体から
+  実行中のショーを拾う経路)も拾った瞬間に `start_at` を忘れる。以前は拾った直後の
+  ライブなショーに「START FROM 3:00」+「Back to 0:00」が出て、後者を押すと
+  `seek(0)` の実行中分岐で T0 が未来に飛び、観客の前で機体が最初からやり直す
+  ことがあった
+- **機体側(`ui/showplay.py`)の修正**: SEEK/NEXT で T0 を前方へ大きく動かし、
+  読み込み中/待機中/セット済みだったキューをその新しい T0 が追い越すと、以前は
+  そのキューがそのまま予定時刻で発火していた(飛ばしたはずの絵が一瞬映る)。
+  `ShowPlayer.run()` は新しい T0 のもとでそのキューの `sent` が既に過去になって
+  いれば解除し、`_plan()` の「今のキューを塗り直す」分岐がブロックされたままに
+  ならないよう、その分岐の "busy" 判定も今・次のキューだけを見るようにした。
+  **この修正は機体側の再デプロイが要る**(各 `radxa-NN` で `git pull` して
+  `epaper-ui` を再起動)。後方への SEEK(飛ばさない)は従来どおり再スケジュール
+  されるだけで、この修正の影響を受けない
+- **供給側(`_supervise()`)の競合**: `run` をロック外へコピーしてから
+  `/show/run`・`/show/hold` を送るまでの間に SEEK/RESUME/STOP が割り込むと、
+  古い T0 を後から送ってしまう(あるいは HOLD の後に RUN が届いて機体だけが
+  動き続ける)ことがあった。`run` への書き込みごとに増える世代カウンタ
+  (`_run_gen`)を追加し、実際に送る直前にロックを取り直して世代が動いていないか
+  確認、動いていれば送らない。`_send_run()` 自身もロックを取り直して
+  `run["state"] == "running"` を送信直前に再確認する(seek/stop・seek/hold の
+  競合が典型)
+- SEEK の丸め(0.1 秒単位)だけで境界を外れて拒否されないよう、ショーの長さの
+  ちょうど 0.1 秒以内はショーの長さへ丸める(719.96 秒のショーで 719.96 を
+  指定すると 720.0 に丸まって拒否されていた)
+- HOLD 中・START 待ちの SEEK にもそれぞれの状態に応じたメッセージを追加
+  (`"On hold at 1:30. RESUME continues from here."` / `"START will begin at
+  1:30."`)。何もアップロードしていないのに機体から実行中のショーを拾っている
+  ときの SEEK は `"This conductor did not upload the show - Upload first."`
+  (`mode: "none"`)と正直に答える
+- 巨大な JSON 整数(`10**400` 桁)は `float()` が `OverflowError` を投げ、
+  今までは 500 相当(接続が切れる)になっていたのを 400 に統一
+- 変更ファイル: `conductor/fleet.py`・`conductor/server.py`・`ui/showplay.py`、
+  テスト一式(`tests/test_fleet.py`・`tests/test_conductor_server.py`・
+  `tests/test_showplay.py`)
+
 **SEEK(手動でショーの再生位置を動かす)・Designs 一覧のレイアウト・LOOK サムネイル行(2026-09-24)**
 
 - **`POST /api/fleet/seek`**(新規): `{"to_s","manual":true,"lead_s"}` でショーの位置を
