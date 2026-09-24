@@ -406,7 +406,9 @@ def test_seek_without_a_run_only_says_where_start_begins():
     assert mode == "start_at" and results == {}
     assert link.posted == []
     assert fleet.start_at == 180.0
-    started = fleet.start_show(lead_s=2.0)
+    # The caller resolves the position - here, the server always reads
+    # fleet.start_at itself and passes it on explicitly (round 2 fix).
+    started = fleet.start_show(lead_s=2.0, at=fleet.start_at)
     assert started["radxa-01"]["ok"]
     assert fleet.run["t0"] == 1000.0 + 2.0 - 180.0
     assert fleet.start_at == 0.0                      # forgotten once used
@@ -426,11 +428,23 @@ def test_seek_outside_the_show_is_refused():
     fleet = Fleet({}, clock=lambda: 1000.0)
     fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
     with pytest.raises(ValueError, match=r"0:00 to 10:00"):
-        fleet.seek(600.1)
+        fleet.seek(601.0)
     with pytest.raises(ValueError):
-        fleet.seek(-0.1)
+        fleet.seek(-1.0)
     mode, results = fleet.seek(600.0)                 # the top boundary is fine
     assert mode == "start_at" and fleet.start_at == 600.0
+
+
+def test_a_seek_within_rounding_of_the_end_is_clamped_not_refused():
+    # duration can carry more precision than the 0.1 s a seek is rounded
+    # to (found in review): the exact end must not be refused just
+    # because 719.96 rounds up to 720.0.
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 719.96}}
+    mode, _ = fleet.seek(719.96)
+    assert mode == "start_at" and fleet.start_at == 719.96
+    mode, _ = fleet.seek(-0.04)                       # the same, at the top
+    assert mode == "start_at" and fleet.start_at == 0.0
 
 
 def test_show_duration_is_the_longest_uploaded_show():

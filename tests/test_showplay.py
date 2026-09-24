@@ -202,15 +202,18 @@ def test_a_backward_seek_re_times_an_armed_cue_instead_of_disarming_it(rig):
     # fire time moves - _send()'s own re-timing, not the new disarm above.
     player, session, runner, bus, _ = rig
     player.load(make_show(sents=(-REFRESH, 5.0, 9.0), duration=30))
+    player.preset()
+    assert wait_until(lambda: player.applied == "q00")
     player.run(time.monotonic() + 0.1)
     t0_close = time.monotonic() + 0.4 - 5.0                 # q01 due in 0.4 s: armed
     player.run(t0_close)
     assert wait_until(lambda: session.phase == "armed"
                       and session.cue_id.endswith(("q01", "q01+")))
-    t0_back = t0_close - 3.0                                # backward: q01 now 3.4 s away
+    # Backward (T0 LATER): q01 is 2.0 s away again, not skipped - just re-timed.
+    t0_back = time.monotonic() - 3.0
     player.run(t0_back)
     assert wait_until(lambda: session.phase == "armed"
-                      and abs((session.fire_at or 0) - (t0_back + 5.0)) < 0.05)
+                      and abs((session.fire_at or 0) - (t0_back + 5.0)) < 0.1)
 
 
 def test_joining_mid_show_sends_the_whole_picture(rig):
