@@ -1459,8 +1459,7 @@ class Handler(BaseHTTPRequestHandler):
             slug = _demo_slug(body.get("slug"))
             return self._json({"units": fleet.delete_demo(slug)})
         if command == "preset":
-            return self._json({"units": fleet.simple(fleet._targets(),
-                                                     "/show/preset")})
+            return self._json({"units": fleet.preset()})
         if command == "seek":
             if body.get("manual") is not True:
                 raise ValueError('Manual control is off. Tick "Manual '

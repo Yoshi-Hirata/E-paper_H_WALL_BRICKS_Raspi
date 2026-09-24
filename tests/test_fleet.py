@@ -464,6 +464,26 @@ def test_start_runs_once_every_unit_has_burned():
     assert fleet.run is not None
 
 
+def test_preset_waits_for_the_burn_like_start_does():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-04", "stopped")
+    link.status["show"]["burn"] = {"done": 12, "total": 48, "failed": [],
+                                   "state": "burning"}
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="radxa-04: still writing 12/48"):
+        fleet.preset()
+    assert not any(path == "/show/preset" for path, _ in link.posted)
+    link.status["show"]["burn"]["state"] = "failed"
+    link.status["show"]["burn"]["failed"] = [[3, 1]]
+    with pytest.raises(ValueError, match="radxa-04: 1 board\(s\) not written"):
+        fleet.preset()
+    link.status["show"]["burn"] = {"done": 48, "total": 48, "failed": [],
+                                   "state": "burned"}
+    fleet.preset()
+    assert any(path == "/show/preset" for path, _ in link.posted)
+
+
 def test_the_snapshot_counts_how_many_units_have_burned():
     fleet = Fleet({}, clock=lambda: 1100.0)
     burning = StubLink("radxa-07", "stopped")
@@ -884,6 +904,33 @@ def test_a_unit_that_finished_its_demo_can_still_be_adopted():
     link.status["show"]["demo"] = False
     fleet.links = {"radxa-01": link}
     assert fleet.snapshot()["run"] is not None
+
+
+def test_supervise_reloads_a_reborn_unit_but_runs_it_only_once_burned():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-01", "stopped")
+    link.status["show"]["id"] = "someOtherShow"
+    fleet.links = {"radxa-01": link}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 1000.0, "state": "running", "held_at": None}
+    fleet._supervise(link)
+    assert [path for path, _ in link.posted] == ["/show/load"]   # no run yet
+    assert any("radxa-01: show reloaded" in line for line in fleet.corrections)
+    # The unit now holds the show and is writing its pictures: left alone.
+    link.posted.clear()
+    fleet._corrected.clear()
+    link.status["show"]["id"] = "showA"
+    link.status["show"]["burn"] = {"done": 3, "total": 9, "failed": [],
+                                   "state": "burning"}
+    said = len(fleet.corrections)
+    fleet._supervise(link)
+    assert link.posted == [] and len(fleet.corrections) == said
+    # Burned: the run goes out on the shared T0 (+ this link's offset).
+    link.status["show"]["burn"]["state"] = "burned"
+    link.status["show"]["t0"] = None                # never ran since its reboot
+    fleet._supervise(link)
+    assert [path for path, _ in link.posted] == ["/show/run"]
+    assert any("radxa-01: started late" in line for line in fleet.corrections)
 
 
 def test_supervise_leaves_a_unit_playing_a_demo_alone_once_per_episode():

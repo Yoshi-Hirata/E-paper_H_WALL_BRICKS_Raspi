@@ -526,6 +526,19 @@ class Fleet:
             value = low
         return value
 
+    def preset(self) -> "dict[str, dict]":
+        """Show the 0:00 look on every unit (`/show/preset`). Like START
+        this waits for the burn: a unit still writing its pictures would
+        refuse the preset anyway ("still writing the pictures: n/N"), so
+        the operator gets the same per-unit list here instead of one
+        error per tile - and a unit that failed to burn is refused too
+        (PRESET has no `force`: fix or START anyway)."""
+        targets = self._targets()
+        burning = self._burn_problems(targets)
+        if burning:
+            raise ValueError("; ".join(burning))
+        return self.simple(targets, "/show/preset")
+
     def start_show(self, lead_s: float = DEFAULT_LEAD_S,
                    at: float = 0.0, force: bool = False) -> "dict[str, dict]":
         """Begin the show `lead_s` from now, `at` seconds into it (0.0 for
@@ -701,6 +714,13 @@ class Fleet:
         if unit.get("id") != show["id"]:
             why = "show reloaded"
             link.post("/show/load", show)
+        elif (run["state"] != "holding"
+              and (unit.get("burn") or {}).get("state") == "burning"):
+            # Still writing its pictures after a reload (pre-burn): a
+            # /show/run now would only be refused ("still writing the
+            # pictures: n/N"). The tile's Pictures row shows the progress;
+            # the run goes out on the first poll after the burn settles.
+            return
         if run["state"] == "holding":
             if why or unit.get("state") == "running":
                 # `run` was copied outside the lock, and `link.post` above
@@ -720,7 +740,13 @@ class Fleet:
             # `synced` false is a unit running on the T0 it restored from
             # disk: even when that is close enough, say so, so it knows
             # (and shows) that the PC has confirmed it.
-            if (why or unit.get("state") not in ("running", "ended")
+            if why == "show reloaded":
+                # The load just started the unit's burn; running it is
+                # the next poll's job, once the pictures are written
+                # (the branch above waits for that). Said now, so the
+                # operator sees why this unit is a few seconds behind.
+                why = "show reloaded, writing its pictures"
+            elif (unit.get("state") not in ("running", "ended")
                     or unit.get("t0") is None
                     or unit.get("synced") is False
                     or abs(unit["t0"] - expected) > T0_TOLERANCE_S):

@@ -187,13 +187,21 @@ def timeline(ws, second_at=4, duration=30):
     return shows
 
 
+def burned(fleet, units, timeout=15):
+    """Upload starts the burn on every unit; PRESET/START wait for it (the
+    page shows "Pictures written on n / n units" first)."""
+    return wait_until(lambda: fleet._burn_problems(list(units)) == [],
+                      timeout=timeout)
+
+
 def test_upload_preset_start_and_both_units_fire_together(stage):
     ws, fleet, units, _ = stage
     shows = timeline(ws, second_at=6)
     results = fleet.upload(shows)
     assert all(r["ok"] and r["show"] == shows[n]["id"]
                for n, r in results.items())
-    fleet.simple(list(shows), "/show/preset")
+    assert burned(fleet, units)
+    fleet.preset()
     assert wait_until(lambda: all(u.player.applied == "q00"
                                   for u in units.values()))
     assert all(len(u.shows) == 1 for u in units.values())
@@ -217,7 +225,8 @@ def test_upload_preset_start_and_both_units_fire_together(stage):
 def test_a_finished_show_is_left_alone(stage):
     ws, fleet, units, _ = stage
     fleet.upload(timeline(ws, second_at=6, duration=6))
-    fleet.simple(list(units), "/show/preset")
+    assert burned(fleet, units)
+    fleet.preset()
     assert wait_until(lambda: all(u.player.applied == "q00"
                                   for u in units.values()))
     fleet.start_show(lead_s=0.3)
@@ -231,7 +240,8 @@ def test_a_finished_show_is_left_alone(stage):
 def test_hold_resume_and_next_move_every_unit_alike(stage):
     ws, fleet, units, _ = stage
     fleet.upload(timeline(ws, second_at=20))
-    fleet.simple(list(units), "/show/preset")
+    assert burned(fleet, units)
+    fleet.preset()
     assert wait_until(lambda: all(u.player.applied == "q00"
                                   for u in units.values()))
     fleet.start_show(lead_s=0.3)
@@ -259,7 +269,8 @@ def test_hold_resume_and_next_move_every_unit_alike(stage):
 def test_a_unit_that_restarts_is_put_right_without_being_asked(stage):
     ws, fleet, units, tmp_path = stage
     fleet.upload(timeline(ws, second_at=6))
-    fleet.simple(list(units), "/show/preset")
+    assert burned(fleet, units)
+    fleet.preset()
     assert wait_until(lambda: all(u.player.applied == "q00"
                                   for u in units.values()))
     fleet.start_show(lead_s=0.3)
@@ -296,6 +307,7 @@ def test_a_unit_that_restarts_is_put_right_without_being_asked(stage):
 def test_a_running_show_refuses_loose_cues_but_not_the_panic_white(stage):
     ws, fleet, units, _ = stage
     fleet.upload(timeline(ws, second_at=20))
+    assert burned(fleet, units)
     fleet.start_show(lead_s=0.2)
     assert wait_until(lambda: all(u.player.state == "running"
                                   for u in units.values()))
