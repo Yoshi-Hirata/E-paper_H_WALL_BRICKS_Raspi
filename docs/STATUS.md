@@ -29,9 +29,16 @@ unit 側・conductor 側とも一本化された。以下がいまの契約。**
   - **最後までリストを歩いた終わり方だけが `failed`** で、`failed: [[基板, スロット], …]` は
     「その基板が拒否した/不在だった」を意味する。**途中で終わった焼き込みは必ず
     `cancelled` + `reason`**(焼き込み中の STOP = 理由なし、`no serial port`、
-    `bus busy: …`、`no boards answering`、`interrupted: the port was taken`、
-    `the worker was stopped first`)。空の `failed` を持つ `failed` が PC に
-    「0 board(s) not written」と force を勧めさせていたのを直した(第 2 巡レビュー)
+    `bus busy: …`、`interrupted: the port was taken`、`the worker was stopped first`)。
+    空の `failed` を持つ `failed` が PC に「0 board(s) not written」と force を
+    勧めさせていたのを直した(第 2 巡レビュー)
+  - **基板が 1 枚も答えない機体は `failed`**(全ペアが不在)+ `reason` =
+    「none of its 16 boards answered」。衣装の電源が入っていないのはショー当日の
+    普通の状況なので、**これで他の 9 台の START を止めない** - 機体自身のゲートは
+    不在だけなら通し、PC はダイアログで聞いてから force で進める
+    (「radxa-07: none of its 16 boards answered (that garment keeps whatever it
+    shows) — start anyway?」)。`cancelled` はあくまで「何が書けたか分からない
+    終わり方」だけ
   - 焼き込みは終わったが記録をディスクに書けなかったときは `record: "unsaved: <err>"` が付く
     (タイルに出る。`note` には入れない - `note` は status() が burn より先に読むので 1 ポーリング
     遅れ、run() が消してしまう)。再試行は次の `load()` のときだけ
@@ -55,6 +62,15 @@ unit 側・conductor 側とも一本化された。以下がいまの契約。**
 - **機体がショー中に再起動しても白は出さない**: 起動時のスタンバイ(白)を飛ばし
   (`ShowPlayer.restored_running` を `ui/main.py` が見る)、**遅れているトリガを基板の探索より
   先に**送る。実機では探索に 16 秒かかり、その間ステージ上の衣装が真っ白になっていた
+- **基板の探索はキューに道を譲る**(`PROBE_HOLD_S = 3 s`): 不在の基板 1 枚の探索は実機で
+  約 1.5〜2.5 秒かかるので、次のトリガがこの時間内に来るなら次の探索を始めず、
+  `_setup` の掃引はそのトリガを正確に待って先に撃つ(`_reprobe` は残りを次の間隔に回す)。
+  実機では再起動直後の 6 枚の探索(15 秒)が次のキューを **+4003 ms** 遅らせていた
+- **焼き込みの所要時間のログはジョブを受けた瞬間から数える**:
+  `burn done: 8/64 in 23.5 s (probe 22.1 s, 2 live boards, 14 absent: 3-16)` -
+  実機では最初の探索 22 秒がタイマの外で「1.4 s」と出ており、操作者の待ち時間
+  (24 秒)と合わなかった。不在の基板一覧も同じ 1 行に入れた(タイルのログは 6 行しか
+  出ないので、`… - skipped` の行は長い焼き込みでは流れてしまう)
 - **焼き込み時間**(実測に基づく見積り、`SAVE_S_PER_BOARD` 0.25 s + `CLEAR_S_PER_BOARD` 0.06 s):
   **36 基板 × 10 キュー ≈ 112 秒、× 18 キュー ≈ 195 秒(約 3.3 分)**。F5 のクリア(0x25)が
   初回だけ (基板, スロット) ごとに 1 フレーム増えるぶんを含む。**中身の変わらない再 Upload は
@@ -73,7 +89,12 @@ unit 側・conductor 側とも一本化された。以下がいまの契約。**
 - 起動時のスタンバイの基板探索(3-8 の 6 枚が不在)は **約 16 秒**
 - 中身の変わらない再 Upload は **0.02 秒**で `written` に戻る(書き込み 0 件)
 - ショー中に `epaper-ui` を再起動 → `show-burn.json` から復元、conductor は
-  「T0 confirmed after its restart」、書き直しゼロ、以後のキューは +1 ms で発火
+  「T0 confirmed after its restart」、書き直しゼロ、以後のキューは +1 ms で発火。
+  修正後の再確認: 復帰後の最初のバス動作が「cue q01 fired slot 2」(再起動の 3 秒後)、
+  スタンバイの白なし。その次のキューが探索に埋もれて +4003 ms 遅れた件は
+  `PROBE_HOLD_S` で解消(上)
+- START の新しい文言も実機で確認: 「56 of 64 pictures not written on boards 3, 4, 5
+  +11 more」で拒否 → force で +1 ms 発火
 
 **このラウンドの中身**(コミット: U2 = `5e4cede` のマージまで、V2 = `39d75fa` のマージまで、
 第 2 巡の修正 = `20911c2`(unit)+ `4eb36a1`(conductor)+ 本エントリ)
@@ -84,9 +105,10 @@ unit 側・conductor 側とも一本化された。以下がいまの契約。**
   showfile の delays 必須化(F5)、監視の連打防止(F6)、デモ焼き込み中の扱い(F7)、docs(F8)、F11
 - 第 2 巡: 上記の「途中で終わった焼き込みは cancelled」「枚数で数える」「ショー中の Upload」
   「adopt の force」「記録が書けないときの `record`」「再起動しても白を出さない」
-  「absent 基板の探索を先に済ませて 1 行で言う」「START の force 再試行を PRESET と対称に」
+  「absent 基板の探索を先に済ませて 1 行で言う」「電源の入っていない衣装 1 台で
+  他の 9 台を止めない」「探索はキューに道を譲る」「START の force 再試行を PRESET と対称に」
   「LCD のヒントを 1 行に収める」「Pictures 行の言葉と CONDUCTOR_START §6 の表」
-- **テスト: 675 件 + skip 1**(Windows、3 分 58 秒。ラウンド開始時 667 + 1 から +8)
+- **テスト: 678 件 + skip 1**(Windows、4 分 0 秒。ラウンド開始時 667 + 1 から +11)
 
 **フォローアップ(未着手)**
 

@@ -80,7 +80,14 @@ def pictures_not_written(burn: dict) -> str:
     of 12 boards x 18 cues loses 18 pictures when one board refuses, not
     "1 board". Saying "3 board(s) not written" made a whole garment's
     worth of missing pictures sound like a footnote (review round 2,
-    2026-09-25)."""
+    2026-09-25).
+
+    A whole garment that never answered is the unit's own sentence
+    instead ("none of its 16 boards answered"): a feed switched off is
+    an ordinary thing on a show day, and listing sixteen boards would
+    bury it."""
+    if burn.get("reason"):
+        return str(burn["reason"])
     failed = [pair for pair in (burn.get("failed") or [])
               if isinstance(pair, (list, tuple)) and pair]
     boards = sorted({pair[0] for pair in failed})

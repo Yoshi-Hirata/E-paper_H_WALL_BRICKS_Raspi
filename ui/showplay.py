@@ -45,17 +45,21 @@ show, and its "state" is one of
 
     "burning"    the pictures are being written now (done/total)
     "burned"     every picture is in its slot - run()/preset() go ahead
-    "failed"     the burn ended with pairs not written (failed =
-                 [[board, slot], ...]): a board absent at the time is a
-                 known gap and passes; a live board that refused is
-                 refused back ("did not take the burn") unless run() or
-                 preset() is given force=True
+    "failed"     the burn walked its whole list and some pairs are not
+                 written (failed = [[board, slot], ...]): a board absent
+                 at the time is a known gap and passes; a live board
+                 that refused is refused back ("did not take the burn")
+                 unless run() or preset() is given force=True. A garment
+                 with no power at all lands here too, every pair absent,
+                 with "reason": "none of its 16 boards answered" - so
+                 one dark unit never holds the other nine out of the
+                 show (2026-09-25)
     "cancelled"  the burn never walked its whole list, so nothing says
                  what is in which slot: STOP, the port taken by a local
-                 pattern, no serial port, a busy bus, no board
-                 answering. "reason" carries which of those (absent for
-                 the operator's own STOP) - Upload again, and force
-                 does NOT pass it
+                 pattern, no serial port, a busy bus, a setup cut short.
+                 "reason" carries which of those (absent for the
+                 operator's own STOP) - Upload again, and force does
+                 NOT pass it
     "none"       nothing burned for THIS show since the unit started (a
                  restart after Upload, or a burn that never began) -
                  Upload again

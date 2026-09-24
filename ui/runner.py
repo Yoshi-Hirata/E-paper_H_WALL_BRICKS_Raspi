@@ -82,6 +82,14 @@ PROBE_SWEEP_DELAY_S = 3.0 # between passes, so a repaint can finish meanwhile
 REPROBE_INTERVAL_S = 60.0 # how often absent boards get another chance
 FIRE_SPIN_S = 0.02        # the last stretch before a timed show is polled
 ARM_GRACE_S = 0.25        # how long a fresh worker waits for a cue's fire time
+# A probe of a board that is not there costs a serial timeout - about
+# 1.5 s, and up to 2.5 s across the setup's sweeps (radxa-01,
+# 2026-09-25). A cue's trigger falling inside one is a late cue on
+# stage (a unit that restarted mid-show fired its next cue 4 s late,
+# behind the start-up probe of six absent boards), so no probe is begun
+# while a trigger is due within this, and the probing sweep waits the
+# trigger out and sends it first instead.
+PROBE_HOLD_S = 3.0
 # How long a new start waits for a worker that did not end within stop()'s
 # timeout. One request into a wedged CDC can block for ~7.5 s (three
 # tries of 2 s write timeout + 0.5 s read), and a save retries that.
@@ -198,6 +206,10 @@ class DemoRunner:
         self.caption: str | None = None   # what the current cycle shows
         self._once = False
         self.standby_ready = False
+        # A trigger sent from inside the probing (see PROBE_HOLD_S) owes
+        # the same guard stop as any other; _run_remote() picks this up.
+        self._guard_owed: "float | None" = None
+        self._firing = False       # inside _fire_at(): never re-enter it
         self.cycle = 0
         self.failures = 0          # cycles abandoned since the demo started
         self.started_at: float | None = None
@@ -480,6 +492,27 @@ class DemoRunner:
         active, _ = self.pattern.resolve(self.cycle)
         return active.dev_type
 
+    def _trigger_due_soon(self) -> bool:
+        """True when a show cue's trigger is due within the cost of one
+        probe (PROBE_HOLD_S) - the probing must not start another one."""
+        session = self.remote
+        if session is None:
+            return False
+        due = session.due()
+        return due is not None and due[1] - time.monotonic() <= PROBE_HOLD_S
+
+    def _fire_before_probing(self, bus, groups: int) -> None:
+        """Called between probes: a trigger due within one probe's cost
+        is waited out precisely and sent first (_fire_at() spins the
+        last 20 ms), and the probing goes on straight after. Nothing has
+        to be probed or configured for a broadcast "show slot N" - the
+        picture is already in the slot."""
+        if self._firing or not self._trigger_due_soon():
+            return
+        due = self.remote.due()
+        if due is not None and self._fire_at(bus, groups, self.remote, *due):
+            self._guard_owed = time.monotonic() + self.guard_delay
+
     def _probe(self, bus, board: int, groups: int) -> bool:
         """One quick chance for a board to answer: silence it, set the slot.
 
@@ -559,8 +592,12 @@ class DemoRunner:
         if not self.absent or time.monotonic() < self._next_reprobe:
             return False
         self._next_reprobe = time.monotonic() + self.reprobe_interval
+        # Not while a cue is nearly due: a pass over six absent boards
+        # is 15 s, and _fire_at() calls this from inside its own wait.
+        # What is left unprobed stays absent for the next interval.
         joined = [board for board in sorted(self.absent)
-                  if not self._stop.is_set()
+                  if not self._trigger_due_soon()
+                  and not self._stop.is_set()
                   and self._probe(bus, board, groups)]
         if not joined:
             return False
@@ -619,6 +656,7 @@ class DemoRunner:
             for board in pending:
                 if reach is not None and board > reach:
                     break                       # nothing for a while: the end
+                self._fire_before_probing(bus, groups)
                 if self._probe(bus, board, groups):
                     found.append(board)
                     if reach is not None:
@@ -865,7 +903,8 @@ class DemoRunner:
                       f" last starts +{max(timed) * 10 / 1000:.2f} s")
         return True
 
-    def _run_burn(self, bus, groups: int, session, burn_job: dict) -> None:
+    def _run_burn(self, bus, groups: int, session, burn_job: dict,
+                  began: "float | None" = None) -> None:
         """Write every cue of a show into its own slot, in order,
         skipping whatever the cache already knows is there
         (ui/showplay.py's ShowPlayer.load()). Interruptible: a newer
@@ -873,13 +912,19 @@ class DemoRunner:
         this notices between boards, not just between cues, so
         /show/stop or a fresh /show/load never waits for the whole
         thing to finish - an interrupted burn ends "cancelled" with its
-        reason, never "failed" (review round 2, 2026-09-25)."""
+        reason, never "failed" (review round 2, 2026-09-25).
+
+        `began` is when the worker took the job, so the time this
+        reports is the one the operator waited - the probing before the
+        first write is most of it on a wall with absent boards (the
+        caller's _setup(), 22 s for 14 of them on radxa-01)."""
         epoch, dev_type = burn_job["epoch"], burn_job["dev_type"]
         done, failed = 0, []
-        began = time.monotonic()
+        began = time.monotonic() if began is None else began
         pairs = [(cue, board) for cue in burn_job["cues"]
                  for board in sorted(cue["boards"])]
         self._probe_burn_boards(bus, groups, burn_job)
+        probe_s = time.monotonic() - began
         for n, (cue, board) in enumerate(pairs):
             slot = cue["slot"]
             if self._stop.is_set() or not session.burn_current(epoch):
@@ -914,11 +959,31 @@ class DemoRunner:
                 failed.append((board, slot))
             done += 1
             session.burn_progress(epoch, done, failed)
-        session.burn_finished(epoch, failed)
-        absent = len([b for b in self.boards if b in self.absent])
+        session.burn_finished(epoch, failed, self._all_absent(pairs, failed))
+        # Everything in one line, because the unit's log on the tile is
+        # six entries deep and the "absent ... skipped" line above can
+        # have scrolled off by the time a long burn ends.
+        absent = [b for b in self.boards if b in self.absent]
         self.emit(f"burn done: {done - len(failed)}/{done} in "
-                  f"{time.monotonic() - began:.1f} s "
-                  f"({len(self.live)} live boards, {absent} absent)")
+                  f"{time.monotonic() - began:.1f} s (probe {probe_s:.1f} s, "
+                  f"{len(self.live)} live boards, {len(absent)} absent"
+                  + (f": {self._fmt_boards(absent)})" if absent else ")"))
+
+    def _all_absent(self, pairs, failed) -> "str | None":
+        """"none of its 16 boards answered", when that is what this burn
+        found - the show's whole garment is dark (its feed is off, or it
+        is not plugged in). The PC words that case its own way and lets
+        the operator start the other units past it, which is why the
+        unit says it rather than leaving the PC to guess from a list of
+        pairs that happens to be complete: a wall whose boards all
+        answered and all refused the write looks the same in `failed`
+        and is NOT this."""
+        if not failed or len(failed) != len(pairs):
+            return None
+        boards = sorted({board for board, _ in failed})
+        if not all(board in self.absent for board in boards):
+            return None
+        return f"none of its {len(boards)} boards answered"
 
     def _probe_burn_boards(self, bus, groups: int, burn_job: dict) -> None:
         """Give every board this burn names, and that nothing is known
@@ -970,18 +1035,22 @@ class DemoRunner:
         the bus once every reprobe_interval) rather than only doing so
         between cues.
         """
-        while True:
-            remaining = at - time.monotonic()
-            if remaining <= 0:
-                break
-            if (self._stop.is_set()
-                    or session.due() != (cue_id, at, slot, dev_type)):
-                return False                    # stopped, cancelled or moved
-            if remaining > FIRE_SPIN_S:
-                self._reprobe(bus, groups)
-                self._stop.wait(min(remaining - FIRE_SPIN_S, 0.05))
-            else:
-                time.sleep(0.0005)
+        self._firing = True
+        try:
+            while True:
+                remaining = at - time.monotonic()
+                if remaining <= 0:
+                    break
+                if (self._stop.is_set()
+                        or session.due() != (cue_id, at, slot, dev_type)):
+                    return False                # stopped, cancelled or moved
+                if remaining > FIRE_SPIN_S:
+                    self._reprobe(bus, groups)
+                    self._stop.wait(min(remaining - FIRE_SPIN_S, 0.05))
+                else:
+                    time.sleep(0.0005)
+        finally:
+            self._firing = False
         bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
         sent_at = time.monotonic()
         session.fired(cue_id, sent_at)
@@ -1053,6 +1122,11 @@ class DemoRunner:
                         # construction-time list (or a previous show's).
                         burn_job = session.take_burn_job()
                         if burn_job is not None:
+                            # The clock the operator is watching starts
+                            # HERE, not at the first write: the setup
+                            # sweep below is what a wall with absent
+                            # boards spends most of an Upload on.
+                            burn_began = time.monotonic()
                             guard_due = None
                             wanted = sorted({b for cue in burn_job["cues"]
                                             for b in cue["boards"]})
@@ -1067,25 +1141,41 @@ class DemoRunner:
                                 needs_setup = True
                             if needs_setup:
                                 if not self._setup(bus, groups):
-                                    # The job is taken and nothing of it
-                                    # written, and with no board
-                                    # answering there is no telling what
-                                    # would have been: the burn is
-                                    # CANCELLED with the reason ("no
-                                    # boards answering"), not "failed"
-                                    # over pairs nobody tried - the PC
-                                    # then says "Upload again" instead of
-                                    # offering a force this unit refuses
-                                    # (review round 2, 2026-09-25).
-                                    session.burn_cancelled(
-                                        burn_job["epoch"],
-                                        self.error or "setup failed")
-                                    session.failed_with(self.error
-                                                        or "setup failed")
-                                    break
-                                needs_setup = False
-                                self.error = None
-                            self._run_burn(bus, groups, session, burn_job)
+                                    if self.error != "no boards answering":
+                                        # The setup itself was cut short
+                                        # (a stop, a dead port): nothing
+                                        # was tried and nothing says what
+                                        # would have been written, so the
+                                        # burn is CANCELLED with the
+                                        # reason - never a "failed" over
+                                        # pairs nobody reached, which the
+                                        # PC would offer to force past
+                                        # (review round 2, 2026-09-25).
+                                        session.burn_cancelled(
+                                            burn_job["epoch"],
+                                            self.error or "setup failed")
+                                        session.failed_with(self.error
+                                                            or "setup failed")
+                                        break
+                                    # Every board of this show was
+                                    # probed and none answered - a
+                                    # garment whose feed is off, or one
+                                    # that is not plugged in. That is a
+                                    # KNOWN GAP, not an unknown one: the
+                                    # burn below walks its whole list and
+                                    # puts every pair down as absent, so
+                                    # the operator can start the other
+                                    # nine units past it (the conductor
+                                    # asks first). needs_setup stays on,
+                                    # so a feed switched on later is
+                                    # found by the next pass.
+                                    self.emit("no boards answering: the "
+                                              "burn writes nothing")
+                                else:
+                                    needs_setup = False
+                                    self.error = None
+                            self._run_burn(bus, groups, session, burn_job,
+                                           began=burn_began)
                             continue
 
                         if (needs_setup and session.phase == READY
@@ -1131,6 +1221,10 @@ class DemoRunner:
                                 guard_due = time.monotonic() + self.guard_delay
                             continue
                         now = time.monotonic()
+                        if self._guard_owed is not None:
+                            guard_due = (self._guard_owed if guard_due is None
+                                         else min(guard_due, self._guard_owed))
+                            self._guard_owed = None
                         if guard_due is not None and now >= guard_due:
                             # As after every demo cycle: a shown slot runs
                             # on into the factory autoplay unless stopped.

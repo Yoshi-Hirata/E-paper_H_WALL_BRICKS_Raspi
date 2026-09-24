@@ -619,6 +619,26 @@ def test_a_partly_failed_burn_is_counted_in_pictures_and_names_three_boards():
     assert fleet.run is not None
 
 
+def test_a_garment_that_answered_on_no_board_is_named_that_way_and_forceable():
+    # A feed switched off must not hold the other nine units out of the
+    # show: the unit reports a fully walked burn whose every pair is
+    # absent, and START says so in the unit's own words and goes ahead
+    # once the operator has answered the page's question (2026-09-25).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-07", "stopped")
+    fleet.links = {"radxa-07": link}
+    fleet.shows = {"radxa-07": {"id": "showA", "cues": [], "duration": 600}}
+    link.status["show"]["burn"] = {
+        "done": 48, "total": 48, "state": "failed",
+        "reason": "none of its 16 boards answered",
+        "failed": [[b, s] for b in range(1, 17) for s in range(1, 4)]}
+    with pytest.raises(ValueError,
+                       match="radxa-07: none of its 16 boards answered"):
+        fleet.start_show(lead_s=1.0)
+    fleet.start_show(lead_s=1.0, force=True)
+    assert fleet.run is not None and link.posted[-1][1]["force"] is True
+
+
 def test_an_adopted_run_carries_force_so_supervision_is_not_refused():
     # A conductor restarted mid-show builds the run from what the units
     # are already playing: that show passed the burn gate when it was

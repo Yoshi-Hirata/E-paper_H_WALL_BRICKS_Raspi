@@ -1905,6 +1905,11 @@ function picturesText(u) {
 // Kept word for word the same as conductor/fleet.py's own message, which
 // is what the server refuses START with.
 function picturesLost(burn) {
+  // A garment that never answered at all is the unit's own sentence
+  // ("none of its 16 boards answered"): its feed is off, or it is not
+  // plugged in - ordinary on a show day, and it must not read like
+  // sixteen separate faults.
+  if (burn.reason) return String(burn.reason);
   const failed = (burn.failed || []).filter(pair => Array.isArray(pair) && pair.length);
   const boards = [...new Set(failed.map(pair => pair[0]))].sort((a, b) => a - b);
   const named = boards.slice(0, 3).join(", ")
@@ -1925,15 +1930,19 @@ function burnFailedQuestion(question) {
   if (reporting.some(u => !u.show.burn || !["burned", "failed"].includes(u.show.burn.state))) return null;
   const failed = reporting.filter(u => u.show.burn.state === "failed");
   if (!failed.length) return null;
-  return failed.map(u => `${u.name}: ${picturesLost(u.show.burn)}`)
-    .join("; ") + ` — ${question}`;
+  return failed.map(u => `${u.name}: ${picturesLost(u.show.burn)}`).join("; ")
+    + (failed.some(u => u.show.burn.reason)
+       ? " (that garment keeps whatever it shows)" : "")
+    + ` — ${question}`;
 }
 // A server refusal `force` would get past: every unit it names merely
 // failed on some boards (fleet.py's "<unit>: 10 of 12 pictures not written
-// on boards 1, 2, 3"). A cancelled or restarted unit says "pictures not
-// written ..." without the count, and no answer here would help it.
+// on boards 1, 2, 3") or answered on none of them ("<unit>: none of its 16
+// boards answered"). A cancelled or restarted unit says "pictures not
+// written ..." without either, and no answer here would help it.
 const onlyFailedBoards = error => !!error && error.split("; ").every(
-  part => /\d+ of \d+ pictures not written/.test(part));
+  part => /\d+ of \d+ pictures not written|none of its \d+ boards answered/
+    .test(part));
 function renderTiles() {
   showClockText();
   const box = $("#tiles");

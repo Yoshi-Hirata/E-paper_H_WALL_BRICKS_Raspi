@@ -29,11 +29,13 @@ threads and the runner's worker, which owns the serial port:
                     n/N" before a show can be started. Its "state":
                     "burning" -> "burned" (all written) or "failed"
                     (`failed` = [[board, slot], ...] not written, the
-                    whole list walked). A burn that never got that far
-                    is "cancelled" with a "reason" - cancel_burn()
-                    (STOP, no reason needed), burn_cancelled() (the
-                    worker taken off the port) or failed_with() (no
-                    port, a busy bus, no board answering) - never
+                    whole list walked - with a "reason" when the worker
+                    can say more than the list does, e.g. "none of its
+                    16 boards answered" for a garment with no power).
+                    A burn that never got that far is "cancelled" with
+                    a "reason" - cancel_burn() (STOP, no reason
+                    needed), burn_cancelled() (the worker taken off the
+                    port) or failed_with() (no port, a busy bus) - never
                     "failed", whose empty list would have the PC offer
                     a force over "0 board(s) not written" (review round
                     2, 2026-09-25). ShowPlayer pairs this with the show
@@ -115,10 +117,11 @@ class RemoteSession:
         self.burn_done = 0
         self.burn_total = 0
         self.burn_failed: "list[tuple[int, int]]" = []
-        # Why a burn ended as "cancelled" ("no serial port", "bus busy:
-        # ...", "no boards answering", "interrupted: ..."), carried into
-        # the burn dict as "reason" so the PC's tile can say it rather
-        # than only "cancelled" (review round 2, 2026-09-25).
+        # Why a burn ended as it did ("no serial port", "bus busy: ...",
+        # "interrupted: ...", or - on a FAILED burn - "none of its 16
+        # boards answered"), carried into the burn dict as "reason" so
+        # the PC's tile can say it rather than only "cancelled" (review
+        # round 2, 2026-09-25).
         self.burn_reason: str | None = None
         # True once the worker walked the whole list (burn_finished()):
         # a "failed" without it is a burn the bus gave up on part way
@@ -339,11 +342,17 @@ class RemoteSession:
                 # a moment when the port was missing is out of date.
                 self.burn_state, self.burn_reason = "burning", None
 
-    def burn_finished(self, epoch: int, failed) -> None:
+    def burn_finished(self, epoch: int, failed,
+                      reason: "str | None" = None) -> None:
         """The worker walked the whole list: `failed` is every (board,
         slot) not written - refused by the board, or absent. A burn that
         did NOT get that far ends at burn_cancelled() instead, so a
-        "failed" always names every pair it is about."""
+        "failed" always names every pair it is about.
+
+        `reason` is set only where the worker can say something the list
+        of pairs does not - "none of its 16 boards answered" for a
+        garment that is simply not powered (ui/runner.py's
+        _all_absent())."""
         with self._lock:
             if epoch != self._burn_epoch:
                 return
@@ -351,7 +360,7 @@ class RemoteSession:
             self.burn_done = self.burn_total
             self.burn_complete = True
             self.burn_state = "failed" if failed else "burned"
-            self.burn_reason = None
+            self.burn_reason = reason if failed else None
 
     def burn_status(self) -> "dict | None":
         return self.burn_record()[0]

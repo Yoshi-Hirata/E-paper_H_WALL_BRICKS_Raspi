@@ -1105,28 +1105,58 @@ def test_a_burn_the_bus_gave_up_on_is_cancelled_and_refused_with_force(tmp_path)
         runner.stop()
 
 
-def test_no_board_answering_cancels_the_burn_and_force_cannot_start_it(tmp_path):
-    # Review round 2: _setup() failing ("no boards answering") used to
-    # put down every pair as "failed", which the gate's absent-only rule
-    # waved through - a show started on pictures nobody had written.
+def test_a_garment_with_no_power_is_a_failed_burn_of_absent_pairs(tmp_path):
+    # A wall feed switched off, or a garment not plugged in: ordinary on
+    # a show day, and the other nine units must still be able to start
+    # (2026-09-25). So the burn WALKS its list, puts every pair down as
+    # absent and says so - a known gap, which this unit's own gate lets
+    # through and the PC offers to start past. It is not "cancelled",
+    # which is for a burn that never found out what it would have
+    # written.
     from tests.test_ui_remote import PickyBus
 
     session, runner, bus = make_session(PickyBus({1, 2}))
     player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
     try:
         player.load(make_show())
-        assert wait_until(lambda: player.status()["burn"]["state"]
-                          == "cancelled")
-        assert player.status()["burn"]["reason"] == "no boards answering"
-        for force in (False, True):
-            with pytest.raises(RemoteError,
-                               match="cancelled: no boards answering"):
-                player.run(time.monotonic() + 0.3, force=force)
-            with pytest.raises(RemoteError,
-                               match="cancelled: no boards answering"):
-                player.preset(force=force)
-        assert show_times(bus) == [] and player.state == LOADED
-        assert not (tmp_path / BURN_FILE).exists()
+        assert wait_burn_settled(player)
+        burn = player.status()["burn"]
+        assert burn["state"] == "failed"
+        assert burn["reason"] == "none of its 2 boards answered"
+        assert burn["done"] == burn["total"] == 6
+        assert sorted(tuple(pair) for pair in burn["failed"]) == [
+            (b, slot) for b in (1, 2) for slot in (1, 2, 3)]
+        assert saved_pairs(bus) == set()            # nothing was written
+        # An absent board is a known gap: preset() and run() go ahead
+        # (with or without force), and the show runs on triggers alone.
+        player.preset()
+        player.run(time.monotonic() + 0.2, force=True)
+        assert player.state == RUNNING
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_dark_garment_costs_one_probe_pass_and_says_so_once(tmp_path):
+    from tests.test_ui_remote import PickyBus
+
+    session, runner, bus = make_session(PickyBus({1, 2}), probe_sweeps=1)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        player.load(make_show())
+        assert wait_burn_settled(player)
+        # PickyBus swallows a silent board's frames, so they are only in
+        # `requested` - one probe each, and nothing else all burn.
+        probes = [f.dest for f in bus.requested if f.dest in (1, 2)]
+        assert sorted(probes) == [1, 2]             # one pass, no more
+        log = runner.recent(20)
+        assert any("no boards answering: the burn writes nothing" in line
+                   for line in log)
+        assert any("2 boards absent (1-2) - skipped" in line for line in log)
+        assert any("burn done: 0/6 in " in line
+                   and "(probe " in line
+                   and "0 live boards, 2 absent: 1-2)" in line
+                   for line in log)
     finally:
         player.close()
         runner.stop()

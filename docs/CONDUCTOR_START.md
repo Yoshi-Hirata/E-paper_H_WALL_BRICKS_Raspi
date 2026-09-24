@@ -124,9 +124,10 @@ python -m conductor serve --open
      |---|---|---|
      | `writing 12/48 (8 s)` | 焼き込み中 | 待つ。force では越えられない |
      | `written` | 全部の絵がスロットに入っている | そのまま ② ③ へ |
-     | `✗ not written (cancelled: 理由) — Upload again` | 焼き込みが最後まで行かなかった(焼き込み中の STOP、機体がポートを取られた、基板が 1 枚も答えない) | **① Upload をやり直す**。force では越えられない |
+     | `✗ not written (cancelled: 理由) — Upload again` | 焼き込みが最後まで行かなかった(焼き込み中の STOP、機体がポートを取られた、ポートが無い) | **① Upload をやり直す**。force では越えられない |
      | `✗ not written since it restarted — Upload again` | Upload のあとに機体が再起動した | **① Upload をやり直す**。force では越えられない |
      | `✗ 10 of 12 pictures not written on boards 1, 2, 3` | 生きている基板が書き込みを拒否した(または不在) | その基板抜きで進めるなら ② ③ の確認ダイアログで「anyway」(`force`)。直すなら ① Upload |
+     | `✗ none of its 16 boards answered` | その衣装の基板が 1 枚も答えない(電源が入っていない・ケーブルが抜けている) | 直すなら電源・ケーブル。**その 1 台を置いて他の 9 台で始められる**: ② ③ のダイアログで「anyway」(`force`)- その衣装はいま映っているものを映したまま |
 
    - **焼き込み中の STOP、焼き込み中の機体再起動 → ① Upload をやり直し、全タイルが written に
      なるまで待つ**
