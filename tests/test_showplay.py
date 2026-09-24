@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ui.remote import RemoteError
+from ui.remote import ARMED, READY, RemoteError
 from ui.showplay import ENDED, HOLDING, LOADED, RUNNING, STOPPED, ShowPlayer
 from tests.test_ui_remote import SAVE, SHOW, make_session, wait_until
 
@@ -626,6 +626,88 @@ def test_preset_survives_a_run_no_bump_and_is_not_repainted_at_start(rig):
     # Exactly one "show" for the preset - START never re-sent it.
     assert events(bus)[:3] == [("save", 1, 1), ("save", 2, 1), ("show",)]
     assert len([e for e in events(bus) if e == ("show",)]) == 3
+
+
+def test_branch_one_does_not_preempt_an_armed_cue_still_waiting_to_fire(rig):
+    # Found in the timing review: branch 1 only checked whether the next
+    # cue's own lead had opened, never whether the CURRENT cue (q01 here)
+    # had actually fired yet. On real hardware this happens whenever the
+    # gap between two cues is shorter than the next one's own _lead() -
+    # 32 boards 8 s apart, or a short lead right after a NEXT/SEEK - and
+    # q02's prepare() would silently displace q01's still-ARMED session
+    # entry before it ever got to fire (session.fired() then finds a
+    # different cue_id and drops the tally with no error).
+    #
+    # Reproduced directly against _plan() rather than by racing real
+    # clocks: the runner's own firing is normally faster and more precise
+    # than ShowPlayer's tick_s poll, so the window this bug needs is only
+    # ever a few ms wide on a live show - too narrow to land reliably in
+    # a test. Freezing "q01 is ARMED, not yet due" and asking _plan() what
+    # it would do next exercises exactly the same branch, deterministically.
+    player, session, runner, bus, _ = rig
+    show = make_show(sents=(-REFRESH, 1.0, 1.15))    # q01/q02 0.15 s apart
+    player.load(show)
+    lead02 = player._lead(show["cues"][2])
+    assert lead02 > 0.15                              # the bug's precondition
+    key = player._key(show, show["cues"][1], False)   # q01, as _send() would key it
+    # Set up "q01 already ARMED, nowhere near due" and call _plan() all
+    # inside one hold of player._lock (an RLock - _plan() re-enters it
+    # fine): the player's own background thread needs that same lock for
+    # its own _plan() calls, so nothing else can run between the setup
+    # and the read of its decision, and there is no need to go through
+    # session.prepare()/fire() (whose own wait would give that thread a
+    # real window to act on q01 itself, before this scenario is even set
+    # up - the point of this test starts only once it already is).
+    with player._lock:
+        player.state, player.t0 = RUNNING, time.monotonic() - 1.0
+        player.applied, player.dirty = "q00", False
+        session.active, session.phase, session.cue_id = True, ARMED, key
+        session.fire_at = time.monotonic() + 10        # nowhere near due
+        session.saved, session.failed = [1, 2], []
+        _, action = player._plan()
+
+        # q01's session entry must be untouched, and q02 not sent in its
+        # place - it fires later (at 1.15), or at once if that has
+        # passed by the time q01 finally does.
+        assert session.cue_id == key and session.phase == ARMED
+    assert action is None or action[1]["id"] != "q02"
+
+
+def test_two_close_cues_both_fire_when_the_first_overruns_its_own_lead(tmp_path):
+    # The same bug end to end: q01's actual save (slowed here to stand in
+    # for "32 boards 8 s apart" on real hardware, where a save can simply
+    # take longer than _lead() assumed) overruns its own estimate, so
+    # q02's window opens while q01 is still unfired. Without the fix,
+    # q02's prepare() would silently win and q01 would never appear on
+    # the garment; the fake bus's SHOW count says which happened.
+    delay = 0.08                     # per board; 4 boards = 0.32 s of SAVE
+    player, session, runner, bus = make_rig(tmp_path, SlowBus(delay))
+    try:
+        boards = list(range(1, 5))
+        hexed = {n: array(n) for n in (1, 2, 3)}
+
+        def cue(id_, sent, color):
+            return {"id": id_, "sent": sent, "label": id_,
+                    "boards": {str(b): hexed[color] for b in boards},
+                    "state": {str(b): hexed[color] for b in boards}}
+
+        show = {"id": "abc1234567", "name": "t", "unit": "radxa-03",
+                "dev_type": 3, "refresh_s": REFRESH, "duration": 5,
+                "boards": boards,
+                "cues": [cue("q00", -REFRESH, 1), cue("q01", 1.0, 2),
+                        cue("q02", 1.15, 3)]}          # 0.15 s apart
+        player.load(show)
+        assert player._lead(show["cues"][2]) > 0.15    # the bug's precondition
+        assert len(boards) * delay > 0.15              # the slow save overruns it
+        player.preset()
+        assert wait_until(lambda: player.applied == "q00", timeout=4)
+        player.run(time.monotonic() + 0.05)
+        assert wait_until(lambda: player.state == ENDED, timeout=8)
+        assert len(show_times(bus)) == 3               # preset, q01, q02 - none lost
+        assert player.applied == "q02"
+    finally:
+        player.close()
+        runner.stop()
 
 
 def test_a_cue_with_its_own_refresh_time_spaces_the_next_write_by_it(rig):

@@ -187,9 +187,10 @@ class ShowPlayer:
             # the new one - its `sent` is now in the past. Left alone it
             # would just fire as scheduled (or the moment it is ready),
             # showing that skipped cue while the true current one waits
-            # behind it (_plan()'s branch 2 is blocked by `in_flight`
-            # until this fires). Disarming it lets that branch repaint
-            # the picture this new T0 actually wants.
+            # behind it (_plan()'s branch 2 is blocked by `owned_unfired`
+            # until this fires). Disarming it clears fire_at, which is
+            # exactly what lets that branch repaint the picture this new
+            # T0 actually wants (owned_unfired requires a fire_at).
             session = self.session
             if (self._owns(session.cue_id)
                     and session.phase in (PREPARING, READY, ARMED)):
@@ -466,15 +467,36 @@ class ShowPlayer:
             ahead = [c for c in cues if c["sent"] > now]
             current = past[-1] if past else None
             nxt = ahead[0] if ahead else None
-            # A cue only counts as "busy" if it is still the one that
-            # belongs here - current or next. One a forward jump left
-            # behind (run() disarms it, but READY/ARMED stays on the
-            # session until something re-decides it) must not block this
-            # branch from repainting what the new T0 actually wants.
+            # An owned cue with a fire_at set (ARMED, or still PREPARING
+            # but already given one by _send() - see below) carries a
+            # promise to fire at that instant; session.prepare() for any
+            # OTHER cue would displace it outright (its cue_id, its
+            # fire_at), and the runner's own session.fired() for the
+            # displaced cue would then find a different cue_id and drop
+            # the tally with no error - the cue is simply never shown.
+            # A cue that is merely READY, or PREPARING with no fire_at
+            # yet (freshly prepared, or disarmed on purpose - run()'s own
+            # forward-jump handling cancel()s a stale armed cue this same
+            # way), has no such promise and is fine to preempt; requiring
+            # fire_at is what tells the two apart.
+            #
+            # Every branch below waits for a genuinely promised cue
+            # instead: it fires at its own time once this clears, or at
+            # once if that time has already passed by then (found in the
+            # timing review, 2026-09-24). Two ways this opens: branch 1 -
+            # the interval between cues shorter than the next one's own
+            # _lead() (32 boards 8 s apart on real hardware, or a short
+            # lead right after a NEXT/SEEK) sends the next cue before the
+            # current one has fired; branch 2 - a save slow enough to
+            # overrun its own _lead() estimate can leave a cue neither
+            # "current" nor "next" by the time it finally resolves (both
+            # have already moved past it), which a plain current/next
+            # membership check does not see.
             owned = self._parse(session.cue_id)[0] if self._owns(
                 session.cue_id) else None
-            in_flight = (owned in {c["id"] for c in (current, nxt) if c}
-                         and session.phase in (PREPARING, READY, ARMED))
+            owned_unfired = (owned is not None
+                             and session.phase in (PREPARING, READY, ARMED)
+                             and session.fire_at is not None)
             duration = float(show["duration"])
             if nxt is None and now > duration + END_SLACK_S:
                 # Over on the clock - even if the last cue never made it
@@ -492,7 +514,8 @@ class ShowPlayer:
             #    it is on the garment already (the preset, shown before a
             #    START whose T0 is still ahead).
             if (nxt is not None and nxt["sent"] - now <= self._lead(nxt)
-                    and not (self.applied == nxt["id"] and not self.dirty)):
+                    and not (self.applied == nxt["id"] and not self.dirty)
+                    and not (owned_unfired and owned != nxt["id"])):
                 index = cues.index(nxt)
                 before = cues[index - 1]["id"] if index else None
                 if self._latched is None or self._latched[0] != nxt["id"]:
@@ -506,9 +529,16 @@ class ShowPlayer:
                 action = (show, nxt, self._latched[1], self.t0 + nxt["sent"])
             # 2. Not showing what it should, and room before the next cue
             #    needs the bus: put the whole picture up now.
-            elif current is not None and not in_flight and (
-                    self.applied != current["id"]
-                    or (self.dirty and self._healed_for != current["id"])):
+            #
+            # Blocked by ANY owned unfired cue, even this same `current`
+            # once armed - unlike branch 1, this send's fire_at is
+            # "now_mono + a lead", not a fixed instant, so re-deciding it
+            # every tick while ARMED would keep moving its own fire time
+            # forward and it would never actually fire (a livelock found
+            # while testing the owned_unfired guard itself).
+            elif (current is not None and not owned_unfired
+                    and (self.applied != current["id"]
+                        or (self.dirty and self._healed_for != current["id"]))):
                 room = (nxt["sent"] - now) if nxt else float("inf")
                 # The unit compiled this moment's own refresh (the
                 # slowest of the cues sharing it, conductor/showfile.py)
@@ -523,7 +553,7 @@ class ShowPlayer:
                     action = (show, current, True,
                               now_mono + self._lead(current) + CATCH_UP_LEAD_S)
 
-            if (nxt is None and action is None and not in_flight
+            if (nxt is None and action is None and not owned_unfired
                     and current is not None and self.applied == current["id"]
                     and now > duration):
                 self.state = ENDED

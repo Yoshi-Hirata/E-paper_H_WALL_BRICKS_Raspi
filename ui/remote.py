@@ -38,6 +38,18 @@ LOCAL = "local"            # the unit is on its own menu
 ARRAY_LEN = 64
 TABLE_LEN = 128            # a delay table: 64 sockets x uint16, big-endian
 DEV_NUMBER_BRAND = 0x03    # the layout every UI pattern sends (ui/patterns.py)
+# A cue this close to its own fire time (ui/runner.py's _fire_at() busy-waits
+# the last FIRE_SPIN_S = 0.02 s of it, then the broadcast send and the
+# session.fired() call after it cost a few more ms) must not be displaced by
+# a new prepare(): fired() matches on cue_id, and a prepare() landing in
+# that window would move cue_id on before fired() ever gets to record it -
+# the fire happens on the wire, but the session, and everything reading it
+# (ShowPlayer._tally(), /status), never finds out. Found in the timing
+# review, 2026-09-24, alongside the same race in ShowPlayer._plan()'s own
+# scheduling (see its owned_unfired_elsewhere) - this is the general,
+# session-level version of the same guard, covering every other caller too
+# (an operator's own /prepare+/fire, not just a ShowPlayer-run show).
+FIRE_IMMINENT_S = 0.05
 
 
 class RemoteError(ValueError):
@@ -93,6 +105,17 @@ class RemoteSession:
                                   f"{TABLE_LEN} bytes (64 sockets x uint16), "
                                   f"got {len(table)}")
         with self._lock:
+            if (self.phase == ARMED and self.fire_at is not None
+                    and self.fire_at - self._clock() <= FIRE_IMMINENT_S):
+                # About to fire, or already sent and not yet tallied - see
+                # FIRE_IMMINENT_S. Refused rather than silently dropped:
+                # the caller (ShowPlayer never hits this - its own
+                # scheduling already waits, see _plan()'s
+                # owned_unfired_elsewhere - so in practice this is an
+                # operator's own /prepare arriving a beat too soon) gets a
+                # 409 and tries again a moment later, once fired() has run.
+                raise RemoteError(f"cue {self.cue_id} is about to fire - "
+                                  f"try again in a moment")
             self.active = True
             self.phase = PREPARING
             self.cue_id, self.label = str(cue_id), label

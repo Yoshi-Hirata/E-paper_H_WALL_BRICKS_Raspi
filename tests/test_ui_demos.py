@@ -180,6 +180,58 @@ def test_show_load_is_refused_while_a_demo_plays_not_while_a_pc_show_runs(rig):
     player.stop()
 
 
+def test_show_preset_and_run_are_also_refused_while_a_demo_plays(rig):
+    # The demo's show id is exactly what a PC "START" would post to
+    # /show/run - without this, the PC could quietly retime the demo
+    # instead of being told to stop it first.
+    agent, session, runner, bus, player, demos = rig
+    show = make_show()
+    player.load(show, demo=True)
+    player.run(time.monotonic() + 0.3)
+    code, body = call(agent, "/show/preset", {})
+    assert code == 409 and "stop it first" in body["error"]
+    code, body = call(agent, "/show/run", {"t0": time.monotonic() + 1,
+                                           "show": show["id"]})
+    assert code == 409 and "stop it first" in body["error"]
+    # HOLD reaches the same guard (state HOLDING, not RUNNING).
+    player.hold()
+    code, body = call(agent, "/show/run", {"t0": time.monotonic() + 1})
+    assert code == 409
+    # /show/hold and /show/stop are how the PC takes the unit back, and
+    # must not themselves be blocked by the guard they satisfy.
+    assert call(agent, "/show/hold", {})[0] == 200
+    assert call(agent, "/show/stop", {})[0] == 200
+    player.stop()
+
+    # A PC-driven show (is_demo False) is unaffected.
+    player.load(show)
+    player.run(time.monotonic() + 0.3)
+    assert call(agent, "/show/run", {"t0": time.monotonic() + 1,
+                                     "show": show["id"]})[0] == 200
+    player.stop()
+
+
+def test_status_clock_is_stamped_before_the_slow_demos_read(rig):
+    # Agent.status() must sample the clock before demos.list() (disk) or
+    # any other variable-cost work, or the /status round trip the PC
+    # times its offset from stops being symmetric.
+    agent, session, runner, bus, player, demos = rig
+    original_list = demos.list
+
+    def slow_list():
+        time.sleep(0.2)
+        return original_list()
+    demos.list = slow_list
+    try:
+        before = time.monotonic()
+        code, status = call(agent, "/status")
+        after = time.monotonic()
+        assert code == 200 and after - before >= 0.2   # the slow path ran
+        assert status["clock"]["mono"] - before < 0.05  # stamped up front
+    finally:
+        demos.list = original_list
+
+
 def test_demo_delete_over_http_refuses_a_bad_or_unknown_slug(rig):
     agent, session, runner, bus, player, demos = rig
     assert call(agent, "/demo/delete", {"slug": "../show-run"})[0] == 409

@@ -27,8 +27,10 @@ a show.
                        while a show or demo is running or holding
     GET  /demo/list    the demos stored here
     POST /demo/delete  {"slug"}
-    /status gains "demos": <count>; /show/load is refused, the same way,
-    while a demo (not a PC-driven show) is running or holding
+    /status gains "demos": <count>; /show/load, /show/preset and
+    /show/run are refused, the same way, while a demo (not a PC-driven
+    show) is running or holding - /show/hold and /show/stop still work,
+    since those are how the PC takes the unit back
 
 The PC polls; the unit never calls out. A unit that walks out of Wi-Fi
 range simply stops answering for a while, and nothing here minds.
@@ -110,9 +112,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/clock":
             return self._answer(200, _clock())
         if self.path == "/status":
-            payload = self.agent.status()
-            payload["clock"] = _clock()         # last thing before the wire
-            return self._answer(200, payload)
+            return self._answer(200, self.agent.status())
         if self.path == "/demo/list":
             demos = self.agent.demos
             if demos is None:
@@ -160,9 +160,17 @@ class _Handler(BaseHTTPRequestHandler):
             if self.path.startswith("/show/"):
                 if player is None:
                     raise RemoteError("this unit has no show player")
+                # A demo (never a PC-driven show, is_demo is False for
+                # those) that is RUNNING/HOLDING owns the unit until the
+                # operator stops it locally or the PC sends /show/stop -
+                # load/preset/run must not retime or replace it under
+                # someone's feet; hold/stop still work, since those are
+                # exactly how the PC takes the unit back.
+                if (self.path in ("/show/load", "/show/preset", "/show/run")
+                        and player.is_demo
+                        and player.state in (RUNNING, HOLDING)):
+                    raise RemoteError("a show is running - stop it first")
                 if self.path == "/show/load":
-                    if player.is_demo and player.state in (RUNNING, HOLDING):
-                        raise RemoteError("a show is running - stop it first")
                     player.load(body)
                 elif self.path == "/show/preset":
                     player.preset()
@@ -202,9 +210,7 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:        # noqa: BLE001 - answer, never die
             return self._answer(500, {"error": f"{exc.__class__.__name__}: "
                                                f"{exc}"})
-        payload = self.agent.status()
-        payload["clock"] = _clock()
-        self._answer(200, payload)
+        self._answer(200, self.agent.status())
 
 
 class Agent:
@@ -224,6 +230,13 @@ class Agent:
         self._started = time.monotonic()
 
     def status(self) -> dict:
+        # Stamped first, before any of the work below - the PC's offset
+        # measurement takes this as "the instant the unit's clock read
+        # this", and demos.list() (disk) or a busy runner.recent() can
+        # cost real, variable time; letting that land between the
+        # request and the stamp would bias every reading by it. Only
+        # cheap in-memory reads follow.
+        clock = _clock()
         payload = self.session.status()
         payload.update({"api": API_VERSION, "host": self.name,
                         "commit": self.commit,
@@ -232,7 +245,8 @@ class Agent:
                         "show": (self.player.status() if self.player
                                  else None),
                         "demos": len(self.demos.list()) if self.demos
-                        else 0})
+                        else 0,
+                        "clock": clock})
         return payload
 
     def start(self) -> int:
