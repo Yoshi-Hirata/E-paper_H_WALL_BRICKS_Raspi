@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Proposal: 3-slot rotation for back-to-back refreshes / 三槽位轮换实现连续刷新的方案</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm; }
+  body { font-family: "Segoe UI", "Noto Sans", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; color: #1a1a1a; font-size: 10.5pt; line-height: 1.45; max-width: 190mm; margin: 0 auto; }
+  h1 { font-size: 17pt; margin: 0 0 4px; }
+  h2 { font-size: 13pt; margin: 22px 0 6px; border-bottom: 2px solid #2440a8; padding-bottom: 3px; }
+  h3 { font-size: 11pt; margin: 14px 0 4px; }
+  .sub { color: #555; margin: 0 0 14px; font-size: 9.5pt; }
+  .zh { color: #333; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 6px 0; }
+  .pair > div { min-width: 0; }
+  .lang { font-size: 8pt; letter-spacing: .08em; color: #2440a8; font-weight: 700; margin-bottom: 2px; }
+  table { border-collapse: collapse; width: 100%; font-size: 9.5pt; margin: 6px 0 10px; }
+  th, td { border: 1px solid #bbb; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef1f8; }
+  .box { border: 1px solid #c8372d; background: #fff5f4; padding: 8px 12px; margin: 10px 0; border-radius: 4px; }
+  .note { border-left: 4px solid #2440a8; background: #f3f5fb; padding: 6px 10px; margin: 8px 0; }
+  .q { margin: 6px 0; }
+  .q b { color: #2440a8; }
+  figure { margin: 10px 0 14px; page-break-inside: avoid; }
+  figcaption { font-size: 9pt; color: #444; margin-top: 4px; }
+  svg text { font-family: "Segoe UI", "Noto Sans", "Microsoft YaHei", Arial, sans-serif; }
+  code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; background: #f2f2f2; padding: 0 3px; }
+  .small { font-size: 9pt; color: #555; }
+  .pb { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<h1>Proposal: 3-slot rotation for back-to-back refreshes<br><span class="zh">提案：采用三槽位轮换实现连续刷新</span></h1>
+<p class="sub">From: R2 Engineering (Y. Hirata) — AZ-27SS e-paper garment project · To: Meris · Date: 2026-09-24 · Boards: 16-colour controller, firmware V1.4 (FW_260923), RS-485 bus of up to 36 boards per host</p>
+
+<h2>1. What we need / 我们的需求</h2>
+<div class="pair">
+  <div><div class="lang">EN</div>
+    <p>The show director requires that the <b>next picture starts refreshing 1 second after the previous refresh has finished</b>. A refresh (0x1D) takes about 7 s on FW_260923 regardless of how many boards are on the bus, because every board repaints in parallel after one broadcast.</p>
+    <p>The part that depends on the number of boards is <b>sending the colour data</b> (0x13, 66 bytes per board) over RS-485: about 0.22–0.25 s per board including the ACK. With 36 boards that is 8–9 s — longer than the 7 s refresh plus 1 s.</p>
+  </div>
+  <div><div class="lang">中文</div>
+    <p class="zh">演出导演要求：<b>上一次刷新结束后 1 秒，下一幅画面开始刷新</b>。在 FW_260923 上，一次刷新（0x1D）约需 7 秒，与总线上的板数无关，因为所有板在一次广播后并行重绘。</p>
+    <p class="zh">与板数相关的是<b>颜色数据的发送</b>（0x13，每板 66 字节）：经 RS-485 每板约 0.22–0.25 秒（含 ACK）。36 块板需要 8–9 秒，超过了“7 秒刷新 + 1 秒”。</p>
+  </div>
+</div>
+
+<div class="box">
+  <div class="lang">EN</div>
+  <p><b>About the 60-second rest you recommended.</b> We understand your advice that the paper should rest at least 60 s after a refresh before the next one, and that shorter intervals carry a risk of colour muddiness (loss of colour purity). <b>For this show, the client (R2 Engineering / Y. Hirata) knowingly accepts that risk.</b> We are not asking you to guarantee colour quality at 1 s intervals; we are asking whether the sequence below is <i>safe for the controller and the data</i>, and how the firmware behaves while a refresh is in progress. Any mitigation you can suggest (for example a periodic white refresh) is welcome.</p>
+  <div class="lang">中文</div>
+  <p class="zh"><b>关于贵司建议的 60 秒休止。</b>我们理解贵司的建议：刷新后应至少休息 60 秒再进行下一次刷新，间隔过短有颜色发浑（色纯度下降）的风险。<b>对于本次演出，客户（R2 Engineering / 平田）明确知晓并自行承担该风险。</b>我们并不要求贵司保证 1 秒间隔下的颜色品质；我们想确认的是下述时序<i>对控制器和数据是否安全</i>，以及刷新进行中固件的行为。如有任何缓解建议（例如定期做一次全白刷新），我们非常欢迎。</p>
+</div>
+
+<h2>2. Today: one slot (19) / 现状：只用一个槽位（19）</h2>
+<div class="pair">
+  <div><div class="lang">EN</div>
+    <p>Today every picture is written to slot 19 and shown with <code>0x1D slot 19</code>. Because the next picture would overwrite the slot that is being displayed, the host only starts writing after the previous picture has been fired. The write must then fit into the 7 s refresh + 1 s gap, which only works up to about 24 boards.</p>
+  </div>
+  <div><div class="lang">中文</div>
+    <p class="zh">现状是每幅画面都写入槽位 19，并用 <code>0x1D 槽位 19</code> 显示。由于下一幅会覆盖正在显示的槽位，主机只能在上一幅发出显示命令之后才开始写入。写入必须在“7 秒刷新 + 1 秒”内完成，这只在约 24 块板以内可行。</p>
+  </div>
+</div>
+
+<figure>
+<svg viewBox="0 0 760 170" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#333"/></marker></defs>
+  <text x="10" y="18" font-size="11" font-weight="700">Single slot 19 (today) / 单槽位 19（现状）</text>
+  <!-- time axis -->
+  <line x1="60" y1="140" x2="740" y2="140" stroke="#333" marker-end="url(#a)"/>
+  <text x="60" y="158" font-size="10">0 s</text><text x="340" y="158" font-size="10">7 s</text><text x="380" y="158" font-size="10">8 s</text><text x="700" y="158" font-size="10">t</text>
+  <!-- row labels -->
+  <text x="10" y="50" font-size="10">Paper / 纸</text>
+  <text x="10" y="92" font-size="10">Bus / 总线</text>
+  <!-- refresh N -->
+  <rect x="60" y="34" width="280" height="24" fill="#2a78d6" opacity=".85"/>
+  <text x="80" y="50" font-size="10" fill="#fff">picture N refreshing (0x1D slot19) · 画面 N 刷新中 ≈ 7 s</text>
+  <rect x="340" y="34" width="40" height="24" fill="#ddd"/><text x="343" y="50" font-size="9">1 s gap</text>
+  <rect x="380" y="34" width="280" height="24" fill="#2a78d6" opacity=".5"/>
+  <text x="400" y="50" font-size="10" fill="#fff">picture N+1 refreshing · 画面 N+1</text>
+  <!-- write N+1 -->
+  <rect x="62" y="76" width="330" height="24" fill="#e07a1f" opacity=".9"/>
+  <text x="70" y="92" font-size="10" fill="#fff">write N+1 into slot 19: 0x17 + 0x13 × boards (0.22 s each) · 写入 N+1 到槽位 19</text>
+  <line x1="380" y1="62" x2="380" y2="134" stroke="#c8372d" stroke-dasharray="4 3"/>
+  <text x="386" y="120" font-size="9" fill="#c8372d">must be finished here / 必须在此之前完成</text>
+  <text x="395" y="106" font-size="9" fill="#c8372d">36 boards → 8–9 s: does not fit / 36 块板放不下</text>
+</svg>
+<figcaption>Fig. 1 — With one slot the colour data of N+1 can only be sent after N has been fired, so the write must fit into ~8 s. / 图 1 —— 只用一个槽位时，N+1 的颜色数据只能在 N 发出之后发送，写入必须在约 8 秒内完成。</figcaption>
+</figure>
+
+<h2>3. Proposal: rotate three slots 17 → 18 → 19 / 提案：三个槽位 17 → 18 → 19 轮换</h2>
+<div class="pair">
+  <div><div class="lang">EN</div>
+    <p>Each picture goes to the next slot in the rotation. While picture N (slot 18) is being displayed and refreshing, the host writes picture N+1 into slot 19 — a slot that is <b>not</b> being displayed — and picture N+2 into slot 17 after that. The fire command is <code>0x1D &lt;slot of that picture&gt;</code>, sent 1 s after the previous refresh has finished. The write for a picture now has almost <b>two whole intervals</b> (≈16 s) instead of one, which is enough for 36 boards with margin.</p>
+    <p>Only existing commands are used: <code>0x1B</code> slot config, <code>0x13</code> colour data, <code>0x1F</code>/<code>0x25</code> per-segment delay table (stored per slot), <code>0x1D</code> show single, <code>0x17</code> stop. <b>No firmware change is requested</b> — if the answers in section 4 allow it.</p>
+  </div>
+  <div><div class="lang">中文</div>
+    <p class="zh">每幅画面写入轮换中的下一个槽位。当画面 N（槽位 18）正在显示并刷新时，主机把画面 N+1 写入槽位 19——一个<b>未在显示</b>的槽位——之后再把 N+2 写入槽位 17。显示命令为 <code>0x1D &lt;该画面的槽位&gt;</code>，在上一次刷新结束 1 秒后发出。这样每幅画面的写入时间几乎有<b>两个完整间隔</b>（约 16 秒），足以覆盖 36 块板并留有余量。</p>
+    <p class="zh">仅使用现有命令：<code>0x1B</code> 槽位设置、<code>0x13</code> 颜色数据、<code>0x1F</code>/<code>0x25</code> 分段延时表（按槽位保存）、<code>0x1D</code> 单张显示、<code>0x17</code> 停止。<b>不需要修改固件</b>——前提是第 4 节的回答允许这样做。</p>
+  </div>
+</div>
+
+<figure>
+<svg viewBox="0 0 760 250" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <text x="10" y="18" font-size="11" font-weight="700">Three-slot rotation (proposed) / 三槽位轮换（提案）</text>
+  <line x1="60" y1="222" x2="740" y2="222" stroke="#333" marker-end="url(#a)"/>
+  <text x="60" y="240" font-size="10">0</text><text x="220" y="240" font-size="10">8 s</text><text x="380" y="240" font-size="10">16 s</text><text x="540" y="240" font-size="10">24 s</text><text x="700" y="240" font-size="10">t</text>
+  <text x="10" y="52" font-size="10">Paper / 纸</text>
+  <text x="10" y="100" font-size="10">Slot 17</text>
+  <text x="10" y="140" font-size="10">Slot 18</text>
+  <text x="10" y="180" font-size="10">Slot 19</text>
+  <!-- refresh bars: 7 s = 140 px, gap 1 s = 20 px -->
+  <rect x="60" y="36" width="140" height="24" fill="#2a78d6" opacity=".85"/><text x="66" y="52" font-size="9.5" fill="#fff">N (slot 17) refresh 7 s</text>
+  <rect x="200" y="36" width="20" height="24" fill="#ddd"/>
+  <rect x="220" y="36" width="140" height="24" fill="#2a78d6" opacity=".85"/><text x="226" y="52" font-size="9.5" fill="#fff">N+1 (slot 18)</text>
+  <rect x="360" y="36" width="20" height="24" fill="#ddd"/>
+  <rect x="380" y="36" width="140" height="24" fill="#2a78d6" opacity=".85"/><text x="386" y="52" font-size="9.5" fill="#fff">N+2 (slot 19)</text>
+  <rect x="520" y="36" width="20" height="24" fill="#ddd"/>
+  <rect x="540" y="36" width="140" height="24" fill="#2a78d6" opacity=".85"/><text x="546" y="52" font-size="9.5" fill="#fff">N+3 (slot 17)</text>
+  <text x="203" y="72" font-size="8" fill="#555">1 s</text>
+  <!-- slot 17 row: displaying N 0-7s ; write N+3 from 8s (after 17 no longer shown... after N refresh done) to 24 -->
+  <rect x="60" y="86" width="140" height="22" fill="#9bbce8"/><text x="66" y="101" font-size="9">displaying N · 显示 N</text>
+  <rect x="220" y="86" width="300" height="22" fill="#e07a1f" opacity=".9"/><text x="226" y="101" font-size="9" fill="#fff">write N+3 (0x13 × 36 boards ≈ 8–9 s fits in 16 s) · 写入 N+3</text>
+  <!-- slot 18: write N+1 before 0..8 (already), display 8-15 -->
+  <rect x="60" y="126" width="160" height="22" fill="#e07a1f" opacity=".9"/><text x="66" y="141" font-size="9" fill="#fff">write N+1 (started earlier) · 写入 N+1</text>
+  <rect x="220" y="126" width="140" height="22" fill="#9bbce8"/><text x="226" y="141" font-size="9">displaying N+1</text>
+  <rect x="380" y="126" width="300" height="22" fill="#e07a1f" opacity=".9"/><text x="386" y="141" font-size="9" fill="#fff">write N+4 · 写入 N+4</text>
+  <!-- slot 19: write N+2 0..16, display 16-23 -->
+  <rect x="60" y="166" width="320" height="22" fill="#e07a1f" opacity=".9"/><text x="66" y="181" font-size="9" fill="#fff">write N+2 (two intervals available) · 写入 N+2（可用两个间隔）</text>
+  <rect x="380" y="166" width="140" height="22" fill="#9bbce8"/><text x="386" y="181" font-size="9">displaying N+2</text>
+  <rect x="540" y="166" width="140" height="22" fill="#e07a1f" opacity=".9"/><text x="546" y="181" font-size="9" fill="#fff">write N+5</text>
+  <!-- fire markers -->
+  <g stroke="#c8372d" stroke-width="1.5"><line x1="60" y1="30" x2="60" y2="64"/><line x1="220" y1="30" x2="220" y2="64"/><line x1="380" y1="30" x2="380" y2="64"/><line x1="540" y1="30" x2="540" y2="64"/></g>
+  <text x="600" y="210" font-size="9" fill="#c8372d">| = 0x1D fire (broadcast) · 显示命令</text>
+</svg>
+<figcaption>Fig. 2 — The slot being written is never the slot being displayed. The write of each picture may start as soon as its slot's previous picture has finished refreshing. / 图 2 —— 正在写入的槽位永远不是正在显示的槽位。每幅画面的写入可在该槽位上一幅画面刷新结束后立即开始。</figcaption>
+</figure>
+
+<h3>Per-board command sequence for one picture / 每幅画面对每块板的命令顺序</h3>
+<table>
+  <tr><th>#</th><th>Command / 命令</th><th>When / 时机</th><th>Note / 说明</th></tr>
+  <tr><td>1</td><td><code>0x1B</code> slot config (slot S, mode 0x02, pipeline)</td><td>once per slot, or after a board reboot / 每个槽位一次，或板重启后</td><td>same values as today / 与现状相同</td></tr>
+  <tr><td>2</td><td><code>0x1F</code> delay table for slot S (only for a "sweep" picture) / 槽位 S 的延时表（仅扫动画面）</td><td>while another slot is displaying / 另一槽位显示期间</td><td>128 bytes, stored per slot (V1.4 7.4) / 按槽位保存</td></tr>
+  <tr><td>3</td><td><code>0x13</code> colour data 66 B → slot S / 颜色数据</td><td>while another slot is displaying, possibly <b>during its refresh</b> / 另一槽位显示期间，可能<b>在其刷新过程中</b></td><td>one frame per board, ACK awaited / 每板一帧，等待 ACK</td></tr>
+  <tr><td>4</td><td><code>0x1D</code> show single slot S — broadcast 0xFF / 单张显示，广播</td><td>1 s after the previous refresh finished / 上一次刷新结束后 1 秒</td><td>all boards start together / 所有板同时开始</td></tr>
+</table>
+<p class="small">Today we also send <code>0x17</code> (stop) to each board before each <code>0x13</code>, to suppress the factory autoplay. If 0x17 is unnecessary once autoplay is stopped, we would drop it (question Q4). / 现状中我们在每次 <code>0x13</code> 之前还向每块板发送 <code>0x17</code>（停止）以抑制出厂自动播放。若自动播放停止后不再需要 0x17，我们将省略它（见问题 Q4）。</p>
+
+<h2 class="pb">4. Questions to Meris / 请教 Meris 的问题</h2>
+
+<div class="q"><b>Q1 — Slots 17 and 18 / 槽位 17 和 18.</b>
+<div class="pair"><div>Slots 0–18 hold your factory demo pictures. May we overwrite slots <b>17 and 18</b> (0x13 / 0x1F / 0x1B) permanently? We accept that the factory pictures in those slots are lost. Is any slot reserved by the firmware (must not be written), or is there any difference between slots 0–18 and slot 19 (size, flash region, autoplay)?</div>
+<div class="zh">槽位 0–18 存有贵司的出厂演示画面。我们是否可以永久覆盖槽位 <b>17 和 18</b>（0x13 / 0x1F / 0x1B）？我们接受这些槽位中的出厂画面丢失。是否有固件保留（不可写）的槽位？槽位 0–18 与槽位 19 之间是否存在差异（容量、Flash 区域、自动播放）？</div></div></div>
+
+<div class="q"><b>Q2 — Commands received during a refresh / 刷新过程中收到的命令.</b>
+<div class="pair"><div>While a board is refreshing (after 0x1D), and it receives <code>0x13</code> / <code>0x1B</code> / <code>0x1F</code> / <code>0x17</code> addressed to it: (a) is the ACK returned immediately? (b) is the command <b>executed immediately</b> (flash written) or <b>queued until the refresh ends</b>? (c) is there any limit to the number of queued frames? Our measurement of 2026-08-14 suggests that commands are queued and executed after the repaint.</div>
+<div class="zh">当板正在刷新（0x1D 之后）时收到发给它的 <code>0x13</code> / <code>0x1B</code> / <code>0x1F</code> / <code>0x17</code>：(a) ACK 是否立即返回？(b) 命令是<b>立即执行</b>（写入 Flash）还是<b>排队到刷新结束后执行</b>？(c) 队列帧数是否有限制？我们 2026-08-14 的测量表明命令会排队并在重绘后执行。</div></div></div>
+
+<div class="q"><b>Q3 — Writing a slot that is not being displayed / 写入未在显示的槽位.</b>
+<div class="pair"><div>During the refresh of slot S1, is it safe to write colour data into a <b>different</b> slot S2 with 0x13 (no effect on the picture being refreshed)? And the opposite case, for our understanding: if 0x13 arrives for the <b>same</b> slot that is currently refreshing, is the image already latched (refresh unaffected) or read progressively from the slot (risk of a torn picture)?</div>
+<div class="zh">在槽位 S1 刷新期间，用 0x13 向<b>另一个</b>槽位 S2 写入颜色数据是否安全（不影响正在刷新的画面）？反过来的情况也请说明：若 0x13 写入的是<b>正在刷新的同一</b>槽位，图像是否已被锁存（刷新不受影响），还是在刷新过程中逐步从槽位读取（有画面撕裂风险）？</div></div></div>
+
+<div class="q"><b>Q4 — 0x17 stop before each write / 每次写入前的 0x17 停止.</b>
+<div class="pair"><div>Once autoplay has been stopped with 0x17, is it necessary to send 0x17 again before every 0x13? What does 0x17 do if it arrives while a refresh is in progress — does it abort the refresh?</div>
+<div class="zh">用 0x17 停止自动播放后，是否还需要在每次 0x13 之前再次发送 0x17？若 0x17 在刷新进行中到达，会怎样——是否会中止刷新？</div></div></div>
+
+<div class="q"><b>Q5 — 0x1D while a board is still refreshing / 板仍在刷新时收到 0x1D.</b>
+<div class="pair"><div>If the broadcast 0x1D for the next picture arrives while one board is still finishing its refresh (boards may differ by a few hundred ms), is that 0x1D queued and executed right after (one extra refresh, as we observed 2026-08-14), or dropped? What is the minimum interval you recommend between the end of one refresh and the next 0x1D for the <i>controller</i> (we plan 1 s; the paper-quality risk is ours, see section 1)?</div>
+<div class="zh">若下一幅画面的广播 0x1D 到达时某块板仍在完成刷新（各板可能相差几百毫秒），该 0x1D 是排队并随后执行（多刷新一次，如我们 2026-08-14 所见）还是被丢弃？就<i>控制器</i>而言，贵司建议一次刷新结束到下一次 0x1D 的最小间隔是多少（我们计划 1 秒；纸张品质风险由我们承担，见第 1 节）？</div></div></div>
+
+<div class="q"><b>Q6 — 0x1E "switch to next slot" / 0x1E“切换到下一槽位”.</b>
+<div class="pair"><div>Would 0x1E help this rotation (e.g. pre-select the next slot so that a single broadcast starts it), and what exactly does it do — does it start a refresh immediately?</div>
+<div class="zh">0x1E 是否有助于这种轮换（例如预先选定下一槽位，使一次广播即可启动）？它具体做什么——是否会立即开始刷新？</div></div></div>
+
+<div class="q"><b>Q7 — Refresh duration / 刷新时长.</b>
+<div class="pair"><div>Please confirm the refresh duration on FW_260923 from 0x1D to a finished picture: is it a constant (≈7 s) independent of the number of segments that change and of the colours involved? If it varies, what is the maximum?</div>
+<div class="zh">请确认 FW_260923 上从 0x1D 到画面完成的刷新时长：是否为常数（约 7 秒），与变化的分段数和颜色无关？若有变化，最大值是多少？</div></div></div>
+
+<div class="q"><b>Q8 — Flash endurance / Flash 寿命.</b>
+<div class="pair"><div>With this rotation each slot is rewritten about every third picture: for a show and its rehearsals, on the order of 500–1000 writes per slot. Is that within the flash endurance of the controller? Is a RAM-only "next picture" buffer available or planned?</div>
+<div class="zh">采用此轮换后，每个槽位约每三幅画面重写一次：一场演出加排练大约每槽位 500–1000 次写入。这是否在控制器 Flash 寿命范围内？是否有或计划提供仅存于 RAM 的“下一幅画面”缓冲？</div></div></div>
+
+<div class="q"><b>Q9 — Power / 电源.</b>
+<div class="pair"><div>With 1 s intervals, flash writes on some boards overlap the refresh of all boards continuously. Is there any current or timing constraint on the controller side we should respect (e.g. do not write flash within the first N ms of a refresh)?</div>
+<div class="zh">在 1 秒间隔下，部分板的 Flash 写入会与所有板的刷新持续重叠。控制器侧是否有我们应遵守的电流或时序限制（例如刷新开始的前 N 毫秒内不要写 Flash）？</div></div></div>
+
+<h2>5. What we will test on our side / 我们将自行验证的内容</h2>
+<div class="pair">
+  <div><div class="lang">EN</div>
+    <ul>
+      <li>Refresh duration per board, measured visually, with real 16-colour designs.</li>
+      <li>0x13 to another slot 1–2 s into a refresh: ACK timing, picture intact, data correct at the next 0x1D.</li>
+      <li>Ten pictures back to back at 8 s intervals on a 32–36-board bus: no picture skipped, fire timing, per-board late/failed counts.</li>
+      <li>12 V rail at the last board during a back-to-back run.</li>
+    </ul>
+    <p>We will share the results with you. Thank you for your support.</p>
+  </div>
+  <div><div class="lang">中文</div>
+    <ul class="zh">
+      <li>用真实的 16 色图案，目视测量每块板的刷新时长。</li>
+      <li>刷新开始 1–2 秒后向另一槽位发送 0x13：ACK 时机、画面完好、下一次 0x1D 时数据正确。</li>
+      <li>在 32–36 块板的总线上以 8 秒间隔连续播放十幅画面：无画面丢失、显示时机、每板迟到/失败计数。</li>
+      <li>连续播放期间末端板处的 12 V 电压。</li>
+    </ul>
+    <p class="zh">我们会与贵司分享测试结果。感谢贵司的支持。</p>
+  </div>
+</div>
+
+<p class="small">Contact / 联系人: Y. Hirata, R2 Engineering — y.hirata@r2-engineering.com</p>
+</body>
+</html>
