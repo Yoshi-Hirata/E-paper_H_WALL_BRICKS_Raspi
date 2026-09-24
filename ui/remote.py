@@ -130,8 +130,9 @@ class RemoteSession:
                 slot: int = DEFAULT_SLOT) -> None:
         """`delays`: per board, the 128-byte table (64 sockets x uint16,
         big-endian, 10 ms frames) of per-socket start delays that makes
-        the change sweep the garment (written before the colours;
-        boards without one keep what they have).
+        the change sweep the garment (written before the colours; a
+        board without one gets its slot's sweep cleared, once - see
+        ui/runner.py's _save_one()).
 
         Writing here (rather than through a burn) makes the slot's
         content unknown to the burn cache - see ui/runner.py's
