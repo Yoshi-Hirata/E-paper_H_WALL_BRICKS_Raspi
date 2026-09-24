@@ -18,6 +18,26 @@
 
 ## 2. 直近で完成したもの
 
+**pre-burn 統合(U の unit 側 + V の conductor 側を main に統合、2026-09-25)**
+
+- U のブランチを main にリベースして統合(`df2da01`/`dc21e3c`)。統合で e2e が見つけた 2 つの隙間を
+  `72b4ed9` で埋めた: (1) **PRESET も START と同じ焼き込みゲート**(`Fleet.preset()`、`/api/fleet/preset`
+  はこれを使う)- 焼き込み中の unit は `/show/preset` を拒否するので、タイルごとのエラーではなく
+  START と同じ「radxa-04: still writing 12/48」の一覧を返す(PRESET に force は無い)。
+  (2) **監視(`_supervise`)は再起動した unit に `/show/load` を送った同じ回に `/show/run` を送らない**
+  (焼き込み中で拒否され、修正の記録も失われていた)。「show reloaded, writing its pictures」と記録し、
+  `status.show.burn.state == "burning"` の間は放置、焼き込みが終わった最初のポーリングで run を送る
+  (「started late」)。holding 中は従来どおり hold を送る。
+- e2e(`tests/test_show_e2e.py`)は Upload 後に `burned()` で焼き込み完了を待ってから PRESET/START する
+  (本番の操作も同じ: Units タブの「Pictures written on n / n units」を見てから ② ③)。
+- fake fleet(scratchpad/fake_fleet.py、127.0.0.1:18701/18704)で API を通した: Upload → 焼き込み
+  (radxa-01: 32 枚、radxa-04: 48 枚)→ PRESET → START → ショー中の Upload は 400「stop the show first」
+  → STOP。同じショーの再 Upload はキャッシュにより 0.5 秒未満で burned。
+- テスト 636 件 + skip 1(Windows)。**実機未検証**: 焼き込みの所要時間(見積り 36 基板 × 10 キュー
+  ≈ 90 秒)、8 秒間隔の 0x1D、12 V レール。Radxa 復帰後に `git pull` と `epaper-ui` 再起動が全台に必要
+  (`ui/*` が大きく変わった。conductor と unit は常に同時更新)。
+- 統合版の敵対的レビュー(Opus)は進行中。
+
 **本体側(unit): 事前焼き込み(pre-burn)方式への全面移行 - ショー中は 0x13 を一切送らない(2026-09-25)**
 
 - 経緯: 「毎回リアルタイムに書き込みを行うのはショーにおいてリスクが高い」という利用者(Hirata)の
