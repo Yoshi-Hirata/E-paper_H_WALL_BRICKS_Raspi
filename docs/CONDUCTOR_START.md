@@ -109,8 +109,16 @@ python -m conductor serve --open
 
 1. PC を専用ルータにつなぐ → `Start Conductor.bat`
 2. Units タブで 10 台が online、時計精度(±ms)が出ていることを確認
-3. **Upload**(ショーを全機体へ配布)→ **Show preset**(開始前の絵を出す)
-4. 本番:**START**。途中は HOLD / RESUME / NEXT / STOP
+3. **① Upload**(ショーを全機体へ配布 = 各キューの絵を基板のスロットへ焼き込む)→ Units タブの
+   「THE SHOW」カードが **Pictures written on n / n units** になるまで待つ(36 基板 × 10 キューで
+   約 90 秒。各機体タイルの **Pictures** 行に `writing n / N` の進み具合が出る)→
+   **② Show preset**(開始前の絵を出す)→ **③ START**
+4. 本番中は HOLD / RESUME / NEXT / STOP
+   - 焼き込みの途中で STOP を押した機体、Upload のあとに再起動した機体は絵が書けていない
+     (Pictures 行が `not written … Upload again`、② ③ も機体名つきで拒否される)。
+     **もう一度 ① Upload** して、書き終わるのを待ってから ② ③ へ
+   - 基板が答えず Pictures 行が `FAILED` になった機体は、② ③ の確認ダイアログで
+     「anyway」を選べばその基板抜きで進める(`force`)。**書き込み中の機体は force でも越えられない**
 5. 終わったら黒いウィンドウを閉じる。機体は本体のメニューに戻る(Units タブの Release)
 
 ## 7. スタンドアローンでデモを流す
