@@ -15661,6 +15661,12 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   let project = null;
   let state = null;                 // last SIM.buildState(project)
   let musicUrl = null;              // object URL of the picked File, or null
+  // The File itself, kept alongside musicUrl (adversarial review round 2 -
+  // F5): an object URL, once revoked, is permanently dead - a snapshot that
+  // only remembers the URL STRING (as runSelfTestSafely() used to) cannot
+  // recover after the self-test's own newProject() revokes it. The File
+  // object has no such problem; a fresh URL can always be minted from it.
+  let musicFile = null;
   let autosaveWarned = false;
   let autosaveTimer = null;
 
@@ -15808,10 +15814,34 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     return (it && lookDisplay(it)) || m[1];
   }
   function labelize(msg) {
-    return String(msg).replace(/ on \(([^)]+)\)/g, (m, name) => {
+    // Any standalone "(known item)", not only one preceded by " on "
+    // (adversarial review round 2 - F6): model.js's pre-burn-cap message
+    // (the MAX_CUES_PER_UNIT check) interpolates the same "(<item>)" bus
+    // fallback as a bare sentence-opening prefix - "(AZ271SX0002) carries
+    // 21 pictures…" - which the narrower " on (...)" pattern never matched,
+    // leaking the raw item code. Matching on "is this parenthetical exactly
+    // a known item's name" (not just "looks like one") means this can never
+    // eat an unrelated parenthetical aside.
+    return String(msg).replace(/\(([^()]+)\)/g, (m, name) => {
       const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
-      return " on " + ((it && lookDisplay(it)) || name);
+      return it ? ((it && lookDisplay(it)) || name) : m;
     });
+  }
+  // model.js's pre-burn cue-limit message, hand-rewritten rather than left
+  // to deJargon()'s word-for-word swap (adversarial review round 2 - F6):
+  // "(AZ271SX0002) carries 21 pictures but a board holds 18 show pictures
+  // (slot 0 is the white standby, slot 19 the manual one-shot) - merge or
+  // remove cues" would still name an internal detail (which slot number is
+  // reserved for what) no designer decision hinges on, even after
+  // board->segment. Matched on the ORIGINAL wording (before deJargon would
+  // touch "board"), so this must run first - see clean() below.
+  function rewriteCueLimitMessage(msg) {
+    const m = /^\(([^()]+)\) carries (\d+) pictures but a board holds (\d+) show pictures\b/.exec(String(msg));
+    if (!m) return null;
+    const [, name, carries, holds] = m;
+    const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
+    const label = (it && lookDisplay(it)) || name;
+    return `${label} has ${carries} pictures but a garment can hold ${holds} in one show - merge or remove cues`;
   }
   // Adversarial review (2026-09-25): labelize() only ever rewrote the one
   // "on (<item>)" bus fallback - real problem/warning strings ported
@@ -15833,7 +15863,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
       .replace(/\bdip\b/gi, "").replace(/\bradxa\b/gi, "controller")
       .replace(/[ \t]{2,}/g, " ").trim();
   }
-  const clean = msg => deJargon(labelize(msg));
+  const clean = msg => rewriteCueLimitMessage(msg) ?? deJargon(labelize(msg));
   // The "natural" sequence's real label, ported verbatim from
   // conductor/sequence.py's LABELS ("Socket order (P01 to P60)"), is exactly
   // the kind of string plan_designer_sim.md §3 bans from this UI - unlike
@@ -15859,18 +15889,30 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
       "9 boards on one unit, but a bus holds at most 8",
       "board 7 is in both front row 3 and back row 9",
     ];
+    // model.js's pre-burn cap message (adversarial review round 2 - F6):
+    // run through clean() (labelize -> rewriteCueLimitMessage -> deJargon
+    // in that priority, see clean()'s own definition), not deJargon() alone
+    // - the whole point is that the bare "(item)" prefix and the slot-
+    // number detail need the hand-written rewrite, not a word swap.
+    const cleanDirty = ["(AZ271SD1301) carries 21 pictures but a board holds 18 show pictures "
+      + "(slot 0 is the white standby, slot 19 the manual one-shot) - merge or remove cues"];
     const banned = /\b(unit|units|radxa|bus|buses|board|boards|dip|socket|sockets)\b/i;
     const failures = [];
     for (const msg of dirty) {
       const got = deJargon(msg);
       if (banned.test(got)) failures.push(`deJargon(${JSON.stringify(msg)}) -> ${JSON.stringify(got)} still has banned vocabulary`);
     }
+    for (const msg of cleanDirty) {
+      const got = clean(msg);
+      if (banned.test(got)) failures.push(`clean(${JSON.stringify(msg)}) -> ${JSON.stringify(got)} still has banned vocabulary`);
+      if (/slot 0|slot 19|one-shot/.test(got)) failures.push(`clean(${JSON.stringify(msg)}) -> ${JSON.stringify(got)} still leaks the internal slot numbering`);
+    }
     const seqs = (globalThis.SIM.sequence && globalThis.SIM.sequence.LABELS) || {};
     Object.keys(seqs).forEach(id => {
       const got = seqLabel({ id, label: seqs[id] });
       if (banned.test(got)) failures.push(`seqLabel(${id}) -> ${JSON.stringify(got)} still has banned vocabulary`);
     });
-    const result = { ok: failures.length === 0, total: dirty.length + Object.keys(seqs).length, failed: failures.length, failures };
+    const result = { ok: failures.length === 0, total: dirty.length + cleanDirty.length + Object.keys(seqs).length, failed: failures.length, failures };
     try {
       let pre = document.getElementById("displaycheck-out");
       if (!pre) { pre = document.createElement("pre"); pre.id = "displaycheck-out"; document.body.appendChild(pre); }
@@ -15881,11 +15923,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     } catch {}
     return result;
   }
+  // Exposed for the Help tab's "Run self-test" area and for tests; the
+  // #displaycheck hash's own auto-run lives in boot(), AFTER rebuild() -
+  // displayCheck() now looks items up in `state` (F6's rewrite needs to
+  // find the item behind a bare "(item)" prefix), which does not exist yet
+  // this early (this listener would otherwise fire before boot()'s own,
+  // registered further down the file, ever runs).
   globalThis.__displaycheck = displayCheck;
-  if (typeof document !== "undefined" && /#displaycheck/.test(location.hash)) {
-    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", displayCheck);
-    else displayCheck();
-  }
   const itemName = i => !i ? "" : lookDisplay(i) || i.item;
   const itemFull = i => !i ? "" : [lookDisplay(i), i.model].filter(Boolean).join(" · ") || i.item;
   const designLabel = d => d.label || d.name;
@@ -16473,16 +16517,32 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   // of the substitute project, and the autosave is untouched.
   function runSelfTestSafely() {
     const savedProject = JSON.parse(JSON.stringify(project));
-    const savedMusicUrl = musicUrl;
+    const savedMusicFile = musicFile;   // the File, not musicUrl - see musicFile's own comment
     const savedUi = Object.assign({}, ui);
     let result;
     try {
       result = globalThis.__selftest();
     } finally {
       Object.assign(ui, savedUi);
+      // Re-mint the object URL from the ORIGINAL File, and BEFORE
+      // setProject() below, not after (adversarial review round 2 - F5):
+      // the self-test's own newProject()/openBundle() calls revoke
+      // whatever musicUrl was live, so a snapshot of the URL string itself
+      // is already dead by the time this runs - only the File can make a
+      // working URL again. Doing it first also means setProject()'s own
+      // rebuild() sees the correct, live musicUrl on its very first pass,
+      // not one render later.
+      if (savedMusicFile) {
+        if (musicUrl) { URL.revokeObjectURL(musicUrl); musicUrl = null; }
+        musicFile = savedMusicFile;
+        musicUrl = URL.createObjectURL(savedMusicFile);
+        ensureTransport().setMusic(musicUrl);
+      } else {
+        if (musicUrl) { URL.revokeObjectURL(musicUrl); musicUrl = null; }
+        musicFile = null;
+        ensureTransport().setMusic(null);
+      }
       app.setProject(savedProject);
-      musicUrl = savedMusicUrl;
-      ensureTransport().setMusic(savedMusicUrl);
     }
     return result;
   }
@@ -16639,6 +16699,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   // NEW name instead of the "re-pick the file" bar plan §3.7 promises).
   function setMusicFile(file) {
     if (musicUrl) { URL.revokeObjectURL(musicUrl); musicUrl = null; }
+    musicFile = file || null;
     musicUrl = file ? URL.createObjectURL(file) : null;
     project.show.music = file ? { name: file.name } : null;
     ensureTransport().setMusic(musicUrl);
@@ -16842,7 +16903,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     // unwired. Done here, after rebuild(), and not alongside the
     // displayCheck() trigger itself (registered earlier, so it can and does
     // run before `state` exists) because render() needs `state`.
-    if (/displaycheck/i.test(location.hash)) { ui.tab = "timeline"; ui.cue = null; render(); }
+    if (/displaycheck/i.test(location.hash)) { displayCheck(); ui.tab = "timeline"; ui.cue = null; render(); }
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();

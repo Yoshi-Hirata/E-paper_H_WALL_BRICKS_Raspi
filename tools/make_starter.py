@@ -142,13 +142,22 @@ def main():
     js_text = render_js(files, show)
 
     if args.check:
+        # Byte comparison, not read_text()/read_normalised() (adversarial
+        # review round 2 - F7): both of those do their own newline handling
+        # (universal-newline translation, or this file's own CRLF->LF
+        # normalisation for reading legitimately-CRLF SOURCE data), so a
+        # committed starter.js or starter CSV corrupted to CRLF by a bad
+        # Windows checkout would silently compare equal to the correct
+        # "\n"-only content every time - --check exists specifically to
+        # catch a stale (or corrupted) generated file, so it must compare
+        # exactly what write_bytes() below would write.
         ok = True
-        if not STARTER_JS.exists() or STARTER_JS.read_text(encoding="utf-8") != js_text:
+        if not STARTER_JS.exists() or STARTER_JS.read_bytes() != js_text.encode("utf-8"):
             print("make_starter --check: conductor/web/sim/starter.js is stale", file=sys.stderr)
             ok = False
         for name, text in files.items():
             p = STARTER_DIR / name
-            if not p.exists() or read_normalised(p) != text:
+            if not p.exists() or p.read_bytes() != text.encode("utf-8"):
                 print(f"make_starter --check: conductor/web/starter/{name} is stale", file=sys.stderr)
                 ok = False
         existing = {p.name for p in STARTER_DIR.glob("*.csv")} if STARTER_DIR.is_dir() else set()

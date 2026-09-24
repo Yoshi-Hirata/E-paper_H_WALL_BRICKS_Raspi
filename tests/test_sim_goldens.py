@@ -50,34 +50,45 @@ def test_goldens_are_current():
         f"run python tools/make_goldens.py\nstdout={result.stdout}\nstderr={result.stderr}")
 
 
-def test_generator_ignores_showdata(tmp_path):
+def test_generator_ignores_showdata(tmp_path, monkeypatch):
     """The generator must depend ONLY on committed inputs (tests/fixtures/
     sim/*.csv and conductor/web/starter/*.csv) - a populated, git-ignored
     showdata/files/ (real client data that only exists on the show PC)
     must not change a single golden case, or `--check` fails on any
     machine that happens to have it. Regression test for the bug Coder Q
     found: an extra showdata-derived digest case the committed goldens
-    (built on a machine without showdata/) did not have."""
+    (built on a machine without showdata/) did not have.
+
+    Fully sandboxed under tmp_path (adversarial review round 2 - F8): the
+    old version of this test wrote its probe files straight into the real
+    repository's showdata/files/ - on a machine that (like the one it was
+    caught on) has real, gitignored client data sitting there already, and
+    whose `finally` block's rmdir() calls could raise and mask the real
+    assertion if that directory somehow ended up non-empty. This copies the
+    committed inputs build_goldens() actually reads into a throwaway
+    directory, monkeypatches the module's own path constants to it, and
+    only ever writes probes under tmp_path - if some future edit ever adds
+    a real ROOT/showdata/files glob back into the generator, ROOT is
+    monkeypatched too, so that edit would still see these probes and this
+    test would still catch it."""
+    fake_root = tmp_path / "repo"
+    fake_starter = fake_root / "conductor" / "web" / "starter"
+    fake_fixtures = fake_root / "tests" / "fixtures" / "sim"
+    shutil.copytree(mg.STARTER_DIR, fake_starter)
+    shutil.copytree(mg.FIXTURES_DIR, fake_fixtures)
+    monkeypatch.setattr(mg, "ROOT", fake_root)
+    monkeypatch.setattr(mg, "STARTER_DIR", fake_starter)
+    monkeypatch.setattr(mg, "FIXTURES_DIR", fake_fixtures)
+
     before = mg.dumps_sorted(mg.build_goldens())
 
-    showdata_files = ROOT / "showdata" / "files"
-    already_there = showdata_files.is_dir()
-    if not already_there:
-        showdata_files.mkdir(parents=True)
-    marker = showdata_files / "ZZZ_generator_ignores_showdata_probe_map.csv"
-    try:
-        marker.write_text(
-            "side,row,col,board_no,socket,label\nfront,0,1,1,1,\n", encoding="utf-8")
-        (showdata_files / "ZZZ_generator_ignores_showdata_probe_color_pattern01_grid.csv"
-        ).write_text("side,row,shift,1\nfront,0,0,0x01\n", encoding="utf-8")
-        after = mg.dumps_sorted(mg.build_goldens())
-    finally:
-        marker.unlink(missing_ok=True)
-        probe_grid = showdata_files / "ZZZ_generator_ignores_showdata_probe_color_pattern01_grid.csv"
-        probe_grid.unlink(missing_ok=True)
-        if not already_there:
-            showdata_files.rmdir()
-            showdata_files.parent.rmdir()
+    showdata_files = fake_root / "showdata" / "files"
+    showdata_files.mkdir(parents=True)
+    (showdata_files / "ZZZ_generator_ignores_showdata_probe_map.csv").write_text(
+        "side,row,col,board_no,socket,label\nfront,0,1,1,1,\n", encoding="utf-8")
+    (showdata_files / "ZZZ_generator_ignores_showdata_probe_color_pattern01_grid.csv"
+    ).write_text("side,row,shift,1\nfront,0,0,0x01\n", encoding="utf-8")
+    after = mg.dumps_sorted(mg.build_goldens())
 
     assert before == after, "a populated showdata/files/ changed the generated goldens"
 
@@ -91,9 +102,14 @@ def test_generator_ignores_showdata(tmp_path):
 
 
 def test_goldens_js_is_well_formed(golden):
-    text = (SIM_DIR / "goldens.js").read_text(encoding="utf-8")
-    assert text.endswith("\n")
-    assert "\r\n" not in text
+    # read_bytes(), not read_text() (adversarial review round 2 - F8):
+    # Path.read_text() does universal-newline translation, so "\r\n" not in
+    # text can never fire regardless of what is actually on disk - the CRLF
+    # check needs the raw bytes to mean anything.
+    raw = (SIM_DIR / "goldens.js").read_bytes()
+    assert raw.endswith(b"\n")
+    assert b"\r\n" not in raw
+    text = raw.decode("utf-8")
     assert str(ROOT).replace("\\", "/") not in text.replace("\\\\", "/")
     assert "globalThis.SIM = Object.assign" in text and "GOLDENS:" in text
     assert golden["format"] == "epaper-sim-goldens"
@@ -141,10 +157,20 @@ def test_goldens_cover_every_sequence_and_rule(golden):
     # committed real maps), not showdata/ - they must always be present
     # and reproducible on any machine, one per starter item.
     digest_cases = [c for c in golden["cases"] if c["kind"] == "state-digest"]
-    assert len(digest_cases) >= 10, "expected one state-digest case per starter item"
-    for case in digest_cases:
-        for name in case["project"]["files"]:
-            assert "showdata" not in name.lower()
+    # The exact 10 starter items, pinned by name - not "no name contains the
+    # literal word showdata" (adversarial review round 2 - F8), which can
+    # never fail: these cases are built from conductor/web/starter/*.csv
+    # (Q's committed real maps), and nothing in that path ever contains the
+    # word "showdata" regardless of whether the check that follows it is
+    # doing anything. A pinned set catches an item silently going missing
+    # (or an unexpected one appearing) the way the vacuous check could not.
+    EXPECTED_STARTER_ITEMS = {
+        "starter-AZ271SB2303", "starter-AZ271SC6302", "starter-AZ271SD1301",
+        "starter-AZ271SD1305", "starter-AZ271SD1305_B", "starter-AZ271SD1306",
+        "starter-AZ271SD1307", "starter-AZ271SG1035", "starter-AZ271SG1036",
+        "starter-AZ271SG3037",
+    }
+    assert {c["name"] for c in digest_cases} == EXPECTED_STARTER_ITEMS
 
     # The exact half-to-even landmark: Python rounds 2.25 to one decimal
     # as "2.2" (even), not the "2.3" a naive JS Math.round-based toFixed

@@ -105,7 +105,13 @@ COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def build(source: Path, no_starter: bool) -> "tuple[str, list[tuple[str, int]]]":
-    html = source.read_text(encoding="utf-8")
+    # read_bytes().decode(), not read_text() (adversarial review round 2 -
+    # F7): read_text() does universal-newline translation, so a source file
+    # already corrupted to CRLF (a bad checkout, core.autocrlf=true) would
+    # silently come back LF-only here, and --check below would then have
+    # nothing left to catch it against - decoding bytes ourselves preserves
+    # whatever line endings are really on disk.
+    html = source.read_bytes().decode("utf-8")
     # Strip HTML comments first: designer.html documents the model.js/state.js
     # swap (see its own header comment) using literal-looking <script> text
     # that must never be mistaken for a real tag to inline.
@@ -118,7 +124,7 @@ def build(source: Path, no_starter: bool) -> "tuple[str, list[tuple[str, int]]]"
         if "stylesheet" not in (pre + post).lower():
             return m.group(0)
         _refuse_if_unsafe(href, "<link>")
-        text = (base / href).read_text(encoding="utf-8")
+        text = (base / href).read_bytes().decode("utf-8")
         _refuse_control_chars(text, href)
         sizes.append((href, len(text.encode("utf-8"))))
         return f"<style>{_escape_close(text, 'style')}</style>"
@@ -132,7 +138,7 @@ def build(source: Path, no_starter: bool) -> "tuple[str, list[tuple[str, int]]]"
         if no_starter and Path(src).name == "starter.js":
             return ""
         _refuse_if_unsafe(src, "<script>")
-        text = (base / src).read_text(encoding="utf-8")
+        text = (base / src).read_bytes().decode("utf-8")
         _refuse_control_chars(text, src)
         sizes.append((src, len(text.encode("utf-8"))))
         return f"<script>{_escape_script_hazards(text)}</script>"
@@ -196,8 +202,14 @@ def main():
         if not args.out.exists():
             print(f"build_designer --check: {args.out} does not exist", file=sys.stderr)
             return 1
-        current = args.out.read_text(encoding="utf-8")
-        if current != html:
+        # read_bytes(), compared against the freshly-built html re-encoded
+        # to bytes - not read_text() (adversarial review round 2 - F7): a
+        # dist/ corrupted to CRLF by a bad checkout would otherwise compare
+        # equal to the correct "\n"-only rebuild every time, so --check
+        # could never catch it (and CI would never notice a phantom-
+        # modified dist/ either).
+        current = args.out.read_bytes()
+        if current != html.encode("utf-8"):
             print(f"build_designer --check: {args.out} is stale - run "
                   "`python tools/build_designer.py`", file=sys.stderr)
             return 1

@@ -3,3 +3,15 @@
 *.service.in text eol=lf
 *.env text eol=lf
 *.bat text eol=crlf
+
+# Generated designer-simulator artefacts are byte-compared by their own
+# build/check scripts (tools/build_designer.py, tools/make_starter.py,
+# tools/make_goldens.py); with core.autocrlf=true a fresh Windows clone
+# would otherwise check them out as CRLF and show them phantom-modified
+# forever the moment any of those scripts re-wrote them "\n"-only
+# (adversarial review round 2 - F7).
+dist/** text eol=lf
+conductor/web/sim/*.js text eol=lf
+conductor/web/sim/*.css text eol=lf
+conductor/web/starter/*.csv text eol=lf
+tests/goldens/*.json text eol=lf

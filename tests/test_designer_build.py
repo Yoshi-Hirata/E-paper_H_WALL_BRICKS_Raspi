@@ -143,31 +143,6 @@ def test_build_designer_excludes_any_data_stub_script(tmp_path):
     assert "data-stub" not in html
 
 
-def _strip_comments(text: str, html: bool) -> str:
-    if html:
-        return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    text = re.sub(r"(?m)//.*$", "", text)
-    # displayCheck()'s own `dirty` fixture array (designer-app.js) is a set
-    # of DELIBERATELY dirty strings copied from the Python templates, fed
-    # straight into deJargon() to prove it scrubs them - never displayed
-    # verbatim, so they are not "vocabulary reaching the UI" and would
-    # otherwise be a permanent false positive here.
-    text = re.sub(r"const dirty = \[.*?\];", "const dirty = [];", text, flags=re.DOTALL)
-    # displayCheck()'s own banned-word regex literal - the pattern it tests
-    # WITH, not a string that reaches the screen.
-    text = re.sub(r"const banned = /.*?/i;", "const banned = /x/i;", text)
-    # `show.boards` / `project.show.boards` / a bare `boards:` property name
-    # is the bundle schema's own field (plan §4.2: "boards": {} - a board-
-    # renumbering map the designer never sees or edits, always {} here) -
-    # a JS identifier, not UI prose. Blank it the same way property access
-    # generally would not count as "vocabulary reaching the UI".
-    text = re.sub(r"\.boards\b", ".X", text)
-    text = re.sub(r"\bboards\s*:", "X:", text)
-    text = re.sub(r'"boards"', '"X"', text)
-    return text
-
-
 # A static regex scan of designer.html/designer-app.js/designer.css used to
 # stand in for this check on its own - it passed cleanly while the rendered
 # Transition dropdown still said "Socket order (P01 to P60)" (the label
