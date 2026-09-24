@@ -1204,10 +1204,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/delete":
                 self.workspace.delete(body["name"])
                 return self._json({"ok": True})
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
             # TypeError: hostile JSON ({"at": null}, {"at": {}}, ...) that
             # reaches a str/float/dict call before it reaches a ValueError
-            # of its own - still a 400, never a 500 that kills the page.
+            # of its own. OverflowError: float() on a JSON integer with a
+            # few hundred digits (found in review) - either way, a 400,
+            # never a 500 that drops the connection.
             return self._json({"error": str(exc)}, status=400)
         self._send(404, b"not found", "text/plain")
 
@@ -1256,13 +1258,28 @@ class Handler(BaseHTTPRequestHandler):
             if not 0.5 <= lead <= 60:
                 raise ValueError("lead time is 0.5-60 s")
             if not fleet.shows:
+                if fleet.run is not None:
+                    # Adopted from the units after a restart with
+                    # nothing of its own uploaded: there is no
+                    # show_duration to check `to_s` against here.
+                    return self._json({"units": {}, "mode": "none", "note":
+                                       "This conductor did not upload the "
+                                       "show - Upload first."})
                 return self._json({"units": {}, "note":
                                    "Nothing uploaded yet - Upload first."})
             mode, results = fleet.seek(float(to_s), lead)
             snap = fleet.snapshot()
+            to_s = round(float(to_s), 1)
+            if mode == "start_at":
+                note = f"START will begin at {timeline.format_clock(to_s)}."
+            elif mode == "holding":
+                note = (f"On hold at {timeline.format_clock(to_s)}. "
+                        "RESUME continues from here.")
+            else:
+                note = ""
             return self._json({"units": results, "run": snap["run"],
-                               "mode": mode, "to_s": round(float(to_s), 1),
-                               "start_at": snap["start_at"], "note": ""})
+                               "mode": mode, "to_s": to_s,
+                               "start_at": snap["start_at"], "note": note})
         if command in ("start", "next"):
             lead = float(body.get("lead_s", DEFAULT_LEAD_S))
             if not 0.5 <= lead <= 60:
@@ -1278,23 +1295,27 @@ class Handler(BaseHTTPRequestHandler):
                                        "The show is already running."})
                 from_s = body.get("from_s")
                 if from_s is None:
+                    # No range check skipped here: fleet.start_show()
+                    # below validates whichever `at` it is given, this
+                    # branch included - a remembered position from a
+                    # SEEK is not proof it still fits a show re-uploaded
+                    # since (found in review, was the open door).
                     at = fleet.start_at
                 else:
                     if (not isinstance(from_s, (int, float))
                             or isinstance(from_s, bool)):
                         raise ValueError("Where to start from must be a "
                                          "number of seconds.")
-                    at = float(from_s)
+                    at = round(float(from_s), 1)
                     if at > 0 and body.get("manual") is not True:
                         raise ValueError(
                             'Manual control is off. Tick "Manual control" '
                             "to start from a time other than 0:00.")
-                    duration = fleet.show_duration()
-                    if not 0 <= at <= duration:
-                        raise ValueError(
-                            f"The show is {timeline.format_clock(0)} to "
-                            f"{timeline.format_clock(duration)}.")
-                results = fleet.start_show(lead, from_s)
+                # start_show() range-checks `at` itself (the same
+                # ValueError seek() raises) and uses exactly this value -
+                # never re-reading fleet.start_at - so the note below and
+                # the T0 actually run on can never disagree.
+                results = fleet.start_show(lead, at)
                 response = {"units": results, "lead_s": lead, "from_s": at}
                 if at > 0:
                     response["note"] = (f"Started from "

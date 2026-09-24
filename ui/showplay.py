@@ -165,6 +165,22 @@ class ShowPlayer:
                 if self.applied != first or self.dirty:
                     self._forget_garment()
                 self._healed_for = self._latched = None
+            # A forward jump (a SEEK past due, or a big NEXT) can leave a
+            # cue that was already loading/armed for the OLD T0 behind
+            # the new one - its `sent` is now in the past. Left alone it
+            # would just fire as scheduled (or the moment it is ready),
+            # showing that skipped cue while the true current one waits
+            # behind it (_plan()'s branch 2 is blocked by `in_flight`
+            # until this fires). Disarming it lets that branch repaint
+            # the picture this new T0 actually wants.
+            session = self.session
+            if (self._owns(session.cue_id)
+                    and session.phase in (PREPARING, READY, ARMED)):
+                cue_id, _ = self._parse(session.cue_id)
+                cue = next((c for c in self.show["cues"]
+                           if c["id"] == cue_id), None)
+                if cue is not None and cue["sent"] <= self._clock() - self.t0:
+                    self._disarm()
             self._persist()
         self._wake.set()
 
@@ -394,7 +410,14 @@ class ShowPlayer:
             ahead = [c for c in cues if c["sent"] > now]
             current = past[-1] if past else None
             nxt = ahead[0] if ahead else None
-            in_flight = (self._owns(session.cue_id)
+            # A cue only counts as "busy" if it is still the one that
+            # belongs here - current or next. One a forward jump left
+            # behind (run() disarms it, but READY/ARMED stays on the
+            # session until something re-decides it) must not block this
+            # branch from repainting what the new T0 actually wants.
+            owned = self._parse(session.cue_id)[0] if self._owns(
+                session.cue_id) else None
+            in_flight = (owned in {c["id"] for c in (current, nxt) if c}
                          and session.phase in (PREPARING, READY, ARMED))
             duration = float(show["duration"])
             if nxt is None and now > duration + END_SLACK_S:

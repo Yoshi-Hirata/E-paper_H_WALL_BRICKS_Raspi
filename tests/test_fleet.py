@@ -406,7 +406,9 @@ def test_seek_without_a_run_only_says_where_start_begins():
     assert mode == "start_at" and results == {}
     assert link.posted == []
     assert fleet.start_at == 180.0
-    started = fleet.start_show(lead_s=2.0)
+    # The caller resolves the position - here, the server always reads
+    # fleet.start_at itself and passes it on explicitly (round 2 fix).
+    started = fleet.start_show(lead_s=2.0, at=fleet.start_at)
     assert started["radxa-01"]["ok"]
     assert fleet.run["t0"] == 1000.0 + 2.0 - 180.0
     assert fleet.start_at == 0.0                      # forgotten once used
@@ -426,11 +428,23 @@ def test_seek_outside_the_show_is_refused():
     fleet = Fleet({}, clock=lambda: 1000.0)
     fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
     with pytest.raises(ValueError, match=r"0:00 to 10:00"):
-        fleet.seek(600.1)
+        fleet.seek(601.0)
     with pytest.raises(ValueError):
-        fleet.seek(-0.1)
+        fleet.seek(-1.0)
     mode, results = fleet.seek(600.0)                 # the top boundary is fine
     assert mode == "start_at" and fleet.start_at == 600.0
+
+
+def test_a_seek_within_rounding_of_the_end_is_clamped_not_refused():
+    # duration can carry more precision than the 0.1 s a seek is rounded
+    # to (found in review): the exact end must not be refused just
+    # because 719.96 rounds up to 720.0.
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 719.96}}
+    mode, _ = fleet.seek(719.96)
+    assert mode == "start_at" and fleet.start_at == 719.96
+    mode, _ = fleet.seek(-0.04)                       # the same, at the top
+    assert mode == "start_at" and fleet.start_at == 0.0
 
 
 def test_show_duration_is_the_longest_uploaded_show():
@@ -439,6 +453,138 @@ def test_show_duration_is_the_longest_uploaded_show():
     fleet.shows = {"radxa-01": {"id": "a", "cues": [], "duration": 300},
                    "radxa-02": {"id": "b", "cues": [], "duration": 720}}
     assert fleet.show_duration() == 720.0
+    assert isinstance(fleet.show_duration(), float)   # even from int inputs
+
+
+def test_start_show_range_checks_whichever_position_it_is_given():
+    # The blocker found in review: START never validated a remembered
+    # start_at (only an explicit from_s) - the open door was skipped
+    # validation, not a missing message.
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running")}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match=r"0:00 to 10:00"):
+        fleet.start_show(lead_s=1.0, at=601.0)
+    assert fleet.run is None                          # refused before any mutation
+
+
+def test_start_show_with_no_position_begins_exactly_lead_seconds_from_now():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running")}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.start_show(lead_s=3.0)
+    assert fleet.run["t0"] == 1003.0
+
+
+def test_uploading_a_new_show_forgets_a_remembered_start_position():
+    fleet = Fleet({})
+    fleet.start_at = 180.0
+    fleet.upload({})
+    assert fleet.start_at == 0.0
+
+
+def test_adopting_a_run_forgets_a_remembered_start_position():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    fleet.start_at = 45.0
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running")}
+    run = fleet.snapshot()["run"]
+    assert run["adopted"]
+    assert fleet.start_at == 0.0
+
+
+def test_snapshot_start_at_is_zero_while_a_run_exists():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.start_at = 42.0                    # a leftover from before this run
+    fleet.run = {"t0": 700.0, "state": "running", "held_at": None}
+    assert fleet.snapshot()["start_at"] == 0.0
+    fleet.run = None
+    assert fleet.snapshot()["start_at"] == 42.0
+
+
+def test_seeking_while_running_does_not_touch_the_remembered_start_position():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running")}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "running", "held_at": None}
+    fleet.seek(200.0, lead_s=1.0)
+    assert fleet.start_at == 0.0
+
+
+# ---- races: an operator's next command lands mid-flight ----
+
+def test_a_seek_racing_a_stop_does_not_crash_or_post(monkeypatch):
+    # seek() releases _run_lock before _send_run() reads self.run again;
+    # a concurrent STOP in that gap used to surface as a 400 'NoneType'
+    # object is not subscriptable (found in review).
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = StubLink("radxa-01", "running")
+    fleet.links = {"radxa-01": link}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "running", "held_at": None}
+    real_targets = fleet._targets
+
+    def targets_then_stop():
+        names = real_targets()
+        fleet.run = None                     # a concurrent STOP lands here
+        return names
+    monkeypatch.setattr(fleet, "_targets", targets_then_stop)
+    mode, results = fleet.seek(50.0, lead_s=1.0)
+    assert mode == "running" and results == {}
+    assert link.posted == []
+
+
+def test_a_seek_racing_a_hold_does_not_send_run_after_hold(monkeypatch):
+    # Same gap, a concurrent HOLD instead: without the re-check, /show/run
+    # could land after /show/hold and the unit would run while the
+    # conductor believes it holds (found in review).
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = StubLink("radxa-01", "running")
+    fleet.links = {"radxa-01": link}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "running", "held_at": None}
+    real_targets = fleet._targets
+    raced = []
+
+    def targets_then_hold():
+        if not raced:
+            raced.append(True)
+            fleet.hold()                     # a concurrent HOLD lands here
+        return real_targets()
+    monkeypatch.setattr(fleet, "_targets", targets_then_hold)
+    mode, results = fleet.seek(50.0, lead_s=1.0)
+    assert mode == "running" and results == {}
+    assert link.posted == [("/show/hold", {})]         # only HOLD's own post landed
+
+
+class RacingLink(StubLink):
+    """A unit whose `post` performs a concurrent SEEK the first time it
+    is called, simulating one landing between _supervise()'s copy of
+    `run` and the point where it would post the (by then stale) T0."""
+
+    def __init__(self, name, fleet):
+        super().__init__(name, "running")
+        self._fleet = fleet
+        self._raced = False
+
+    def post(self, path, body):
+        if not self._raced and path == "/show/load":
+            self._raced = True
+            self._fleet.seek(200.0, lead_s=1.0)        # the concurrent operator
+        return super().post(path, body)
+
+
+def test_supervise_does_not_post_a_stale_t0_when_a_seek_lands_mid_check():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    link = RacingLink("radxa-01", fleet)
+    fleet.links = {"radxa-01": link}
+    # A different id than the StubLink's own ("showA") forces the
+    # "show reloaded" /show/load post that RacingLink hooks.
+    fleet.shows = {"radxa-01": {"id": "freshId", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "running", "held_at": None}
+    fleet._supervise(link)
+    run_posts = [body for path, body in link.posted if path == "/show/run"]
+    assert len(run_posts) == 1                # supervise's own attempt was dropped
+    assert run_posts[0]["t0"] == 806.0         # only the seek's own (new) T0 landed
 
 
 def test_a_seek_is_not_held_up_by_an_offline_unit(fleet, units):

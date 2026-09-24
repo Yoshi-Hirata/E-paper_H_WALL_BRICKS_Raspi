@@ -232,6 +232,13 @@ class Fleet:
         # while there is no run, reset by every START and STOP.
         self.start_at: float = 0.0
         self._run_lock = threading.Lock()
+        # Bumped under _run_lock by every write to `run` (start, seek,
+        # resume, next_cue, hold, stop, adopt). _supervise() reads it
+        # alongside its copy of `run` and checks again, under the lock,
+        # right before it posts a T0 that copy decided on - an operator's
+        # command that landed in between makes that copy stale, and
+        # supervision must not send it anyway (found in review, see §2.4).
+        self._run_gen = 0
         # A run is adopted from the units only by a conductor that has
         # just come up and been told nothing yet; after an operator's
         # STOP, a unit still running is a unit that missed it.
@@ -268,7 +275,11 @@ class Fleet:
         self._adopt()
         with self._run_lock:
             run = dict(self.run) if self.run else None
-            start_at = self.start_at
+            # Meaningful only with no run: once one exists (live, or
+            # adopted from the units) a leftover position is nobody's
+            # business - showing it would invite "Back to 0:00" to seek a
+            # LIVE show back to the top (found in review).
+            start_at = self.start_at if run is None else 0.0
         if run:
             mark = run["held_at"] if run["state"] == "holding" else self._clock()
             run["now"] = round(mark - run["t0"], 2)
@@ -279,13 +290,13 @@ class Fleet:
                           for unit, show in self.shows.items()},
                 "corrections": self.corrections[-5:],
                 "start_at": start_at,
-                "show_duration": duration or None}
+                "show_duration": duration if self.shows else None}
 
     def show_duration(self) -> float:
         """The longest `duration` among the uploaded shows, 0.0 when none
         are uploaded (§2.1: the page then sees `show_duration: null`)."""
-        return max((show.get("duration", 0.0) for show in self.shows.values()),
-                   default=0.0)
+        return float(max((show.get("duration", 0.0)
+                          for show in self.shows.values()), default=0.0))
 
     # ---- the show ----
 
@@ -295,10 +306,21 @@ class Fleet:
             return {"show": (status.get("show") or {}).get("id")}
         results = self._each(list(shows), action)
         self.shows = dict(shows)
+        # A new show file is a new duration: a remembered position from
+        # the old one may no longer even be inside it (found in review).
+        with self._run_lock:
+            self.start_at = 0.0
         return results
 
     def _send_run(self, names) -> "dict[str, dict]":
         with self._run_lock:
+            # Re-checked, not just read: seek()/start_show() release the
+            # lock before this runs, so a STOP or HOLD may have already
+            # landed - posting the T0 they decided on would be exactly
+            # the stale command supervision exists to correct, only sent
+            # by the conductor itself (found in review).
+            if not self.run or self.run["state"] != "running":
+                return {}
             t0 = self.run["t0"]
         # The polls already in flight still show the old T0; give this
         # one time to land before the supervision second-guesses it.
@@ -320,18 +342,40 @@ class Fleet:
             name for name, link in self.links.items()
             if (link.status or {}).get("show")]
 
+    @staticmethod
+    def _clamped(value: float, low: float, high: float) -> float:
+        """`value` rounded to 0.1 s (§2.2/§2.3), then snapped to `low`/
+        `high` when the rounding alone would put it just outside - a
+        719.96 s show must not refuse a seek to its own end because
+        719.96 rounds to 720.0 (found in review)."""
+        value = round(float(value), 1)
+        if value > high and value - high <= 0.1:
+            value = high
+        elif value < low and low - value <= 0.1:
+            value = low
+        return value
+
     def start_show(self, lead_s: float = DEFAULT_LEAD_S,
-                   from_s: "float | None" = None) -> "dict[str, dict]":
-        """Begin the show `lead_s` from now, at `from_s` seconds into it -
-        or, when `from_s` is not given, at `self.start_at` (where a SEEK
-        made before the show started, or nothing, left it). Either way a
-        successful START forgets that position (§2.3)."""
+                   at: float = 0.0) -> "dict[str, dict]":
+        """Begin the show `lead_s` from now, `at` seconds into it (0.0 for
+        the top). The caller resolves `at` itself - normally
+        `fleet.start_at`, where a SEEK made before the show started (or
+        nothing) left it - and this uses exactly the value it is given,
+        never `self.start_at` again: the note a caller builds from `at`
+        and the T0 this actually runs on can then never disagree (found
+        in review). Out of range is the same ValueError seek() raises. A
+        successful START always forgets `self.start_at` (§2.3)."""
+        duration = self.show_duration()
+        at = self._clamped(at, 0.0, duration)
+        if not 0 <= at <= duration:
+            raise ValueError(f"The show is {timeline.format_clock(0)} to "
+                             f"{timeline.format_clock(duration)}.")
         with self._run_lock:
-            at = self.start_at if from_s is None else float(from_s)
             self._may_adopt, self._stopped = False, False
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",
                         "held_at": None}
             self.start_at = 0.0
+            self._run_gen += 1
         return self._send_run(self._targets())
 
     def seek(self, to_s: float, lead_s: float = DEFAULT_LEAD_S
@@ -345,7 +389,7 @@ class Fleet:
         Returns (mode, per-unit results); `to_s` outside 0..show_duration()
         is a ValueError, the plain-English range the page shows."""
         duration = self.show_duration()
-        to_s = round(float(to_s), 1)
+        to_s = self._clamped(to_s, 0.0, duration)
         if not 0 <= to_s <= duration:
             raise ValueError(f"The show is {timeline.format_clock(0)} to "
                              f"{timeline.format_clock(duration)}.")
@@ -361,6 +405,7 @@ class Fleet:
                 self.run["t0"] = self._clock() + lead_s - to_s
                 mode = "running"
                 send = True
+            self._run_gen += 1
         if send:
             return mode, self._send_run(self._targets())
         return mode, {}
@@ -370,6 +415,7 @@ class Fleet:
             if not self.run or self.run["state"] != "running":
                 return {}
             self.run.update(state="holding", held_at=self._clock())
+            self._run_gen += 1
         return self.simple(self._targets(), "/show/hold")
 
     def resume(self) -> "dict[str, dict]":
@@ -378,6 +424,7 @@ class Fleet:
                 return {}
             self.run["t0"] += self._clock() - self.run["held_at"]
             self.run.update(state="running", held_at=None)
+            self._run_gen += 1
         return self._send_run(self._targets())
 
     def next_cue(self, lead_s: float = DEFAULT_LEAD_S) -> "dict[str, dict]":
@@ -402,6 +449,7 @@ class Fleet:
             if self.run["state"] == "holding":  # NEXT also lets go of a hold
                 self.run["t0"] += self._clock() - self.run["held_at"]
                 self.run.update(state="running", held_at=None)
+            self._run_gen += 1
         return self._send_run(self._targets())
 
     def stop_show(self) -> "dict[str, dict]":
@@ -411,6 +459,7 @@ class Fleet:
             self._stop_told = set()
             self.run = None
             self.start_at = 0.0
+            self._run_gen += 1
         return self.simple(targets, "/show/stop")
 
     def _supervise(self, link: UnitLink) -> None:
@@ -419,6 +468,7 @@ class Fleet:
         with self._run_lock:
             run = dict(self.run) if self.run else None
             stopped = self._stopped
+            gen = self._run_gen
         now = self._clock()
         if now - self._corrected.get(link.name, -1e9) < SUPERVISE_EVERY_S:
             return
@@ -446,6 +496,13 @@ class Fleet:
             link.post("/show/load", show)
         if run["state"] == "holding":
             if why or unit.get("state") == "running":
+                # `run` was copied outside the lock, and `link.post` above
+                # may have taken a moment: re-check that no SEEK/RESUME/
+                # STOP landed since, or this would post the T0 or hold
+                # decision they have already overtaken (found in review).
+                with self._run_lock:
+                    if self._run_gen != gen:
+                        return
                 link.post("/show/hold", {})
                 why = why or "put on hold"
         else:
@@ -462,6 +519,9 @@ class Fleet:
                     or abs(unit["t0"] - expected) > T0_TOLERANCE_S):
                 if now - run["t0"] > float(show.get("duration", 0)) + 30:
                     return                  # the show is over; leave it be
+                with self._run_lock:
+                    if self._run_gen != gen:
+                        return              # stale: an operator beat us to it
                 link.post("/show/run", {"t0": expected, "show": show["id"]})
                 why = why or ("started late" if unit.get("t0") is None
                               else "T0 confirmed after its restart"
@@ -490,6 +550,11 @@ class Fleet:
                 self._may_adopt = False
                 self.run = {"t0": found[len(found) // 2], "state": "running",
                             "held_at": None, "adopted": True}
+                # Whatever a SEEK remembered before this conductor came
+                # up (or restarted) is not where THIS run began - the
+                # units, not the page, decided that (found in review).
+                self.start_at = 0.0
+                self._run_gen += 1
 
     # ---- commands, to many units at once ----
 

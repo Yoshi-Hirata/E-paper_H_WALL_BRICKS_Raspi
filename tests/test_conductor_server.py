@@ -1105,14 +1105,39 @@ def test_seek_with_hostile_json_is_a_400_not_a_500(tmp_path):
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
+        huge = 10 ** 400                          # float(huge) is OverflowError
         for body in ({"manual": True, "to_s": None},
                      {"manual": True, "to_s": "abc"},
                      {"manual": True, "to_s": {}},
                      {"manual": True, "to_s": [1]},
                      {"manual": True, "to_s": True},
                      {"manual": True},
-                     {"manual": True, "to_s": 10.0, "lead_s": "fast"}):
+                     {"manual": True, "to_s": 10.0, "lead_s": "fast"},
+                     {"manual": True, "to_s": huge},
+                     {"manual": True, "to_s": 10.0, "lead_s": huge}):
             status, _ = _post(port, "/api/fleet/seek", body)
+            assert status == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_with_a_huge_json_integer_is_a_400_not_a_dropped_connection(tmp_path):
+    # float(10**400) raises OverflowError, not ValueError - it must still
+    # come back as a clean 400, not escape do_POST's except and drop the
+    # connection (found in review).
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        huge = 10 ** 400
+        for body in ({"lead_s": huge}, {"from_s": huge, "manual": True},
+                     {"lead_s": huge, "from_s": 10, "manual": True}):
+            status, _ = _post(port, "/api/fleet/start", body)
             assert status == 400
     finally:
         server.shutdown()
@@ -1134,6 +1159,7 @@ def test_start_begins_where_the_seek_bar_was_left(tmp_path):
         assert status == 200
         assert seek_result["mode"] == "start_at"
         assert seek_result["start_at"] == 90.0
+        assert seek_result["note"] == "START will begin at 1:30."
         status, start_result = _post(port, "/api/fleet/start", {"lead_s": 1})
         assert status == 200
         assert start_result["from_s"] == 90.0
@@ -1169,6 +1195,86 @@ def test_start_from_a_time_needs_manual_too(tmp_path):
         status, payload = _post(port, "/api/fleet/start",
                                 {"lead_s": 1, "from_s": 0})
         assert status == 200 and payload["from_s"] == 0.0 and "note" not in payload
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_from_a_seeked_position_is_refused_if_a_reupload_shrank_the_show(tmp_path):
+    # The blocker found in review: SEEK to 9:00 on a 12:00 show, then a
+    # re-upload shrinks it to 5:00 - the page never sends from_s, so
+    # START must range-check the remembered position itself, or every
+    # unit goes ENDED on its first tick and nothing ever fires.
+    from conductor.fleet import Fleet
+
+    fleet = Fleet({})
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 720}}
+    fleet.links = {}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, seek_result = _post(port, "/api/fleet/seek",
+                                    {"to_s": 540.0, "manual": True})
+        assert status == 200 and seek_result["mode"] == "start_at"
+        fleet.shows = {"radxa-01": {"id": "showB", "cues": [],
+                                    "duration": 300}}     # re-uploaded, shorter
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 1})
+        assert status == 400
+        assert payload["error"] == "The show is 0:00 to 5:00."
+        assert fleet.run is None                  # never started on a bad position
+        assert fleet.start_at == 540.0             # unchanged - fixable, not lost
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_seek_after_adopting_a_run_with_nothing_uploaded_here_is_honest(tmp_path):
+    # A conductor restarted mid-show adopts the run from the units
+    # (fleet.run is set) but has nothing of its own in fleet.shows - SEEK
+    # cannot compute a show_duration or a sensible T0 there.
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running")}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert fleet.snapshot()["run"] is not None     # adopted
+        status, payload = _post(port, "/api/fleet/seek",
+                                {"to_s": 30.0, "manual": True})
+        assert status == 200
+        assert payload == {"units": {}, "mode": "none", "note":
+                           "This conductor did not upload the show - "
+                           "Upload first."}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_seek_while_holding_answers_with_the_full_shape(tmp_path):
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    fleet = Fleet({})
+    link = StubLink("radxa-01", "running")
+    fleet.links = {"radxa-01": link}
+    fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "holding", "held_at": 750.0}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, result = _post(port, "/api/fleet/seek",
+                               {"to_s": 90.0, "manual": True})
+        assert status == 200
+        assert result["mode"] == "holding" and result["units"] == {}
+        assert result["to_s"] == 90.0 and result["start_at"] == 0.0
+        assert result["run"]["state"] == "holding"
+        assert result["note"] == "On hold at 1:30. RESUME continues from here."
+        assert link.posted == []                  # nothing sent while holding
     finally:
         server.shutdown()
         server.server_close()
@@ -1233,7 +1339,7 @@ def test_a_seek_answers_per_unit_like_every_other_command(tmp_path):
         # The same {unit: {"ok": ...}} shape every other fleet command answers with.
         assert result["units"] == {"radxa-02": {"ok": True}}
         status, hold_result = _post(port, "/api/fleet/hold", {})
-        assert set(hold_result["units"]) == set(result["units"])
+        assert hold_result["units"] == {"radxa-02": {"ok": True, "phase": None}}
     finally:
         server.shutdown()
         server.server_close()
