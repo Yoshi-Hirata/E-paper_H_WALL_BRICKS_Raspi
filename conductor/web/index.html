@@ -318,6 +318,10 @@ function parseClock(text) {                       // "3:20" or "200" -> seconds
 }
 const hex = c => "0x" + Number(c).toString(16).toUpperCase().padStart(2, "0");
 const rgb = c => `rgb(${state.palette[c].rgb.join(",")})`;
+// A scale's fill: a palette code (settled colours) turns into a colour via
+// rgb(); a refresh-flicker phase hands over a CSS colour directly (a string
+// starting with "#") to use as-is. undefined is the bare garment.
+const fillFor = code => code === undefined ? "var(--garment)" : (typeof code === "string" && code[0] === "#") ? code : rgb(code);
 // What an item is called: its LOOK number and model number (both editable in the
 // list on the Designs tab); the file name's prefix when it has neither.
 const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : i.item;
@@ -330,6 +334,7 @@ async function refresh() {
   $("#ws").textContent = "workspace: " + state.workspace;
   if (!state.items.some(i => i.item === ui.item)) ui.item = state.items[0]?.item ?? null;
   maxRankCache.clear();               // ranks/maps may have changed under us
+  refreshModelCache.clear();          // cue ids may now mean different cues
   syncPlayerSrc();
   render();
 }
@@ -423,7 +428,7 @@ function renderGarment(item, opts) {
       let fill, text = "";
       if (opts.mode === "design") {
         const code = opts.colors[key];
-        fill = code !== undefined ? rgb(code) : "var(--garment)";
+        fill = fillFor(code);
         if (code === undefined && opts.labels) text = opts.undecided?.includes(key) ? "-" : "?";
       } else { fill = tint(order.indexOf(boardNo), order.length); text = socket; }
       const dim = ui.board !== null && opts.labels && ui.board !== boardNo ? ` opacity=".18"` : "";
@@ -567,32 +572,103 @@ function maxRankOf(item, sequence, ranks) {
   if (m === undefined) { m = Math.max(...ranks, 0); maxRankCache.set(key, m); }
   return m;
 }
-// The scales a sweeping cue has finished by t: rank x step is a scale's
-// delay, and it is done one refresh after that.
+// ---- e-paper refresh flicker (simulator only): every scale a cue colours goes
+// dark, flickers, warms, then settles on its target - a wave whose per-scale
+// start time is the sweep delay (rank x step, 0 for natural) plus a small
+// deterministic per-scale jitter, so a "natural" cue still refreshes as one
+// ripple instead of a single flat cut. See plan_refresh_sim.md for the model.
+const JITTER_MAX = 0.35;                    // seconds, spread of phase-A stragglers
+const REFRESH_TINT = [0xb8, 0xa0, 0x30];    // yellow-green tint blended into phase D
+const REFRESH_PHASE_A = ["#2b2a4e", "#3a2f5a"];                                    // dark navy / dark purple
+const REFRESH_PALETTE = ["#2b2a4e", "#3a2f5a", "#9a9aa0", "#c9c9cc", "#e6e3d8",
+                          "#d8cf7a", "#b8b83a", "#7a5a3a", "#8a4a3a", "#2f4a7a"]; // phase B: any of these
+const REFRESH_PHASE_C = ["#c9c9cc", "#e6e3d8", "#d8cf7a", "#b8b83a", "#7a5a3a"]; // phase C: warm/grey subset
+// 32-bit integer mix (Math.imul only - no strings, no Math.random) used both for
+// the per-scale jitter and for picking a flicker colour each 0.25 s tick: same
+// (n, bucket) always gives the same result, so a frame can be redrawn or skipped
+// without the flicker looking different.
+function hash32(a, b) {
+  let h = Math.imul(a ^ 0x9e3779b1, 0x85ebca6b) ^ Math.imul(b ^ 0x27d4eb2f, 0xc2b2ae35);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  return (h ^ (h >>> 15)) >>> 0;
+}
+const hexOfCode = code => { const [r, g, b] = state.palette[code].rgb; return "#" + [r, g, b].map(v => Math.round(v).toString(16).padStart(2, "0")).join(""); };
+const hexToRgb = hex => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+// target tinted towards REFRESH_TINT by weight w (0..1)
+function tintedHex(targetCode, w) {
+  const target = hexToRgb(hexOfCode(targetCode));
+  const mixed = target.map((v, i) => Math.round(v * (1 - w) + REFRESH_TINT[i] * w));
+  return "#" + mixed.map(v => v.toString(16).padStart(2, "0")).join("");
+}
+// Per item+cue, each scale's sweep delay and jitter, in item.map.scales order -
+// computed once (typed arrays) and reused every frame; cleared alongside
+// maxRankCache whenever the show/maps might have changed under us.
+const refreshModelCache = new Map();        // "item|cueId" -> {delay: Float64Array, jitter: Float64Array}
+function refreshModelFor(item, cue, sweep) {
+  const key = item.item + "|" + cue.id;
+  let m = refreshModelCache.get(key);
+  if (m) return m;
+  const ranks = item.sequences?.[sweep.sequence];
+  const maxRank = ranks ? maxRankOf(item, sweep.sequence, ranks) : 0;
+  const n = item.map.scales.length;
+  const delay = new Float64Array(n), jitter = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    delay[i] = ranks && maxRank > 0 ? ranks[i] * sweep.span_s / maxRank : 0;
+    jitter[i] = (hash32(i, 0xa5a5) % 1000) / 1000 * JITTER_MAX;
+  }
+  m = { delay, jitter };
+  refreshModelCache.set(key, m);
+  return m;
+}
+// One scale's colour at τ seconds into its own refresh (0 <= τ < refresh): the
+// phase table from plan_refresh_sim.md, expressed as a fraction of the refresh
+// time so a 16 s firmware scales the same as the 7 s one measured on video.
+function refreshPhaseColor(n, tau, frac, targetCode) {
+  const bucket = Math.floor(tau / 0.25);
+  const h = hash32(n, bucket);
+  if (frac < 0.13) return REFRESH_PHASE_A[h % REFRESH_PHASE_A.length];
+  if (frac < 0.50) return REFRESH_PALETTE[h % REFRESH_PALETTE.length];
+  if (frac < 0.72) return REFRESH_PHASE_C[h % REFRESH_PHASE_C.length];
+  if (frac < 0.95) {
+    if (h % 6 === 0) return REFRESH_PHASE_C[hash32(n, bucket + 1) % REFRESH_PHASE_C.length];   // small residual flicker
+    const w = 0.45 * (1 - (frac - 0.72) / 0.23);
+    return tintedHex(targetCode, w);
+  }
+  return hexOfCode(targetCode);
+}
+// The scales a cue in flight is showing at t: each scale starts its own
+// refresh at sent + delay (sweep) + jitter, runs through the flicker phases
+// above, and reaches its target one refresh after it started - replacing the
+// old flat "revealed once sent+delay+refresh <= t" cut with the wave itself.
+// A scale the design does not colour (partial cue) is left out untouched.
 function sweptColors(item, cue, design, t) {
   const sweep = sweepOf(cue);
-  const ranks = item.sequences?.[sweep.sequence];
-  if (!ranks) return design.colors;
-  const refresh = refreshOf(cue).value, done = {};
-  const maxRank = maxRankOf(item, sweep.sequence, ranks);
+  const refresh = refreshOf(cue).value;
+  const model = refreshModelFor(item, cue, sweep);
+  const out = {};
   item.map.scales.forEach((s, n) => {
     const key = `${s[0]}|${s[1]}|${s[2]}`;
-    const delay = maxRank > 0 ? ranks[n] * sweep.span_s / maxRank : 0;
-    if (key in design.colors && cue.sent + delay + refresh <= t) done[key] = design.colors[key];
+    const targetCode = design.colors[key];
+    if (targetCode === undefined) return;                    // partial cue: this scale is untouched
+    const tau = t - (cue.sent + model.delay[n] + model.jitter[n]);
+    if (tau < 0) return;                                      // not started yet: keep showing the old colour
+    out[key] = tau >= refresh ? targetCode : refreshPhaseColor(n, tau, tau / refresh, targetCode);
   });
-  return done;
+  return out;
 }
 function wornAt(item, t) {
   // Designs complete by t, in order: a full cue replaces, a partial one overlays;
-  // a sweep in progress overlays what it has finished so far.
+  // a cue in flight overlays each scale's own refresh flicker (sweptColors),
+  // whose per-scale start already carries the sweep delay - natural included,
+  // via jitter alone, so every cue refreshes as a wave and not a flat cut.
   let colors = {}, shifts = null, label = "(as before the show)", changing = false;
   for (const cue of cuesOf(item)) {
     const design = item.designs.find(d => d.name === cue.design);
-    const sweep = sweepOf(cue);
     if (cue.sent <= t && t < cue.complete) changing = true;
     if (!design) continue;
     if (cue.complete > t) {
-      if (sweep.sequence !== "natural" && sweep.span_s > 0 && cue.sent <= t) colors = { ...colors, ...sweptColors(item, cue, design, t) };
+      if (cue.sent <= t) colors = { ...colors, ...sweptColors(item, cue, design, t) };
       continue;
     }
     colors = cue.partial ? { ...colors, ...design.colors } : { ...design.colors };
@@ -914,8 +990,7 @@ function updateThumbColors(t, view) {
       if (worn.changing) changing = true;
       sub.push(`${entry.item.model || entry.item.item}: ${worn.label}`);
       for (const [key, circleEl] of entry.circles) {
-        const code = worn.colors[key];
-        const fill = code !== undefined ? rgb(code) : "var(--garment)";
+        const fill = fillFor(worn.colors[key]);
         if (entry.colors.get(key) !== fill) { entry.colors.set(key, fill); if (circleEl) circleEl.setAttribute("fill", fill); }
       }
     }
