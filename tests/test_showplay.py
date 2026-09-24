@@ -634,3 +634,55 @@ def test_a_cue_with_delay_tables_hands_them_to_the_session(rig):
     # Its lead counts the tables: each board is written twice.
     assert player._lead(show["cues"][1]) > player._lead(
         dict(show["cues"][1], delays={}))
+
+
+# ---- the director's 1 s gap (conductor/timeline.py min_interval/validate) ----
+
+def test_a_refresh_plus_gap_apart_writes_the_next_cue_during_the_previous_repaint(
+        tmp_path):
+    """docs/STATUS.md, 2026-09-24: the next send may follow the previous
+    picture's completion by just the director's 1 s gap. That only works
+    because the unit is not idle for the refresh - _plan()'s branch 1
+    starts preparing (writing the boards for) the next cue the moment it
+    is due, whatever the previous cue is still doing, and a board queues
+    a command that arrives mid-repaint (ui/runner.py, measured 2026-08-14).
+
+    Here writing the 2 boards (1.1 s, save_s below) takes longer than the
+    0.3 s refresh itself, so the second cue's write genuinely starts
+    before the first cue's picture is complete - and it still fires
+    exactly on time, refresh + the 1 s gap after the first cue's send.
+    """
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, save_s=0.5, margin_s=0.1,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        gap = 1.0                                    # the director's minimum
+        show = make_show(sents=(-REFRESH, 0.0, REFRESH + gap), duration=5.0)
+        player.load(show)
+        player.preset()
+        assert wait_until(lambda: player.applied == "q00")
+
+        t0 = time.monotonic() + 0.1
+        player.run(t0)
+        assert wait_until(lambda: player.applied == "q01")
+        fire_q01 = show_times(bus)[1]
+
+        assert wait_until(lambda: player.applied == "q02", timeout=4)
+        fire_q02 = show_times(bus)[2]
+
+        saves = [(frame.dest, frame.data[3], t)
+                for frame, t in zip(bus.log, bus.times) if frame.cmd == SAVE]
+        prepare_q02 = next(t for dest, colour, t in saves
+                           if dest == 1 and colour == 3)
+
+        # It starts writing q02 after q01 actually fired...
+        assert prepare_q02 > fire_q01
+        # ...in fact before q01's own picture is complete: the write and
+        # the repaint overlap, as the director's rule assumes.
+        assert prepare_q02 < fire_q01 + REFRESH
+        # And still fires q02 on time: refresh + the 1 s gap after q01.
+        assert 0 <= fire_q02 - (t0 + REFRESH + gap) < 0.05
+    finally:
+        player.close()
+        runner.stop()

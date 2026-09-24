@@ -108,7 +108,7 @@ def test_a_next_cue_before_the_picture_is_complete_is_a_problem_in_those_words()
     assert any("previous picture is complete" in p and "1:07" in p
               for p in found["b"])
     # It replaces the bus-spacing message for this pair, not adds to it.
-    assert not any("boards need" in p for p in found["b"])
+    assert not any("after the previous" in p for p in found["b"])
     # Comfortably clear of both the overlap and the bus-room rule: no
     # problem at all.
     late["at"] = 72
@@ -131,9 +131,63 @@ def test_clean_drops_align_and_keeps_refresh_s():
 
 
 def test_min_interval_grows_with_the_boards_to_write():
-    assert min_interval(16) == pytest.approx(7 + 3.52 + 3)       # 13.5 s
-    assert min_interval(36) == pytest.approx(7 + 7.92 + 3)       # 17.9 s
-    assert min_interval(16, refresh=16) == pytest.approx(16 + 3.52 + 3)
+    # Refresh-bound: writing 16 boards (4.52 s) is well under refresh + the
+    # director's 1 s gap, so that gap is what binds.
+    assert min_interval(16) == pytest.approx(8.0)
+    # Write-bound: writing 36 boards (8.92 s) now takes longer than the gap.
+    assert min_interval(36) == pytest.approx(36 * 0.22 + 1)      # 8.92 s
+    assert min_interval(16, refresh=16) == pytest.approx(17.0)   # 16 + 1 s gap
+
+
+def test_the_next_refresh_may_start_one_second_after_the_previous_is_complete():
+    # The unit is writing the next cue's boards while the previous one is
+    # still repainting (ui/showplay.py _plan()'s branch 1, ui/runner.py's
+    # queue-during-repaint), so the director's 1 s gap after the picture
+    # completes is all two sends on one unit need - 16 boards' own write
+    # time (4.52 s) is well inside that.
+    items = {"look22": {"item": "Look22", "unit": "radxa-04", "boards": 16,
+                        "designs": {"p1": OK, "p2": OK}}}
+    a = cue("a", "Look22", 60, "p1")               # complete at 67
+    fine = cue("b", "Look22", 68.0, "p2")          # 8.0 s later: 7 s + 1 s gap
+    assert validate([a, fine], items, 600, 7.0)[0]["b"] == []
+    tight = cue("b", "Look22", 67.9, "p2")         # 7.9 s later: 0.1 s short
+    found, _ = validate([a, tight], items, 600, 7.0)
+    assert len(found["b"]) == 1
+    assert "after the previous refresh on radxa-04" in found["b"][0]
+    assert "may start 8 s after it (7 s refresh + 1 s gap)" in found["b"][0]
+
+
+def test_many_boards_are_bound_by_their_write_time():
+    # 36 boards take 8.92 s to write - more than refresh + the 1 s gap -
+    # so writing them, not the director's gap, is what needs the room.
+    items = {"look22": {"item": "Look22", "unit": "radxa-04", "boards": 36,
+                        "designs": {"p1": OK, "p2": OK}}}
+    a = cue("a", "Look22", 60, "p1")
+    b = cue("b", "Look22", 68.5, "p2")             # 8.5 s: short of 8.92 s
+    found, _ = validate([a, b], items, 600, 7.0)
+    assert len(found["b"]) == 1
+    msg = found["b"][0]
+    assert msg.startswith("only ") and "after the previous send on radxa-04" in msg
+    assert "36 boards take 9 s to write" in msg
+    fine = cue("b", "Look22", 69.0, "p2")          # 9.0 s: enough to write them
+    assert validate([a, fine], items, 600, 7.0)[0]["b"] == []
+
+
+def test_a_sweep_adds_its_span_before_the_gap():
+    # A sweep lengthens the previous picture, so its span counts before
+    # the director's gap - not instead of it.
+    items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
+                        "designs": {"g1.csv": {"full": True, "partial": True}}}}
+    swept = cue("a", "Look22", 49, "g1.csv")
+    swept["sweep"] = {"sequence": "top_down", "span_s": 4.0, "source": "cue"}
+    swept["span"] = 4.0                            # complete at 49+7+4 = 60
+    fine = cue("b", "Look22", 61, "g1.csv")         # 12 s later: 7+4+1
+    assert validate([swept, fine], items, 600, 7.0)[0]["b"] == []
+    tight = cue("b", "Look22", 60.5, "g1.csv")      # 11.5 s: short of 12 s
+    found, _ = validate([swept, tight], items, 600, 7.0)
+    assert len(found["b"]) == 1
+    assert ("may start 12 s after it (7 s refresh + 4 s sweep + 1 s gap)"
+           in found["b"][0])
 
 
 def test_a_plain_show_has_no_problems():
@@ -144,27 +198,37 @@ def test_a_plain_show_has_no_problems():
 
 
 def test_refreshes_on_one_unit_need_room():
-    cues = [cue("a", "Look22", 0, "p1"), cue("b", "Look22", 113, "p2"),
-            cue("c", "Look22", 123, "p1")]
-    found, _ = problems(cues)
-    assert found["b"] == []
-    assert len(found["c"]) == 1 and "only 10 s" in found["c"][0]
-    assert "16 boards need 14 s" in found["c"][0]
-    # 20 s apart is enough at 7 s a refresh - and was not at 16 s.
-    cues[2] = cue("c", "Look22", 133, "p1")
-    assert problems(cues)[0]["c"] == []
-    found, _ = validate(cues, ITEMS, 600, refresh=16)
-    assert "only 20 s" in found["c"][0] and "need 23 s" in found["c"][0]
+    # b's picture completes at 107 (7 s refresh); a send from 107 up to
+    # (but not past) 115 is "before the picture is complete", a separate
+    # rule (tested above) - this is about the room a bus needs AFTER that.
+    b = cue("b", "Look22", 100, "p2")
+    tight = cue("c", "Look22", 107.3, "p1")       # 7.3 s after send: too tight
+    found, _ = problems([b, tight])
+    assert len(found["c"]) == 1 and "only 7 s" in found["c"][0]
+    assert "may start 8 s after it (7 s refresh + 1 s gap)" in found["c"][0]
+    # 8 s apart (refresh + the 1 s gap) is enough room at a 7 s refresh -
+    # not at a 16 s one, where that same gap needs 17 s.
+    fine = cue("c", "Look22", 108, "p1")
+    assert problems([b, fine])[0]["c"] == []
+    tight16 = cue("c", "Look22", 116.3, "p1")     # 16.3 s after send
+    found, _ = validate([b, tight16], ITEMS, 600, refresh=16)
+    assert "only 16 s" in found["c"][0]
+    assert "may start 17 s after it (16 s refresh + 1 s gap)" in found["c"][0]
+    fine16 = cue("c", "Look22", 117, "p1")
+    assert validate([b, fine16], ITEMS, 600, refresh=16)[0]["c"] == []
 
 
 def test_the_first_cue_must_leave_time_to_write_the_boards_after_start():
-    # Sent at 0:03 - the preset's refresh ended at 0:00, and 16 boards
-    # take ~3.5 s + margin to write, so 3 s is too tight; 0:33 is fine.
+    # The preset's refresh ends at 0:00 - 16 boards only need 4.5 s to
+    # write, but the director's rule still wants the next send no sooner
+    # than refresh + 1 s gap (8 s) after it: 0.1 s is far too tight, 8 s
+    # exactly is fine.
     found, _ = problems([cue("a", "Look22", 0, "p1"),
-                         cue("b", "Look22", 3, "p2")])
-    assert found["b"] and "only 10 s" in found["b"][0]
+                         cue("b", "Look22", 0.1, "p2")])
+    assert found["b"] and "only 7 s" in found["b"][0]
+    assert "may start 8 s after it (7 s refresh + 1 s gap)" in found["b"][0]
     found, _ = problems([cue("a", "Look22", 0, "p1"),
-                         cue("b", "Look22", 33, "p2")])
+                         cue("b", "Look22", 1, "p2")])
     assert found["b"] == []
 
 
@@ -191,9 +255,10 @@ def test_items_sharing_a_unit_share_its_bus():
     found, _ = problems(same_moment)
     assert found["a"] == found["b"] == []           # one refresh for both
     staggered = [cue("a", "Look20-Top", 53, "t1"),
-                 cue("b", "Look20-Skirt", 63, "s1")]
-    found, _ = problems(staggered)
+                 cue("b", "Look20-Skirt", 59, "s1")]     # 6 s: writing 32
+    found, _ = problems(staggered)                       # boards takes 8 s
     assert "radxa-02" in found["b"][0] and "32 boards" in found["b"][0]
+    assert "previous send" in found["b"][0] and "take 8 s to write" in found["b"][0]
     # Another unit is another bus: no conflict with Look22 ten seconds on.
     found, _ = problems(same_moment + [cue("c", "Look22", 63, "p1")])
     assert found["c"] == []
@@ -239,11 +304,12 @@ def test_a_sweep_lengthens_the_change_and_the_room_after_it():
     # The next refresh on the unit must wait for the sweep too.
     items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
                         "designs": {"g1.csv": {"full": True, "partial": True}}}}
-    # Sent at 49; the bus is busy 7 + 4 s, then 2 boards + margin: 14.44 s.
-    later = cue("b", "Look22", 49 + 14.44 - 1, "g1.csv")     # 1 s short
+    # Sent at 49; the previous cue's picture (7 + 4 s sweep) plus the 1 s
+    # gap is 12 s - more than writing 2 boards would need on its own.
+    later = cue("b", "Look22", 49 + 12 - 1, "g1.csv")     # 1 s short
     problems, _ = validate([swept, later], items, 600, 7.0)
     assert problems["b"] and "sweep" in problems["b"][0]
-    later["at"] = 49 + 14.44 + 1
+    later["at"] = 49 + 12 + 1
     problems, _ = validate([swept, later], items, 600, 7.0)
     assert problems["b"] == []
 

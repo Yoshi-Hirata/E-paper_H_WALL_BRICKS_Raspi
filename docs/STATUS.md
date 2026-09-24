@@ -18,6 +18,45 @@
 
 ## 2. 直近で完成したもの
 
+**Timeline: 次の refresh は前の絵が完成してから 1 秒後でよい(2026-09-24)**
+
+- ディレクターの要望:「Reflesh が終わった後、1 秒後に次のデザインへの refresh に入ることができる
+  ようにしたい」。
+- 旧ルール `min_interval(boards, refresh) = refresh + boards×0.22 s + 3.0 s`(例: 16 枚・refresh 7 s
+  → 13.5 s、36 枚 → 17.9 s、refresh 16 s・16 枚 → 22.5 s)は、次のキューの書き込みが前の絵の完成後に
+  始まる、という前提だった。実際は `ui/showplay.py` の `_plan()` の分岐1が前のキューの送信の瞬間から
+  次のキューの書き込みを始めており(`_lead()` は「遅くともこの時刻までに」であって「早くてもこの
+  時刻から」ではない)、基板は再描画中に届いたコマンドもキューに積んで受け付ける(`ui/runner.py` の
+  SHOW_REPEATS 付近のコメント、2026-08-14 測定)。つまり書き込みは再描画と重なって進んでおり、旧
+  ルールの余裕は refresh 分と書き込み分を単純に足していて二重取りだった。
+- 新ルール: `GAP_AFTER_REFRESH_S = 1.0`(絵の完成から次の送信までのディレクターの最小間隔)、
+  `WRITE_MARGIN_S = 1.0`(書き込み後の余裕)として
+  `min_interval(boards, refresh, gap) = max(refresh + gap, boards×0.22 s + WRITE_MARGIN_S)`(足し算
+  ではなく大きい方)。16 枚・refresh 7 s → 8.0 s(旧 13.5 s)。27 枚 → max(8.0, 6.94)=8.0 s。32 枚 →
+  max(8.0, 8.04)=8.04 s(表示は 8 s)。36 枚 → max(8.0, 8.92)=8.92 s(旧 17.9 s)。refresh 16 s・16 枚
+  → 17.0 s(旧 22.5 s)。`validate()` の 1 台のバス内チェックも同じ式(前のキューがスイープならその
+  span を refresh 側に、次のキューがスイープなら書き込み側を 2 倍)。文言は refresh 側が効くとき
+  「only N s after the previous refresh on UNIT; the next one may start M s after it (R s refresh +
+  G s gap)」、書き込み側が効くとき「only N s after the previous send on UNIT; its B boards take M s
+  to write」。「前の絵が完成する前に次が始まる」という同一アイテム内のルールは変更なし(同じ事実の
+  特別な場合)。
+- 安全と考える理由: 上記の通り書き込みは前の再描画と重なって進み、基板は再描画中のコマンドも
+  キューに積んで受け付ける(2026-08-14 測定)。**ただしこの詰めた間隔は実機(Radxa)でまだ確認して
+  いない**: 再描画中の save が受理されること・絵が正しく仕上がること・「完成 + 1 秒」で確実に発火
+  することを、Radxa が戻り次第、実機で確認する必要がある。
+- `gap` は将来ショーの設定(`show.json` の `gap_s`、0〜30 s・小数点 1 桁、デフォルト 1.0)にして操作
+  側で緩められるようにする予定だが、`timeline.clean()`/`set_timeline()` の配線は `conductor/server.py`
+  にあり今回のセッションでは触れないため、モデル側(`min_interval(..., gap=...)`・
+  `validate(..., gap=...)`、デフォルト `GAP_AFTER_REFRESH_S`)のみ実装した。**TODO: `gap_s` を
+  ショー設定として保存・編集できるようにする server.py 側・ページ側の配線(別セッションで割り当て)。**
+- テスト: `tests/test_timeline.py`(`min_interval` の新しい期待値、新ルールの文言、
+  `test_the_next_refresh_may_start_one_second_after_the_previous_is_complete`・
+  `test_many_boards_are_bound_by_their_write_time`・`test_a_sweep_adds_its_span_before_the_gap` を
+  追加)、`tests/test_conductor_server.py`(`min_interval` の 10.66/19.66 → 8.0/17.0)、
+  `tests/test_showplay.py`(`test_a_refresh_plus_gap_apart_writes_the_next_cue_during_the_previous_repaint`:
+  refresh + 1 s 間隔の 2 キューで、2 枚目の書き込みが 1 枚目の発火後・絵の完成前に始まり、時刻通りに
+  発火することを確認)。
+
 **マップが制作サイトの行ごとの shift を持つように(2026-09-24)**
 
 - 制作サイト(vglabjp.synology.me の配線ページ、csvMap())の実際のルールは「中央セル(穴アドレスに

@@ -35,16 +35,21 @@ last longer than one refresh, by that span. The resolved sweep and the
 seconds it actually adds (which needs the garment's map) come from the
 server, as cue["sweep"] and cue["span"].
 
-What one unit can do bounds the timeline. Before a refresh the unit has
-to write every board (about 0.22 s each, docs/SCALING.md), and nothing
-is sent to a bus that is still refreshing, so two refreshes on the same
-unit need
+What one unit can do bounds the timeline. The director wants at least
+GAP_AFTER_REFRESH_S (1 s) between a picture finishing and the next
+refresh starting - but the unit does not sit idle until then: it starts
+writing the next cue's boards (about 0.22 s each, docs/SCALING.md) the
+moment the previous one is SENT, not when its picture completes, and a
+board queues a command that arrives while it is still repainting
+(measured 2026-08-14, ui/runner.py). So two refreshes on the same unit
+need, between their send times, whichever is larger of
 
-    refresh + boards x 0.22 s + margin
+    refresh + gap                       (the director's minimum), or
+    boards x 0.22 s + WRITE_MARGIN_S    (time to write them all first)
 
-between their send times. Items sharing a unit (Look 20's top and
-skirt) share that budget - unless their cues fall on the same instant,
-which is one refresh for both.
+- see min_interval(). Items sharing a unit (Look 20's top and skirt)
+share that budget - unless their cues fall on the same instant, which
+is one refresh for both.
 
 Pure data in, problems out: no files, no clock, so the rules are
 testable and the web page and the units can both rely on them.
@@ -65,7 +70,12 @@ from .sequence import MAX_DELAY_S, clean_sequence, clean_span
 REFRESH_S = 7.0
 REFRESH_RANGE_S = (1.0, 60.0)
 SAVE_S_PER_BOARD = 0.22    # stop + save, measured
-MARGIN_S = 3.0
+# The director's minimum from "picture complete" to the next send
+# (2026-09-24: "Reflesh が終わった後、1 秒後に次のデザインへの refresh に
+# 入ることができるようにしたい") - a show setting one day (gap_s), taken
+# as an argument here meanwhile, same as refresh.
+GAP_AFTER_REFRESH_S = 1.0
+WRITE_MARGIN_S = 1.0      # slack after the last board's write before the send
 DEFAULT_DURATION_S = 600.0
 
 _CLOCK = re.compile(r"^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)\s*$")
@@ -93,9 +103,14 @@ def format_clock(seconds: float) -> str:
     return f"{sign}{total // 60}:{total % 60:02d}"
 
 
-def min_interval(boards: int, refresh: float = REFRESH_S) -> float:
-    """Seconds one unit needs between the send times of two refreshes."""
-    return refresh + boards * SAVE_S_PER_BOARD + MARGIN_S
+def min_interval(boards: int, refresh: float = REFRESH_S,
+                 gap: float = GAP_AFTER_REFRESH_S) -> float:
+    """Seconds one unit needs between the send times of two refreshes:
+    long enough after the previous picture completes (refresh + gap), or
+    long enough to write every board first if that takes longer -
+    whichever binds. The two are not added: the write happens while the
+    previous refresh is still under way, not after it."""
+    return max(refresh + gap, boards * SAVE_S_PER_BOARD + WRITE_MARGIN_S)
 
 
 def span_of(cue: dict) -> float:
@@ -232,7 +247,8 @@ def apply_transitions(cues: "list[dict]", transitions: dict) -> None:
 
 def validate(cues: "list[dict]", items: "dict[str, dict]",
              duration: float = DEFAULT_DURATION_S,
-             refresh: float = REFRESH_S) -> "tuple[dict, list[str]]":
+             refresh: float = REFRESH_S,
+             gap: float = GAP_AFTER_REFRESH_S) -> "tuple[dict, list[str]]":
     """({cue id: [problems]}, [warnings about the whole show]).
 
     `items` maps the lower-cased item name to
@@ -310,27 +326,39 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
     for unit, unit_cues in by_unit.items():
         boards = sum(item["boards"] for item in items.values()
                      if (item.get("unit") or f"({item['item']})") == unit)
-        need = min_interval(boards, refresh)
         unit_cues.sort(key=lambda c: times(c, refresh)[0])
         previous = before = None
         for cue in unit_cues:
             sent = times(cue, refresh)[0]
             if previous is not None and sent != previous:
-                # The previous change occupies the bus for its own span,
-                # and a sweep has its delay tables to write as well.
-                gap = sent - previous
-                extra = span_of(before) + (
-                    boards * SAVE_S_PER_BOARD if sweeps(cue) else 0.0)
+                spacing = sent - previous
+                # Either bound may bind: the director's gap after the
+                # previous picture completes (its own refresh, plus a
+                # sweep's span, if it had one) - or the time to write
+                # every board, doubled when this cue sweeps and needs
+                # its delay tables written too.
+                refresh_term = refresh + span_of(before) + gap
+                write_term = (boards * SAVE_S_PER_BOARD
+                             * (2 if sweeps(cue) else 1) + WRITE_MARGIN_S)
+                need = max(refresh_term, write_term)
                 same_item = (before is not None
                             and cue["item"].lower() == before["item"].lower())
-                if gap < need + extra and not (
+                if spacing < need and not (
                         same_item and cue["id"] in overlapped):
-                    problems[cue["id"]].append(
-                        f"only {gap:.0f} s after the previous refresh on {unit}; "
-                        f"its {boards} boards need {need + extra:.0f} s "
-                        f"({refresh:.0f} s refresh"
-                        + (f" + {span_of(before):.0f} s sweep" if span_of(before)
-                           else "") + " + writing the boards)")
+                    if refresh_term >= write_term:
+                        detail = f"{refresh:.0f} s refresh"
+                        if span_of(before):
+                            detail += f" + {span_of(before):.0f} s sweep"
+                        detail += f" + {gap:.0f} s gap"
+                        problems[cue["id"]].append(
+                            f"only {spacing:.0f} s after the previous refresh "
+                            f"on {unit}; the next one may start "
+                            f"{need:.0f} s after it ({detail})")
+                    else:
+                        problems[cue["id"]].append(
+                            f"only {spacing:.0f} s after the previous send "
+                            f"on {unit}; its {boards} boards take "
+                            f"{need:.0f} s to write")
             previous, before = sent, cue
 
     for key, item in sorted(items.items()):
