@@ -284,3 +284,47 @@ Raspberry Pi Zero 2 W ──USB CDC── 基板 ID:1 ──4芯(TTL UART)──
 - **20 枚構成の検討は [SCALING.md](SCALING.md)**。電源が唯一の明確な障壁で、
   バス構成の実測(3 枚目を足す)が最優先。ソフトは 1 枚の不通で全枚が
   止まる点(7.1)の改修が要る
+
+## 12. 演出家向けシミュレーター(designer sim)まわりの開発
+
+`docs/DESIGNER_SIMULATOR_PLAN.md` の方式 A(単一 HTML・サーバー不要)で作った、
+`conductor/web/sim/*.js`(Python の `look.py`/`sequence.py`/`timeline.py` を JS へ
+移植したもの)と、生成物を配布用に固めた `dist/az27ss-simulator.html` の話。使い方は
+[SIMULATOR_FOR_DESIGNERS.md](SIMULATOR_FOR_DESIGNERS.md)(演出家向け、日本語)。
+
+### 12.1 生成物を作り直すコマンド
+
+生成物はどれもリポジトリにコミットされる(演出家が git を持たないため、
+`dist/az27ss-simulator.html` はビルド抜きでダブルクリックできる状態で置いてある)。
+中身を直したら、対応するコマンドで作り直してからコミットする。`--check` は
+作り直さずに「最新かどうか」だけを確認するモード(CI・テストが使う)。
+
+| コマンド | 何を作るか | いつ走らせるか |
+|---|---|---|
+| `python tools/make_goldens.py` | `tests/goldens/model.json` と `conductor/web/sim/goldens.js`(Python 版 `look.py`/`sequence.py`/`timeline.py` の答え合わせ用) | `tests/fixtures/sim/*.csv` を足す/変えたとき、Python 側の該当モジュールを変えたとき |
+| `python tools/make_starter.py` | `conductor/web/sim/starter.js`(`conductor/web/starter/*.csv` を JS の定数に固めたもの。初回起動時の既定データ) | `conductor/web/starter/*.csv` を足す/変えたとき |
+| `python tools/build_designer.py` | `dist/az27ss-simulator.html`(`conductor/web/designer.html` と `conductor/web/sim/*.css/*.js` を 1 個の HTML に inline したもの。`--no-starter` で初期データ抜きのビルドも作れる) | `conductor/web/designer.html`・`conductor/web/sim/*` のいずれかを変えたとき(上の 2 つを先に作り直してから) |
+
+3 つとも `--check` モードで「コミットされているものと同じか」を確認できる
+(`tests/test_sim_goldens.py::test_goldens_are_current`、
+`tests/test_designer_build.py::test_build_is_current`)。**生成物を手で直接編集しない**
+- 次にジェネレータを走らせた人が黙って上書きする。
+
+### 12.2 `conductor/web/index.html` を直すときのチェックリスト(共有ロジックとの食い違い防止)
+
+本番オペレーター用の `conductor/web/index.html` と、演出家用の `conductor/web/sim/*.js`
+(`render.js`/`flicker.js`/`looks.js`)は、**見た目の計算(ガーメントの描画・書き換え中の
+チラつきの色)を独立に持っている**(index.html 側はこのラウンドではリファクタしていない)。
+index.html の該当箇所を直したときは:
+
+1. `PITCH`・`MARGIN`・`JITTER_MAX`・`TINT_STEPS`・`REFRESH_TINT`・`REFRESH_PHASE_A`・
+   `REFRESH_PALETTE`・`REFRESH_PHASE_C` のいずれかの数値/配色を変えたら、
+   `conductor/web/sim/render.js`・`flicker.js` 側の同名定数も同じ値に変える
+   (`tests/test_designer_build.py::test_shared_constants_match_index_html` が両ファイルから
+   正規表現で値を抜き出して一致を見る - 直し忘れるとここで落ちる)
+2. 描画・チラつきの**アルゴリズム自体**(`renderGarment`/`wornAt`/`refreshPhaseColor` 相当)を
+   変えたときは、`conductor/web/sim/*.js` の該当関数(ファイル先頭のコメントに
+   「index.html のどの行から移植したか」が書いてある)も同じロジックに直す。片方だけ直すと、
+   ショー PC の画面とシミュレーターで書き換え中の見え方が食い違う
+3. 直したら `python tools/build_designer.py` を実行して `dist/az27ss-simulator.html` を
+   作り直し、`python -m pytest tests/test_designer_build.py tests/test_sim_goldens.py` を通す

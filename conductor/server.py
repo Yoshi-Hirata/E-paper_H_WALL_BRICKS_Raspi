@@ -54,6 +54,8 @@ BOARD_NO_MAX = 9999
 NUMBER_BRAND = 0x03        # the device type the units' UI sends (ui/patterns.py)
 SHOW_FORMAT = "epaper-show"
 SHOW_FORMAT_VERSION = 1
+BUNDLE_FORMAT = "epaper-show-bundle"      # the designers' simulator export
+BUNDLE_FORMAT_VERSION = 1
 DEMO_NAME_MAX = 14        # the unit's LCD menu row
 # The unit's LCD font (ui/render.py, DejaVu) has no Japanese glyphs, so a
 # demo's name must be plain ASCII the unit can actually draw - the same
@@ -687,6 +689,57 @@ class Workspace:
                                     "is not in this workspace")
         return len(cues or []), warnings
 
+    def import_bundle(self, payload: dict) -> dict:
+        """The designers' project file (conductor/web/sim's "Save
+        project..."): their CSVs and their timeline in one file. The CSVs
+        save first, the same as /api/files (a bad name is refused, not
+        fatal); the timeline then replaces itself exactly as
+        import_show() does - one _commit - except that a bundle with no
+        unit assignments of its own (the normal case: the designers'
+        simulator never has any) leaves the operator's assignments here
+        untouched instead of wiping them to {}.
+
+        The bundle's own "music" entry is a name only, same as the show
+        file's - the actual bytes always travel by hand and are picked
+        again on this machine (docs/SIMULATOR_FOR_DESIGNERS.md), so this
+        never touches self.music; the name is only handed back for the
+        page's toast.
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("not a bundle file")
+        if payload.get("format") != BUNDLE_FORMAT:
+            raise ValueError(f"not a bundle file (format {payload.get('format')!r}, "
+                             f"want {BUNDLE_FORMAT!r})")
+        if payload.get("version") != BUNDLE_FORMAT_VERSION:
+            raise ValueError(f"bundle file version {payload.get('version')!r} "
+                             f"is not supported (want {BUNDLE_FORMAT_VERSION})")
+        show = payload.get("show")
+        if not isinstance(show, dict):
+            raise ValueError("bundle: show must be an object")
+        files = payload.get("files") or {}
+        if not isinstance(files, dict):
+            raise ValueError("bundle: files must be an object")
+        saved: "list[str]" = []
+        refused: "list[str]" = []
+        for name in sorted(files):
+            text = files[name]
+            if not isinstance(name, str) or not isinstance(text, str):
+                raise ValueError("bundle: files must be name -> text")
+            try:
+                saved.append(self.save(name, text))
+            except ValueError as exc:
+                refused.append(str(exc))
+        show = dict(show)
+        units_kept = not show.get("units")
+        if units_kept:
+            show.pop("units", None)
+        cues, warnings = self.import_show(show)
+        music = payload.get("music")
+        return {"ok": True, "saved": saved, "refused": refused,
+                "cues": cues, "warnings": warnings,
+                "units_kept": units_kept,
+                "music": music.get("name") if isinstance(music, dict) else None}
+
     # ---- files ----
 
     @staticmethod
@@ -1264,6 +1317,8 @@ class Handler(BaseHTTPRequestHandler):
                 cues, warnings = self.workspace.import_show(body)
                 return self._json({"ok": True, "cues": cues,
                                    "warnings": warnings})
+            if self.path == "/api/bundle/import":
+                return self._json(self.workspace.import_bundle(body))
             if self.path == "/api/transition":
                 self.workspace.set_transition(body.get("design", ""),
                                               body.get("sequence", "natural"),

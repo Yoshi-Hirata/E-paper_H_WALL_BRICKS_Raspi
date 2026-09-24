@@ -18,6 +18,36 @@
 
 ## 2. 直近で完成したもの
 
+**Conductor 側: 演出家のシミュレーターから「まるごとプロジェクト」を読み込む Load bundle…(2026-09-24)**
+
+- 演出家チーム向けシミュレーター(単一 HTML・サーバー不要、`docs/DESIGNER_SIMULATOR_PLAN.md`)が
+  書き出す `epaper-show-bundle` v1(CSV 一式 + タイムラインを 1 個の JSON にまとめたもの)を、
+  Conductor 側で受け取れるようにした。Timeline タブの「Load show…」の隣に「Load bundle…」を
+  追加(`conductor/web/index.html`。確認ダイアログは「デザイナーから送られたプロジェクトを
+  読み込みますか。CSV はワークスペースに追加され、タイムラインは今のものと置き換わります。
+  機体の割り当てはそのまま残ります」の趣旨)。
+- **`Workspace.import_bundle(payload)`**(新規、`conductor/server.py`): フォーマット/バージョンを
+  検証 → CSV を `POST /api/files` と同じ規則で保存(`*_map.csv` / `*_color_*_grid.csv` 以外は
+  refused に積むだけで処理は続ける) → `show = dict(payload["show"])` から `units` が空(演出家の
+  シミュレーターには機体という概念が無いので通常はこちら)なら `units` キーごと外してから
+  `import_show()` に渡す。**タイムラインの置き換えは `import_show()` と同じ 1 コミット**
+  (CSV の保存自体は show.json の undo 対象外 - `/api/files` と同じ扱い)。**現場の機体割り当ては、
+  バンドル側が自分の割り当てを運んできたときだけ上書きし、それ以外は一切触らない**
+  (戻り値の `units_kept` で判定結果を返す)。音楽はバンドルでも名前だけの参考情報 - 実体は
+  シミュレーター側の制約と同じくこのマシンで毎回選び直す。
+- **`POST /api/bundle/import`**(新規): `/api/show/import` の直後に追加。同じ例外タプルで
+  壊れた JSON(`{"show": null}` 等)も 500 ではなく 400 になる。
+- レスポンス: `{"ok","saved","refused","cues","warnings","units_kept","music"}`。
+- テスト `tests/test_bundle.py`(11 件): CSV 保存とタイムライン反映、機体割り当てを維持する
+  ケースとバンドル側の割り当てが勝つケース、undo が 1 手で完全に戻ること(CSV は戻らない)、
+  フォーマット/バージョン/ファイル名が悪いときの拒否、バンドル自身が運んできた CSV を同じ
+  取り込みの中で警告チェックが見つけられること、既存の `/api/show/import` が無傷であること
+  を確認。P 担当の `tests/fixtures/sim/bundle_v1.json` はこのコミットの時点でまだ存在しない
+  ため、`tests/test_look.py` の MAP/GRID から手作りした最小バンドルで代用(存在すればそちらを
+  優先して読む実装済み - 後で置かれれば自動的に切り替わる)。
+- デザイナー向けの使い方(開き方・CSV の入れ方・mm.ss・保存と受け渡し・制限)は日本語で
+  `docs/SIMULATOR_FOR_DESIGNERS.md` に。
+
 **Timeline: 1 秒 gap ルールをレビューで修正 - 本体の準備時間より詰めない(2026-09-24)**
 
 - ディレクターの要望:「Reflesh が終わった後、1 秒後に次のデザインへの refresh に入ることができる

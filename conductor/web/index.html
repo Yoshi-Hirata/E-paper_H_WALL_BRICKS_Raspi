@@ -1029,6 +1029,7 @@ function renderTimeline() {
       <div class="group">
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
         <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
+        <label class="filebtn" title="Load a project sent by the designers: their CSVs are added to the workspace and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
         hatched = refreshing · solid = held until End · Esc deselects</div>
@@ -1417,6 +1418,25 @@ async function loadShowFile(file) {
     const result = await api("/api/show/import", data);
     if (result?.error) toast(result.error);
     else toast(`Loaded ${file.name}: ${result.cues ?? 0} cue(s)` + (result.warnings?.length ? " · " + result.warnings.join(" · ") : ""));
+  } catch (err) { toast("Import failed: " + err.message); }
+  await refresh();
+}
+async function loadBundleFile(file) {
+  if (!file) return;
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { toast("Not a bundle file"); return; }
+  if (!data || data.format !== "epaper-show-bundle") { toast("Not a bundle file"); return; }
+  if (!confirm(`Load the project ${file.name} sent by the designers? Their CSVs are added to the workspace and their timeline replaces the current one. The unit assignments here are kept.`)) return;
+  if (ui.playing) stopPlayback(false);
+  try {
+    const result = await api("/api/bundle/import", data);
+    if (result?.error) toast(result.error);
+    else {
+      const bits = [`${result.cues ?? 0} cue(s)`, `${result.saved?.length ?? 0} file(s) saved`];
+      if (result.refused?.length) bits.push(`${result.refused.length} refused`);
+      if (result.music) bits.push(`music: ${result.music} (pick the audio again)`);
+      toast(`Loaded ${file.name}: ` + bits.join(" · ") + (result.warnings?.length ? " · " + result.warnings.join(" · ") : ""));
+    }
   } catch (err) { toast("Import failed: " + err.message); }
   await refresh();
 }
@@ -2121,6 +2141,7 @@ document.addEventListener("change", async e => {
   else if (id === "pick-own") { uploadOwn(itemByKey(ui.item), e.target.files); e.target.value = ""; }
   else if (id === "tp-music-load" || id === "tp-music-replace") { const f = e.target.files[0]; e.target.value = ""; await uploadMusic(f); }
   else if (id === "tl-load-show") { const f = e.target.files[0]; e.target.value = ""; await loadShowFile(f); }
+  else if (id === "tl-load-bundle") { const f = e.target.files[0]; e.target.value = ""; await loadBundleFile(f); }
   else if (id === "duration") {
     const seconds = parseClock(e.target.value);
     if (seconds === null || seconds < 1) { toast("Enter the length as m:ss"); renderTimeline(); return; }
