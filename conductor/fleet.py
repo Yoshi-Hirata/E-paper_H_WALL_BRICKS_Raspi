@@ -330,6 +330,8 @@ class Fleet:
 
     def upload(self, shows: "dict[str, dict]") -> "dict[str, dict]":
         def action(link):
+            if self._playing_demo(link):
+                raise RuntimeError("playing a demo - press STOP first")
             status = link.post("/show/load", shows[link.name])
             return {"show": (status.get("show") or {}).get("id")}
         results = self._each(list(shows), action)
@@ -546,6 +548,7 @@ class Fleet:
         with self._run_lock:
             self._may_adopt, self._stopped = False, True
             self._stop_told = set()
+            self._demo_told = set()     # the next demo episode is announced again
             self.run = None
             self.start_at = 0.0
             self._run_gen += 1
@@ -566,7 +569,12 @@ class Fleet:
             # The operator stopped the show; a unit that was out of reach
             # then and still runs it has to be told now.
             if (stopped and unit.get("state") in ("running", "holding")
-                    and link.name not in self._stop_told):
+                    and link.name not in self._stop_told
+                    and not self._playing_demo(link)):
+                # A demo that started AFTER the STOP is not a missed STOP:
+                # someone pressed KEY1 on the unit on purpose (found in the
+                # final review - the first demo after every STOP used to
+                # be killed within a poll, the second one survived).
                 # Once per unit and STOP: a unit that missed it. One that
                 # runs again after that was started by someone, on purpose.
                 self._stop_told.add(link.name)

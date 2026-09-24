@@ -570,8 +570,11 @@ class ShowPlayer:
                 if action is not None:
                     self._send(*action)
             except RemoteError as exc:
+                # A refused prepare (the session holds a cue about to
+                # fire, or the unit is busy): look again next tick, not a
+                # second later - a second is most of a cue's lead.
                 self.note = str(exc)
-                wait = 1.0
+                wait = self.tick_s
             except Exception as exc:        # noqa: BLE001 - never die mid-show
                 self.note = f"player error: {exc}"
             self._wake.wait(wait)

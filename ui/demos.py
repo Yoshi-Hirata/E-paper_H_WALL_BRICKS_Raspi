@@ -51,6 +51,9 @@ def slugify(name: str) -> str:
 class DemoStore:
     def __init__(self, root: "Path | None" = None):
         self.root = Path(root) if root is not None else STORE / "demos"
+        # Slugs whose sidecar could not be (re)built: skipped until the
+        # process restarts, instead of being re-parsed on every listing.
+        self._unreadable: "set[str]" = set()
 
     # ---- disk ----
 
@@ -94,19 +97,25 @@ class DemoStore:
         """A "<slug>.json" whose sidecar is missing (an older write, or
         one that lost it) is re-derived once rather than left invisible
         to the menu and to /demo/list."""
+        if slug in self._unreadable:
+            return None             # tried once already; not every 2 s
         try:
             data = json.loads(self._path(slug).read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            self._unreadable.add(slug)
             return None
-        show = data.get("show")
-        if not isinstance(data, dict) or not isinstance(show, dict):
+        if not isinstance(data, dict) or not isinstance(data.get("show"), dict):
+            self._unreadable.add(slug)
             return None
+        show = data["show"]
         meta = self._meta_of(slug, data.get("name", slug), show,
                              bool(data.get("loop")), data.get("saved_at"))
         try:
             self._write(self._meta_path(slug), meta)
         except OSError:
-            pass                    # still returned below for this listing
+            # Remembered, so a full SD card does not make every /status
+            # poll re-parse the whole show file for ever.
+            self._unreadable.add(slug)
         return meta
 
     def _entries(self) -> "list[dict]":
@@ -156,17 +165,29 @@ class DemoStore:
             self._write(self._meta_path(slug),
                        self._meta_of(slug, name, show, loop, saved_at))
         except OSError as exc:
+            # Whole or not at all: a show file without its sidecar would
+            # be re-parsed on every listing and listed as if it were fine.
+            for stale in (self._path(slug), self._meta_path(slug)):
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
             raise RemoteError(f"could not write the demo: {exc}") from exc
+        self._unreadable.discard(slug)
         return slug
 
     def delete(self, slug: str) -> None:
         path = self._path(slug)
         if not path.is_file():
             raise RemoteError(f"no such demo: {slug}")
-        path.unlink()
-        meta = self._meta_path(slug)
-        if meta.is_file():
-            meta.unlink()
+        try:
+            path.unlink()
+            meta = self._meta_path(slug)
+            if meta.is_file():
+                meta.unlink()
+        except OSError as exc:
+            raise RemoteError(f"could not delete the demo: {exc}") from exc
+        self._unreadable.discard(slug)
 
     def load(self, slug: str) -> dict:
         path = self._path(slug)

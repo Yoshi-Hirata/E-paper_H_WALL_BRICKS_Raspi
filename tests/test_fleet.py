@@ -836,3 +836,40 @@ def test_start_show_reports_a_demo_unit_as_not_started():
     results = fleet.start_show(lead_s=1.0)
     assert not results["radxa-01"]["ok"]
     assert "playing a demo" in results["radxa-01"]["error"]
+
+
+def test_a_demo_started_after_the_stop_is_not_a_missed_stop():
+    """Rehearsal: STOP on the PC, then KEY1 on a demo row at the unit. The
+    catch-up for units that missed the STOP must not kill that demo (it
+    did, once per unit and STOP - the second try survived)."""
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-02", "running")
+    fleet.links = {"radxa-02": link}
+    fleet.shows = {"radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.start_show(lead_s=1.0)
+    fleet.stop_show()
+    link.posted.clear()
+    link.status["show"].update({"demo": True, "demo_name": "DEMO PARIS"})
+    for _ in range(3):
+        fleet._corrected.clear()
+        fleet._supervise(link)
+    assert link.posted == []                        # left alone
+    link.status["show"].update({"demo": False})     # now a real missed STOP
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert link.posted == [("/show/stop", {})]
+
+
+def test_upload_refuses_a_unit_playing_a_demo_like_start_does():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    busy = StubLink("radxa-02", "running")
+    busy.status["show"].update({"demo": True, "demo_name": "DEMO PARIS"})
+    idle = StubLink("radxa-03", "loaded")
+    fleet.links = {"radxa-02": busy, "radxa-03": idle}
+    results = fleet.upload({"radxa-02": {"id": "s2", "cues": [], "duration": 60},
+                            "radxa-03": {"id": "s3", "cues": [], "duration": 60}})
+    assert results["radxa-02"]["ok"] is False
+    assert "playing a demo" in results["radxa-02"]["error"]
+    assert results["radxa-03"]["ok"] is True
+    assert busy.posted == [] and idle.posted[0][0] == "/show/load"
+

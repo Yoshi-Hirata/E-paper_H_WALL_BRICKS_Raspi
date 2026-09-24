@@ -40,10 +40,11 @@ pull, no firmware. On the show's own router that is enough; a shared
 network can set a token (--remote-token), which every request must then
 carry as X-Show-Token.
 
-Clock: time.monotonic(), stamped as late as possible before the answer
-is written. The PC takes the round trip's midpoint as "when the unit
-said so" (the NTP idea), and the smallest round trip of a few tries
-bounds the error to a few milliseconds on a quiet WLAN.
+Clock: time.monotonic(), stamped FIRST in status(), before anything
+with a variable cost (the demo listing, the log) - so that cost cannot
+leak into the reading. The PC takes the round trip's midpoint as "when
+the unit said so" (the NTP idea), and the smallest round trip of a few
+tries bounds the error to a few milliseconds on a quiet WLAN.
 """
 
 from __future__ import annotations

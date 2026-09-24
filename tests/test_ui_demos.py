@@ -581,3 +581,32 @@ def test_restore_of_a_demo_clears_is_demo_and_never_auto_resumes(tmp_path):
     finally:
         player.close()
         runner.stop()
+
+
+def test_a_foreign_json_file_in_the_store_is_skipped_not_fatal(tmp_path):
+    """A `*.json` that is not an object (null, a list) must not raise out of
+    list() - that path runs on every /status poll and every LCD tick."""
+    store = DemoStore(tmp_path)
+    (tmp_path / "junk.json").write_text("null", encoding="utf-8")
+    (tmp_path / "other.json").write_text("[1, 2]", encoding="utf-8")
+    assert store.list() == []
+    assert store.list() == []          # remembered, not re-parsed each time
+    assert store._unreadable == {"junk", "other"}
+
+
+def test_a_save_whose_sidecar_fails_leaves_nothing_behind(tmp_path, monkeypatch):
+    store = DemoStore(tmp_path)
+    real_write = store._write
+    calls = []
+
+    def flaky(path, payload):
+        calls.append(path.name)
+        if path.name.endswith(".meta.json"):
+            raise OSError(28, "No space left on device")
+        real_write(path, payload)
+    monkeypatch.setattr(store, "_write", flaky)
+    with pytest.raises(RemoteError):
+        store.save("DEMO PARIS", make_show())
+    assert list(tmp_path.glob("*.json")) == []     # whole or not at all
+    assert store.list() == []
+

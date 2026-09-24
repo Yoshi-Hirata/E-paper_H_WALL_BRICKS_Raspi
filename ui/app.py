@@ -537,7 +537,16 @@ class App:
                   and self._clock() - self._demo_ended_at >= LOOP_GAP_S):
                 self._demo_ended_at = None
                 if not self._loop_demo_show():
-                    self._stop_demo()       # e.g. the session went busy
+                    if player.is_demo:
+                        self._stop_demo()   # e.g. the session went busy
+                    else:
+                        # The PC took the player between the check above
+                        # and the lap: releasing the session now would
+                        # tear down ITS show. Just let go of the demo.
+                        self._playing_demo = None
+                        self._demo_ended_at = None
+                        self.screen = Screen.MENU
+                        self._dirty = True
         else:
             self._demo_ended_at = None
 
