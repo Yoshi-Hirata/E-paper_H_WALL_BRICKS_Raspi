@@ -247,6 +247,11 @@ body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-ev
      (see syncDockSpacing()); the 150px fallback only covers the first paint. */
   #tl-editor-card { position: sticky; top: 12px; max-height: calc(100vh - 24px - var(--tl-dock-h, 150px));
     overflow-y: auto; }
+  /* In the 400px side column the explanation goes UNDER the controls,
+     not squeezed beside them into a one-word-per-line ribbon. */
+  #tl-editor-card .cue-row { grid-template-columns: 76px minmax(0, 1fr); }
+  #tl-editor-card .cue-row .why { grid-column: 2; margin-top: -2px; }
+  #tl-editor-card .cue-computed { grid-column: 2; }
 }
 .card-head-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
 .card-head-toggle h2 { margin: 0; }

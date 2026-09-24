@@ -18,6 +18,19 @@
 
 ## 2. 直近で完成したもの
 
+**Timeline の組み立て直し: 下部ドック・横並び EDIT CUE・EDIT CUE からデザインの遷移を編集(2026-09-24)**
+
+- 1366×768 でキューを選ぶと THE LOOKS AT が y=890(画面外)まで押し下げられていた。THE LOOKS AT を
+  `#tl-dock`(position: fixed、下端)にし、compact(≈167 px、ルック枠 90 px)/ collapsed(≈44 px)/
+  Simulator view(全画面)の 3 状態。`ui.dock` を localStorage `tl.dock` に保存。`#content` の下余白と
+  `--tl-dock-h` は実測(`syncDockSpacing()`)。
+- `#tl-editing` は 1400 px 以上で `minmax(0,1fr) 400px` のグリッド、EDIT CUE(`#tl-editor-card`)は
+  sticky・最大高さはドックの上まで。見出しクリックで折りたたみ(`ui.editorOpen`)、Esc で選択解除。
+  側面カラムでは各行の説明文をコントロールの下に回す。
+- EDIT CUE の Transition 行を Refresh 行と同じラジオ対に: 「this design」は Designs タブと同じ
+  `POST /api/transition`(同じ data-tr-seq/data-tr-span 属性で既存ハンドラを共用)、「this cue only」は
+  従来の custom。どちらで変えても `refresh()` 後に両タブ・CUES 表・シミュレーターが揃う。
+
 **UI の 16 色を実機見本色に(2026-09-24)**
 
 - 制作サイト(vglabjp.synology.me)の色表が `PAL_VER 260921`「表示色 = 実機見本(肉眼)色」に更新された
