@@ -55,6 +55,7 @@ JUMP_S = 0.5               # an offset moving more than this = a reboot
 DEFAULT_LEAD_S = 3.0
 T0_TOLERANCE_S = 0.05      # a unit's T0 further off than this is corrected
 SUPERVISE_EVERY_S = 3.0    # at most one correction per unit in this time
+DEMO_SAVE_TIMEOUT_S = TIMEOUT_S * 4    # /demo/save includes an eMMC write
 
 # The PC's reference clock. Not time.monotonic(): on Windows that ticks
 # every 15.6 ms (measured 2026-09-21: round trips of exactly 0, 15 or
@@ -162,25 +163,36 @@ class UnitLink:
         self._learn(payload, sent, received)
         return True
 
-    def post(self, path: str, body: dict) -> dict:
-        """A command, on a connection of its own (any thread may call)."""
-        conn = self._connect(self._timeout * 2)
+    def post(self, path: str, body: dict, learn: bool = True,
+             timeout: "float | None" = None) -> dict:
+        """A command, on a connection of its own (any thread may call).
+        `learn=False` skips feeding this round trip into the clock model:
+        a reply whose timing has nothing to do with the network (writing
+        a demo to eMMC, say) would poison the offset with a false "slow
+        path". `timeout` overrides the usual 2x poll timeout for a
+        command known to run long."""
+        conn = self._connect(timeout if timeout is not None
+                             else self._timeout * 2)
         try:
             payload, sent, received = self._exchange(conn, "POST", path, body)
         finally:
             conn.close()
-        self._learn(payload, sent, received)
+        if learn:
+            self._learn(payload, sent, received)
         return payload
 
-    def get(self, path: str) -> dict:
+    def get(self, path: str, learn: bool = True,
+            timeout: "float | None" = None) -> dict:
         """A read, on a connection of its own - the same shape as post(),
         for a GET that is not the polled /status (e.g. /demo/list)."""
-        conn = self._connect(self._timeout * 2)
+        conn = self._connect(timeout if timeout is not None
+                             else self._timeout * 2)
         try:
             payload, sent, received = self._exchange(conn, "GET", path)
         finally:
             conn.close()
-        self._learn(payload, sent, received)
+        if learn:
+            self._learn(payload, sent, received)
         return payload
 
     # ---- what is known ----
@@ -257,6 +269,10 @@ class Fleet:
         self._may_adopt = True
         self._stopped = False
         self._stop_told: "set[str]" = set()    # told once; not a tug of war
+        # Units currently left alone because they play their own demo -
+        # said once per episode (added when the demo starts, dropped the
+        # moment it is not running/holding any more), never every poll.
+        self._demo_told: "set[str]" = set()
         self._corrected: "dict[str, float]" = {}
         self.corrections: "list[str]" = []
 
@@ -334,18 +350,25 @@ class Fleet:
         upload() sends via /show/load) to /demo/save under `name`, so the
         unit can play it from its own menu, on its own clock, without
         this PC. Only the units named in `shows` are written to - exactly
-        upload()'s own targets."""
+        upload()'s own targets. `learn=False`: a write includes an eMMC
+        save on the unit's side, and its own longer timeout - neither
+        belongs anywhere near the clock-offset model."""
         def action(link):
             result = link.post("/demo/save", {"name": name, "loop": bool(loop),
-                                               "show": shows[link.name]})
+                                               "show": shows[link.name]},
+                               learn=False, timeout=DEMO_SAVE_TIMEOUT_S)
             return {"slug": result.get("slug")}
         return self._each(list(shows), action)
 
     def list_demos(self) -> "dict[str, dict]":
         """Per unit: {"ok": True, "demos": [...]} from a GET /demo/list,
-        or {"ok": False, "error": ...} for one offline or that refused -
-        every configured unit, not just those with a show uploaded (a
-        demo written earlier outlives this conductor's own upload)."""
+        or {"ok": False, "error": "offline"} for an unreachable one, or
+        {"ok": False, "error": <the unit's own message>} for one that
+        answered but refused (e.g. an older agent with no /demo/list at
+        all) - every configured unit, not just those with a show
+        uploaded (a demo written earlier outlives this conductor's own
+        upload). The server tells the two failure kinds apart by the
+        exact "offline" text."""
         def action(link):
             if not link.online:
                 raise RuntimeError("offline")
@@ -353,11 +376,25 @@ class Fleet:
         return self._each(list(self.links), action)
 
     def delete_demo(self, slug: str) -> "dict[str, dict]":
-        """POST /demo/delete on every configured unit."""
+        """POST /demo/delete on every configured unit that is online -
+        the same "offline" sentinel and skip as list_demos(), instead of
+        waiting out a real unit's connection timeout for a delete that
+        could not land anyway."""
         def action(link):
-            result = link.post("/demo/delete", {"slug": slug})
+            if not link.online:
+                raise RuntimeError("offline")
+            result = link.post("/demo/delete", {"slug": slug}, learn=False)
             return {"demos": result.get("demos")}
         return self._each(list(self.links), action)
+
+    @staticmethod
+    def _playing_demo(link: "UnitLink") -> bool:
+        """True only while this unit is actually running or holding its
+        own standalone demo - not merely one it once played and has
+        since stopped, ended, or gone back to its menu."""
+        unit = (link.status or {}).get("show") or {}
+        return bool(unit.get("demo")) and unit.get("state") in ("running",
+                                                                 "holding")
 
     def _send_run(self, names) -> "dict[str, dict]":
         with self._run_lock:
@@ -375,6 +412,11 @@ class Fleet:
             self._corrected[name] = self._clock()
 
         def action(link):
+            if self._playing_demo(link):
+                # The unit itself would refuse /show/run while its own
+                # demo runs - said here too, so START/SEEK/RESUME/NEXT
+                # never even try, and the operator sees exactly why.
+                raise RuntimeError("playing a demo - press STOP first")
             offset = link.offset
             if offset is None:
                 raise RuntimeError("clock not measured yet")
@@ -537,14 +579,24 @@ class Fleet:
         show = self.shows.get(link.name)
         if show is None or link.offset is None:
             return
-        if unit.get("demo"):
+        if self._playing_demo(link):
             # Playing its own standalone demo (the same player the fleet's
             # show would run on) - leave it alone. The unit itself refuses
             # /show/load and /show/run while a demo runs, so nothing here
             # would land anyway; forcing it would only fight an operator
             # who chose to play the demo on purpose. STOP still ends it
-            # (the "missed STOP" branch above, unaffected by this return).
+            # (the "missed STOP" branch above, unaffected by this return) -
+            # said once per episode, not every poll, and forgotten the
+            # moment the demo is no longer running/holding, so the next
+            # one is announced too.
+            if link.name not in self._demo_told:
+                self._demo_told.add(link.name)
+                self.corrections.append(
+                    f"{time.strftime('%H:%M:%S')} {link.name}: "
+                    "playing a demo, left alone")
+                del self.corrections[:-20]
             return
+        self._demo_told.discard(link.name)
         why = None
         if unit.get("id") != show["id"]:
             why = "show reloaded"
@@ -601,7 +653,7 @@ class Fleet:
                 # "running" - adopting it would have this conductor try
                 # to drive (and "correct") a demo nobody asked it to.
                 if (link.online and unit.get("state") == "running"
-                        and not unit.get("demo")
+                        and not self._playing_demo(link)
                         and unit.get("synced") and unit.get("t0") is not None
                         and link.offset is not None):
                     found.append(unit["t0"] - link.offset)

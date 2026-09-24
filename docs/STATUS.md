@@ -24,34 +24,57 @@
   文字 — 機体の LCD フォント DejaVu は日本語を描けないため拒否)と Loop を決めて
   「Write demo to units」を押すと、いまのタイムラインを機体ごとに `compile_show()`
   した結果(Upload と同じショーファイル)を各機体の `/demo/save` へ送る。
-  タイムラインに問題が残っている間は Upload と同じ判定で押せない。
+  タイムラインに問題が残っている間・**ショーが進行中の間**は Upload と同じ判定に
+  加えて押せない(まず STOP)。
 - `conductor/fleet.py`: `Fleet.write_demo(name, loop, shows)`(`upload()` と同じ
-  `_each()` の形で、`self.shows`/`run` には触れない)、`list_demos()`
-  (`GET /demo/list`、`UnitLink.get()` を新設)、`delete_demo(slug)`
-  (`POST /demo/delete`、全設定済み機体へ)。
+  `_each()` の形で、`self.shows`/`run` には触れない。`/demo/save` はネットワーク
+  の速さと無関係な eMMC 書き込みを含むので `UnitLink.post(..., learn=False,
+  timeout=DEMO_SAVE_TIMEOUT_S)` — 往復時間を時計モデルに混ぜない・タイムアウトを
+  4 倍にする)、`list_demos()`(`GET /demo/list`、`UnitLink.get()` を新設)、
+  `delete_demo(slug)`(`POST /demo/delete`、**online な機体だけ**。offline は
+  `{"ok": false, "error": "offline"}` で試みずに返す、list_demos() と同じ)。
 - `conductor/server.py`: `POST /api/fleet/write_demo` `{"name","loop"}` →
-  `{"units","problems","name"}`(名前は 1〜14 文字・印字可能 ASCII のみ、`loop` は
-  JSON の真偽値のみ許可)。`GET /api/fleet/demos` → `{"units": {unit: [demo,...]},
-  "offline": [...]}`(オフラインの機体は `units` から省き `offline` に名前で列挙)。
-  各デモに `current`(そのデモを書いた時点の per-unit ショー ID が、いまの
-  `compile_show()` の ID と一致するか)を添えて返す。`POST /api/fleet/delete_demo
-  {"slug"}`。
-- ページ: 「Demos on the units」表(名前・キュー数・長さ・Loop・**Timeline**
-  (current / older(該当機体))・保持機体・Delete)。機体タイルに「Demos」行
-  (`/status` の `demos` 件数。旧いエージェントには無いので「—」)。
-- **機体が自分のデモを再生中は PC の進行と衝突させない**: `fleet.py` の
-  `_adopt()`/`_supervise()` は、機体の `show.state` が `demo: true` のときは
-  「自分の実行として拾う」「/show/load・/show/run で正す」対象から外す
-  (機体側も `/show/load`・`/show/run` を 409 で拒否する)。Units タブの Show 行は
-  そのとき `✗ old version` の代わりに `demo` と出す。STOP は今まで通りデモも
-  含めて止める。
+  `{"units","problems","name"}`(名前は 1〜14 文字・印字可能 ASCII のみ、前後の
+  空白は捨てる。`loop` は JSON の真偽値のみ許可)。`GET /api/fleet/demos` →
+  `{"units": {unit: [demo,...]}, "offline": [...], "failed": {unit: "..."}}`
+  (無応答は `offline`、応答はしたが失敗した機体 — 旧いエージェントの 404 など —
+  は `failed` に理由付きで分ける)。各デモに `current`(その per-unit ショー ID が、
+  いま**アップロード済みの版**(`fleet.shows`、何もアップロードしていなければ
+  その場で `compile_show()` した結果)と一致するか。比較材料が無い・そのデモに
+  `show_id` が無い場合は `null` — ページは `older` ではなく「—」と出す)を添えて
+  返す。`POST /api/fleet/delete_demo {"slug"}`(slug は `^[a-z0-9][a-z0-9-]*$` を
+  PC 側でも検証、外れは 400 "bad demo id")。
+- ページ: 「Demos on the units」表(slug と名前の組でグルーピング、機体ごとに
+  キュー数・長さ・Loop が違うことがあるので `16 · 16 · 27` のように機体の並び順で
+  列挙・**Timeline**(current / older(該当機体) / 「—」)・保持機体・Delete)。
+  取得に失敗すると表の代わりにエラー文を出し、以後は Refresh か書き込み・削除の
+  あとにしか取り直さない(失敗のたびに毎秒リトライしない)。ショー進行中は
+  「Write demo to units」も無効(ヒント表示)。機体タイルに「Demos」行(`/status`
+  の `demos` 件数。旧いエージェントには無いので「—」)。
+- **機体が自分のデモを再生中(running/holding)は PC の進行と衝突させない**:
+  `fleet.py` の `_adopt()`/`_supervise()`/`_send_run()` は、機体の
+  `show.state` が running/holding **かつ** `demo: true` のときだけ対象から外す
+  (`_playing_demo()`)。**stopped/ended など再生中でなくなれば通常どおり監視・
+  補正の対象に戻る**(デモの状態を見ず `demo` だけで無条件にスキップしていたのは
+  レビューで見つかったバグ — 一晩放置されるところだった)。`_send_run()`
+  (START・SEEK・RESUME・NEXT が通る唯一の経路)は再生中の機体を
+  `{"ok": false, "error": "playing a demo - press STOP first"}` として報告し、
+  そもそも `/show/run` を送らない(機体自身も 409 で拒否するが、PC 側も
+  同じ判定を先にしている)。「left alone」の記録はエピソードごとに 1 回だけ
+  (`_demo_told`、毎回のポーリングでは出さない)。Units タブの Show 行は
+  そのとき `✗ old version` の代わりに `demo: <名前>`(`/status.show.demo_name`)
+  と出す。STOP は今まで通りデモも含めて止める。
 - 機体側(`ui/demos.py`・`ui/agent.py`・メニュー)は別セッションの実装分。
-  この変更は凍結した契約
-  (`POST /demo/save {"name","loop","show"}` → `{"ok","slug","demos"}` など、
-  409 は `{"error"}` で per-unit の失敗として届く)に対して書かれており、
-  そちら側のブランチが未マージの間は実機での疎通確認ができていない
-  (`tests/test_fleet.py`/`test_conductor_server.py` は StubLink 相手のテストで
-  独立に確認済み、`python -m pytest -q` 521 件 pass)。
+  この変更は凍結した契約に対して書かれており、そちら側のブランチが未マージの間は
+  実機での疎通確認ができていない(`tests/test_fleet.py`・`test_conductor_server.py`
+  は StubLink/実 IP を避けたスタブ相手のテストで独立に確認済み)。
+- **フィックスラウンドで見つかったもの**(レビュー指摘、実装側の見落とし):
+  デモ関連のテストの一部が `Fleet({})` の既定 10 台(`192.168.51.101…`)に
+  実際に発信していた(空 dict は falsy → `default_units()` にフォールバックする
+  ことを見落としていた) — 到達可能な実機がなければタイムアウトで気づかないまま
+  本番機に触れる危険があった。`Fleet({"radxa-01": "127.0.0.1:1"})` のように
+  ローカルの未使用ポートへ差し替えて修正。`python -m pytest -q` 全件 pass
+  (LAN に一切出ないことを目視でも確認)。
 
 **マップが制作サイトの行ごとの shift を持つように(2026-09-24)**
 

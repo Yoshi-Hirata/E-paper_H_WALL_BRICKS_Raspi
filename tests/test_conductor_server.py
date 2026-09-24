@@ -1396,7 +1396,11 @@ def test_write_demo_validates_the_name(tmp_path):
     from conductor.server import DEMO_NAME_MESSAGE
 
     _demo_workspace(tmp_path)
-    server = make_server(tmp_path, port=0, fleet=Fleet({}))
+    # A single configured (but unreachable) unit, not the ten real
+    # defaults (Fleet({}) falls back to default_units() - 192.168.51.101…
+    # - and the last call below has a name that passes validation, which
+    # would otherwise reach the network for real (found in review)).
+    server = make_server(tmp_path, port=0, fleet=Fleet({"radxa-01": "127.0.0.1:1"}))
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -1420,7 +1424,9 @@ def test_write_demo_loop_must_be_a_json_boolean(tmp_path):
     from conductor.fleet import Fleet
 
     _demo_workspace(tmp_path)
-    server = make_server(tmp_path, port=0, fleet=Fleet({}))
+    # Same reason as above: the final call's loop is omitted (reads as
+    # False, not refused) and would reach the network for real.
+    server = make_server(tmp_path, port=0, fleet=Fleet({"radxa-01": "127.0.0.1:1"}))
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -1461,11 +1467,36 @@ def test_write_demo_response_shape_and_name_is_upper_cased(tmp_path):
         server.server_close()
 
 
+def test_write_demo_name_is_trimmed_and_symbols_pass_through(tmp_path):
+    # Leading/trailing whitespace is stripped; `"`, `<`, `>` are ordinary
+    # printable ASCII and are not refused here - escaping them belongs to
+    # whatever renders the name later (the page's esc()), not to this
+    # validation.
+    from conductor.fleet import Fleet
+
+    _demo_workspace(tmp_path)
+    server = make_server(tmp_path, port=0, fleet=Fleet({"radxa-09": "127.0.0.1:1"}))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/write_demo",
+                                {"name": '  demo "x" <y>  ', "loop": False})
+        assert status == 200
+        assert payload["name"] == 'DEMO "X" <Y>'
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_write_demo_is_blocked_the_same_way_upload_is(tmp_path):
     from conductor.fleet import Fleet
 
     Workspace(tmp_path)                    # no map, no design, no timeline
-    server = make_server(tmp_path, port=0, fleet=Fleet({}))
+    # compile_show() returns no shows here (a problem, "no cues"), so
+    # write_demo() is never even called - Fleet({}) would be harmless in
+    # this one test, but a non-default fleet costs nothing and reads the
+    # same as its neighbours.
+    server = make_server(tmp_path, port=0, fleet=Fleet({"radxa-01": "127.0.0.1:1"}))
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -1479,23 +1510,26 @@ def test_write_demo_is_blocked_the_same_way_upload_is(tmp_path):
         server.server_close()
 
 
-def test_delete_demo_needs_a_slug(tmp_path):
+def test_delete_demo_validates_the_slug(tmp_path):
     from conductor.fleet import Fleet
 
-    # A single configured (but unreachable) unit, not the ten defaults -
-    # delete_demo() posts to every configured unit, and this keeps the
-    # request from waiting out ten real connection timeouts.
+    # A single configured unit that was never polled (UnitLink.online is
+    # False until a poll sets last_seen) - delete_demo() only posts to
+    # online links, so a valid slug never even reaches the network here.
     server = make_server(tmp_path, port=0, fleet=Fleet({"radxa-01": "127.0.0.1:1"}))
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        status, payload = _post(port, "/api/fleet/delete_demo", {})
-        assert status == 400 and "no demo" in payload["error"]
+        for bad in ("", "   ", "UPPER", "-leading", "has spaces", 'has"quote'):
+            status, payload = _post(port, "/api/fleet/delete_demo",
+                                    {"slug": bad})
+            assert status == 400 and payload["error"] == "bad demo id"
         status, payload = _post(port, "/api/fleet/delete_demo",
                                 {"slug": "demo-paris"})
         assert status == 200
-        assert set(payload["units"]) == {"radxa-01"}
-        assert payload["units"]["radxa-01"]["ok"] is False
+        # Never online: skipped, not a real (and pointless) connection.
+        assert payload["units"] == {
+            "radxa-01": {"ok": False, "error": "offline"}}
     finally:
         server.shutdown()
         server.server_close()
@@ -1511,13 +1545,16 @@ def test_get_fleet_demos_with_no_fleet_configured(tmp_path):
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        assert _get(port, "/api/fleet/demos") == {"units": {}, "offline": []}
+        assert _get(port, "/api/fleet/demos") == {
+            "units": {}, "offline": [], "failed": {}}
     finally:
         server.shutdown()
         server.server_close()
 
 
-def test_get_fleet_demos_marks_whether_each_matches_the_current_timeline(tmp_path):
+def test_get_fleet_demos_falls_back_to_compiling_when_nothing_was_uploaded(tmp_path):
+    # fleet.shows is empty (nothing uploaded this session) - the only
+    # reference left is compiling the timeline right now.
     from conductor.fleet import Fleet
     from tests.test_fleet import StubLink
 
@@ -1536,6 +1573,7 @@ def test_get_fleet_demos_marks_whether_each_matches_the_current_timeline(tmp_pat
     offline.online = False
     fleet = Fleet({})
     fleet.links = {"radxa-01": online, "radxa-02": offline}
+    assert fleet.shows == {}
     server = make_server(tmp_path, port=0, fleet=fleet)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1545,6 +1583,86 @@ def test_get_fleet_demos_marks_whether_each_matches_the_current_timeline(tmp_pat
         assert demos["demo-a"]["current"] is True
         assert demos["demo-b"]["current"] is False
         assert payload["offline"] == ["radxa-02"]
+        assert payload["failed"] == {}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_fleet_demos_prefers_what_was_actually_uploaded(tmp_path):
+    # fleet.shows (a live upload) is cheap and already in memory - it is
+    # used ahead of compiling the timeline again, and can disagree with
+    # what compile_show() would say right now (the timeline moved on
+    # since that upload).
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    _demo_workspace(tmp_path)
+    online = StubLink("radxa-01", "stopped")
+    online.demos = [{"slug": "demo-a", "name": "DEMO A", "cues": 1,
+                     "duration": 600, "loop": False, "saved_at": 1,
+                     "show_id": "uploaded-hash"}]
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": online}
+    fleet.shows = {"radxa-01": {"id": "uploaded-hash", "cues": [],
+                                "duration": 600}}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        payload = _get(port, "/api/fleet/demos")
+        assert payload["units"]["radxa-01"][0]["current"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_fleet_demos_shows_a_dash_not_older_when_there_is_no_reference(tmp_path):
+    # No upload this session AND the timeline has a problem (compile_show()
+    # returns no shows) - "current" must read null (the page's "—"), never
+    # False ("older"), for every demo: there is nothing to compare against.
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    Workspace(tmp_path)                    # no map, no design, no timeline
+    online = StubLink("radxa-01", "stopped")
+    online.demos = [{"slug": "demo-a", "name": "DEMO A", "cues": 1,
+                     "duration": 600, "loop": False, "saved_at": 1,
+                     "show_id": "some-hash"}]
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": online}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        payload = _get(port, "/api/fleet/demos")
+        assert payload["units"]["radxa-01"][0]["current"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_fleet_demos_separates_offline_from_a_unit_that_answered_with_an_error(tmp_path):
+    # An older agent with no /demo/list at all answers, just not with
+    # 200 - that unit is not "offline" (it is right there on the LAN),
+    # it "failed", with its own message.
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    class OldAgentLink(StubLink):
+        def get(self, path):
+            raise RuntimeError("HTTP 404: not found")
+
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": OldAgentLink("radxa-01", "stopped")}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        payload = _get(port, "/api/fleet/demos")
+        assert payload["offline"] == []
+        assert payload["failed"] == {"radxa-01": "HTTP 404: not found"}
+        assert payload["units"] == {}
     finally:
         server.shutdown()
         server.server_close()

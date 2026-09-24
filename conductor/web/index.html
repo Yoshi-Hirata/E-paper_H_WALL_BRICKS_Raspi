@@ -362,6 +362,8 @@ let state = null;
 // The last GET /api/fleet/demos answer ({units: {unit: [demo,...]}, offline: [unit,...]}),
 // or null before the Units tab has ever asked for it - see refreshDemos().
 let demoList = null;
+let demoListError = null;      // the last fetch's failure, if any (shown instead of the table)
+let demoListTried = false;     // true once a fetch has been attempted - never retried on its own
 let demoListLoading = false;   // guards against a render loop firing the GET twice
 // The transport's audio element: a singleton that is NEVER inserted into the DOM,
 // so renderTimeline()'s innerHTML= (fired by every edit) can never interrupt it.
@@ -1357,48 +1359,77 @@ function demoTargetUnits() {
   const unitOf = new Map(trackItems().map(i => [i.item, i.unit]));
   return new Set(state.show.cues.map(c => unitOf.get(c.item)).filter(Boolean));
 }
-// One row per demo name (slug), gathered across every unit's own list -
+// One row per (slug, name) pair, gathered across every unit's own list -
 // several units hold the same demo, so this folds them into one row with
-// the units that have it. Each unit's own entry says whether ITS show_id
-// still matches what compile_show() would produce for it right now
-// (server-side, in the GET /api/fleet/demos answer) - a row is "current"
-// only while every unit that holds it agrees; one that fell behind (the
-// timeline, a map or a design changed since that unit's write) is named,
-// not just silently averaged away.
+// the units that have it. A slug is only supposed to carry one name, but
+// two units could disagree (a stale write, a slug reused for something
+// else) - keying on both instead of the slug alone means that shows up
+// as two rows rather than one row silently wearing whichever name
+// happened to be seen last.
+// cues/duration/loop are kept one entry per unit, in the same order as
+// `units` - a unit's own compiled show can legitimately have a
+// different cue count (and, in principle, duration) than another unit's
+// slice of the same timeline, so these are shown per unit, not
+// collapsed into a single (possibly wrong) number.
 function demoRows() {
   const bySlug = new Map();
   for (const [unit, demos] of Object.entries(demoList?.units || {}))
     for (const d of demos) {
-      const row = bySlug.get(d.slug) || { ...d, units: [], outdated: [] };
+      const key = d.slug + "\0" + d.name;
+      const row = bySlug.get(key) || { slug: d.slug, name: d.name, units: [],
+                                       cues: [], duration: [], loop: [], current: [] };
       row.units.push(unit);
-      if (!d.current) row.outdated.push(unit);
-      bySlug.set(d.slug, row);
+      row.cues.push(d.cues);
+      row.duration.push(d.duration);
+      row.loop.push(!!d.loop);
+      row.current.push(d.current === undefined ? null : d.current);
+      bySlug.set(key, row);
     }
   return [...bySlug.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
+const joinPerUnit = (values, fmt = (v => v)) => values.map(fmt).join(" · ");
+function demoTimelineHtml(row) {
+  // current: true/false/null per unit (server-computed) - false anywhere
+  // is named ("older"); with no false but a null somewhere there simply
+  // is nothing to compare against yet, so this reads "—", never "older".
+  const outdated = row.units.filter((u, i) => row.current[i] === false);
+  if (outdated.length)
+    return `<span class="warn">older (${esc(outdated.join(", "))})</span>`;
+  if (row.current.some(c => c === null)) return "—";
+  return `<span class="okline">current</span>`;
+}
 function demoTableHtml() {
-  if (!demoList) return `<div class="meta">Checking the units…</div>`;
-  const rows = demoRows(), offline = demoList.offline || [];
+  if (!demoListTried) return `<div class="meta">Checking the units…</div>`;
+  if (demoListError)
+    return `<div class="warn">Could not reach the conductor: ${esc(demoListError)}</div>`;
+  const rows = demoRows(), offline = demoList?.offline || [];
+  const failed = demoList?.failed || {};
+  const failedNames = Object.keys(failed);
   return (rows.length ? `<table><thead><tr><th>Name</th><th>Cues</th><th>Length</th>
       <th>Loop</th><th>Timeline</th><th>Units</th><th></th></tr></thead><tbody>${rows.map(d => `<tr>
-        <td>${esc(d.name)}</td><td>${d.cues}</td><td>${clock(d.duration)}</td>
-        <td>${d.loop ? "yes" : "—"}</td>
-        <td>${d.outdated.length ? `<span class="warn">older (${esc(d.outdated.join(", "))})</span>`
-                                : `<span class="okline">current</span>`}</td>
+        <td>${esc(d.name)}</td><td>${esc(joinPerUnit(d.cues))}</td>
+        <td>${esc(joinPerUnit(d.duration, clock))}</td>
+        <td>${esc(joinPerUnit(d.loop, v => v ? "yes" : "—"))}</td>
+        <td>${demoTimelineHtml(d)}</td>
         <td>${esc(d.units.join(", "))}</td>
-        <td><button data-demo-delete="${esc(d.slug)}">Delete</button></td></tr>`).join("")}
+        <td><button data-demo-delete="${esc(d.slug)}" data-demo-name="${esc(d.name)}">Delete</button></td></tr>`).join("")}
       </tbody></table>` : `<div class="meta">No demos found on the units yet.</div>`)
-    + (offline.length ? `<div class="warn" style="margin-top:6px">Not checked ` +
-      `(offline): ${esc(offline.join(", "))}</div>` : "");
+    + (offline.length ? `<div class="warn" style="margin-top:6px">Offline: `
+      + `${esc(offline.join(", "))}</div>` : "")
+    + (failedNames.length ? `<div class="warn" style="margin-top:2px">Not checked — `
+      + `${failedNames.map(u => `${esc(u)}: ${esc(failed[u])}`).join(", ")}</div>` : "");
 }
 // Fetched once the Units tab is first opened, then only on an explicit Refresh
 // or right after a write/delete - not on every poll (the demo store barely
 // changes, and every unit would otherwise answer this every second for nothing).
+// `demoListTried` (not `demoList === null`) gates the auto-fetch, so a fetch
+// that failed is shown as an error instead of being retried on every render.
 async function refreshDemos() {
   if (demoListLoading) return;
   demoListLoading = true;
-  try { demoList = await api("/api/fleet/demos"); } catch (err) { demoList = null; }
-  finally { demoListLoading = false; }
+  try { demoList = await api("/api/fleet/demos"); demoListError = null; }
+  catch (err) { demoListError = err.message || "no answer from the conductor server"; }
+  finally { demoListLoading = false; demoListTried = true; }
   const box = $("#demo-table");
   if (box) box.innerHTML = demoTableHtml();
 }
@@ -1581,14 +1612,14 @@ function renderFleet() {
       <div class="meta" id="show-fix"></div>
     </div>
     <div class="card"><h2>STANDALONE DEMO</h2>
-      <div class="meta sub">Writes the current timeline into every unit's own menu; each unit can then play its part from its LCD without this PC. If a unit is playing a demo, press STOP on this page first (it also ends the demo).</div>
+      <div class="meta sub">Writes the current timeline into every unit's own menu; each unit can then play its part from its LCD without this PC. If a unit is already playing a demo, press STOP first (it ends the demo too).</div>
       <div class="go">
         <input type="text" id="demo-name" maxlength="${DEMO_NAME_MAX}" placeholder="DEMO NAME" value="${esc(ui.demoName)}" title="${esc(DEMO_NAME_HINT)}">
         <span class="meta" id="demo-count">${ui.demoName.trim().length}/${DEMO_NAME_MAX}</span>
-        <label class="meta"><input type="checkbox" id="demo-loop" ${ui.demoLoop ? "checked" : ""}> Loop (restart 5 s after the end)</label>
-        <button class="big" id="demo-write" ${cueCount && !cueBad && ui.demoName.trim() ? "" : "disabled"}>Write demo to units</button>
+        <label class="meta"><input type="checkbox" id="demo-loop" ${ui.demoLoop ? "checked" : ""}> Loop (auto-restart 5 s after the end)</label>
+        <button class="big" id="demo-write" ${cueCount && !cueBad && ui.demoName.trim() && !fleet?.run ? "" : "disabled"}>Write demo to units</button>
       </div>
-      <div class="meta warn">${esc(DEMO_NAME_HINT)}</div>
+      <div class="meta warn">${esc(DEMO_NAME_HINT)}${fleet?.run ? " · stop the show first" : ""}</div>
       <div class="meta" id="demo-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.demoLog || "")}</div>
       <div class="meta sub" style="margin-top:10px">Demos on the units</div>
       <div class="go" style="margin-top:4px">
@@ -1618,7 +1649,7 @@ function renderFleet() {
       <div class="meta sub">Every unit is polled every 2 s, and each round trip also measures its clock offset.</div><div class="tiles" id="tiles"></div></div>`;
   renderThumbs(THUMBS.fleet, fleetShowPos());
   renderTiles();
-  if (demoList === null) refreshDemos();     // first time the Units tab is opened
+  if (!demoListTried) refreshDemos();        // first time the Units tab is opened
 }
 let lastFleetThumbPos = null, lastFleetRunState = undefined;
 function showClockText() {
@@ -1660,10 +1691,12 @@ function showClockText() {
   // restarted; the run is adopted a poll or two later, or never if the units
   // themselves came back unsynced). STOP must work then more than ever.
   const unitsBusy = fleet.units.some(u => u.online && u.show && ["running", "holding"].includes(u.show.state));
+  const demoCueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
   const able = { "show-preset": want > 0 && !run && !unitsBusy, "show-start": want > 0,
                  "show-hold": running, "show-resume": holding,
                  "show-next-cue": (running && upcoming.length > 0) || holding, "show-stop": !!run || unitsBusy,
-                 "fleet-prepare": !run && !unitsBusy && assignedItems().length > 0, "fleet-fire": !run && !unitsBusy };
+                 "fleet-prepare": !run && !unitsBusy && assignedItems().length > 0, "fleet-fire": !run && !unitsBusy,
+                 "demo-write": !run && state.show.cues.length && !demoCueBad && !!ui.demoName.trim() };
   for (const [id, on] of Object.entries(able)) { const b = $("#" + id); if (b) b.disabled = !on; }
   // Whenever start_at > 0 (a seek moved the "no run" position, or a start from
   // elsewhere was left behind) START warns where it will actually begin,
@@ -1706,7 +1739,7 @@ function renderTiles() {
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
       <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
-      <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo${u.show.demo_name ? ": " + esc(u.show.demo_name) : ""}`
+      <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
       <div class="row"><span>Demos</span><b>${u.demos ?? "—"}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
@@ -1869,8 +1902,7 @@ document.addEventListener("click", async e => {
   const delDemo = e.target.closest("[data-demo-delete]");
   if (delDemo) {
     const slug = delDemo.dataset.demoDelete;
-    const row = demoRows().find(r => r.slug === slug);
-    const label = row ? row.name : slug;
+    const label = delDemo.dataset.demoName || slug;
     if (!confirm(`Delete "${label}" from every unit's menu?`)) return;
     const result = await fleetCommand("delete_demo", { slug }, `Delete demo "${label}"`, "demo");
     if (result) await refreshDemos();

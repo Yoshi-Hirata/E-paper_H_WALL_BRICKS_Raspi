@@ -62,6 +62,7 @@ DEMO_NAME_MAX = 14        # the unit's LCD menu row
 DEMO_NAME_MESSAGE = (f"A-Z, 0-9 and symbols, up to {DEMO_NAME_MAX} characters "
                      "(the unit's screen cannot show Japanese)")
 _DEMO_NAME_OK = re.compile(r"^[\x20-\x7e]+$")     # printable ASCII only
+_DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
 _IS_MAP = re.compile(r"_map$", re.IGNORECASE)
 _IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
@@ -89,6 +90,17 @@ def _demo_name(raw) -> str:
     if not name or len(name) > DEMO_NAME_MAX or not _DEMO_NAME_OK.match(name):
         raise ValueError(DEMO_NAME_MESSAGE)
     return name.upper()
+
+
+def _demo_slug(raw) -> str:
+    """A demo's id, as the unit itself makes one (ui/demos.py: lower-case
+    a-z0-9- from the name). Refused here too - a slug is about to become
+    a path/JSON key on every unit, and this is cheaper than letting ten
+    of them each say so themselves."""
+    slug = str(raw or "").strip()
+    if not _DEMO_SLUG_OK.match(slug):
+        raise ValueError("bad demo id")
+    return slug
 
 
 def _design_transition(entry) -> dict:
@@ -1048,32 +1060,44 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(dict(self.fleet.snapshot(),
                                        prepared=prepared))
             if path == "/api/fleet/demos":
-                # Only the units that answered are asked (list_demos()
-                # skips an offline one rather than wait out its timeout);
-                # the rest are named in "offline" so the page can say so
-                # instead of just leaving them out silently.
+                # list_demos() skips an unreachable unit rather than wait
+                # out its timeout (its result carries the exact "offline"
+                # text); one that answered but refused (a 404 from an
+                # older agent with no /demo/list, say) is a different
+                # thing and goes in "failed" instead, with its own
+                # message - the page tells the two apart in what it says.
                 if self.fleet is None:
-                    return self._json({"units": {}, "offline": []})
+                    return self._json({"units": {}, "offline": [], "failed": {}})
                 results = self.fleet.list_demos()
                 # Each demo carries the id of the per-unit show it was
-                # written with (showfile.build_unit_show's own hash) - the
-                # same id this unit's slice of the CURRENT timeline would
-                # compile to, when the maps/designs are still here to
-                # compile it. A demo whose id no longer matches was
-                # written before the timeline (or a map/design) changed
-                # since - the page says so rather than implying it is
-                # still exactly what a fresh write would produce.
-                current_shows, _ = self.workspace.compile_show()
+                # written with (showfile.build_unit_show's own hash).
+                # "current" compares it against what was actually
+                # UPLOADED (fleet.shows - free, already in memory) and
+                # only falls back to compiling the timeline right now
+                # when nothing was uploaded this session at all. Neither
+                # a missing reference id nor a demo entry with no
+                # show_id of its own (an older unit) is "older" - it is
+                # simply not known, so the page says "—", never "older".
+                reference = dict(self.fleet.shows)
+                if not reference:
+                    reference, _ = self.workspace.compile_show()
                 def annotate(unit, demos):
-                    current_id = (current_shows.get(unit) or {}).get("id")
-                    return [dict(d, current=(current_id is not None
-                                             and d.get("show_id") == current_id))
-                           for d in demos]
+                    current_id = (reference.get(unit) or {}).get("id")
+                    out = []
+                    for demo in demos:
+                        show_id = demo.get("show_id")
+                        current = (None if current_id is None or show_id is None
+                                  else show_id == current_id)
+                        out.append(dict(demo, current=current))
+                    return out
                 units = {name: annotate(name, r["demos"])
                         for name, r in results.items() if r["ok"]}
                 offline = sorted(name for name, r in results.items()
-                                 if not r["ok"])
-                return self._json({"units": units, "offline": offline})
+                                 if not r["ok"] and r["error"] == "offline")
+                failed = {name: r["error"] for name, r in results.items()
+                         if not r["ok"] and r["error"] != "offline"}
+                return self._json({"units": units, "offline": offline,
+                                   "failed": failed})
         except Exception as exc:        # noqa: BLE001 - a poll must get JSON
             return self._json({"error": f"{exc.__class__.__name__}: {exc}"},
                               status=500)
@@ -1309,9 +1333,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"units": results, "problems": problems,
                                "name": name})
         if command == "delete_demo":
-            slug = str(body.get("slug") or "").strip()
-            if not slug:
-                raise ValueError("no demo to delete")
+            slug = _demo_slug(body.get("slug"))
             return self._json({"units": fleet.delete_demo(slug)})
         if command == "preset":
             return self._json({"units": fleet.simple(fleet._targets(),
