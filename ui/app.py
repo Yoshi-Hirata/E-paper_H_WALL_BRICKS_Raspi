@@ -46,18 +46,28 @@ hands the unit back to its own menu; on a locked unit nothing does, so
 a knock on stage cannot drop a garment out of the show.
 
 A standalone demo (ui/demos.py) IS a menu row, one per show the PC has
-written into this unit, sorted in right after STANDBY. KEY1 plays it on
-the unit's own clock (ui/showplay.py's ShowPlayer, loaded with
-demo=True so a reboot does not resume it on its own) and the screen
-follows it exactly like REMOTE does a PC-driven show - same picture,
-different title ("DEMO <name>") and hints, because the player fires
-its cues through the very same session a show PC would. KEY2 releases
-that session (ending the demo and any lingering "REMOTE" claim on it in
-one move, see _stop_demo); KEY1 held restarts it from 0:00; ENDED with
-`loop` set restarts it again after LOOP_GAP_S. A show PC still wins:
-/prepare and /show/load are refused while the demo runs (ui/agent.py),
-so the operator presses STOP on the Units tab, which is /show/stop and
-ends the demo the same way KEY2 does.
+written into this unit, sorted in right after STANDBY. KEY1 loads it
+(ui/showplay.py's ShowPlayer, with demo=True so a reboot does not
+resume it on its own) and the DEMO screen opens right away, on the
+burn ui/remote.py's RemoteSession.burn() just started - it shows
+"writing pictures n/N" (status.show.burn) while that runs, and KEY2
+during it cancels the burn and returns to the menu, same as any other
+time on this screen. Once burn.state is "burned" the App itself calls
+run() - once, not on every tick - and the screen then follows a
+running demo exactly like REMOTE follows a PC-driven show, because the
+player fires its cues through the very same session a show PC would.
+A burn that instead comes back "failed" with a board that is live but
+still would not take the write shows "N boards failed - KEY2 menu" and
+never runs (a board that is simply absent is not counted - the same
+gap ShowPlayer.run() itself accepts). KEY2 releases the session (ending
+the demo and any lingering "REMOTE" claim on it in one move, see
+_stop_demo); KEY1 held restarts it from 0:00 (a fresh load - the burn
+cache makes an unchanged file's re-burn cost nothing); ENDED with
+`loop` set restarts it again after LOOP_GAP_S, a re-run only, never a
+re-burn. A show PC still wins: /prepare and /show/load are refused
+while the demo runs (ui/agent.py), so the operator presses STOP on the
+Units tab, which is /show/stop and ends the demo the same way KEY2
+does.
 
 With `locked` set the buttons do nothing at all, except that they still
 wake the screen; the UNLOCK_SEQUENCE frees them temporarily and the lock
@@ -159,6 +169,14 @@ class App:
         self._demo_loop = False
         self._demo_ended_at: float | None = None
         self._demo_show_id: str | None = None
+        # Pre-burn (2026-09-25): _start_demo_show() only loads (which
+        # starts the burn); _track_demo() calls run() itself, exactly
+        # once, the first tick it sees the burn settle.
+        self._demo_awaiting_run = False
+        # Set instead, when that settling was "failed" with a board that
+        # is live but still refused the write - shown on the DEMO screen
+        # until KEY2 (_stop_demo clears it).
+        self._demo_burn_error: str | None = None
         self._last_demo_poll = 0.0
         # A short-lived note on the MENU screen (e.g. a refused KEY1 on a
         # demo row while the PC's own show is loaded) - _standby_status()
@@ -422,12 +440,14 @@ class App:
     # ---- standalone demos (ui/demos.py) ----
 
     def _start_demo_show(self, slug: str, name: "str | None" = None) -> bool:
-        """Load the stored show fresh and run it from 0:00 (KEY1, and
-        KEY1-hold's restart - the operator may have just re-written this
-        very slug). False if it could not be (a corrupt or since-deleted
-        file - /demo/save validates, so this is mainly the "deleted from
-        the PC while it played" case); the caller falls back to the menu
-        rather than opening a screen with nothing to show.
+        """Load the stored show fresh (KEY1, and KEY1-hold's restart - the
+        operator may have just re-written this very slug); only starts
+        the burn - _track_demo() calls run() itself once it settles.
+        False if the load could not even start (a corrupt or
+        since-deleted file - /demo/save validates, so this is mainly the
+        "deleted from the PC while it played" case); the caller falls
+        back to the menu rather than opening a screen with nothing to
+        show.
 
         `name` (the row's label) is what /status.show.demo_name carries
         for the PC's Units tile; a restart that does not pass one again
@@ -437,21 +457,18 @@ class App:
             self.player.load(show, demo=True,
                              name=self._demo_name if name is None else name)
             self._demo_show_id = show["id"]
-            # Far enough ahead that the preset cue's own lead (its boards'
-            # save time plus the port setup, ShowPlayer._lead) has room to
-            # land before its instant - the same margin preset() itself
-            # uses, plus a second of slack for the LCD's own poll.
-            lead = self.player._lead(show["cues"][0]) + 1.0
-            self.player.run(self._clock() + lead)
+            self._demo_awaiting_run = True
+            self._demo_burn_error = None
             return True
         except RemoteError:
             return False
 
     def _loop_demo_show(self) -> bool:
         """ENDED, loop set: run the already-loaded show again from 0:00 -
-        no reload, no re-write of the ~100-300 KB show file to disk every
-        lap (run() starting a new top forgets the garment on its own, so
-        nothing about a stale load would show)."""
+        no reload (so no re-burn either - the picture in every slot is
+        already right), no re-write of the ~100-300 KB show file to disk
+        every lap (run() starting a new top forgets the garment on its
+        own, so nothing about a stale load would show)."""
         show = self.player.show if self.player else None
         if show is None or not self.player.is_demo:
             return False
@@ -461,6 +478,35 @@ class App:
             return True
         except RemoteError:
             return False
+
+    def _await_demo_burn(self) -> None:
+        """One tick of waiting out _start_demo_show()'s burn: still
+        "burning" is a no-op (the DEMO screen's hint reads the count
+        straight off status.show.burn each frame), any other state ends
+        the wait - run() once, and a refusal (a live board would not
+        take the write) becomes the screen's error instead of trying
+        again on its own."""
+        player = self.player
+        status = player.status()
+        burn = (status or {}).get("burn")
+        if burn is not None and burn["state"] == "burning":
+            self._dirty = True
+            return
+        self._demo_awaiting_run = False
+        try:
+            lead = player._lead(player.show["cues"][0]) + 1.0
+            player.run(self._clock() + lead)
+        except RemoteError as exc:
+            if burn is not None and burn["state"] == "failed":
+                absent = player.session.runner.absent
+                failed = {b for b, s in burn.get("failed", ())
+                         if b not in absent}
+                self._demo_burn_error = f"{len(failed)} boards failed - KEY2 menu"
+            else:
+                # Some other refusal (e.g. the unit went busy under us) -
+                # say what it actually was rather than guess "boards".
+                self._demo_burn_error = f"{exc} - KEY2 menu"
+        self._dirty = True
 
     def _enter_demo(self, row: "DemoRow") -> None:
         if self.player is None or self.demo_store is None:
@@ -499,8 +545,13 @@ class App:
             self.remote.release()
         elif self.player is not None:
             self.player.stop()
+        # player.stop() (reached above through on_release, or directly)
+        # itself calls session.cancel_burn() - KEY2 during "writing
+        # pictures n/N" gives up on it the same way.
         self._playing_demo = None
         self._demo_ended_at = None
+        self._demo_awaiting_run = False
+        self._demo_burn_error = None
         self.screen = Screen.MENU
         self._dirty = True
 
@@ -517,9 +568,14 @@ class App:
         if not player.is_demo or (player.show or {}).get("id") != self._demo_show_id:
             self._playing_demo = None
             self._demo_ended_at = None
+            self._demo_awaiting_run = False
+            self._demo_burn_error = None
             if self.screen is Screen.DEMO:
                 self.screen = Screen.MENU
             self._dirty = True
+            return
+        if self._demo_awaiting_run:
+            self._await_demo_burn()
             return
         status = player.status()
         state = status["state"] if status else None
@@ -768,12 +824,15 @@ class App:
                 status = self._remote_status()
                 fire_at = status["fire_at"]
                 show = status.get("show") or {}
+                burn = show.get("burn")
                 left = (None if fire_at is None or status["fired_at"]
                         else int(max(0.0, fire_at - self._mono())))
                 return ("demo", self._playing_demo, status["phase"],
                         len(status["saved"]), len(status["failed"]),
                         status["error"], left, show.get("state"),
                         None if show.get("now") is None else int(show["now"]),
+                        None if burn is None else (burn["state"], burn["done"]),
+                        self._demo_burn_error,
                         tuple(self.runner.recent(LOG_LINES)), self.locked)
             if self.screen is Screen.REBOOT:
                 rebooter = self.rebooter
@@ -797,6 +856,11 @@ class App:
         if self.locked:
             return "buttons locked"
         show = status.get("show") or {}
+        burn = show.get("burn")
+        if burn is not None and burn["state"] == "burning":
+            return f"writing pictures {burn['done']}/{burn['total']} - KEY2 cancel"
+        if self._demo_burn_error:
+            return self._demo_burn_error
         if show.get("state") == "ended":
             return ("looping soon - KEY2 menu" if self._demo_loop
                     else "ended - KEY2 menu")

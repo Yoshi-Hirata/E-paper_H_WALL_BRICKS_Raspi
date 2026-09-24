@@ -1,24 +1,36 @@
 """Remote cues: the show PC loads a design, then fires it on the clock.
 
-A garment changes in two steps, because only the last one can be timed:
+Two independent things share this mailbox between the HTTP agent's
+threads and the runner's worker, which owns the serial port:
 
-  prepare   every board gets its 64-byte array saved to the slot - about
-            0.2 s a board over the 9600 bps relay, retried like any demo
-            cycle, reported board by board. Nothing changes on the glass.
-  fire      one broadcast show, sent at an agreed instant of THIS unit's
-            monotonic clock. The PC measures each unit's clock offset
-            (ui/agent.py serves the clock), so ten units given "their"
-            instant fire together. One frame, never repeated (see
-            runner.SHOW_REPEATS).
+  a manual cue      /prepare + /fire (the Designs tab, and a demo row's
+                    one-shot preview): every board gets its 64-byte
+                    array saved to a slot - about 0.2 s a board over
+                    the 9600 bps relay - then one broadcast show, sent
+                    at an agreed instant of THIS unit's monotonic
+                    clock. Always slot 19 (DEFAULT_SLOT); see arm()
+                    below for why a show's own cues never take this
+                    path.
 
-The session is the mailbox between the HTTP agent's threads and the
-runner's worker, which owns the serial port: the agent posts prepare /
-fire / cancel, the worker (DemoRunner._run_remote) takes them and
-reports back, and status() is what the PC and the LCD read.
+  a burn            ui/showplay.py's ShowPlayer.load() writes every
+                    cue of a show into its OWN slot (1..19) up front,
+                    once, well before the show runs - see burn() and
+                    docs/MERIS_REPLY_3SLOT.pdf: a colour save (0x13), a
+                    delay table (0x1F) and a slot's config (0x1B) all
+                    persist across a power cycle, so this only ever
+                    needs doing again when the show file itself
+                    changes. Once burned, RUNNING a show is triggers
+                    only: arm(cue_id, slot, ...) sets a fire time with
+                    NOTHING to write - the picture is already on the
+                    glass's own board, waiting in its slot - and the
+                    worker's _fire_at() sends one broadcast "show slot
+                    N" at the cue's instant. status()["burn"] is what
+                    the PC and the LCD read to show "writing pictures
+                    n/N" before a show can be started.
 
-The monotonic clock is used because the wall clock can step - timesyncd
-is active on the units whenever they see the internet - and a step in
-the middle of a show would move every cue.
+The monotonic clock is used for fire times because the wall clock can
+step - timesyncd is active on the units whenever they see the internet
+- and a step in the middle of a show would move every cue.
 """
 
 from __future__ import annotations
@@ -28,8 +40,8 @@ import time
 
 IDLE = "idle"              # remote, nothing loaded
 PREPARING = "preparing"    # saving the arrays to the boards
-READY = "ready"            # saved; waiting for a fire time
-ARMED = "armed"            # saved and a fire time is set
+READY = "ready"            # saved (or nothing to save); waiting for a fire time
+ARMED = "armed"            # ready and a fire time is set
 FIRED = "fired"            # the show went out
 FAILED = "failed"          # nothing could be saved
 STANDBY = "standby"        # asked for the white standby
@@ -38,17 +50,23 @@ LOCAL = "local"            # the unit is on its own menu
 ARRAY_LEN = 64
 TABLE_LEN = 128            # a delay table: 64 sockets x uint16, big-endian
 DEV_NUMBER_BRAND = 0x03    # the layout every UI pattern sends (ui/patterns.py)
+# host/epaper/commands.py's TEST_SLOT: slot 0 is the standby white, a show's
+# cues take 1..19 (conductor/showfile.py), and this is what a manual
+# /prepare (the Designs tab) or a demo row's one-shot preview still uses -
+# it is never part of a show's own rotation (docs/MERIS_REPLY_3SLOT.pdf,
+# the pre-burn redesign, 2026-09-24).
+DEFAULT_SLOT = 19
 # A cue this close to its own fire time (ui/runner.py's _fire_at() busy-waits
 # the last FIRE_SPIN_S = 0.02 s of it, then the broadcast send and the
 # session.fired() call after it cost a few more ms) must not be displaced by
-# a new prepare(): fired() matches on cue_id, and a prepare() landing in
-# that window would move cue_id on before fired() ever gets to record it -
-# the fire happens on the wire, but the session, and everything reading it
+# a new prepare()/arm(): fired() matches on cue_id, and one landing in that
+# window would move cue_id on before fired() ever gets to record it - the
+# fire happens on the wire, but the session, and everything reading it
 # (ShowPlayer._tally(), /status), never finds out. Found in the timing
 # review, 2026-09-24, alongside the same race in ShowPlayer._plan()'s own
-# scheduling (see its owned_unfired_elsewhere) - this is the general,
-# session-level version of the same guard, covering every other caller too
-# (an operator's own /prepare+/fire, not just a ShowPlayer-run show).
+# scheduling - this is the general, session-level version of the same
+# guard, covering every other caller too (an operator's own /prepare+/fire,
+# not just a ShowPlayer-run show).
 FIRE_IMMINENT_S = 0.05
 
 
@@ -75,19 +93,36 @@ class RemoteSession:
         self.fire_at: float | None = None
         self.fired_at: float | None = None
         self.prepare_s: float | None = None
+        self.slot = DEFAULT_SLOT
+        self.dev_type = DEV_NUMBER_BRAND
         self._job: dict | None = None
+
+        # A show's own burn (see the module docstring): None means
+        # "nothing has ever been burned this session".
+        self.burn_state: str | None = None
+        self.burn_done = 0
+        self.burn_total = 0
+        self.burn_failed: "list[tuple[int, int]]" = []
+        self._burn_job: dict | None = None
+        self._burn_epoch = 0
+
         self._lock = threading.Lock()
         self._wake = threading.Event()
 
-    # ---- called by the agent ----
+    # ---- called by the agent: a manual cue (always slot 19) ----
 
     def prepare(self, cue_id: str, boards: "dict[int, bytes]",
                 dev_type: int = DEV_NUMBER_BRAND, label: str = "",
-                delays: "dict[int, bytes] | None" = None) -> None:
+                delays: "dict[int, bytes] | None" = None,
+                slot: int = DEFAULT_SLOT) -> None:
         """`delays`: per board, the 128-byte table (64 sockets x uint16,
         big-endian, 10 ms frames) of per-socket start delays that makes
         the change sweep the garment (written before the colours;
-        boards without one keep what they have)."""
+        boards without one keep what they have).
+
+        Writing here (rather than through a burn) makes the slot's
+        content unknown to the burn cache - see ui/runner.py's
+        `_forget_burned()`, called for every board this saves."""
         if self.busy():
             raise RemoteError("unit is busy (firmware update, scan or reboot)")
         if not boards:
@@ -104,29 +139,57 @@ class RemoteSession:
                 raise RemoteError(f"board {address}: delay table must be "
                                   f"{TABLE_LEN} bytes (64 sockets x uint16), "
                                   f"got {len(table)}")
+        cue_id, slot = str(cue_id), int(slot)
         with self._lock:
-            if (self.phase == ARMED and self.fire_at is not None
-                    and self.fire_at - self._clock() <= FIRE_IMMINENT_S):
-                # About to fire, or already sent and not yet tallied - see
-                # FIRE_IMMINENT_S. Refused rather than silently dropped:
-                # the caller (ShowPlayer never hits this - its own
-                # scheduling already waits, see _plan()'s
-                # owned_unfired_elsewhere - so in practice this is an
-                # operator's own /prepare arriving a beat too soon) gets a
-                # 409 and tries again a moment later, once fired() has run.
-                raise RemoteError(f"cue {self.cue_id} is about to fire - "
-                                  f"try again in a moment")
+            self._refuse_if_imminent_locked(cue_id)
             self.active = True
             self.phase = PREPARING
-            self.cue_id, self.label = str(cue_id), label
+            self.cue_id, self.label = cue_id, label
             self.error = None
             self.saved, self.failed = [], []
             self.fire_at = self.fired_at = self.prepare_s = None
-            self._job = {"cue_id": self.cue_id, "boards": dict(boards),
-                         "dev_type": dev_type, "delays": delays}
+            self.slot, self.dev_type = slot, dev_type
+            self._job = {"cue_id": cue_id, "boards": dict(boards),
+                         "dev_type": dev_type, "delays": delays, "slot": slot}
         if not self.runner.remote and self.runner.start_remote(self) is False:
             self.failed_with("bus busy: the previous worker has not finished")
         self._wake.set()
+
+    def arm(self, cue_id: str, slot: int, dev_type: int = DEV_NUMBER_BRAND,
+            label: str = "") -> None:
+        """A cue already burned into `slot`: nothing to write, just a
+        fire time to keep - used by ui/showplay.py while RUNNING. Skips
+        PREPARING outright (there is no board write for the worker to
+        do or report on)."""
+        if self.busy():
+            raise RemoteError("unit is busy (firmware update, scan or reboot)")
+        cue_id, slot = str(cue_id), int(slot)
+        with self._lock:
+            self._refuse_if_imminent_locked(cue_id)
+            self.active = True
+            self.phase = READY
+            self.cue_id, self.label = cue_id, label
+            self.error = None
+            self.saved, self.failed = [], []
+            self.fire_at = self.fired_at = self.prepare_s = None
+            self.slot, self.dev_type = slot, dev_type
+            self._job = None
+        if not self.runner.remote and self.runner.start_remote(self) is False:
+            self.failed_with("bus busy: the previous worker has not finished")
+        self._wake.set()
+
+    def _refuse_if_imminent_locked(self, new_cue_id: str) -> None:
+        if (new_cue_id != self.cue_id and self.phase == ARMED
+                and self.fire_at is not None
+                and self.fire_at - self._clock() <= FIRE_IMMINENT_S):
+            # About to fire, or already sent and not yet tallied - see
+            # FIRE_IMMINENT_S. Refused rather than silently dropped: the
+            # caller (ShowPlayer never hits this - its own scheduling
+            # already waits - so in practice this is an operator's own
+            # /prepare arriving a beat too soon) gets a 409 and tries
+            # again a moment later, once fired() has run.
+            raise RemoteError(f"cue {self.cue_id} is about to fire - "
+                              f"try again in a moment")
 
     def fire(self, cue_id: str, at: float) -> None:
         with self._lock:
@@ -170,6 +233,74 @@ class RemoteSession:
             self._job = None
         self.runner.stop()
 
+    # ---- called by the agent: burning a show's cues into their slots ----
+
+    def burn(self, cues: "list[dict]", dev_type: int = DEV_NUMBER_BRAND) -> None:
+        """Queue a burn: `cues` is [{"slot", "boards": {addr: bytes64},
+        "delays": {addr: bytes128}}, ...], written in that order. Runs
+        on the runner's worker, which owns the port; a later burn() or
+        cancel_burn() (ShowPlayer.stop()) makes an in-flight one give up
+        early - see ui/runner.py's _run_burn()."""
+        if self.busy():
+            raise RemoteError("unit is busy (firmware update, scan or reboot)")
+        total = sum(len(c["boards"]) for c in cues)
+        with self._lock:
+            self._burn_epoch += 1
+            epoch = self._burn_epoch
+            self.burn_state = "burning"
+            self.burn_done, self.burn_total, self.burn_failed = 0, total, []
+            self._burn_job = {"cues": cues, "dev_type": dev_type, "epoch": epoch}
+        if not self.runner.remote and self.runner.start_remote(self) is False:
+            with self._lock:
+                self.burn_state = "failed"
+            self.failed_with("bus busy: the previous worker has not finished")
+            return
+        self._wake.set()
+
+    def cancel_burn(self) -> None:
+        """Give up on a burn in progress; what is already written stays
+        written (and the cache still knows it)."""
+        with self._lock:
+            self._burn_epoch += 1
+            self._burn_job = None
+            if self.burn_state == "burning":
+                self.burn_state = None
+        self._wake.set()
+
+    def burn_current(self, epoch: int) -> bool:
+        """False once a newer burn() or a cancel_burn() has superseded
+        the one the worker is (still) working through."""
+        with self._lock:
+            return self._burn_epoch == epoch
+
+    def take_burn_job(self) -> "dict | None":
+        with self._lock:
+            job, self._burn_job = self._burn_job, None
+            return job
+
+    def burn_progress(self, epoch: int, done: int, failed) -> None:
+        with self._lock:
+            if epoch != self._burn_epoch:
+                return
+            self.burn_done = done
+            self.burn_failed = list(failed)
+
+    def burn_finished(self, epoch: int, failed) -> None:
+        with self._lock:
+            if epoch != self._burn_epoch:
+                return
+            self.burn_failed = list(failed)
+            self.burn_done = self.burn_total
+            self.burn_state = "failed" if failed else "burned"
+
+    def burn_status(self) -> "dict | None":
+        with self._lock:
+            if self.burn_state is None:
+                return None
+            return {"done": self.burn_done, "total": self.burn_total,
+                    "failed": [list(bs) for bs in self.burn_failed],
+                    "state": self.burn_state}
+
     # ---- called by the runner's worker ----
 
     def wake(self) -> None:
@@ -196,11 +327,11 @@ class RemoteSession:
             else:
                 self.phase = ARMED if self.fire_at is not None else READY
 
-    def due(self) -> "tuple[str, float] | None":
-        """(cue, fire time) once the boards are loaded and a time is set."""
+    def due(self) -> "tuple[str, float, int, int] | None":
+        """(cue, fire time, slot, dev_type) once a time is set."""
         with self._lock:
             if self.phase == ARMED and self.fire_at is not None:
-                return self.cue_id, self.fire_at
+                return self.cue_id, self.fire_at, self.slot, self.dev_type
             return None
 
     def fired(self, cue_id: str, at: float) -> None:
@@ -215,6 +346,8 @@ class RemoteSession:
             if self.phase in (PREPARING, READY, ARMED):
                 self.phase = FAILED
             self.error = message
+            if self.burn_state == "burning":
+                self.burn_state = "failed"
 
     # ---- what the PC and the LCD read ----
 
@@ -223,6 +356,11 @@ class RemoteSession:
         with self._lock:
             late_ms = (None if self.fired_at is None or self.fire_at is None
                        else round((self.fired_at - self.fire_at) * 1000, 1))
+            burn = None
+            if self.burn_state is not None:
+                burn = {"done": self.burn_done, "total": self.burn_total,
+                       "failed": [list(bs) for bs in self.burn_failed],
+                       "state": self.burn_state}
             return {
                 "active": self.active, "phase": self.phase,
                 "cue": self.cue_id, "label": self.label,
@@ -234,4 +372,5 @@ class RemoteSession:
                 "boards": runner.reported_boards, "live": list(runner.live),
                 "no_sweep": sorted(runner.no_sweep),
                 "standby_ready": bool(runner.standby_ready),
+                "burn": burn,
             }

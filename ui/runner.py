@@ -132,7 +132,8 @@ class DemoRunner:
         self.boards = list(boards) if boards else list(DEFAULT_BOARDS)
         self.interval = interval
         self.guard_delay = guard_delay
-        self.slot = slot
+        self.slot = slot           # the LOCAL pattern loop's working slot
+        self._pattern_slot = slot  # ...restored by _start() after standby
         self.port = port
         self.palette = palette or list(DEFAULT_PALETTE)
         self._open_bus = open_bus or (lambda p: Bus(p, verbose=False))
@@ -164,12 +165,20 @@ class DemoRunner:
         # per reprobe interval and nothing else.
         self.live: list[int] = []
         self.absent: set[int] = set()
-        self._needs_cfg: set[int] = set()
+        # Per (board, slot): slot 0x1B config already sent, and the
+        # delay table (docs/FW_REQUEST_SEGMENT_DELAY.md) already there -
+        # so an unchanged one is not written again. A board's reboot
+        # wipes neither in flash (docs/MERIS_REPLY_3SLOT.pdf: 0x13/0x1F/
+        # 0x1B persist across power cycles), but a board that dropped
+        # out and reappeared is re-verified with a write anyway rather
+        # than trusted blind - see _forget_board().
+        self._cfg_done: set[tuple[int, int]] = set()
+        self._delays_sent: dict[tuple[int, int], bytes] = {}
+        # Per (board, slot): the (array, table) last burned there, so a
+        # re-Upload of an unchanged show writes nothing (ui/showplay.py's
+        # ShowPlayer.load() -> RemoteSession.burn() -> _run_burn()).
+        self._burn_cache: dict[tuple[int, int], tuple] = {}
         self._next_reprobe = 0.0
-        # Sweeps (docs/FW_REQUEST_SEGMENT_DELAY.md): the delay table each
-        # board holds, so an unchanged one is not written again, and the
-        # boards whose firmware answered "no such command".
-        self._delays_sent: dict[int, bytes] = {}
         self.no_sweep: set[int] = set()
 
         self.log: deque[str] = deque(maxlen=LOG_HISTORY)
@@ -233,11 +242,14 @@ class DemoRunner:
         Runs as soon as the link is up, so the installation always starts
         from a known blank state instead of whatever vendor demo frame
         happened to be on the glass. One-shot: it paints once and the
-        worker finishes, leaving the panels holding white.
+        worker finishes, leaving the panels holding white - always into
+        slot 0, since that is what the master autoplays at power-up
+        (docs/MERIS_REPLY_3SLOT.pdf): whatever comes back from an
+        unplug/replug shows the same white, not a stale look.
         """
         from .patterns import STANDBY
 
-        self.start(STANDBY, once=True)
+        self.start(STANDBY, once=True, slot=0)
 
     def _old_worker_gone(self) -> bool:
         """True once no earlier worker can touch the bus any more."""
@@ -273,7 +285,7 @@ class DemoRunner:
         self.caption = None
         self.failures = 0
         self.error = None
-        self._needs_cfg = set()
+        self._cfg_done = set()
         self._next_reprobe = 0.0
         self._stop.clear()
         self._pause.clear()
@@ -286,11 +298,13 @@ class DemoRunner:
         self._thread.start()
         return True
 
-    def start(self, pattern: Pattern, once: bool = False) -> bool:
+    def start(self, pattern: Pattern, once: bool = False,
+              slot: "int | None" = None) -> bool:
         with self._control:
-            return self._start(pattern, once)
+            return self._start(pattern, once, slot)
 
-    def _start(self, pattern: Pattern, once: bool = False) -> bool:
+    def _start(self, pattern: Pattern, once: bool = False,
+               slot: "int | None" = None) -> bool:
         if self.running:
             self.stop()
         self.pattern = pattern          # what the screen names, either way
@@ -299,6 +313,11 @@ class DemoRunner:
         self.remote = None
         self._once = once
         self.pattern = pattern
+        # standby() asks for slot 0 (docs/MERIS_REPLY_3SLOT.pdf: the
+        # master's power-up autoplay is slot 0, so that is what "white
+        # and quiet" has to mean); every other pattern uses the runner's
+        # own configured slot, same as always.
+        self.slot = self._pattern_slot if slot is None else slot
         self.cycle = 0
         self.caption = None
         self.failures = 0
@@ -307,7 +326,7 @@ class DemoRunner:
         # change because a different pattern was picked, and re-sweeping
         # eighteen empty sockets would hold the first frame for half a
         # minute every time KEY1 is pressed.
-        self._needs_cfg = set()
+        self._cfg_done = set()
         self._next_reprobe = 0.0
         self._stop.clear()
         self._pause.clear()
@@ -463,18 +482,37 @@ class DemoRunner:
         if not self._request(bus, stop(board, groups), f"probe @{board:02d}",
                              attempts=1, quiet=True, bus_retries=1):
             return False
-        return self._request(bus, slot_config(board, self.slot,
-                                              group_count=groups,
-                                              dev_type=self._active_dev_type()),
-                             f"cfg @{board:02d}")
+        ok = self._request(bus, slot_config(board, self.slot,
+                                            group_count=groups,
+                                            dev_type=self._active_dev_type()),
+                           f"cfg @{board:02d}")
+        if ok:
+            self._cfg_done.add((board, self.slot))
+        return ok
+
+    def _forget_board(self, board: int) -> None:
+        """A board that failed to take data may have rebooted - which,
+        even though 0x13/0x1F/0x1B all persist across a power cycle
+        (docs/MERIS_REPLY_3SLOT.pdf), is reason enough to re-verify every
+        one of its slots with a write rather than trust the caches."""
+        self._cfg_done = {k for k in self._cfg_done if k[0] != board}
+        self._delays_sent = {k: v for k, v in self._delays_sent.items()
+                             if k[0] != board}
+        self._burn_cache = {k: v for k, v in self._burn_cache.items()
+                            if k[0] != board}
+
+    def _forget_burned(self, board: int, slot: int) -> None:
+        """A manual /prepare (always slot 19) just wrote over what a
+        burn might have put there - the cache no longer knows what the
+        board holds, so the next burn must not skip it."""
+        self._burn_cache.pop((board, slot), None)
 
     def _drop(self, board: int) -> None:
         """Stop bothering an unreachable board until a reprobe finds it."""
         if board in self.live:
             self.live.remove(board)
         self.absent.add(board)
-        self._needs_cfg.discard(board)
-        self._delays_sent.pop(board, None)      # may come back rebooted
+        self._forget_board(board)
         self.emit(f"board {board} dropped, will reprobe")
 
     @property
@@ -512,7 +550,6 @@ class DemoRunner:
         self.absent -= set(joined)
         keep = set(self.live) | set(joined)
         self.live = [b for b in self.boards if b in keep]
-        self._needs_cfg -= set(joined)      # _probe just configured them
         if self.explore:                    # look a little past the newcomer
             horizon = min(MAX_BOARD_ID, max(self.live) + EXPLORE_GAP)
             beyond = [b for b in DEFAULT_BOARDS if b > max(self.boards)
@@ -540,7 +577,13 @@ class DemoRunner:
         time.sleep(0.3)
         if self.explore:
             self.boards = list(DEFAULT_BOARDS)      # the search starts over
-        self._delays_sent.clear()       # FW VERSION's 0x25 / a reboot may have cleared them
+        # Cheap to redo, so always re-verified on a bus reopen - unlike
+        # _burn_cache, which is deliberately NOT cleared here: a burn is
+        # expensive (docs/MERIS_REPLY_3SLOT.pdf says the write itself
+        # persists across a power cycle), so only a board that actually
+        # dropped out (_drop(), below) loses its place in that cache.
+        self._cfg_done = set()
+        self._delays_sent = {}
         known_absent = {b for b in self.boards if b in self.absent}
         pending = list(self.boards)
         found: list[int] = []
@@ -575,7 +618,6 @@ class DemoRunner:
             pending = [b for b in still if b not in known_absent]
         self.absent = set(self.boards) - set(found)
         self.live = [b for b in self.boards if b in set(found)]
-        self._needs_cfg = set()
         self._next_reprobe = time.monotonic() + self.reprobe_interval
         if not self.live:
             self.error = "no boards answering"
@@ -604,24 +646,22 @@ class DemoRunner:
                 self._drop(board)
                 skipped = True
                 continue
-            if board in self._needs_cfg and not self._request(
+            if (board, self.slot) not in self._cfg_done and not self._request(
                     bus, slot_config(board, self.slot, group_count=groups,
                                      dev_type=active.dev_type),
                     f"cfg @{board:02d}"):
                 self._drop(board)
                 skipped = True
                 continue
-            self._needs_cfg.discard(board)
+            self._cfg_done.add((board, self.slot))
             arr = active.array(frame[board])
             if not self._request(bus, save_color(board, self.slot, arr, groups,
                                                  dev_type=active.dev_type),
                                  f"save @{board:02d}", self.save_attempts):
                 # Answering but not taking data - it may have rebooted, so
-                # it needs its slot configured again before the next try.
-                # A rebooted board forgets its delay table too, so the
-                # cache must not tell _save_delays it is still there.
-                self._needs_cfg.add(board)
-                self._delays_sent.pop(board, None)
+                # every one of its slots needs re-verifying before the
+                # next try (_forget_board()).
+                self._forget_board(board)
                 skipped = True
                 continue
             updated += 1
@@ -707,72 +747,73 @@ class DemoRunner:
             return self._sleep(interval - self.guard_delay)
         return self._sleep(interval)
 
-    # ---- remote cues (ui/remote.py) ----
+    # ---- remote cues and burns (ui/remote.py) ----
+
+    def _save_one(self, bus, groups: int, slot: int, dev_type: int,
+                 board: int, array: bytes,
+                 table: "bytes | None" = None) -> bool:
+        """Write one board's picture (and its delay table, if it carries
+        one) into `slot`. No per-board stop first: 0x13 is pure storage
+        and never needs the board silenced (docs/MERIS_REPLY_3SLOT.pdf)
+        - unlike _cycle()'s live pattern loop, which still silences
+        before it draws."""
+        if board not in self.live:
+            return False
+        if (board, slot) not in self._cfg_done and not self._request(
+                bus, slot_config(board, slot, group_count=groups,
+                                 dev_type=dev_type), f"cfg @{board:02d}"):
+            self._drop(board)
+            return False
+        self._cfg_done.add((board, slot))
+        if table is not None and not self._save_delays(bus, groups, board,
+                                                        table, dev_type, slot):
+            self._forget_board(board)
+            return False
+        if not self._request(bus, save_color(board, slot, array, groups,
+                                             dev_type=dev_type),
+                             f"save @{board:02d}", self.save_attempts):
+            self._forget_board(board)
+            return False
+        return True
 
     def _save_cue(self, bus, groups: int, job: dict) -> "tuple[list, list]":
-        """Write one cue's arrays to the boards; (saved, failed).
-
-        The per-board sequence is _cycle's - stop, slot config when the
-        board may have rebooted, save - without the show: that goes out
-        later, on the clock.
-        """
-        dev_type = job["dev_type"]
+        """Write one manual cue's arrays to its slot; (saved, failed) -
+        the Designs tab and a demo row's one-shot preview (always slot
+        19, DEFAULT_SLOT)."""
+        dev_type, slot = job["dev_type"], job.get("slot", TEST_SLOT)
+        delays = job.get("delays") or {}
         saved, failed = [], []
         for board in sorted(job["boards"]):
             if self._stop.is_set():
                 break
-            if board not in self.live:
-                failed.append(board)            # absent; the reprobe looks
-                continue
-            if not self._request(bus, stop(board, groups), f"stop @{board:02d}"):
-                self._drop(board)
+            if self._save_one(bus, groups, slot, dev_type, board,
+                              job["boards"][board], delays.get(board)):
+                saved.append(board)
+                self._forget_burned(board, slot)   # the burn cache is stale now
+            else:
                 failed.append(board)
-                continue
-            if board in self._needs_cfg and not self._request(
-                    bus, slot_config(board, self.slot, group_count=groups,
-                                     dev_type=dev_type), f"cfg @{board:02d}"):
-                self._drop(board)
-                failed.append(board)
-                continue
-            self._needs_cfg.discard(board)
-            table = (job.get("delays") or {}).get(board)
-            if table is not None and not self._save_delays(bus, groups, board,
-                                                           table, dev_type):
-                # A rebooted or reconfigured board forgets its delay
-                # table, so the cache must not skip resending it later.
-                self._needs_cfg.add(board)
-                self._delays_sent.pop(board, None)
-                failed.append(board)
-                continue
-            if not self._request(bus, save_color(board, self.slot,
-                                                 job["boards"][board], groups,
-                                                 dev_type=dev_type),
-                                 f"save @{board:02d}", self.save_attempts):
-                self._needs_cfg.add(board)
-                self._delays_sent.pop(board, None)
-                failed.append(board)
-                continue
-            saved.append(board)
         return saved, failed
 
     def _save_delays(self, bus, groups: int, board: int, table: bytes,
-                     dev_type: int) -> bool:
+                     dev_type: int, slot: "int | None" = None) -> bool:
         """Give a board the sweep's delay table unless it already holds
-        it. The show file's table is 64 sockets of uint16, big-endian,
-        already in the board's own unit - 10 ms frames (NO_DELAY: no
-        delay given); the board takes it as V1.4's 0x1F, and a table
-        with no delays at all is 0x25 - forget the sweep. A board whose
-        firmware does not know the commands is remembered and left
-        alone: the cue still goes out, in socket order."""
-        if board in self.no_sweep or self._delays_sent.get(board) == table:
+        it (in this `slot`). The show file's table is 64 sockets of
+        uint16, big-endian, already in the board's own unit - 10 ms
+        frames (NO_DELAY: no delay given); the board takes it as V1.4's
+        0x1F, and a table with no delays at all is 0x25 - forget the
+        sweep. A board whose firmware does not know the commands is
+        remembered and left alone: the picture still goes out, in
+        socket order."""
+        slot = self.slot if slot is None else slot
+        if board in self.no_sweep or self._delays_sent.get((board, slot)) == table:
             return True
         values = struct.unpack(">64H", table)
         if all(v == NO_DELAY for v in values):
-            frames = [clear_pipeline(board, self.slot, groups, dev_type=dev_type)]
+            frames = [clear_pipeline(board, slot, groups, dev_type=dev_type)]
             label = f"sweep off @{board:02d}"
         else:
             frames = list(save_pipeline(
-                board, self.slot,
+                board, slot,
                 [0 if v == NO_DELAY else v for v in values],
                 groups, dev_type=dev_type))
             label = f"sweep @{board:02d}"
@@ -788,7 +829,7 @@ class DemoRunner:
                     and ack.cmd == ACK_SUCCESS
                     or self._request(bus, frame, label, self.save_attempts)):
                 return False
-        self._delays_sent[board] = table
+        self._delays_sent[(board, slot)] = table
         # Said once per table, so the operator can see on the unit's
         # log that the sweep really reached the board (a cached table
         # is not sent again and not announced again).
@@ -800,31 +841,75 @@ class DemoRunner:
                       f" last starts +{max(timed) * 10 / 1000:.2f} s")
         return True
 
-    def _fire_at(self, bus, groups: int, session, cue_id: str,
-                 at: float) -> bool:
-        """Send the one broadcast show at monotonic time `at`.
+    def _run_burn(self, bus, groups: int, session, burn_job: dict) -> None:
+        """Write every cue of a show into its own slot, in order,
+        skipping whatever the cache already knows is there
+        (ui/showplay.py's ShowPlayer.load()). Interruptible: a newer
+        burn() or a cancel_burn() bumps the session's burn epoch, and
+        this notices between boards, not just between cues, so
+        /show/stop or a fresh /show/load never waits for the whole
+        thing to finish."""
+        epoch, dev_type = burn_job["epoch"], burn_job["dev_type"]
+        done, failed = 0, []
+        for cue in burn_job["cues"]:
+            slot = cue["slot"]
+            delays = cue.get("delays") or {}
+            for board in sorted(cue["boards"]):
+                if self._stop.is_set() or not session.burn_current(epoch):
+                    return
+                array = cue["boards"][board]
+                table = delays.get(board)
+                if board not in self.live:
+                    failed.append((board, slot))
+                elif self._burn_cache.get((board, slot)) == (array, table):
+                    pass                 # unchanged: nothing to write
+                elif self._save_one(bus, groups, slot, dev_type, board,
+                                    array, table):
+                    self._burn_cache[(board, slot)] = (array, table)
+                else:
+                    failed.append((board, slot))
+                done += 1
+                session.burn_progress(epoch, done, failed)
+        session.burn_finished(epoch, failed)
+        self.emit(f"burn done: {done - len(failed)}/{done} boards written, "
+                  f"{len(failed)} failed")
+
+    def _fire_at(self, bus, groups: int, session, cue_id: str, at: float,
+                 slot: int, dev_type: int) -> bool:
+        """Send the one broadcast "show slot" at monotonic time `at`.
 
         Sleeps most of the way and polls the last FIRE_SPIN_S, so the
         frame leaves within a millisecond or two of the instant; a time
         already past (a late command) fires at once and the lateness is
-        what the session reports.
+        what the session reports. Nothing is written here - the picture
+        is already burned into `slot`.
+
+        A show's cues can now be far apart (nothing to write ahead of
+        time any more, so ui/showplay.py arms the next one the moment
+        the current one applies, however far off its own instant is) -
+        this call is where the runner would otherwise sit for that whole
+        stretch, so it keeps reprobing (cheap: _reprobe() only touches
+        the bus once every reprobe_interval) rather than only doing so
+        between cues.
         """
         while True:
             remaining = at - time.monotonic()
             if remaining <= 0:
                 break
-            if self._stop.is_set() or session.due() != (cue_id, at):
+            if (self._stop.is_set()
+                    or session.due() != (cue_id, at, slot, dev_type)):
                 return False                    # stopped, cancelled or moved
             if remaining > FIRE_SPIN_S:
+                self._reprobe(bus, groups)
                 self._stop.wait(min(remaining - FIRE_SPIN_S, 0.05))
             else:
                 time.sleep(0.0005)
-        bus.send(show_single(0xFF, self.slot, groups,
-                             dev_type=self._remote_dev_type))
+        bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
         sent_at = time.monotonic()
         session.fired(cue_id, sent_at)
         self.cycle += 1
-        self.emit(f"cue {cue_id} fired {(sent_at - at) * 1000:+.0f} ms")
+        self.emit(f"cue {cue_id} fired slot {slot} "
+                  f"{(sent_at - at) * 1000:+.0f} ms")
         return True
 
     def _run_remote(self, session) -> None:
@@ -845,10 +930,14 @@ class DemoRunner:
                     needs_setup = True
                     groups = max(len(self.boards), max(self.boards))
                     while not self._stop.is_set():
+                        # A job's own board list is applied BEFORE setup
+                        # runs, so the very first prepare() (still holding
+                        # the runner's construction-time board list) does
+                        # not pay for a setup sweep of the wrong list and
+                        # then a second one right after adjusting it.
                         job = session.take_job()
                         if job is not None:
                             guard_due = None    # the save's stops cover it
-                            self._remote_dev_type = job["dev_type"]
                             wanted = sorted(job["boards"])
                             if wanted != sorted(self.boards):
                                 # Another garment, another board list - but
@@ -863,20 +952,65 @@ class DemoRunner:
                                              if b in wanted]
                                 self.boards = wanted
                                 self.explore = False    # the show PC knows
+                                groups = max(len(self.boards), max(self.boards))
                                 needs_setup = True
-                            groups = max(len(self.boards), max(self.boards))
+                            if needs_setup:
+                                if not self._setup(bus, groups):
+                                    session.failed_with(self.error
+                                                        or "setup failed")
+                                    break
+                                needs_setup = False
+                                self.error = None
                             began = time.monotonic()
-                            if needs_setup and not self._setup(bus, groups):
-                                session.failed_with(self.error or "setup failed")
-                                break           # reopen the bus and retry
-                            needs_setup = False
-                            self.error = None
                             saved, failed = self._save_cue(bus, groups, job)
                             took = time.monotonic() - began
                             session.prepared(job["cue_id"], saved, failed, took)
                             self.emit(f"cue {job['cue_id']} saved "
                                       f"{len(saved)}/{len(wanted)} in {took:.1f} s")
                             continue
+
+                        # A burn's own board list (every board any of its
+                        # cues names) is applied the same way, and for the
+                        # same reason: the runner may still be holding its
+                        # construction-time list (or a previous show's).
+                        burn_job = session.take_burn_job()
+                        if burn_job is not None:
+                            guard_due = None
+                            wanted = sorted({b for cue in burn_job["cues"]
+                                            for b in cue["boards"]})
+                            if wanted and wanted != sorted(self.boards):
+                                self.absent = {b for b in wanted
+                                               if b in self.absent}
+                                self.live = [b for b in self.live
+                                             if b in wanted]
+                                self.boards = wanted
+                                self.explore = False
+                                groups = max(len(self.boards), max(self.boards))
+                                needs_setup = True
+                            if needs_setup:
+                                if not self._setup(bus, groups):
+                                    session.failed_with(self.error
+                                                        or "setup failed")
+                                    break
+                                needs_setup = False
+                                self.error = None
+                            self._run_burn(bus, groups, session, burn_job)
+                            continue
+
+                        if needs_setup:
+                            # The one broadcast 0x17 for this port session
+                            # (docs/MERIS_REPLY_3SLOT.pdf: one is enough
+                            # after power-up) - _setup()'s own first move.
+                            # Only reached with no job or burn pending: a
+                            # due fire needs it just as much, but there is
+                            # no board list of its own to adjust first.
+                            if not self._setup(bus, groups):
+                                session.failed_with(self.error
+                                                    or "setup failed")
+                                break           # reopen the bus and retry
+                            needs_setup = False
+                            self.error = None
+
                         due = session.due()
                         if due is not None:
                             if self._fire_at(bus, groups, session, *due):
@@ -888,7 +1022,7 @@ class DemoRunner:
                             # on into the factory autoplay unless stopped.
                             guard_due = None
                             bus.send(stop(0xFF, groups))
-                        if not needs_setup and self._reprobe(bus, groups):
+                        if self._reprobe(bus, groups):
                             pass                # joined boards take the next cue
                         wait = self.link_poll
                         if guard_due is not None:

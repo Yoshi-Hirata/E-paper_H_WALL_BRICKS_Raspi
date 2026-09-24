@@ -22,7 +22,8 @@ from ui.inputs import ScriptedInput
 from ui.remote import RemoteError
 from ui.showplay import ENDED, LOADED, RUNNING, STOPPED, ShowPlayer
 
-from tests.test_showplay import REFRESH, events, make_show, ordered_bus, show_times
+from tests.test_showplay import (REFRESH, events, make_show, ordered_bus,
+                                 show_times, wait_burned)
 from tests.test_ui_remote import call, make_session, shows, wait_until
 
 ordered_bus = ordered_bus            # re-exported: keeps the autouse fixture
@@ -150,6 +151,7 @@ def test_demo_save_is_refused_while_a_show_runs_or_holds(rig):
     agent, session, runner, bus, player, demos = rig
     show = make_show()
     player.load(show)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     code, body = call(agent, "/demo/save", {"name": "x", "show": show})
     assert code == 409 and "stop it first" in body["error"]
@@ -165,6 +167,7 @@ def test_show_load_is_refused_while_a_demo_plays_not_while_a_pc_show_runs(rig):
     agent, session, runner, bus, player, demos = rig
     show = make_show()
     player.load(show, demo=True)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     code, body = call(agent, "/show/load", show)
     assert code == 409 and "stop it first" in body["error"]
@@ -174,6 +177,7 @@ def test_show_load_is_refused_while_a_demo_plays_not_while_a_pc_show_runs(rig):
     # the conductor's own supervision (fleet.py resends a mismatched id
     # even mid-show), unchanged by this feature.
     player.load(show)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     code, body = call(agent, "/show/load", show)
     assert code == 200
@@ -187,6 +191,7 @@ def test_show_preset_and_run_are_also_refused_while_a_demo_plays(rig):
     agent, session, runner, bus, player, demos = rig
     show = make_show()
     player.load(show, demo=True)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     code, body = call(agent, "/show/preset", {})
     assert code == 409 and "stop it first" in body["error"]
@@ -205,6 +210,7 @@ def test_show_preset_and_run_are_also_refused_while_a_demo_plays(rig):
 
     # A PC-driven show (is_demo False) is unaffected.
     player.load(show)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     assert call(agent, "/show/run", {"t0": time.monotonic() + 1,
                                      "show": show["id"]})[0] == 200
@@ -256,6 +262,35 @@ def test_status_show_carries_the_demo_flag_and_name(rig):
     assert status["demo"] is False and status["demo_name"] == ""
 
 
+def test_show_load_reply_already_shows_burning_for_the_new_show(rig):
+    # The conductor's fleet-wide START gate polls status.show.burn right
+    # after /show/load's own reply - it must already say "burning" (with
+    # the total worked out) for THIS show, not "burned" from a previous
+    # one or state that has not caught up yet. load() calls
+    # RemoteSession.burn() synchronously (it only queues the write; the
+    # write itself is what runs on the worker), so this is true by
+    # construction, but is worth pinning down at the HTTP boundary.
+    agent, session, runner, bus, player, demos = rig
+    show_a = make_show()
+    code, status = call(agent, "/show/load", show_a)
+    assert code == 200
+    assert status["show"]["id"] == show_a["id"]
+    burn = status["show"]["burn"]
+    assert burn is not None and burn["state"] in ("burning", "burned")
+    assert burn["total"] == sum(len(c["boards"]) for c in show_a["cues"])
+    assert wait_burned(player)
+
+    # A second, different show: the reply's burn must belong to THIS
+    # show, not linger as "burned" from show_a.
+    show_b = make_show(sents=(-REFRESH, 0.5, 0.9, 1.3))
+    code, status = call(agent, "/show/load", show_b)
+    assert code == 200
+    assert status["show"]["id"] == show_b["id"]
+    burn = status["show"]["burn"]
+    assert burn is not None
+    assert burn["total"] == sum(len(c["boards"]) for c in show_b["cues"])
+
+
 def test_demo_routes_without_a_store_are_not_found():
     session, runner, bus = make_session()
     agent = Agent(session, port=0, host="127.0.0.1")
@@ -281,6 +316,7 @@ def make_app(tmp_path, session, runner, player_kwargs=None, **app_kwargs):
     demos = DemoStore(tmp_path / "demos")
     app = App(NullDisplay(), ScriptedInput(()), runner, remote=session,
              player=player, demos=demos, host="radxa-03", **app_kwargs)
+    app.show_status = player.status       # ui/main.py's own wiring too
     return app, player, demos
 
 
@@ -318,13 +354,19 @@ def test_key1_plays_it_and_key2_stops_it(tmp_path):
         app.select(f"demo:{slug}")
         app.handle("key1")
         assert app.screen is Screen.DEMO
-        t0 = player.t0
-        assert t0 is not None
         assert player.is_demo and player.demo_name == "DEMO PARIS"
 
-        assert wait_until(lambda: player.applied == "q00")
-        assert events(bus) == [("save", 1, 1), ("save", 2, 1), ("show",)]
-        assert wait_until(lambda: player.applied == "q01", timeout=4)
+        # KEY1 only starts the burn (both cues, full state, before any
+        # trigger) - the App itself calls run() once it settles.
+        assert _pump(app, lambda: (player.status().get("burn") or {})
+                     .get("state") == "burned")
+        assert events(bus) == [("save", 1, 1), ("save", 2, 1),
+                               ("save", 1, 2), ("save", 2, 2)]
+        assert _pump(app, lambda: player.applied == "q00")
+        t0 = player.t0
+        assert t0 is not None
+        assert events(bus)[-1] == ("show", 1)
+        assert _pump(app, lambda: player.applied == "q01", timeout=4)
         assert 0 <= show_times(bus)[1] - (t0 + 0.6) < 0.05
 
         app.handle("key2")
@@ -346,13 +388,17 @@ def test_key1_held_restarts_from_zero(tmp_path):
         app.refresh_demos()
         app.select(f"demo:{slug}")
         app.handle("key1")
-        assert wait_until(lambda: player.applied == "q00")
+        assert _pump(app, lambda: player.applied == "q00")
         first_t0 = player.t0
 
         app.handle("key1_hold")
         assert app.screen is Screen.DEMO
-        assert player.t0 is not None and player.t0 != first_t0
-        assert wait_until(lambda: player.applied == "q00")
+        # A fresh load (a new burn) - its content is unchanged, so the
+        # cache skips every write, but run() still only follows once
+        # _await_demo_burn() sees it settle.
+        assert _pump(app, lambda: player.t0 is not None
+                     and player.t0 != first_t0)
+        assert _pump(app, lambda: player.applied == "q00")
     finally:
         player.close()
         runner.stop()
@@ -370,7 +416,7 @@ def test_key1_hold_restarts_the_playing_demo_not_a_row_the_cursor_clamped_onto(
         app.refresh_demos()
         app.select(f"demo:{slug_a}")
         app.handle("key1")
-        assert wait_until(lambda: player.applied == "q00")
+        assert _pump(app, lambda: player.applied == "q00")
         assert player.show["id"] == show_a["id"]
 
         # AAA is deleted from the PC while it plays; the row it occupied
@@ -431,6 +477,121 @@ def _pump(app, predicate, timeout=3.0, interval=0.02) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(interval)
+
+
+# ---- pre-burn (2026-09-25): KEY1 burns first, then the App runs it ----
+
+class _SlowSaveBus:
+    """A FakeBus whose colour saves take a moment - long enough for the
+    burn to still be "burning" the first few times something checks."""
+
+    def __init__(self, delay=0.05):
+        from tests.test_ui_runner import FakeBus
+
+        self._bus = FakeBus()
+        self._delay = delay
+
+    def __getattr__(self, name):
+        return getattr(self._bus, name)
+
+    def request(self, frame, retries=3):
+        if frame.cmd == 0x13:          # SAVE
+            time.sleep(self._delay)
+        return self._bus.request(frame, retries)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._bus.closed = True
+
+
+def test_the_demo_screen_shows_the_burn_progress(tmp_path):
+    session, runner, bus = make_session(_SlowSaveBus())
+    app, player, demos = make_app(tmp_path, session, runner)
+    try:
+        show = make_show(sents=(-REFRESH, 0.6, 0.9), duration=5)
+        slug = demos.save("DEMO PARIS", show)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert app.screen is Screen.DEMO
+        # Caught mid-burn at least once - "writing pictures n/N", not the
+        # ordinary running hint, and never yet actually running.
+        assert _pump(app, lambda: "writing pictures" in app._demo_hint(
+            app._remote_status()))
+        assert player.t0 is None
+        assert _pump(app, lambda: player.t0 is not None)
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_key2_during_the_burn_cancels_it_and_returns_to_the_menu(tmp_path):
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    try:
+        # Many cues (many slots to write) so the burn is still running
+        # when KEY2 lands, on a fake bus with no real per-frame delay.
+        show = make_show(sents=tuple(n * 0.01 for n in range(18)),
+                         duration=1.0)
+        slug = demos.save("DEMO PARIS", show)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert app.screen is Screen.DEMO
+        app.handle("key2")
+        assert app.screen is Screen.MENU
+        assert not session.active            # release() let go of the unit
+        time.sleep(0.2)
+        status = session.burn_status()
+        assert status is None or status["state"] != "burning"
+        assert player.t0 is None              # run() was never reached
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_burn_failure_on_a_live_board_shows_the_error_and_never_runs(
+        tmp_path):
+    from tests.test_showplay import RefusesSaveBus
+
+    session, runner, bus = make_session(RefusesSaveBus(2))
+    app, player, demos = make_app(tmp_path, session, runner)
+    try:
+        show = make_show(sents=(-REFRESH, 0.6), duration=5)
+        slug = demos.save("DEMO PARIS", show)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert app.screen is Screen.DEMO
+        assert _pump(app, lambda: "boards failed" in app._demo_hint(
+            app._remote_status()))
+        assert player.t0 is None              # never ran
+        assert app.screen is Screen.DEMO      # stays put until KEY2
+        app.handle("key2")
+        assert app.screen is Screen.MENU
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_burn_failure_on_only_absent_boards_still_runs(tmp_path):
+    from tests.test_ui_remote import PickyBus
+
+    session, runner, bus = make_session(PickyBus({2}))
+    app, player, demos = make_app(tmp_path, session, runner)
+    try:
+        show = make_show(sents=(-REFRESH, 0.6), duration=5)
+        slug = demos.save("DEMO PARIS", show)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert _pump(app, lambda: player.applied == "q00")
+        assert app._demo_burn_error is None
+    finally:
+        player.close()
+        runner.stop()
 
 
 def test_loop_restarts_after_the_gap(tmp_path, monkeypatch):
@@ -527,6 +688,7 @@ def test_a_pc_show_uploaded_over_an_ended_looping_demo_is_never_repainted(
         # or an operator's Upload+START would: /show/load then /show/run.
         pc_show = make_show(sents=(-REFRESH, 0.9), duration=5)
         player.load(pc_show)                    # demo=False: not ours
+        assert wait_burned(player)
         player.run(time.monotonic() + 0.3)
         assert _pump(app, lambda: app.screen is Screen.REMOTE, timeout=2)
         assert app._playing_demo is None        # let go of, not just hidden
@@ -551,6 +713,7 @@ def test_restore_of_a_demo_clears_is_demo_and_never_auto_resumes(tmp_path):
     try:
         show = make_show(sents=(-REFRESH, 5.0), duration=30)
         player.load(show, demo=True)
+        assert wait_burned(player)
         player.run(time.monotonic() + 0.2)
         assert wait_until(lambda: player.state == RUNNING)
         player.close()
