@@ -18,11 +18,91 @@
 
 ## 2. 直近で完成したもの
 
+**pre-burn 統合ラウンド完了(U2 + V2 + 第 2 巡レビューの修正、2026-09-25)- 実機 radxa-01 で確認済み**
+
+このラウンドで pre-burn(Upload の時点で全部の絵をスロットへ焼き込み、本番中はトリガだけ)は
+unit 側・conductor 側とも一本化された。以下がいまの契約。**PC と機体は必ず一緒に更新すること**
+(古いページは機体の `cancelled` / `none` を `written` のように見せる)。
+
+- **焼き込みの状態**(`/status` の `show.burn`、ロード済みショーには必ず付く):
+  `burning`(`done`/`total`)/ `burned` / `failed` / `cancelled` / `none`。
+  - **最後までリストを歩いた終わり方だけが `failed`** で、`failed: [[基板, スロット], …]` は
+    「その基板が拒否した/不在だった」を意味する。**途中で終わった焼き込みは必ず
+    `cancelled` + `reason`**(焼き込み中の STOP = 理由なし、`no serial port`、
+    `bus busy: …`、`no boards answering`、`interrupted: the port was taken`、
+    `the worker was stopped first`)。空の `failed` を持つ `failed` が PC に
+    「0 board(s) not written」と force を勧めさせていたのを直した(第 2 巡レビュー)
+  - 焼き込みは終わったが記録をディスクに書けなかったときは `record: "unsaved: <err>"` が付く
+    (タイルに出る。`note` には入れない - `note` は status() が burn より先に読むので 1 ポーリング
+    遅れ、run() が消してしまう)。再試行は次の `load()` のときだけ
+  - **force が通すのは「生きている基板が拒否した `failed`」だけ**。`burning` / `cancelled` /
+    `none` は force でも通らない(unit・conductor の両方で拒否)
+- **記録の場所**: `~/.epaper/show-burn.json`(`{"burned": ショー id, "when", "state", "total",
+  "failed"}`)。`load()` は新しいショーファイルを書く**前に**これを消すので、焼き込み中の再起動は
+  同じショーでも必ず `none` で戻る
+- **PC 側の文言**(fleet.py とページで同一): `writing 12/48` / `written` /
+  `✗ not written (cancelled: 理由) — Upload again` / `✗ not written since it restarted —
+  Upload again` / `✗ 10 of 12 pictures not written on boards 1, 2, 3 +1 more`。
+  最後のものだけが ② ③ の「anyway?」(force)の対象。**枚数(基板 × キュー)で数える** -
+  12 基板の 1 枚が落ちれば 18 枚であって「1 board」ではない
+- **ショー中の ① Upload**: 確認ダイアログ付きで押せるようになった(`force`)。絵を失った 1 台を
+  戻すための手段で、同じショーを持っている機体は 1 枚も書かない。押した機体はいったん
+  ショーから外れ、次の監視ポーリングで自動的に戻る。これまで復帰手段は STOP(全機体のショーが
+  終わる)しかなかった
+- **conductor を再起動して走行中のショーを拾った run(`_adopt()`)は `force: True` を持つ** -
+  すでにゲートを通って走っているショーに、監視の `/show/run` が force なしで入って拒否される
+  のを防ぐ
+- **機体がショー中に再起動しても白は出さない**: 起動時のスタンバイ(白)を飛ばし
+  (`ShowPlayer.restored_running` を `ui/main.py` が見る)、**遅れているトリガを基板の探索より
+  先に**送る。実機では探索に 16 秒かかり、その間ステージ上の衣装が真っ白になっていた
+- **焼き込み時間**(実測に基づく見積り、`SAVE_S_PER_BOARD` 0.25 s + `CLEAR_S_PER_BOARD` 0.06 s):
+  **36 基板 × 10 キュー ≈ 112 秒、× 18 キュー ≈ 195 秒(約 3.3 分)**。F5 のクリア(0x25)が
+  初回だけ (基板, スロット) ごとに 1 フレーム増えるぶんを含む。**中身の変わらない再 Upload は
+  ≈ 0 秒**(キャッシュが効いて 1 枚も書かない)
+
+**実機測定(radxa-01、FW_260923、基板 1-2 のみ通電、2026-09-25)**
+
+- 2 基板 × 4 スロットの焼き込みは cfg / clear 込みで **約 1.2 秒**(1 枚あたり約 0.15 秒)
+- START 後のトリガは送信予定時刻に対して **+2 ms / +1 ms / +1 ms**(20 秒間隔、走行中の 0x13 は 0 件)
+- PRESET を飛ばして START した回はプリセットのキューが 5 秒遅れて出た - **START が自力で治す**
+- 不在/未知の基板は **1 プロセス起動につき 1 枚あたり約 1.5 秒**のシリアルタイムアウトを払う。
+  16 基板の衣装で 14 枚が不在だと、以前は**最初のスロットの中で 22 秒**かかっていた(2〜4 枚目は
+  各 0.3 秒)。いまは slot 1 の前にまとめて 1 回だけ払い、ログに
+  `14 boards absent (3-16) - skipped` と出す。焼き込みの最後には
+  `burn done: 8/64 in 23.5 s (2 live boards, 14 absent)` の 1 行
+- 起動時のスタンバイの基板探索(3-8 の 6 枚が不在)は **約 16 秒**
+- 中身の変わらない再 Upload は **0.02 秒**で `written` に戻る(書き込み 0 件)
+- ショー中に `epaper-ui` を再起動 → `show-burn.json` から復元、conductor は
+  「T0 confirmed after its restart」、書き直しゼロ、以後のキューは +1 ms で発火
+
+**このラウンドの中身**(コミット: U2 = `5e4cede` のマージまで、V2 = `39d75fa` のマージまで、
+第 2 巡の修正 = `20911c2`(unit)+ `4eb36a1`(conductor)+ 本エントリ)
+
+- U2: 焼き込みをショーに紐付けて永続化(F1)、`force`(F2)、中断された焼き込み(F4)、
+  古いスイープ表のクリア(F5)、F7、F9、F10
+- V2: `_burn_problems` の状態の切り分け(F1)、force を機体まで運ぶ(F2)、PRESET のゲート(F3)、
+  showfile の delays 必須化(F5)、監視の連打防止(F6)、デモ焼き込み中の扱い(F7)、docs(F8)、F11
+- 第 2 巡: 上記の「途中で終わった焼き込みは cancelled」「枚数で数える」「ショー中の Upload」
+  「adopt の force」「記録が書けないときの `record`」「再起動しても白を出さない」
+  「absent 基板の探索を先に済ませて 1 行で言う」「START の force 再試行を PRESET と対称に」
+  「LCD のヒントを 1 行に収める」「Pictures 行の言葉と CONDUCTOR_START §6 の表」
+- **テスト: 675 件 + skip 1**(Windows、3 分 58 秒。ラウンド開始時 667 + 1 から +8)
+
+**フォローアップ(未着手)**
+
+- **F9**: show file の各キューの `boards`(差分)は unit 側で誰も読まない。`validate_show` から
+  `boards` を外し、`showfile.py` の `"boards"` を消せばファイルは約 1/3 小さくなる。
+  `id` のハッシュが変わるので全機体が焼き直しになる - **本番前に済ませること**
+- **フレーム単価の実測**: 上の 112 秒 / 195 秒は 1 枚 0.31 秒の見積り。36 基板の実機で 1 回
+  計って置き換えること(radxa-01 の 2 基板では 1 枚 0.15 秒だった - バスが空いているぶん速い)
+
 **pre-burn レビュー修正ラウンド、conductor 側(Coder V2、2026-09-25)- F1/F2/F3/F5/F6/F7/F8/F11 の PC 側**
 
+- (履歴。統合後のいまの契約は上の統合エントリを見ること - 焼き込み状態には `cancelled` の
+  `reason` が増え、`failed` のメッセージは枚数で数えるようになった)
 - 対象は敵対的レビュー(`review_preburn_findings.md`)の conductor 側。unit 側(F1 の unit 半分、
-  F2 の `_burn_gate(force)`、F4、F9 の死にコード、F10)は Coder U2 が同時に `ui/*` で実装中。
-  **unit 側との契約(U2 に合わせて設計。U2 の報告が違えばコーディネータが調停)**: 焼き込み状態は
+  F2 の `_burn_gate(force)`、F4、F9 の死にコード、F10)は Coder U2 が同時に `ui/*` で実装した。
+  **unit 側との契約**: 焼き込み状態は
   `"burning" | "burned" | "failed" | "cancelled" | "none"`(none = 再起動後・焼き込みを始められなかった
   load)。新しいエージェントはロード済みショーに **必ず `burn` dict** を返し、古いエージェントは
   `burn` キー自体を持たない。`/show/run` と `/show/preset` は `{"force": true}` を受け、force が通すのは
@@ -59,7 +139,7 @@
   「writing its demo pictures, left alone」と 1 回だけ記録して放置する。
 - **F8** `conductor/timeline.py` docstring の 1-19/19 枚、README の「スロット 19 のみ使用する」を 0 / 1〜18 / 19 の
   割り当てに修正。`docs/CONDUCTOR_START.md` §6 を「① Upload → Pictures written on n / n units を待つ(36 基板
-  × 10 キューで約 90 秒)→ ② → ③」にし、焼き込み中の STOP・機体の再起動は Upload し直し、FAILED は ② ③ の
+  × 10 キューで約 90 秒 - いまは約 112 秒に更新済み)→ ② → ③」にし、焼き込み中の STOP・機体の再起動は Upload し直し、FAILED は ② ③ の
   ダイアログで force、書き込み中は force 不可、と明記。`docs/SPECIFICATION.md` §3.3 に delays 必須・焼き込み
   状態・force の規則を追加。
 - **F11** `tests/test_show_e2e.py` の RESUME 後の許容差を「0.2 s + resume() に実際にかかった時間」に。
@@ -67,9 +147,7 @@
   読まないが、unit の `validate_show` が `boards` キーを要求しているので**残してある**。U2 が
   `validate_show` から `boards` を外したら `showfile.py` の `"boards"` 行を消す(state と同サイズなので
   ファイルは約 1/3 減る。`id` のハッシュが変わるので全機体が焼き直しになる - 本番前に済ませること)。
-- **e2e(`tests/test_show_e2e.py`)について**: 本ブランチの unit 側は a2987b5 のままなので、`/show/run` /
-  `/show/preset` の余分な `force` キーは無視され、burn の新 state は現れない。U2 のブランチと統合したあと
-  e2e を必ずもう一度回すこと(特に: STOP 中の burn が "cancelled" になれば `burned()` 待ちの前提が変わる)。
+- **e2e(`tests/test_show_e2e.py`)について**: U2 との統合後に回してある(上の統合エントリ)。
 - コミット: `19c68cc`(fleet/server/page/showfile の本体、停電で PM が WIP 保存)→ `fbf1096`(F5 + F3 server
   test)→ `80f2762`(F1/F2/F3/F6/F7 の fleet tests)→ `35f017a`(F8 docs)→ `a8f9c3c`(F11)→ 本エントリ。
   テスト: **653 件 + skip 1**(Windows、3 分 51 秒。前ラウンド 636 + 1 から +17)。ページはネットワーク無しの
@@ -93,8 +171,8 @@
 - fake fleet(scratchpad/fake_fleet.py、127.0.0.1:18701/18704)で API を通した: Upload → 焼き込み
   (radxa-01: 32 枚、radxa-04: 48 枚)→ PRESET → START → ショー中の Upload は 400「stop the show first」
   → STOP。同じショーの再 Upload はキャッシュにより 0.5 秒未満で burned。
-- テスト 636 件 + skip 1(Windows)。**実機未検証**: 焼き込みの所要時間(見積り 36 基板 × 10 キュー
-  ≈ 90 秒)、8 秒間隔の 0x1D、12 V レール。Radxa 復帰後に `git pull` と `epaper-ui` 再起動が全台に必要
+- テスト 636 件 + skip 1(Windows)。**当時は実機未検証**: 焼き込みの所要時間(いまの見積りは
+  36 基板 × 10 キューで ≈ 112 秒 - 上の統合エントリ)、8 秒間隔の 0x1D、12 V レール。Radxa 復帰後に `git pull` と `epaper-ui` 再起動が全台に必要
   (`ui/*` が大きく変わった。conductor と unit は常に同時更新)。
 - **統合版の敵対的レビュー(Opus, 2026-09-25)の判定は Block。機体への配布・本番使用は F1〜F5 の修正まで禁止。**
   要点(全文はセッションのスクラッチパッド `review_preburn_findings.md`):
@@ -159,10 +237,11 @@
      境目ちょうどで数マイクロ秒の食い違いが起きると、直前に発火し終えたキューを「まだ違う」と
      誤判定して撃ち直すことがあった。`applied` が指すキューの `sent` と `current` の `sent` を
      比較する(順序で見る)ように修正。
-- 焼き込み時間の見積り: 1 基板あたり `SAVE_S_PER_BOARD = 0.25 s`(実測 0.22〜0.25 s に基づく既存の
-  定数)として、**36 基板 × 10 キュー ≈ 90 秒**(`tests/test_showplay.py`
-  `test_the_36_board_10_cue_burn_time_estimate` に定数として固定)。実機の 9600 bps バスでの検証は
-  未実施。
+- 焼き込み時間の見積り: 1 枚あたり `SAVE_S_PER_BOARD = 0.25 s` + `CLEAR_S_PER_BOARD = 0.06 s`
+  (F5 のクリア。実測 0.22〜0.25 s の既存の定数に初回のクリアを足したもの)として、
+  **36 基板 × 10 キュー ≈ 112 秒、× 18 キュー ≈ 195 秒**(`tests/test_showplay.py`
+  `test_a_36_board_10_cue_burn_is_one_save_per_pair` に固定。初出のこの entry は「≈ 90 秒」と
+  書いていた - 上の統合エントリで更新)。radxa-01 の 2 基板では 1 枚 0.15 秒だった。
 - **`ui/app.py`(LCD の KEY1)も同日中に追従**: KEY1 は `player.load(show, demo=True, ...)` を
   呼んで焼き込みを始めるだけになり(`run()` はここではもう呼ばない)、DEMO 画面はその場で開いて
   `status.show.burn` から「writing pictures n/N - KEY2 cancel」をヒント行に出す。焼き込みが

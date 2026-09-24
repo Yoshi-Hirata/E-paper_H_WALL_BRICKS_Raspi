@@ -91,11 +91,15 @@ SHOW_SLOT_MIN, SHOW_SLOT_MAX = 1, DEFAULT_SLOT - 1
 # written into its own slot at /show/load time (RemoteSession.burn()), so
 # RUNNING a show is triggers only - a broadcast "show slot N", nothing to
 # write. SAVE_S_PER_BOARD is what one board's 0x13 costs over the 9600 bps
-# relay - the anchor of the "~90 s for 36 boards x 10 cues" burn estimate
-# the docs and the operator warning quote (tests/test_showplay.py times a
-# fake burn of exactly that size against it); nothing here schedules by
-# it any more.
+# relay and CLEAR_S_PER_BOARD what the 0x25 beside it costs on a FIRST
+# burn (review finding F5: every (board, slot) gets its pipeline cleared
+# or its table written once) - together the anchor of the burn estimate
+# the docs quote: 36 boards x 10 cues = 360 pictures ~ 112 s, x 18 cues
+# ~ 195 s, and the same show again ~ 0 s (nothing is written twice).
+# tests/test_showplay.py times a fake burn of exactly that size against
+# it; nothing here schedules by it any more.
 SAVE_S_PER_BOARD = 0.25    # a little over the measured 0.22 s
+CLEAR_S_PER_BOARD = 0.06   # the 0x25 / 0x1F beside it, first burn only
 RESTORE_GRACE_S = 6.0      # let the PC correct a restored T0 first
 RESTORE_AHEAD_S = 90.0     # a restored T0 further ahead than this is junk
 CATCH_UP_LEAD_S = 0.3

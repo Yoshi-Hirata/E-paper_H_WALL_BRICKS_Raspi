@@ -181,10 +181,17 @@ pipeline = 1。
 - **焼き込みの状態と force**(2026-09-25、`/status` の `show.burn`):
   - 新しいエージェントはロード済みのショーについて必ず `burn` を返し、その
     `state` は `burning`(書き込み中、`done`/`total`)| `burned`(完了)|
-    `failed`(書けなかった基板あり、`failed: [[基板, スロット], …]`)|
-    `cancelled`(焼き込み中に STOP)| `none`(再起動などで焼き込みの記録が無い)
-    のいずれか。古いエージェントは `burn` キー自体を持たない - PC 側はこの場合
-    だけを「制約なし」として扱い、`burn: null` は「書けていない」として止める
+    `failed`(最後まで走ったが書けなかった基板あり、`failed: [[基板, スロット], …]`)|
+    `cancelled`(最後まで走らなかった: 焼き込み中の STOP、ローカルのパターンに
+    ポートを取られた、シリアルポートが無い、基板が 1 枚も答えない。`reason` に
+    理由の文字列が付く - STOP だけは理由なし)| `none`(再起動などで焼き込みの
+    記録が無い)のいずれか。**書けなかった枚数が分からない終わり方は必ず
+    `cancelled`** - 空の `failed` を持つ `failed` は PC に「0 board not written」と
+    force を勧めさせるため(2026-09-25 のレビュー第 2 巡)。焼き込み自体は
+    終わったのに記録をディスクに残せなかったときは `record: "unsaved: <err>"` が
+    付く(次の再起動は `none` になる)。古いエージェントは `burn` キー自体を
+    持たない - PC 側はこの場合だけを「制約なし」として扱い、`burn: null` は
+    「書けていない」として止める
   - PC の ③ START と ② Show preset は全機体が `burned` のときだけ通る。
     `force`(`/show/run`・`/show/preset` の `{"force": true}`。START の force は
     その run の SEEK / RESUME / NEXT / 監視の `/show/run` にも付いて回る)は

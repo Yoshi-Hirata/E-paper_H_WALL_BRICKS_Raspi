@@ -20,8 +20,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ui.remote import ARMED, READY, RemoteError, RemoteSession
-from ui.showplay import (BURN_FILE, ENDED, HOLDING, LOADED, RUNNING,
-                         SAVE_S_PER_BOARD, STOPPED, ShowPlayer)
+from ui.showplay import (BURN_FILE, CLEAR_S_PER_BOARD, ENDED, HOLDING,
+                         LOADED, RUNNING, SAVE_S_PER_BOARD, STOPPED,
+                         ShowPlayer)
 from tests.test_ui_remote import SAVE, SHOW, make_session, wait_until
 from tests.test_ui_runner import FakeBus, make_runner
 
@@ -835,10 +836,11 @@ def test_branch_one_does_not_preempt_an_armed_cue_still_waiting_to_fire(rig):
 # ---- 36 boards x 10 cues: the burn really is one write per pair ----
 
 def test_a_36_board_10_cue_burn_is_one_save_per_pair(tmp_path):
-    """The "~90 s" the docs and the operator warning quote is boards x
-    cues colour writes at SAVE_S_PER_BOARD each - so a burn of exactly
-    that size is run on the fake bus and counted: 360 0x13 frames, one
-    per (board, slot), none repeated, and the status says 360/360."""
+    """The "~112 s" the docs and the operator warning quote is boards x
+    cues colour writes at SAVE_S_PER_BOARD each, plus the one pipeline
+    clear per pair a first burn pays (F5) - so a burn of exactly that
+    size is run on the fake bus and counted: 360 0x13 frames, one per
+    (board, slot), none repeated, and the status says 360/360."""
     session, runner, bus = make_session(boards=list(range(1, 37)))
     player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
     try:
@@ -859,7 +861,10 @@ def test_a_36_board_10_cue_burn_is_one_save_per_pair(tmp_path):
         assert len({(f.dest, f.data[0]) for f in saves}) == 360
         assert player.status()["burn"] == {"done": 360, "total": 360,
                                            "failed": [], "state": "burned"}
-        assert 70 <= len(saves) * SAVE_S_PER_BOARD <= 100     # ~90 s live
+        # ~112 s live (and ~195 s for the same wall with 18 cues).
+        seconds = len(saves) * (SAVE_S_PER_BOARD + CLEAR_S_PER_BOARD)
+        assert 100 <= seconds <= 125
+        assert 180 <= seconds * 18 / 10 <= 210
     finally:
         player.close()
         runner.stop()
