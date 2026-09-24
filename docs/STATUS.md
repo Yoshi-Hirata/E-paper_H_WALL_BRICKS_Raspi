@@ -72,14 +72,21 @@
   定数)として、**36 基板 × 10 キュー ≈ 90 秒**(`tests/test_showplay.py`
   `test_the_36_board_10_cue_burn_time_estimate` に定数として固定)。実機の 9600 bps バスでの検証は
   未実施。
-- **未対応・要フォローアップ**: `ui/app.py` の KEY1/KEY1-hold(`_start_demo_show()`/
-  `_loop_demo_show()`)は `load()` の直後に `run()` を呼ぶため、焼き込みが終わる前に
-  `"still writing the pictures"` で拒否され、その `RemoteError` を握りつぶして無言で失敗する
-  (`tests/test_ui_demos.py` の KEY1 系 7 件が現在失敗 - `ui/app.py` は本セッションの担当ファイル
-  外のため未修正、別セッションへ切り出し済み)。また、`_plan()` は先の「アーム済みの次キュー」が
-  ある間は同じセッション枠を使い回すため、直前のキューのヒール(離脱基板の再結線トリガ)を
-  ブロックすることがある(次キューが撃たれれば自然に解消するが、次キューが遠い間はヒールが
-  後回しになる - 単一ステージのセッションゆえの制約として許容)。
+- **`ui/app.py`(LCD の KEY1)も同日中に追従**: KEY1 は `player.load(show, demo=True, ...)` を
+  呼んで焼き込みを始めるだけになり(`run()` はここではもう呼ばない)、DEMO 画面はその場で開いて
+  `status.show.burn` から「writing pictures n/N - KEY2 cancel」をヒント行に出す。焼き込みが
+  `"burned"` に落ち着いた最初のティックで `App._track_demo()`(新設の `_await_demo_burn()`)が
+  1 回だけ `run()` を呼ぶ。`"failed"` で生きている基板が拒否していれば「N boards failed - KEY2
+  menu」を出したまま `run()` は呼ばない(不在の基板だけなら `ShowPlayer.run()` 自身のゲートが
+  通すので普通に走る)。KEY2 は焼き込み中でも `_stop_demo()` → `session.release()` →
+  `player.stop()` の経路で `cancel_burn()` まで届く(既存の配線のまま)。ループ再生
+  (`_loop_demo_show()`)は再ロードしない(=再焼き込みしない)まま。`tests/test_ui_demos.py` に
+  この流れの新規テスト 4 件を追加、KEY1 系の既存テストは `_pump()`(`app.tick()` を回して待つ)
+  へ全面的に書き換え。
+- **残る既知の制約**: `_plan()` は先の「アーム済みの次キュー」がある間は同じセッション枠を
+  使い回すため、直前のキューのヒール(離脱基板の再結線トリガ)をブロックすることがある(次
+  キューが撃たれれば自然に解消するが、次キューが遠い間はヒールが後回しになる - 単一ステージの
+  セッションゆえの制約として許容)。
 
 **Load bundle…: レビュー指摘の修正 - whole-or-nothing、boards も units と同じ扱い、
 危険なファイル名は拒否、上書きを申告(2026-09-24)**
