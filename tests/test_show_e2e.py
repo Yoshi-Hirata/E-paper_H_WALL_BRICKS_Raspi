@@ -64,7 +64,7 @@ def test_a_show_file_holds_every_cue_resolved_for_the_unit(tmp_path):
     assert problems == [] and list(shows) == ["radxa-02"]
     show = shows["radxa-02"]
     assert show["boards"] == [1, 2, 3, 4, 5] and show["refresh_s"] == 1.0
-    assert show["slots"] == 19            # a board holds 19 pictures
+    assert show["slot_capacity"] == 20    # a board has 20 slots total
     assert [c["id"] for c in show["cues"]] == ["q00", "q01"]
     preset, accent = show["cues"]
     assert (preset["slot"], accent["slot"]) == (1, 2)   # its own slot each,

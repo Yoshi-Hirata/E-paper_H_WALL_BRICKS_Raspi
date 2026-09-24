@@ -367,10 +367,84 @@ def test_start_refuses_while_a_unit_failed_to_burn():
     fleet = Fleet({}, clock=lambda: 1100.0)
     link = StubLink("radxa-05", "stopped")
     link.status["show"]["burn"] = {"done": 40, "total": 48,
-                                   "failed": [[3, 5], [3, 6]], "state": "failed"}
+                                   "failed": [[3, 5], [7, 5]], "state": "failed"}
     fleet.links = {"radxa-05": link}
     fleet.shows = {"radxa-05": {"id": "showA", "cues": [], "duration": 600}}
-    with pytest.raises(ValueError, match="radxa-05: 2 board"):
+    with pytest.raises(ValueError, match=r"radxa-05: 2 board\(s\) not written \(3, 7\)"):
+        fleet.start_show(lead_s=1.0)
+    # `force` waves through the failed boards - but never a unit still
+    # burning, offline, or holding some other show (see the tests below).
+    fleet.start_show(lead_s=1.0, force=True)
+    assert fleet.run is not None
+
+
+def test_start_ignores_an_offline_units_stale_burned_report():
+    # A unit that answered "burned" once, then went offline, must not
+    # wave START through on that stale word - it might have rebooted and
+    # lost everything since (found in review).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-11", "stopped")
+    link.status["show"]["burn"] = {"done": 48, "total": 48, "failed": [],
+                                   "state": "burned"}
+    link.online = False
+    fleet.links = {"radxa-11": link}
+    fleet.shows = {"radxa-11": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="radxa-11: not answering"):
+        fleet.start_show(lead_s=1.0, force=True)   # not even force helps
+
+
+def test_start_refuses_a_unit_that_has_not_taken_this_show_yet():
+    # The unit is online and says "burned" - but about a DIFFERENT show
+    # (an earlier upload, or one from a previous conductor session): its
+    # burn report is not about what is about to run (found in review).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-12", "stopped")
+    link.status["show"]["id"] = "showOLD"
+    link.status["show"]["burn"] = {"done": 48, "total": 48, "failed": [],
+                                   "state": "burned"}
+    fleet.links = {"radxa-12": link}
+    fleet.shows = {"radxa-12": {"id": "showNEW", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="radxa-12: has not taken this show yet"):
+        fleet.start_show(lead_s=1.0, force=True)
+
+
+def test_start_lists_every_burning_unit_together():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    a = StubLink("radxa-13", "stopped")
+    a.status["show"]["burn"] = {"done": 1, "total": 10, "failed": [],
+                                "state": "burning"}
+    b = StubLink("radxa-14", "stopped")
+    b.status["show"]["burn"] = {"done": 5, "total": 10, "failed": [],
+                                "state": "burning"}
+    fleet.links = {"radxa-13": a, "radxa-14": b}
+    fleet.shows = {"radxa-13": {"id": "showA", "cues": [], "duration": 600},
+                   "radxa-14": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="radxa-13: still writing 1/10; "
+                                         "radxa-14: still writing 5/10"):
+        fleet.start_show(lead_s=1.0)
+
+
+def test_force_never_waves_through_a_unit_still_burning():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-15", "stopped")
+    link.status["show"]["burn"] = {"done": 1, "total": 10, "failed": [],
+                                   "state": "burning"}
+    fleet.links = {"radxa-15": link}
+    fleet.shows = {"radxa-15": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="still writing"):
+        fleet.start_show(lead_s=1.0, force=True)
+
+
+def test_a_unit_burning_its_own_demo_says_so():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-16", "stopped")
+    link.status["show"]["demo"] = True
+    link.status["show"]["burn"] = {"done": 3, "total": 10, "failed": [],
+                                   "state": "burning"}
+    fleet.links = {"radxa-16": link}
+    fleet.shows = {"radxa-16": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match=r"radxa-16: writing its demo "
+                                         r"pictures \(3/10\) - wait or STOP it"):
         fleet.start_show(lead_s=1.0)
 
 

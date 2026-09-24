@@ -91,8 +91,70 @@
   `docs/SIMULATOR_FOR_DESIGNERS.md` に。
 
 **Timeline: 1 秒 gap ルールをレビューで修正 - 本体の準備時間より詰めない(2026-09-24)**
+**Conductor 修正ラウンド: START ゲートの信頼性・Upload 中ショー禁止・瞬間単位の間隔
+ルール・スロット契約 1-18/19/0(2026-09-24, Conductor 側。すぐ下の「事前焼き込み方式」
+エントリの数値・文言をここで更新する - スロットは 19 枚までではなく 18 枚まで)**
+
+- **スロット契約を機体側コーダーと確定**: スロット 0 = 白のスタンバイ、
+  **1〜18 = ショーの絵**(`conductor/timeline.py` の `MAX_CUES_PER_UNIT = 18`)、
+  **19 = 手動発火(Prepare)・スタンドアロンデモの単発表示専用**(ショーの
+  タイムラインは使わない)。`conductor/showfile.py` の show ファイルは
+  `"slots"` ではなく **`"slot_capacity": 20`**(`timeline.SLOT_CAPACITY`、基板の
+  スロット総数)を持つ。19 枚目の問題文言は「a board holds 18 show pictures
+  (slot 0 is the white standby, slot 19 the manual one-shot)」に変更。
+- **START ゲートが古い/よその burn 報告を信用しないように**
+  (`conductor/fleet.py` の `_burn`/`_burn_problems`、レビューで発見):
+  対象機体が offline または未応答なら「radxa-0N: not answering」、
+  `status.show.id` が今回アップロードした show の id と一致しなければ
+  「radxa-0N: has not taken this show yet」- どちらも `force` では越えられない。
+  `burn` フィールドが無い(旧機体ソフト)ことは今まで通り許可。
+  `"failed"`(基板の書き込み失敗)は `force=True` のときだけ通す(「burning」は
+  `force` があっても常に拒否)。機体が自分のデモを焼いている最中(`show.demo`)は
+  「radxa-0N: writing its demo pictures (n/N) - wait or STOP it」。複数機体が
+  引っかかれば `"; "` で連結。ページの START は、`fleet.units` の
+  `show.burn.state === "failed"` を見て「radxa-04: 2 board(s) not written
+  (12, 15) — start anyway?」を `confirm()` で聞き、承諾すると `force: true` を
+  付けて再送する(サーバ側の拒否は据え置き - 二重の防御)。
+- **Upload 中にショーが動いていたら拒否**: `conductor/server.py` の
+  `/api/fleet/upload` は `fleet.run` がある間 `force` なしでは 400
+  「stop the show first」。ページは `#show-upload` を run 中は disabled にし、
+  title も「Stop the show first.」に変える(通常時は Upload の意味を説明する
+  title - 挿入で全キューの slot 番号がずれて全体を焼き直す(1 機体あたり
+  約 3 分)のに対し、末尾への追加やその場の編集は自分のスロットだけで済む、
+  という注意も含む)。
+- **バス間隔ルールは「前のキュー」ではなく「前の瞬間(送信)」単位に修正**
+  (レビューで発見): Look20 の上下のように 1 台を共有する 2 アイテムが同時刻の
+  キューを持つとき、次の送信までの必要間隔は「その瞬間の全キューの中で一番遅い
+  refresh・一番長いスイープ」で決まる - 以前は瞬間内で最後にソートされた 1 キュー
+  だけを見ていたため、スイープしない方のアイテムがたまたま後に来ると必要な余裕を
+  過小評価していた。テスト
+  `test_a_sweep_on_one_item_of_a_shared_unit_sets_the_room_for_both`
+  (Top が 5 秒スイープ・Skirt はしない、同時刻 → 次に必要な間隔は 7+5+1=13 秒)。
+- **Fleet summary の頑健化**: `snapshot()["burn"]["total"]` は「burn 情報を
+  実際に報告している機体の数」だけを数える(アップロード先だが burn について
+  何も言っていない機体は分母に入れない)。ページは `total` が 0 なら
+  「pictures written on …」の行を出さない。`_burn`/`_burn_problems`/`_raw_burn`
+  は `show`/`burn` が dict でない(hostile/古い応答)場合を想定して isinstance
+  ガードを追加。タイルの Pictures 行の数値は `esc()` を通し、「writing n / N」の
+  隣に経過秒数(このブラウザタブが burning を初めて見てからの秒数、cheap)を出す。
+- **Timeline の「Shortest interval」表示**は数字から逆算する形に修正
+  (`need`・`refresh` から `gap = need - refresh` を計算、`refresh` も 1 桁小数) -
+  「1 s」や `toFixed(0)` のような決め打ちをやめた。
+- テスト: `tests/test_timeline.py`(`test_a_unit_may_carry_at_most_eighteen_show_pictures`
+  に改名・18 枚に変更、`test_coincident_cues_on_a_shared_unit_count_as_one_picture`、
+  `test_a_sweep_on_one_item_of_a_shared_unit_sets_the_room_for_both` を追加)、
+  `tests/test_fleet.py`(offline のstale「burned」・id 不一致・2 台が burning 中の
+  連結・`force` は failed のみ通し burning は通さない・デモ焼き込み中の文言、
+  計 6 件追加)、`tests/test_conductor_server.py`
+  (`test_upload_while_a_show_is_running_is_refused_unless_forced` を追加。
+  既存の `fleet.links = {}` を使う START 系テスト 3 件は、新しい burn ゲートが
+  「機体不明 = not answering」で弾いてしまうため `StubLink` を使うよう更新)。
+- 依存: `git merge main` で `docs/MERIS_REPLY_3SLOT.pdf` が `docs/MERIS_REPLY_3SLOT.md`
+  (テキスト、PDF は git 対象外)に置き換わったので、参照箇所をすべて `.md` に変更。
+
 **Timeline/Showfile: 事前焼き込み方式に設計変更 - 本番中は基板に一切書き込まない
-(2026-09-24, Conductor 側。以下は直前の「1 秒 gap ルール」エントリ全体を置き換える)**
+(2026-09-24, Conductor 側。以下は直前の「1 秒 gap ルール」エントリ全体を置き換える。
+スロット数・`"slots"` キーは上のエントリで 18/`slot_capacity` に更新済み)**
 
 - 依頼者(Hirata)の方針転換:「毎回リアルタイムに書き込みを行うのはショーにおいて
   リスクが高い。Timeline 焼き込みの段階で 20 スロットをできる限り使って書き込みを

@@ -80,15 +80,17 @@ REFRESH_RANGE_S = (1.0, 60.0)
 # as an argument here meanwhile, same as refresh.
 GAP_AFTER_REFRESH_S = 1.0
 
-# A board's on-board slots: 1-19 hold a show's pictures (showfile.py's
-# build_unit_show, one per cue in send order), slot 0 is the standby
-# white. Nothing is written while a show runs any more (2026-09-24: "毎回
-# リアルタイムに書き込みを行うのはショーにおいてリスクが高い" - every
-# picture is burned into its slot at Upload time instead, docs/
-# MERIS_REPLY_3SLOT.pdf confirms every slot is identical and writable at
-# any time), so a unit's own write speed no longer bounds the timeline
-# here - only how many pictures fit on a board.
-MAX_CUES_PER_UNIT = 19
+# A board has 20 slots. Slot 0 is the standby white; slot 19 is reserved
+# for the manual one-shot (Designs tab Prepare / a standalone demo), never
+# the show's own timeline; slots 1-18 hold a show's pictures (showfile.py's
+# build_unit_show, one per cue in send order). Nothing is written while a
+# show runs any more (2026-09-24: "毎回リアルタイムに書き込みを行うのは
+# ショーにおいてリスクが高い" - every picture is burned into its slot at
+# Upload time instead, docs/MERIS_REPLY_3SLOT.md confirms every slot is
+# identical and writable at any time), so a unit's own write speed no
+# longer bounds the timeline here - only how many pictures fit on a board.
+SLOT_CAPACITY = 20
+MAX_CUES_PER_UNIT = 18
 
 DEFAULT_DURATION_S = 600.0
 
@@ -346,47 +348,61 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
             unit = item.get("unit") or f"({item['item']})"
             by_unit.setdefault(unit, []).append(cue)
     for unit, unit_cues in by_unit.items():
-        unit_cues.sort(key=lambda c: times(c, refresh)[0])
+        # Grouped by send instant, matching showfile.py's own broadcasts:
+        # items sharing a unit and an instant (Look 20's top and skirt)
+        # are ONE send, and the room needed after it is set by ALL of
+        # them together (the slowest refresh, the longest sweep) - not by
+        # whichever of them happens to sort last (found in review).
+        moment_cues: "dict[float, list[dict]]" = {}
+        for cue in unit_cues:
+            moment_cues.setdefault(times(cue, refresh)[0], []).append(cue)
+        moments = sorted(moment_cues)
 
-        # A board has 19 usable slots (0 is the standby white): more
-        # distinct sends than that do not fit, whatever their spacing.
-        moments = sorted({times(c, refresh)[0] for c in unit_cues})
+        # A board has MAX_CUES_PER_UNIT usable slots for the show (0 is
+        # the standby white, 19 the manual one-shot): more distinct sends
+        # than that do not fit, whatever their spacing.
         if len(moments) > MAX_CUES_PER_UNIT:
             order = {sent: index for index, sent in enumerate(moments)}
             for cue in unit_cues:
                 if order[times(cue, refresh)[0]] >= MAX_CUES_PER_UNIT:
                     problems[cue["id"]].append(
                         f"{unit} carries {len(moments)} pictures but a "
-                        f"board holds {MAX_CUES_PER_UNIT} (slot 0 is the "
-                        "white standby) - merge or remove cues")
+                        f"board holds {MAX_CUES_PER_UNIT} show pictures "
+                        "(slot 0 is the white standby, slot 19 the manual "
+                        "one-shot) - merge or remove cues")
 
-        previous = before = None
-        for cue in unit_cues:
-            sent = times(cue, refresh)[0]
-            if previous is not None and sent != previous:
-                spacing = sent - previous
+        previous_sent = previous_group = None
+        for sent in moments:
+            group = moment_cues[sent]
+            if previous_sent is not None:
+                spacing = sent - previous_sent
                 # Every picture is already burned into its slot at
                 # Upload time (showfile.py): a running send is one
                 # broadcast trigger, nothing is written - so the only
                 # floor left is the director's gap after the PREVIOUS
-                # cue's own refresh (plus its sweep's span, if it had
-                # one), for every pair, including the first cue after
-                # the preset.
-                before_refresh = effective_refresh(before, refresh)
-                need = before_refresh + span_of(before) + gap
-                same_item = (before is not None
-                            and cue["item"].lower() == before["item"].lower())
-                suppressed = same_item and cue["id"] in overlapped
-                if spacing < need and not suppressed:
+                # send's own refresh (plus its sweep's span, if any of
+                # its cues had one), for every pair, including the first
+                # send after the preset.
+                before_refresh = max(effective_refresh(c, refresh)
+                                     for c in previous_group)
+                before_span = max(span_of(c) for c in previous_group)
+                need = before_refresh + before_span + gap
+                if spacing < need:
                     detail = f"{before_refresh:.1f} s refresh"
-                    if span_of(before):
-                        detail += f" + {span_of(before):.1f} s sweep"
+                    if before_span:
+                        detail += f" + {before_span:.1f} s sweep"
                     detail += f" + {gap:.1f} s gap"
-                    problems[cue["id"]].append(
-                        f"only {spacing:.1f} s after the previous send "
-                        f"on {unit}; at least {need:.1f} s is needed "
-                        f"({detail})")
-            previous, before = sent, cue
+                    for cue in group:
+                        same_item = any(cue["item"].lower()
+                                        == prev["item"].lower()
+                                        for prev in previous_group)
+                        if same_item and cue["id"] in overlapped:
+                            continue
+                        problems[cue["id"]].append(
+                            f"only {spacing:.1f} s after the previous send "
+                            f"on {unit}; at least {need:.1f} s is needed "
+                            f"({detail})")
+            previous_sent, previous_group = sent, group
 
     for key, item in sorted(items.items()):
         track = [c for c in cues if c["item"].lower() == key]

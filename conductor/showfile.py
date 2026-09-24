@@ -27,17 +27,20 @@ laid over everything before. A unit that comes late to a cue (rebooted,
 started mid-show, jumped by NEXT) sends `state` instead and is right
 again in one refresh, whatever it missed.
 
-Every cue also carries `"slot"`: which of the board's on-board storage
-slots (1-19; 0 is the standby white, see ui/showplay.py) this picture
-is written into, one slot per cue in send order (the preset first, as
-q00 -> slot 1). The unit writes every cue's picture into its slot once,
-at Upload time (a "burn"), rather than during the show - so a running
-send is just a broadcast trigger naming a slot, never a write. Confirmed
-safe by the manufacturer (docs/MERIS_REPLY_3SLOT.pdf, 2026-09-24): all
-20 slots are identical and writable at any time, and 0x13/0x1F/0x1B
-persist across power cycles, so a burned slot survives a reboot. A
-board holds 19 pictures (conductor/timeline.py's MAX_CUES_PER_UNIT) -
-validate() reports a show that asks a unit for more.
+Every cue also carries `"slot"`: which of the board's 20 on-board storage
+slots this picture is written into, one slot per cue in send order (the
+preset first, as q00 -> slot 1). Slot 0 is the standby white and slot 19
+is reserved for the manual one-shot (Designs tab Prepare, a standalone
+demo) - never the show's own timeline - so a show's cues use slots 1-18
+(conductor/timeline.py's MAX_CUES_PER_UNIT; the show carries the board's
+total as `"slot_capacity"`, SLOT_CAPACITY). The unit writes every cue's
+picture into its slot once, at Upload time (a "burn"), rather than during
+the show - so a running send is just a broadcast trigger naming a slot,
+never a write. Confirmed safe by the manufacturer
+(docs/MERIS_REPLY_3SLOT.md, 2026-09-24): all 20 slots are identical and
+writable at any time, and 0x13/0x1F/0x1B persist across power cycles, so
+a burned slot survives a reboot. validate() reports a show that asks a
+unit for more than 18 pictures.
 """
 
 from __future__ import annotations
@@ -119,8 +122,8 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
             "id": f"q{number:02d}",
             "at": min(float(c["at"]) for c in moments[sent]),
             "sent": round(sent, 3),
-            "slot": number + 1,      # 1..MAX_CUES_PER_UNIT; 0 is the
-                                     # standby white (ui/showplay.py)
+            "slot": number + 1,      # 1..MAX_CUES_PER_UNIT (18); 0 is the
+                                     # standby white, 19 the manual one-shot
             # Items sharing a moment (one broadcast) may want different
             # refresh times (different firmware): the unit waits for the
             # slowest one before it may write the next cue's boards.
@@ -138,7 +141,8 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
 
     show = {"name": name, "unit": unit, "dev_type": NUMBER_BRAND,
             "refresh_s": refresh, "duration": duration,
-            "delay_unit_ms": DELAY_UNIT_MS, "slots": timeline.MAX_CUES_PER_UNIT,
+            "delay_unit_ms": DELAY_UNIT_MS,
+            "slot_capacity": timeline.SLOT_CAPACITY,
             "boards": addresses, "cues": unit_cues}
     digest = hashlib.sha1(json.dumps(show, sort_keys=True).encode()).hexdigest()
     show["id"] = digest[:10]

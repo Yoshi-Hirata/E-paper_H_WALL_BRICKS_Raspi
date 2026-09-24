@@ -174,23 +174,48 @@ def test_the_first_cue_after_the_preset_only_needs_refresh_and_gap():
     assert validate([preset, fine], items, 600, 7.0)[0]["f"] == []
 
 
-def test_a_unit_may_carry_at_most_nineteen_pictures():
-    # A board has 19 usable slots (0 is the standby white) - the 20th
-    # distinct send on one unit's bus does not fit, however comfortably
-    # spaced, and every cue from there on is named in the problem.
-    assert MAX_CUES_PER_UNIT == 19
+def test_a_unit_may_carry_at_most_eighteen_show_pictures():
+    # A board has MAX_CUES_PER_UNIT (18) usable slots for the show - slot
+    # 0 is the standby white, slot 19 the manual one-shot, never the
+    # show's own timeline. The 19th distinct send on one unit's bus does
+    # not fit, however comfortably spaced, and every cue from there on is
+    # named in the problem.
+    assert MAX_CUES_PER_UNIT == 18
     items = {"look22": {"item": "Look22", "unit": "radxa-09", "boards": 4,
                         "designs": {"p1": OK, "p2": OK}}}
     cues = [cue("preset", "Look22", 0, "p1")]
-    for index in range(1, 20):                     # 19 more: 20 pictures total
+    for index in range(1, 19):                     # 18 more: 19 pictures total
         design = "p1" if index % 2 else "p2"
         cues.append(cue(f"c{index}", "Look22", index * 10.0, design))
     found, _ = validate(cues, items, 600, 7.0)
-    # The first 19 pictures (the preset plus 18 more) fit; the 20th does not.
-    assert all(found[c["id"]] == [] for c in cues[:19])
-    assert found["c19"] == [
-        "radxa-09 carries 20 pictures but a board holds 19 (slot 0 is "
-        "the white standby) - merge or remove cues"]
+    # The first 18 pictures (the preset plus 17 more) fit; the 19th does not.
+    assert all(found[c["id"]] == [] for c in cues[:18])
+    assert found["c18"] == [
+        "radxa-09 carries 19 pictures but a board holds 18 show pictures "
+        "(slot 0 is the white standby, slot 19 the manual one-shot) - "
+        "merge or remove cues"]
+
+
+def test_coincident_cues_on_a_shared_unit_count_as_one_picture():
+    # Look20-Top and Look20-Skirt share a unit; two cues at the very same
+    # instant are one broadcast (showfile.py) - and so one picture toward
+    # the 18-picture limit, not two.
+    items = {"look20-top": {"item": "Look20-Top", "unit": "radxa-10",
+                            "boards": 4, "designs": {"t1": OK}},
+             "look20-skirt": {"item": "Look20-Skirt", "unit": "radxa-10",
+                              "boards": 4, "designs": {"s1": OK}}}
+    cues = [cue("pt", "Look20-Top", 0, "t1"), cue("ps", "Look20-Skirt", 0, "s1")]
+    for index in range(1, 18):                     # 17 more shared moments
+        cues.append(cue(f"t{index}", "Look20-Top", index * 10.0, "t1"))
+        cues.append(cue(f"s{index}", "Look20-Skirt", index * 10.0, "s1"))
+    found, _ = validate(cues, items, 600, 7.0)      # 18 moments: exactly fits
+    assert all(found[c["id"]] == [] for c in cues)
+    # A 19th moment tips it over, for every cue sent at that instant.
+    cues += [cue("t18", "Look20-Top", 180.0, "t1"),
+            cue("s18", "Look20-Skirt", 180.0, "s1")]
+    found, _ = validate(cues, items, 600, 7.0)
+    assert found["t18"] and "carries 19 pictures" in found["t18"][0]
+    assert found["s18"] and "carries 19 pictures" in found["s18"][0]
 
 
 def test_the_previous_cues_own_refresh_time_sets_the_gap():
@@ -283,6 +308,25 @@ def test_items_sharing_a_unit_share_its_bus():
         "is needed (7.0 s refresh + 1.0 s gap)"]
     # Another unit is another bus: no conflict with Look22 ten seconds on.
     found, _ = problems(same_moment + [cue("c", "Look22", 63, "p1")])
+    assert found["c"] == []
+
+
+def test_a_sweep_on_one_item_of_a_shared_unit_sets_the_room_for_both():
+    # Look20-Top and Look20-Skirt share a unit and an instant (one
+    # broadcast) - when only Top's cue sweeps, the room after that send
+    # must still account for the LONGER of the two (found in review: the
+    # old code used whichever cue happened to sort last, not the max).
+    top = cue("a", "Look20-Top", 53, "t1")
+    top["sweep"] = {"sequence": "top_down", "span_s": 5.0, "source": "cue"}
+    top["span"] = 5.0                              # Top's picture: 7 + 5 = 12 s
+    skirt = cue("b", "Look20-Skirt", 53, "s1")      # Skirt: plain, no sweep
+    next_top = cue("c", "Look20-Top", 53 + 13 - 1, "t1")   # 1 s short of 7+5+1
+    found, _ = validate([top, skirt, next_top], ITEMS, 600, 7.0)
+    assert found["c"] == [
+        "only 12.0 s after the previous send on radxa-02; at least 13.0 s "
+        "is needed (7.0 s refresh + 5.0 s sweep + 1.0 s gap)"]
+    next_top["at"] = 53 + 13
+    found, _ = validate([top, skirt, next_top], ITEMS, 600, 7.0)
     assert found["c"] == []
 
 

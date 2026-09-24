@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conductor.server import MAX_MUSIC, Workspace, make_server
+from tests.test_fleet import StubLink
 from tests.test_look import GRID, MAP, MAP_SHIFT, SKIRT_GRID, SKIRT_MAP
 
 
@@ -360,7 +361,11 @@ def test_start_needs_an_upload_and_does_not_restart_by_accident(tmp_path):
         assert "Upload first" in post("/api/fleet/start", {})["note"]
         assert fleet.run is None
         fleet.shows = {"radxa-01": {"id": "x", "cues": [], "duration": 60}}
-        fleet.links = {}
+        # An online unit already holding this show - START's burn gate
+        # (fleet.py) would otherwise refuse an unconfigured/offline one.
+        link = StubLink("radxa-01", "stopped")
+        link.status["show"]["id"] = "x"
+        fleet.links = {"radxa-01": link}
         post("/api/fleet/start", {"lead_s": 1})
         t0 = fleet.run["t0"]
         again = post("/api/fleet/start", {"lead_s": 1})     # the double click
@@ -1164,7 +1169,7 @@ def test_start_begins_where_the_seek_bar_was_left(tmp_path):
 
     fleet = Fleet({})
     fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
-    fleet.links = {}
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped")}
     server = make_server(tmp_path, port=0, fleet=fleet)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1190,7 +1195,7 @@ def test_start_from_a_time_needs_manual_too(tmp_path):
 
     fleet = Fleet({})
     fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
-    fleet.links = {}
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped")}
     server = make_server(tmp_path, port=0, fleet=fleet)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1485,6 +1490,29 @@ def test_write_demo_name_is_trimmed_and_symbols_pass_through(tmp_path):
                                 {"name": '  demo "x" <y>  ', "loop": False})
         assert status == 200
         assert payload["name"] == 'DEMO "X" <Y>'
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_upload_while_a_show_is_running_is_refused_unless_forced(tmp_path):
+    # Every picture is written at Upload time now (the pre-burn design):
+    # doing that while a show runs could rewrite a slot a unit is about
+    # to trigger.
+    from conductor.fleet import Fleet
+
+    Workspace(tmp_path)                    # no map, no design, no timeline
+    fleet = Fleet({"radxa-01": "127.0.0.1:1"})
+    fleet.run = {"t0": 0.0, "state": "running", "held_at": None}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/upload", {})
+        assert status == 400 and payload["error"] == "stop the show first"
+        status, payload = _post(port, "/api/fleet/upload", {"force": True})
+        assert status == 200      # goes on to compile_show() as usual
+        assert payload["problems"] == ["the timeline has no cues"]
     finally:
         server.shutdown()
         server.server_close()

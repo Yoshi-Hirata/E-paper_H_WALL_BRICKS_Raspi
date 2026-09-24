@@ -1065,7 +1065,9 @@ function renderTimeline() {
             <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
             || `<tr><td class="meta" colspan="8">No cues yet</td></tr>`}
           </tbody></table>
-          <div class="meta" style="margin-top:6px">Shortest interval, one send to the next (every picture is already written into its slot at Upload; a send is just a trigger, whatever the unit's board count): ${(() => { const vals = Object.values(show.min_interval); return vals.length ? `${vals[0].toFixed(1)} s (${show.refresh_s.toFixed(0)} s refresh + 1 s)` : "—"; })()}</div>
+          <div class="meta" style="margin-top:6px">Shortest interval, one send to the next (every picture is already written into its slot at Upload; a send is just a trigger, whatever the unit's board count): ${(() => { const vals = Object.values(show.min_interval); if (!vals.length) return "—";
+            const need = vals[0], refresh = show.refresh_s, gap = need - refresh;
+            return `${need.toFixed(1)} s (${refresh.toFixed(1)} s refresh + ${gap.toFixed(1)} s gap)`; })()}</div>
         </div>
       </div>
       <div class="card" id="tl-editor-card">
