@@ -625,8 +625,8 @@ def test_a_failed_save_forgets_the_boards_delay_table_so_it_is_resent():
     try:
         saved, failed = runner._save_cue(bus, 20, job)
         assert failed == [1] and saved == []
-        assert 1 in runner._needs_cfg
-        assert 1 not in runner._delays_sent          # forgotten, not stale
+        assert (1, 19) not in runner._cfg_done       # every slot re-verified
+        assert (1, 19) not in runner._delays_sent    # forgotten, not stale
 
         saved2, failed2 = runner._save_cue(bus, 20, job)
         assert saved2 == [1] and failed2 == []
@@ -634,3 +634,177 @@ def test_a_failed_save_forgets_the_boards_delay_table_so_it_is_resent():
         assert len(delay_frames) == 4                # 2 (low + high), twice
     finally:
         runner.stop()
+
+
+# ---- pre-burn (2026-09-24): manual cues stay slot 19; a show burns 1..19 ----
+
+def test_no_per_board_stop_in_the_manual_save_path():
+    # docs/MERIS_REPLY_3SLOT.pdf: 0x13 is pure storage, never needs the
+    # board silenced first. Setup/probing still sends a per-board stop
+    # (liveness, unrelated to the save path) - so what is checked is
+    # that a SECOND save adds none beyond what setup already sent once.
+    session, runner, bus = make_session()
+    session.prepare("c1", {1: array(1), 2: array(1), 3: array(1)})
+    assert wait_until(lambda: session.phase == READY)
+    before = len([f for f in bus.requested if f.cmd == STOP and f.dest != 0xFF])
+    session.prepare("c2", {1: array(2), 2: array(2), 3: array(2)})
+    assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
+    after = len([f for f in bus.requested if f.cmd == STOP and f.dest != 0xFF])
+    assert after == before
+    runner.stop()
+
+
+def test_one_broadcast_stop_when_the_worker_takes_the_port():
+    session, runner, bus = make_session()
+    session.prepare("c1", {1: array(1)})
+    assert wait_until(lambda: session.phase == READY)
+    assert len([f for f in bus.sent if f.cmd == STOP and f.dest == 0xFF]) == 1
+    session.prepare("c2", {1: array(2)})
+    assert wait_until(lambda: session.phase == READY and session.cue_id == "c2")
+    assert len([f for f in bus.sent if f.cmd == STOP and f.dest == 0xFF]) == 1
+    runner.stop()
+
+
+def test_arm_needs_no_boards_and_fires_the_given_slot():
+    session, runner, bus = make_session()
+    session.arm("c1", 5, dev_type=3, label="Look 1")
+    assert session.phase == READY and session.slot == 5
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED)
+    shows_ = shows(bus)
+    assert len(shows_) == 1 and shows_[0].data[0] == 5
+    assert [f for f in bus.requested if f.cmd == SAVE] == []   # nothing written
+    runner.stop()
+
+
+def test_standby_paints_slot_0():
+    session, runner, bus = make_session()
+    session.standby()
+    assert wait_until(lambda: runner.standby_ready)
+    shows_ = shows(bus)
+    assert shows_ and all(f.data[0] == 0 for f in shows_)
+    runner.stop()
+
+
+def test_burn_writes_every_cue_to_its_own_slot_in_order():
+    session, runner, bus = make_session()
+    cues = [{"slot": 1, "boards": {1: array(1), 2: array(1)}, "delays": {}},
+            {"slot": 2, "boards": {1: array(2), 2: array(2)}, "delays": {}}]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    saves = [f for f in bus.requested if f.cmd == SAVE]
+    assert [(f.dest, f.data[0], f.data[3]) for f in saves] == [
+        (1, 1, 1), (2, 1, 1), (1, 2, 2), (2, 2, 2)]
+    status = session.burn_status()
+    assert status["done"] == 4 and status["total"] == 4 and status["failed"] == []
+    runner.stop()
+
+
+def test_burn_reports_progress_as_it_goes():
+    session, runner, bus = make_session()
+    cues = [{"slot": n, "boards": {b: array(1) for b in range(1, 4)},
+            "delays": {}} for n in range(1, 4)]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("done", 0) > 0)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    assert session.burn_status()["total"] == 9
+    runner.stop()
+
+
+def test_reburn_of_an_unchanged_show_writes_nothing():
+    session, runner, bus = make_session()
+    cues = [{"slot": 1, "boards": {1: array(1)}, "delays": {}}]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    n = len([f for f in bus.requested if f.cmd == SAVE])
+    session.burn(cues, dev_type=3)          # identical content and slot
+    assert wait_until(lambda: session.burn_status()["done"] == 1
+                      and session.burn_status()["state"] == "burned")
+    assert len([f for f in bus.requested if f.cmd == SAVE]) == n
+    runner.stop()
+
+
+def test_a_changed_cue_rewrites_only_its_own_slot():
+    session, runner, bus = make_session()
+    cues = [{"slot": 1, "boards": {1: array(1)}, "delays": {}},
+            {"slot": 2, "boards": {1: array(2)}, "delays": {}}]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    n = len([f for f in bus.requested if f.cmd == SAVE])
+    cues2 = [{"slot": 1, "boards": {1: array(1)}, "delays": {}},   # unchanged
+             {"slot": 2, "boards": {1: array(9)}, "delays": {}}]   # changed
+    session.burn(cues2, dev_type=3)
+    assert wait_until(lambda: session.burn_status()["done"] == 2
+                      and session.burn_status()["state"] == "burned")
+    new_saves = [f for f in bus.requested if f.cmd == SAVE][n:]
+    assert [(f.data[0], f.data[3]) for f in new_saves] == [(2, 9)]
+    runner.stop()
+
+
+def test_a_board_missing_at_burn_time_is_reported_by_board_and_slot():
+    session, runner, bus = make_session(PickyBus({2}))
+    cues = [{"slot": 1, "boards": {1: array(1), 2: array(1)}, "delays": {}}]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "failed")
+    assert session.burn_status()["failed"] == [[2, 1]]
+    runner.stop()
+
+
+def test_cfg_and_delay_caches_are_per_board_and_slot():
+    session, runner, bus = make_session()
+    cues = [{"slot": 1, "boards": {1: array(1)}, "delays": {1: table(20)}},
+            {"slot": 2, "boards": {1: array(1)}, "delays": {1: table(20)}}]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    cfg_frames = [f for f in bus.requested if f.cmd == CFG and f.dest == 1]
+    # One for setup's own probe (slot 19, the runner's default), then one
+    # per burned slot - never skipped even though board 1 was already
+    # configured for a DIFFERENT slot.
+    assert [f.data[0] for f in cfg_frames] == [19, 1, 2]
+    delay_frames = [f for f in bus.requested if f.cmd == DELAY]
+    assert len(delay_frames) == 4                        # low+high, per slot
+    runner.stop()
+
+
+def test_a_dropped_board_forgets_every_slots_cache():
+    session, runner, bus = make_session()
+    cues = [{"slot": 1, "boards": {1: array(1)}, "delays": {}}]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    assert (1, 1) in runner._cfg_done and (1, 1) in runner._burn_cache
+    runner._drop(1)
+    assert (1, 1) not in runner._cfg_done
+    assert (1, 1) not in runner._burn_cache
+    runner.stop()
+
+
+def test_a_manual_prepare_invalidates_the_burn_cache_for_its_slot():
+    # "the unit marks that slot dirty so the next /show/load re-burns it"
+    session, runner, bus = make_session()
+    cues = [{"slot": 19, "boards": {1: array(1)}, "delays": {}}]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    assert (1, 19) in runner._burn_cache
+    session.prepare("manual", {1: array(9)})     # slot 19, the default
+    assert wait_until(lambda: session.phase == READY)
+    assert (1, 19) not in runner._burn_cache
+    runner.stop()
+
+
+def test_cancel_burn_stops_a_burn_in_progress():
+    session, runner, bus = make_session()
+    cues = [{"slot": n, "boards": {1: array(1)}, "delays": {}}
+            for n in range(1, 20)]
+    session.burn(cues, dev_type=3)
+    session.cancel_burn()
+    time.sleep(0.2)
+    assert session.burn_status() is None or session.burn_status()["state"] != "burning"
+    runner.stop()
