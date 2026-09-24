@@ -25,6 +25,21 @@
  * Owned by Coder P (conductor/web/sim/model.js, state.js, selftest.js,
  * goldens.js). Q (render/flicker/looks/transport/designer-app) and R
  * (server.py/index.html) read this file; they do not edit it.
+ *
+ * Known, deliberately-unfixed parity gaps (adversarial review round 2 -
+ * F11, flagged unreachable in practice - noted here rather than risked as
+ * an edit, per the review's own "or, better, leave it and note it"):
+ *   - validate()'s item lookup uses a plain {} keyed by item name. An item
+ *     literally named "constructor" (or another Object.prototype member)
+ *     would collide with the prototype chain and could misbehave instead
+ *     of the "no such item" a real lookup miss gives everywhere else. Real
+ *     item names come from CSV filenames (a garment or bag's model code),
+ *     so this needs a deliberately hostile filename to reach at all.
+ *   - JS has no distinct bool type Python's json/repr formatting would
+ *     treat differently from 0/1 the way Python's `isinstance(x, bool)`
+ *     can - a project file's JSON encodes true/false as JSON booleans
+ *     either way, so this only matters for a value that arrived as a raw
+ *     0/1 through a path Python would have rejected as "not a bool" first.
  */
 (function () {
   "use strict";

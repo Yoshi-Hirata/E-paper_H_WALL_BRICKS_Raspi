@@ -29,16 +29,23 @@
   const flicker = () => globalThis.SIM.flicker;
 
   // index.html:1134-1155
+  // Normalised, not the raw string (adversarial review, 2026-09-25): "22"
+  // and "022" are the same LOOK number to a designer typing into the
+  // sidebar's plain text field. Exported (not just a local helper) so
+  // designer-app.js's sharesLook() - "does this item need disambiguating
+  // from another one sharing its LOOK" - groups items the exact same way
+  // this does, instead of a second copy of the same normalisation
+  // (adversarial review round 2 - F9) that could drift from it.
+  function lookKey(item) {
+    if (!item.look) return null;
+    const n = Number(item.look);
+    return Number.isFinite(n) ? String(n) : item.look;
+  }
   function lookGroups(items) {
     const groups = new Map();
     for (const item of items) {
-      // Normalised, not the raw string (adversarial review, 2026-09-25):
-      // "22" and "022" are the same LOOK number to a designer typing into
-      // the sidebar's plain text field, and used to land in two separate
-      // groups here.
-      const lookNum = Number(item.look);
-      const lookKey = item.look ? (Number.isFinite(lookNum) ? String(lookNum) : item.look) : null;
-      const key = lookKey ? "L" + lookKey : "I" + item.item;
+      const lk = lookKey(item);
+      const key = lk ? "L" + lk : "I" + item.item;
       if (!groups.has(key)) groups.set(key, { look: item.look || null, items: [] });
       groups.get(key).items.push(item);
     }
@@ -138,6 +145,6 @@
   }
 
   globalThis.SIM = Object.assign(globalThis.SIM || {}, {
-    looks: { lookGroups, renderThumbs, buildLookCache, layoutLooks, updateThumbColors },
+    looks: { lookGroups, lookKey, renderThumbs, buildLookCache, layoutLooks, updateThumbColors },
   });
 })();

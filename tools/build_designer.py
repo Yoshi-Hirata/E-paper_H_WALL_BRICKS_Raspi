@@ -19,6 +19,17 @@ Two tags are treated specially, both on purpose:
   * `sim/starter.js` (the committed CSVs) is skipped when --no-starter is
     given - "the way out" the plan asks for, for a build without the ~ hundred
     KB of starter data.
+  * `sim/goldens.js` and `sim/selftest.js` are skipped together when
+    --no-goldens is given (adversarial review round 2, "DIST SIZE"): the
+    committed dist/az27ss-simulator.html is built this way - goldens.js
+    alone is over half the page's weight, all of it Python-cross-check data
+    a designer's own double-click never needs, only tools/make_goldens.py's
+    own dev/CI harness (test_sim_goldens.py's test_browser_selftest_passes,
+    which never goes through this script at all) and the Help tab's "Run
+    self-test" button, which already says plainly when that button is not
+    available in whichever build is running. designer.html (the dev page)
+    keeps loading both normally either way - --no-goldens only affects what
+    build_designer.py itself inlines.
 
 After assembly the output is checked for self-containment (no http(s):// URL,
 no @import, no <link>, no external src/srcset anywhere but the one named
@@ -29,7 +40,7 @@ line number); all three abort the build. --check rebuilds into memory and
 diffs against the committed dist file without writing anything
 (tests/test_designer_build.py).
 
-Usage: build_designer.py [--source PATH] [--out PATH] [--no-starter] [--check]
+Usage: build_designer.py [--source PATH] [--out PATH] [--no-starter] [--no-goldens] [--check]
 """
 import argparse
 import re
@@ -104,7 +115,7 @@ def _escape_script_hazards(text: str) -> str:
 COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
-def build(source: Path, no_starter: bool) -> "tuple[str, list[tuple[str, int]]]":
+def build(source: Path, no_starter: bool, no_goldens: bool = False) -> "tuple[str, list[tuple[str, int]]]":
     # read_bytes().decode(), not read_text() (adversarial review round 2 -
     # F7): read_text() does universal-newline translation, so a source file
     # already corrupted to CRLF (a bad checkout, core.autocrlf=true) would
@@ -137,6 +148,8 @@ def build(source: Path, no_starter: bool) -> "tuple[str, list[tuple[str, int]]]"
             return ""          # the dev-only stub never ships (see module docstring)
         if no_starter and Path(src).name == "starter.js":
             return ""
+        if no_goldens and Path(src).name in ("goldens.js", "selftest.js"):
+            return ""
         _refuse_if_unsafe(src, "<script>")
         text = (base / src).read_bytes().decode("utf-8")
         _refuse_control_chars(text, src)
@@ -158,6 +171,13 @@ def check_self_contained(html: str):
     stripped = SVG_XMLNS_RE.sub("", html)
     if re.search(r'https?://', stripped):
         raise ValueError("build is not self-contained: an http(s):// URL remains")
+    # Protocol-relative ("//host/path", no scheme - the browser resolves it
+    # against the page's own) in any of the three places a URL can hide:
+    # CSS's url(), an href attribute, or a src attribute (adversarial
+    # review round 2 - F10). The https?:// check above cannot see this form
+    # at all, and it fetches exactly as eagerly as an explicit https:// one.
+    if re.search(r'(?:url\(\s*[\'"]?|\bhref\s*=\s*[\'"]?|\bsrc\s*=\s*[\'"]?)//', html, re.IGNORECASE):
+        raise ValueError("build is not self-contained: a protocol-relative // URL remains")
     if re.search(r'@import\s+(url\(|["\'])', html, re.IGNORECASE):
         raise ValueError("build is not self-contained: a CSS @import remains")
     if re.search(r'<link\b', html, re.IGNORECASE):
@@ -183,10 +203,11 @@ def main():
     ap.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--no-starter", action="store_true")
+    ap.add_argument("--no-goldens", action="store_true")
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
 
-    html, sizes = build(args.source, args.no_starter)
+    html, sizes = build(args.source, args.no_starter, args.no_goldens)
     check_self_contained(html)
     total = len(html.encode("utf-8"))
     if total > SIZE_BUDGET:

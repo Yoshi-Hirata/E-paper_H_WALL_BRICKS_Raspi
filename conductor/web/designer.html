@@ -15,6 +15,12 @@
   <button id="new-project" title="Start a new, empty project (your current one stays saved until you drop new CSV files or open another)">Start a new (empty) project</button>
   <label class="filebtn">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
   <span class="meta">or drop CSV files (or a folder of them) anywhere on the page</span>
+  <!-- Hidden by default; designer-app.js's boot() shows it the moment
+       localStorage genuinely is not usable (Safari private browsing, or any
+       other reason) - a persistent line, not only the one-time toast that
+       autosave's own later failure would otherwise be the sole warning for
+       (adversarial review round 2, friendly-review wording). -->
+  <span class="warn" id="autosave-warn" style="display:none">⚠ Autosave is off in this browser - use Save project… to keep your work.</span>
   <span class="ws" id="ws"></span>
 </header>
 <main id="main">

@@ -33,7 +33,12 @@ def run(*args):
 
 
 def test_build_is_current():
-    result = run(str(BUILD_SCRIPT), "--check")
+    # --no-goldens (DIST SIZE, adversarial review round 2): the committed
+    # dist/az27ss-simulator.html is the SHIPPED variant, built without
+    # goldens.js/selftest.js (Python-cross-check data no designer's
+    # double-click needs, over half the page's weight) - --check must be
+    # told the same flag or it will always report the committed file stale.
+    result = run(str(BUILD_SCRIPT), "--check", "--no-goldens")
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -251,7 +256,7 @@ def test_banned_vocabulary_never_reaches_rendered_ui(tmp_path):
     # actually calls them. #displaycheck also forces the Timeline tab open
     # against the real starter data (designer-app.js's boot(), see its own
     # comment) - the one screen with the most model-derived text (tracks,
-    # cue table, SHORTEST INTERVAL PER GARMENT, the transition dropdowns) -
+    # cue table, SHORTEST INTERVAL PER ITEM, the transition dropdowns) -
     # so this scans the REST of the dumped DOM (all visible text, plus
     # title/placeholder/aria-label attributes, with every <script>/<style>
     # dropped first) for the same banned words. A reviewer ran this by hand

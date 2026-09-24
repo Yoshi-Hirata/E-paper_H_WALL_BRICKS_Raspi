@@ -180,7 +180,16 @@
   // GARMENT) - adversarial review, 2026-09-25. lookDisplay() appends the
   // item code only when it actually needs to.
   function sharesLook(item) {
-    return !!(item && item.look && state.items.filter(x => x.look === item.look).length > 1);
+    // SIM.looks.lookKey(), not a raw item.look === item.look comparison
+    // (adversarial review round 2 - F9): lookGroups() (looks.js) already
+    // normalises "22" and "022" to the same group; this used to compare the
+    // untouched strings, so two garments written as "26" and "026" would
+    // stack together in the dock's looks row (needing no disambiguation by
+    // lookGroups' own logic) while still showing "LOOK 26" unqualified on
+    // each one's own track row, as if there were only one.
+    if (!item || !item.look) return false;
+    const key = globalThis.SIM.looks.lookKey(item);
+    return state.items.filter(x => globalThis.SIM.looks.lookKey(x) === key).length > 1;
   }
   function lookDisplay(item) {
     if (!item || !item.look) return null;
@@ -224,7 +233,7 @@
     const [, name, carries, holds] = m;
     const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
     const label = (it && lookDisplay(it)) || name;
-    return `${label} has ${carries} pictures but a garment can hold ${holds} in one show - merge or remove cues`;
+    return `${label} has ${carries} pictures but an item can hold ${holds} in one show - merge or remove cues`;
   }
   // Adversarial review (2026-09-25): labelize() only ever rewrote the one
   // "on (<item>)" bus fallback - real problem/warning strings ported
@@ -239,7 +248,7 @@
   // numbers and sentence structure stay exactly as Python phrased them.
   function deJargon(msg) {
     return String(msg)
-      .replace(/\bunits\b/gi, "garments").replace(/\bunit\b/gi, "garment")
+      .replace(/\bunits\b/gi, "items").replace(/\bunit\b/gi, "item")
       .replace(/\bboards\b/gi, "segments").replace(/\bboard\b/gi, "segment")
       .replace(/\bsockets\b/gi, "positions").replace(/\bsocket\b/gi, "position")
       .replace(/\bbus(es)?\b/gi, "shared line")
@@ -327,7 +336,7 @@
     const dot = !item.map ? "none" : bad ? "err" : "ok";
     return `<div class="item ${item.item === ui.item ? "sel" : ""}" data-item="${esc(item.item)}">
       <div class="name"><span class="dot ${dot}"></span><em>LOOK</em>
-        <input class="lab look" data-label="look" value="${esc(item.look)}" placeholder="–" maxlength="12" title="LOOK number (the only ordering control)">
+        <input class="lab look" data-label="look" value="${esc(item.look)}" placeholder="–" maxlength="12" title="LOOK number (sets the order items appear in)">
         <input class="lab model" data-label="model" value="${esc(item.model)}" placeholder="model no." maxlength="60" title="Model number">
       </div>
       <div class="meta">${item.map ? `${item.map.scales.length} scales · ${item.designs.length} design${item.designs.length === 1 ? "" : "s"}` : "no map CSV yet"}
@@ -373,7 +382,15 @@
       <span class="mmss-badge" title="Minutes.seconds - 3.05 = 3 min 05 s, 3.5 = 3 min 05 s too (one digit = that many seconds)">mm.ss</span>
       <span class="mmss-echo" id="${id}-echo">${esc(globalThis.SIM.mmss.human(sec))}</span></span>`;
   }
-  function wireMmss(id, onChange) {
+  // currentValueFn (optional): the seconds to revert to on invalid input,
+  // computed FRESH at the moment of the revert - not input.defaultValue
+  // (adversarial review round 2 - F10: the go-to box's defaultValue is
+  // whatever the playhead happened to read when the dock last re-rendered,
+  // which - since it does not re-render every animation frame - is stale
+  // the instant the transport moves on; every other mm.ss field's
+  // defaultValue IS the current value, because those only ever change via a
+  // fresh render(), so they keep the simpler default).
+  function wireMmss(id, onChange, currentValueFn) {
     const input = $("#" + id); if (!input) return;
     const echo = $("#" + id + "-echo");
     const paint = () => {
@@ -386,7 +403,10 @@
     input.addEventListener("change", () => {
       const sec = paint();
       if (sec !== null) onChange(sec);
-      else { input.value = input.defaultValue; paint(); }   // revert AND re-paint, so the red/bad state clears with it
+      else {
+        input.value = currentValueFn ? globalThis.SIM.mmss.format(currentValueFn()) : input.defaultValue;
+        paint();   // revert AND re-paint, so the red/bad state clears with it
+      }
     });
     paint();
   }
@@ -403,7 +423,7 @@
   function renderDesigns() {
     const root = $("#content");
     const item = state.items.find(i => i.item === ui.item);
-    if (!item) { root.innerHTML = `<div class="empty">Drop the garment's map and design CSV files here (or use Add CSV above) to begin.</div>`; return; }
+    if (!item) { root.innerHTML = `<div class="empty">Drop the item's map and design CSV files here (or use Add CSV above) to begin.</div>`; return; }
     if (!item.map || !item.map.scales.length) {
       root.innerHTML = `<div class="card"><h2>${esc(itemFull(item))}</h2>
         <ul class="problems">${item.problems.map(p => `<li>${esc(clean(p))}</li>`).join("") || "<li>no map CSV</li>"}</ul></div>`;
@@ -486,30 +506,30 @@
     const sweep = cue.sweep || { sequence: "natural", span_s: 0 };
     const refr = cue.refresh_s != null ? { value: cue.refresh_s, source: "cue" } : { value: state.show.refresh_s, source: "show" };
     const cuesOnItem = item ? cuesOf(item) : [];
-    const idx = cuesOnItem.findIndex(c => c.id === cue.id);
+    const idx = cuesOnItem.findIndex(c => sameId(c.id, cue.id));
     const isLast = idx === cuesOnItem.length - 1;
     card.innerHTML = `<div class="cue-card">
       <div class="cue-head"><b>${esc(itemFull(item) || cue.item)}</b>
         <span><button id="cue-del" class="danger">Delete</button></span></div>
       <div class="cue-row"><div class="lbl">Start</div><div class="ctl">${mmssField("cue-start", cue.at, { disabled: isPreset })}</div>
-        <div class="why">${isPreset ? "Preset: shown before the show starts" : "The e-paper starts refreshing here"}</div></div>
+        <div class="why">${isPreset ? "Preset: shown before the show starts" : "Refresh begins here"}</div></div>
       <div class="cue-row"><div class="lbl">Refresh</div>
         <div class="ctl"><label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-show" ${refr.source === "show" ? "checked" : ""}> show default (${state.show.refresh_s.toFixed(1)} s)</label>
           <label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-cue" ${refr.source === "cue" ? "checked" : ""}> this cue</label>
           <input type="text" id="cue-refresh" value="${refr.value.toFixed(1)}" ${refr.source === "cue" ? "" : "disabled"}> s</div>
-        <div class="why">How long this garment's e-paper takes to redraw</div></div>
+        <div class="why">How long this item's e-paper takes to redraw</div></div>
       <div class="cue-row"><div class="lbl">Transition</div>
         <div class="ctl" style="flex-direction:column;align-items:flex-start;gap:6px">
-          <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-design" ${transitionMode === "design" ? "checked" : ""}> this design (every cue wearing it)
+          <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-design" ${transitionMode === "design" ? "checked" : ""}> this design (all cues using it)
             ${design ? `<span style="display:inline-flex;gap:8px;align-items:center;margin-left:4px">${transitionControl(cue.design, designTr)}</span>` : ""}</label>
           <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-custom" ${transitionMode === "custom" ? "checked" : ""}> this cue only
             <select id="cue-seq" ${transitionMode !== "custom" ? "disabled" : ""}>${SEQ_OPTIONS().map(s =>
               `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(seqLabel(s))}</option>`).join("")}</select>
             <span ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}><input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" ${transitionMode !== "custom" ? "disabled" : ""}> s</span></label>
         </div><div class="why"></div></div>
-      <div class="cue-computed">Picture complete at ${clockShort(cue.complete)} (Start + ${refr.value.toFixed(1)} s refresh${sweep.span_s > 0 ? ` + ${sweep.span_s.toFixed(1)} s sweep` : ""})</div>
+      <div class="cue-computed">Refresh completes at ${clockShort(cue.complete)} (Start + ${refr.value.toFixed(1)} s refresh${sweep.span_s > 0 ? ` + ${sweep.span_s.toFixed(1)} s sweep` : ""})</div>
       <div class="cue-row"><div class="lbl">End</div><div class="ctl">${mmssField("cue-end", cue.end, { disabled: isLast })}</div>
-        <div class="why">${isLast ? `Shown until the end of the show (${clockShort(state.show.duration)})` : "Shown until the next cue of this garment starts"}</div></div>
+        <div class="why">${isLast ? `Shown until the end of the show (${clockShort(state.show.duration)})` : "Shown until the next cue of this item starts"}</div></div>
       <div class="cue-design"><label>Design <select id="cue-design">${(item?.designs || []).map(d =>
         `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))}</option>`).join("")}</select></label>
         <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label></div>
@@ -554,7 +574,7 @@
       return `<div class="tl-row"><div class="tl-name">${esc(itemName(item))}<small>${esc(item.model || "")}</small></div>
         <div class="tl-track" data-track="${esc(item.item)}">${bands}</div></div>`;
     }).join("");
-    return `<div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div class="tl-wrap">${rows || `<div class="empty">No garments yet.</div>`}
+    return `<div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div class="tl-wrap">${rows || `<div class="empty">No items yet.</div>`}
       <div id="playhead"></div><div id="ph-head"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div>`;
   }
   function rulerTicks(D) {
@@ -582,7 +602,7 @@
   function minIntervalTable() {
     const rows = Object.entries(state.show.min_interval || {}).filter(([, v]) => v !== null && v !== undefined);
     if (!rows.length) return "";
-    return `<div class="card"><h2>SHORTEST INTERVAL PER GARMENT</h2><table><tbody>
+    return `<div class="card"><h2>SHORTEST INTERVAL PER ITEM</h2><table><tbody>
       ${rows.map(([k, v]) => `<tr><td>${esc(unitLabel(k))}</td><td>${v.toFixed(1)} s</td></tr>`).join("")}
       </tbody></table></div>`;
   }
@@ -701,7 +721,19 @@
         const t = Math.round(Math.max(0, Math.min(D, (e.clientX - box.left) / box.width * D)));
         const item = state.items.find(i => i.item === track.dataset.track);
         const design = nextUnusedDesign(item);
-        const id = globalThis.SIM.app.addCue({ item: item.item, at: t, design: design ? design.name : null, partial: false });
+        if (!design) {
+          // Only garments with at least one design ever get a track at all
+          // (trackItems() filters on item.map), but ALL of that garment's
+          // designs can still be used up (nextUnusedDesign() then falls
+          // back to item.designs[0] || null) or - the actual case this
+          // guards - it can have a map and zero designs yet. Either way, a
+          // cue with design:null used to get created anyway, and every
+          // later render of it read "design None is not loaded"
+          // (adversarial review round 2 - F10).
+          toast("Load a design CSV for this item first.");
+          return;
+        }
+        const id = globalThis.SIM.app.addCue({ item: item.item, at: t, design: design.name, partial: false });
         ui.cue = id; render();
       });
     });
@@ -792,7 +824,7 @@
     // silently doing nothing (adversarial review, 2026-09-25); Enter/blur
     // (wireMmss's "change") seeks, the button re-triggers the same commit
     // for a value that is already valid.
-    wireMmss("goto-input", sec => transport.seek(sec));
+    wireMmss("goto-input", sec => transport.seek(sec), () => transport.playhead);
     $("#goto-go").onclick = () => $("#goto-input").dispatchEvent(new Event("change"));
     $("#sim-view").onclick = () => { ui.simView = !ui.simView; persist(); render(); };
     THUMB_VIEW.fill = ui.simView;
@@ -866,17 +898,32 @@
   // ==================================================================
   function renderHelp() {
     $("#content").innerHTML = `<div class="help">
+      <h2>Quick start (English)</h2>
+      <p>Double-click <code>az27ss-simulator.html</code> (or <code>designer.html</code> during development) - no install, no server. Drop the garments' map and design CSV files anywhere on this page to begin (a folder works too). Open the <b>Timeline</b> tab and click anywhere on an item's track to add a cue there, using that item's next design; click an existing cue to edit it, or drag it to move it (hold Shift for 5 s steps instead of 1 s).</p>
+      <p><b>Red</b> always means "this needs fixing before it is right": a red-outlined mm.ss field could not be read as minutes.seconds; a red left border on a cue means the model found a problem with it (open it to see why); a dot next to an item in the sidebar is red when that item has one or more problems. Clicking a track for an item that has no design CSV yet is refused with a toast, rather than creating a cue with nothing to show.</p>
+      <p>When the timeline is ready, <b>Save project…</b> writes everything (every CSV plus the whole timeline) into one <code>.json</code> file - hand that file to whoever runs the show; on the operator's own page, "Load bundle…" reads it in and keeps everything already in place exactly as it was, replacing only the CSVs and the timeline.</p>
+      <p>Clock positions (Start, End, Show length, the dock's go-to box) are typed as mm.ss - minutes and seconds, not a decimal fraction of a minute: <code>3.05</code> is 3 minutes 05 seconds; a single-digit second still counts as seconds, so <code>3.5</code> is also 3 minutes 05 seconds; <code>3.60</code> is not valid (there is no 60th second) and turns the field red. The badge and the live "3 min 05 s" readout next to every one of these fields are there so this never has to be memorised.</p>
+      <p>Supported browsers: Safari 14.1 or later, or a recent Chrome or Edge. A private/incognito window may refuse to keep the autosaved copy at all (see the warning banner in the header when that happens) - use <b>Save project…</b> there instead of relying on autosave.</p>
       <h2>開き方</h2><p>このファイル（<code>az27ss-simulator.html</code> または <code>designer.html</code>）をダブルクリックするだけで開きます。インストールもサーバーも不要です。Windows は Edge か Chrome、macOS は Safari か Chrome を推奨します。</p>
       <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。同じ名前のファイルは上書きされます。</p>
-      <h2>mm.ss の読み方</h2><p>開始・終了・ショー全体の長さなど「時刻」は分.秒（mm.ss）で入力します。例：<code>3.05</code> → 3分05秒。<code>3.5</code> のように秒が1桁でも「3分05秒」として読みます。入力欄の横に読み方がそのまま表示されます（例：「3 min 05 s」）。60秒以上は無効（赤色）になります。</p>
-      <h2>遷移（トランジション）6種</h2><p>各デザインの塗り替え方向を選べます：既定（配線どおり、変更なし）、Top to bottom（上から下）、Bottom to top（下から上）、Left to right（左から右）、Right to left（右から左）、Centre outward（中心から外へ）。「秒」は最初の一列が変わってから最後の一列が変わるまでの時間です。</p>
+      <h2>mm.ss の読み方</h2><p>開始・終了・ショー全体の長さなど「時刻」は分.秒（mm.ss）で入力します。例：<code>3.05</code> → 3分05秒。<code>3.5</code> のように秒が1桁でも「3分05秒」として読みます。<code>3.60</code> のように60秒以上は無効（赤色）になります。入力欄の横に読み方がそのまま表示されます（例：「3 min 05 s」）。</p>
+      <h2>遷移（トランジション）6種</h2><p>各デザインの塗り替え方向を選べます：既定（配線どおり、変更なし）、Top to bottom（上から下）、Bottom to top（下から上）、Left to right (audience)（観客席から見て左から右）、Right to left (audience)（観客席から見て右から左）、Centre outward（中心から外へ）。「秒」は最初の一列が変わってから最後の一列が変わるまでの時間です。</p>
       <h2>保存と受け渡し</h2><p>「Save project…」でこのブラウザ内のプロジェクト全体（CSVとタイムライン）を1つのJSONファイルに書き出します。「Open project…」で読み込みます。オペレーター側の「Load bundle…」に同じファイルを渡すと、ユニットの割り当てはそのままに、CSVとタイムラインだけが更新されます。</p>
-      <h2>制限</h2><p>自動保存はブラウザに約4MBまで。音楽ファイルは64MBまで、名前だけ覚えていて再読み込み後は音源ファイルを選び直してください（プロジェクトファイルには音は含まれません）。保存ファイルは6MBを超えると警告、8MBを超えると保存を拒否します。</p>
+      <h2>制限</h2><p>自動保存はブラウザに約4MBまで。音楽ファイルは64MBまで、名前だけ覚えていて再読み込み後は音源ファイルを選び直してください（プロジェクトファイルには音は含まれません）。保存ファイルは6MBを超えると警告、8MBを超えると保存を拒否します。プライベートブラウジングでは自動保存が効かないことがあります（そのときはヘッダーに警告が出ます）。</p>
       <h2>自己テスト</h2><p><button id="run-selftest">Run self-test</button> <span id="selftest-result"></span></p>
       <h2>連絡先</h2><p>不具合や質問は ${esc("y.hirata@r2-engineering.com")} まで。</p>
     </div>`;
     $("#run-selftest").onclick = () => {
-      if (typeof globalThis.__selftest !== "function") { const out = $("#selftest-result"); out.textContent = "not available in this build yet"; out.className = ""; return; }
+      if (typeof globalThis.__selftest !== "function") {
+        // The shipped dist/az27ss-simulator.html is built with
+        // --no-goldens (DIST SIZE, adversarial review round 2): the
+        // Python-cross-check data alone was over half the page's weight, of
+        // no use to a designer double-clicking this file. The developer
+        // build (conductor/web/designer.html) always has it.
+        const out = $("#selftest-result");
+        out.textContent = "not in this file - the self-test lives in the developer build (conductor/web/designer.html), not the one designers open";
+        out.className = ""; return;
+      }
       const r = runSelfTestSafely();
       // Re-query, don't reuse a reference captured before the call
       // (adversarial review follow-up, 2026-09-25's own fix): restoring the
@@ -1106,14 +1153,20 @@
         // Refused outright, not silently renamed (adversarial review,
         // 2026-09-25): a dropped "../../../etc/foo_map.csv" or
         // "sub/dir_map.csv" used to become "sub_dir_map.csv" and get saved
-        // as if the designer had typed that name - same refusal sentence as
-        // an unrecognised extension, since either way it is "not a
-        // *_map.csv or *_color_NAME_grid.csv" (a real file dropped from a
-        // folder never carries a path in its own `File.name`, only in the
+        // as if the designer had typed that name (a real file dropped from
+        // a folder never carries a path in its own `File.name`, only in the
         // webkitGetAsEntry() traversal this page already flattens before
-        // calling here - so a name that still has one is not a plain file).
-        if (raw.includes("/") || raw.includes("\\") || raw.includes("..")) {
-          refused.push({ name: raw, error: refuseReason(raw) }); continue;
+        // calling here - so a name that still has one is not a plain
+        // file). ".." only as a whole path segment (adversarial review
+        // round 2 - F10), not merely a substring: a slash-free name like
+        // "AZ271SP0002_color_a..b_grid.csv" cannot traverse anywhere - the
+        // old check refused it anyway, with the generic "not a *_map.csv…"
+        // reason, which does not even describe what was wrong with it. A
+        // distinct, accurate message for this specific refusal too, rather
+        // than reusing the unrelated-extension one.
+        const hasBadPathSegment = raw.split(/[\\/]/).includes("..");
+        if (raw.includes("/") || raw.includes("\\") || hasBadPathSegment) {
+          refused.push({ name: raw, error: "file names must not contain / \\ or .." }); continue;
         }
         if (globalThis.SIM.look.kind(raw) === null) { refused.push({ name: raw, error: refuseReason(raw) }); continue; }
         project.files[raw] = text.replace(/\r\n?/g, "\n");
@@ -1264,9 +1317,28 @@
     pause() { ensureTransport().pause(); },
     stop() { ensureTransport().stop(); },
   };
+  // A real read-write probe, not just "does localStorage exist" (Safari in
+  // private browsing DOES expose window.localStorage - every call on it
+  // throws instead): the only way to know autosave will actually work is to
+  // try it once, up front, so the banner shows immediately rather than
+  // waiting for the first debounced autosave to fail 800ms into the
+  // session.
+  function localStorageWorks() {
+    try {
+      const probe = "az27ss.probe";
+      localStorage.setItem(probe, "1");
+      localStorage.removeItem(probe);
+      return true;
+    } catch { return false; }
+  }
   function boot() {
     loadUiPrefs();
     project = loadProject();
+    if (!localStorageWorks()) {
+      autosaveWarned = true;   // the debounced autosave's own toast would be redundant
+      const warn = document.getElementById("autosave-warn");
+      if (warn) warn.style.display = "inline";
+    }
     globalThis.SIM.app = app;
     // Wrap buildState so state.music always reflects this session's live object
     // URL (SIM.buildState itself is pure and knows nothing about object URLs).
@@ -1279,7 +1351,7 @@
     rebuild();
     // #displaycheck also forces the Timeline tab open (adversarial review
     // round 2 - F4): the browser-run vocabulary test needs the real
-    // rendered DOM - tracks, cue table, SHORTEST INTERVAL PER GARMENT, the
+    // rendered DOM - tracks, cue table, SHORTEST INTERVAL PER ITEM, the
     // dock - not just displayCheck()'s own synthetic dirty-string fixtures,
     // and the Timeline tab is where the operator-page vocabulary (unit/
     // board/socket/...) would show up if a display override ever came
