@@ -206,6 +206,7 @@ input[type=range] { width: 100%; }
 .showclock small { display: block; font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
 .showclock.running small { color: var(--ok); } .showclock.holding small { color: var(--warn); }
 .shownext { font-size: 13px; color: var(--dim); min-width: 220px; }
+#demo-name { text-transform: uppercase; width: 180px; }
 .shownext b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
 .go button.hold { background: var(--warn); border-color: var(--warn); color: #fff; }
 .go button.stop:hover { border-color: var(--err); color: var(--err); }
@@ -341,15 +342,27 @@ function loadDockCellsPref() {
 function saveDockCellsPref() {
   try { if (ui.dockCells) localStorage.setItem("tl.dockCells", String(ui.dockCells)); else localStorage.removeItem("tl.dockCells"); } catch {}
 }
+// The unit's LCD font cannot draw Japanese (conductor/server.py's own DEMO_NAME_MESSAGE) -
+// kept in one place so the hint text and the maxlength can never drift apart.
+const DEMO_NAME_MAX = 14;
+const DEMO_NAME_HINT = "A-Z, 0-9 and symbols, up to 14 characters (the unit's screen cannot show Japanese)";
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
              playing: false, anchor: 0, startT: 0, simView: false,
              dock: loadDockPref(), editorOpen: true, dockCells: loadDockCellsPref(),
              // Manual show-position control (Units tab): client-side only, always off on
              // reload, off again after a successful START/STOP - see seekBlockHtml().
-             manual: false, seekDrag: null, seekSent: null, seekTimer: null };
+             manual: false, seekDrag: null, seekSent: null, seekTimer: null,
+             // STANDALONE DEMO (Units tab): the name field keeps its typed case (the
+             // display is upper-cased by CSS only) so retyping never fights the caret;
+             // it is upper-cased once, when sent.
+             demoName: "", demoLoop: false, demoLog: "" };
 let fleet = null;
 let state = null;
+// The last GET /api/fleet/demos answer ({units: {unit: [demo,...]}, offline: [unit,...]}),
+// or null before the Units tab has ever asked for it - see refreshDemos().
+let demoList = null;
+let demoListLoading = false;   // guards against a render loop firing the GET twice
 // The transport's audio element: a singleton that is NEVER inserted into the DOM,
 // so renderTimeline()'s innerHTML= (fired by every edit) can never interrupt it.
 const player = new Audio();
@@ -1336,6 +1349,59 @@ async function loadShowFile(file) {
 
 // ---- tab 3: the units ----
 function assignedItems() { return trackItems().filter(i => i.unit && i.designs.length); }
+// ---- the standalone demo ----
+// Which units a write would actually reach: exactly compile_show()'s own
+// targets - the unit each cue's item is assigned to - so the confirm
+// dialog's count never disagrees with what the server is about to do.
+function demoTargetUnits() {
+  const unitOf = new Map(trackItems().map(i => [i.item, i.unit]));
+  return new Set(state.show.cues.map(c => unitOf.get(c.item)).filter(Boolean));
+}
+// One row per demo name (slug), gathered across every unit's own list -
+// several units hold the same demo, so this folds them into one row with
+// the units that have it. Each unit's own entry says whether ITS show_id
+// still matches what compile_show() would produce for it right now
+// (server-side, in the GET /api/fleet/demos answer) - a row is "current"
+// only while every unit that holds it agrees; one that fell behind (the
+// timeline, a map or a design changed since that unit's write) is named,
+// not just silently averaged away.
+function demoRows() {
+  const bySlug = new Map();
+  for (const [unit, demos] of Object.entries(demoList?.units || {}))
+    for (const d of demos) {
+      const row = bySlug.get(d.slug) || { ...d, units: [], outdated: [] };
+      row.units.push(unit);
+      if (!d.current) row.outdated.push(unit);
+      bySlug.set(d.slug, row);
+    }
+  return [...bySlug.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+function demoTableHtml() {
+  if (!demoList) return `<div class="meta">Checking the units…</div>`;
+  const rows = demoRows(), offline = demoList.offline || [];
+  return (rows.length ? `<table><thead><tr><th>Name</th><th>Cues</th><th>Length</th>
+      <th>Loop</th><th>Timeline</th><th>Units</th><th></th></tr></thead><tbody>${rows.map(d => `<tr>
+        <td>${esc(d.name)}</td><td>${d.cues}</td><td>${clock(d.duration)}</td>
+        <td>${d.loop ? "yes" : "—"}</td>
+        <td>${d.outdated.length ? `<span class="warn">older (${esc(d.outdated.join(", "))})</span>`
+                                : `<span class="okline">current</span>`}</td>
+        <td>${esc(d.units.join(", "))}</td>
+        <td><button data-demo-delete="${esc(d.slug)}">Delete</button></td></tr>`).join("")}
+      </tbody></table>` : `<div class="meta">No demos found on the units yet.</div>`)
+    + (offline.length ? `<div class="warn" style="margin-top:6px">Not checked ` +
+      `(offline): ${esc(offline.join(", "))}</div>` : "");
+}
+// Fetched once the Units tab is first opened, then only on an explicit Refresh
+// or right after a write/delete - not on every poll (the demo store barely
+// changes, and every unit would otherwise answer this every second for nothing).
+async function refreshDemos() {
+  if (demoListLoading) return;
+  demoListLoading = true;
+  try { demoList = await api("/api/fleet/demos"); } catch (err) { demoList = null; }
+  finally { demoListLoading = false; }
+  const box = $("#demo-table");
+  if (box) box.innerHTML = demoTableHtml();
+}
 // `show_duration`/`start_at` are new fields (round 3 §2.1); fall back gracefully
 // so the page works unmodified against an older conductor server.
 function fleetDuration() {
@@ -1514,6 +1580,22 @@ function renderFleet() {
       <div class="meta" id="show-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.showLog || "")}</div>
       <div class="meta" id="show-fix"></div>
     </div>
+    <div class="card"><h2>STANDALONE DEMO</h2>
+      <div class="meta sub">Writes the current timeline into every unit's own menu; each unit can then play its part from its LCD without this PC. If a unit is playing a demo, press STOP on this page first (it also ends the demo).</div>
+      <div class="go">
+        <input type="text" id="demo-name" maxlength="${DEMO_NAME_MAX}" placeholder="DEMO NAME" value="${esc(ui.demoName)}" title="${esc(DEMO_NAME_HINT)}">
+        <span class="meta" id="demo-count">${ui.demoName.trim().length}/${DEMO_NAME_MAX}</span>
+        <label class="meta"><input type="checkbox" id="demo-loop" ${ui.demoLoop ? "checked" : ""}> Loop (restart 5 s after the end)</label>
+        <button class="big" id="demo-write" ${cueCount && !cueBad && ui.demoName.trim() ? "" : "disabled"}>Write demo to units</button>
+      </div>
+      <div class="meta warn">${esc(DEMO_NAME_HINT)}</div>
+      <div class="meta" id="demo-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.demoLog || "")}</div>
+      <div class="meta sub" style="margin-top:10px">Demos on the units</div>
+      <div class="go" style="margin-top:4px">
+        <button id="demo-refresh">Refresh</button>
+      </div>
+      <div id="demo-table" style="margin-top:6px">${demoTableHtml()}</div>
+    </div>
     <div class="card"><h2>MANUAL CUE</h2>
       <div class="meta sub">For checking the sync outside a show: write a design to the boards, then fire every unit at the same instant.</div>
       ${items.length ? `<div class="picks">${items.map(item => `<label><span><b>${esc(itemFull(item))}</b> → ${esc(item.unit)}</span>
@@ -1536,6 +1618,7 @@ function renderFleet() {
       <div class="meta sub">Every unit is polled every 2 s, and each round trip also measures its clock offset.</div><div class="tiles" id="tiles"></div></div>`;
   renderThumbs(THUMBS.fleet, fleetShowPos());
   renderTiles();
+  if (demoList === null) refreshDemos();     // first time the Units tab is opened
 }
 let lastFleetThumbPos = null, lastFleetRunState = undefined;
 function showClockText() {
@@ -1623,7 +1706,9 @@ function renderTiles() {
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
       <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
-      <div class="row"><span>Show</span><b>${u.show ? `${fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
+      <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo${u.show.demo_name ? ": " + esc(u.show.demo_name) : ""}`
+          : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
+      <div class="row"><span>Demos</span><b>${u.demos ?? "—"}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
       ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}
       ${u.unit_error ? `<div class="e">${esc(u.unit_error)}</div>` : ""}
@@ -1649,7 +1734,8 @@ let commandInFlight = false;
 async function fleetCommand(command, body, title, slot = "go") {
   if (commandInFlight) return null;                // a double click must not send it twice
   commandInFlight = true; document.body.classList.add("busy");
-  const key = slot === "go" ? "goLog" : "showLog", box = () => $("#" + slot + "-log");
+  const key = slot === "go" ? "goLog" : slot === "demo" ? "demoLog" : "showLog",
+        box = () => $("#" + slot + "-log");
   try {
     ui[key] = title + " …"; if (box()) box().textContent = ui[key];
     const result = await api("/api/fleet/" + command, body);
@@ -1767,6 +1853,29 @@ document.addEventListener("click", async e => {
     if (confirm("Hand every unit back to its own buttons? A running show stops on the units.")) await fleetCommand("release", {}, "Release to on-device control");
     return;
   }
+  if (e.target.id === "demo-write") {
+    const name = ui.demoName.trim().toUpperCase();
+    if (!name) { toast("Enter a name for the demo."); return; }
+    const cueCount = state.show.cues.length, units = demoTargetUnits().size;
+    const msg = `Write "${name}" (${cueCount} cue${cueCount === 1 ? "" : "s"}, ` +
+      `${clock(state.show.duration)}) into ${units} unit${units === 1 ? "" : "s"}' menus?`;
+    if (!confirm(msg)) return;
+    const result = await fleetCommand("write_demo", { name, loop: ui.demoLoop },
+      `Write demo "${name}"`, "demo");
+    if (result) await refreshDemos();
+    return;
+  }
+  if (e.target.id === "demo-refresh") { await refreshDemos(); return; }
+  const delDemo = e.target.closest("[data-demo-delete]");
+  if (delDemo) {
+    const slug = delDemo.dataset.demoDelete;
+    const row = demoRows().find(r => r.slug === slug);
+    const label = row ? row.name : slug;
+    if (!confirm(`Delete "${label}" from every unit's menu?`)) return;
+    const result = await fleetCommand("delete_demo", { slug }, `Delete demo "${label}"`, "demo");
+    if (result) await refreshDemos();
+    return;
+  }
   const tab = e.target.closest("[data-tab]");
   if (tab) {
     // Leaving the Units tab mid-seek must not let a pending debounce post
@@ -1855,6 +1964,7 @@ document.addEventListener("change", async e => {
     if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
     return;
   }
+  if (id === "demo-loop") { ui.demoLoop = e.target.checked; return; }
   if (id === "show-manual") {
     ui.manual = e.target.checked;
     // Unticking must not leave a debounced commit alive to fire 350 ms later
@@ -2049,6 +2159,20 @@ function releaseSeekIfIdle() {
 }
 document.addEventListener("input", e => {
   if (e.target.id === "show-seek") { previewSeek(Number(e.target.value)); return; }
+  if (e.target.id === "demo-name") {
+    // The field keeps whatever case was typed (CSS shows it upper-cased; the
+    // value sent on Write is upper-cased then) - rewriting .value here on
+    // every keystroke would fight the caret while typing in the middle.
+    ui.demoName = e.target.value;
+    const counter = $("#demo-count");
+    if (counter) counter.textContent = `${ui.demoName.trim().length}/${DEMO_NAME_MAX}`;
+    const btn = $("#demo-write");
+    if (btn) {
+      const cueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
+      btn.disabled = !(state.show.cues.length && !cueBad && ui.demoName.trim());
+    }
+    return;
+  }
   if (e.target.id !== "ph") return;
   const t = Number(e.target.value);
   ui.playhead = t;

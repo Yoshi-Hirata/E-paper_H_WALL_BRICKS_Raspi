@@ -172,6 +172,17 @@ class UnitLink:
         self._learn(payload, sent, received)
         return payload
 
+    def get(self, path: str) -> dict:
+        """A read, on a connection of its own - the same shape as post(),
+        for a GET that is not the polled /status (e.g. /demo/list)."""
+        conn = self._connect(self._timeout * 2)
+        try:
+            payload, sent, received = self._exchange(conn, "GET", path)
+        finally:
+            conn.close()
+        self._learn(payload, sent, received)
+        return payload
+
     # ---- what is known ----
 
     def _best(self) -> "tuple[float, float] | None":
@@ -207,6 +218,7 @@ class UnitLink:
                 "failed": status.get("failed", []),
                 "prepare_s": status.get("prepare_s"),
                 "late_ms": status.get("late_ms"),
+                "demos": status.get("demos"),
                 "unit_error": status.get("error"),
                 "log": status.get("log", []),
                 "show": status.get("show"),
@@ -311,6 +323,41 @@ class Fleet:
         with self._run_lock:
             self.start_at = 0.0
         return results
+
+    # ---- the standalone demo: a named copy of the show, in a unit's own
+    # menu, that plays without this PC. Independent of the run this
+    # conductor is driving - it touches neither self.shows nor self.run.
+
+    def write_demo(self, name: str, loop: bool, shows: "dict[str, dict]"
+                   ) -> "dict[str, dict]":
+        """Post each unit its own compiled show (`shows`, the same dict
+        upload() sends via /show/load) to /demo/save under `name`, so the
+        unit can play it from its own menu, on its own clock, without
+        this PC. Only the units named in `shows` are written to - exactly
+        upload()'s own targets."""
+        def action(link):
+            result = link.post("/demo/save", {"name": name, "loop": bool(loop),
+                                               "show": shows[link.name]})
+            return {"slug": result.get("slug")}
+        return self._each(list(shows), action)
+
+    def list_demos(self) -> "dict[str, dict]":
+        """Per unit: {"ok": True, "demos": [...]} from a GET /demo/list,
+        or {"ok": False, "error": ...} for one offline or that refused -
+        every configured unit, not just those with a show uploaded (a
+        demo written earlier outlives this conductor's own upload)."""
+        def action(link):
+            if not link.online:
+                raise RuntimeError("offline")
+            return {"demos": link.get("/demo/list").get("demos") or []}
+        return self._each(list(self.links), action)
+
+    def delete_demo(self, slug: str) -> "dict[str, dict]":
+        """POST /demo/delete on every configured unit."""
+        def action(link):
+            result = link.post("/demo/delete", {"slug": slug})
+            return {"demos": result.get("demos")}
+        return self._each(list(self.links), action)
 
     def _send_run(self, names) -> "dict[str, dict]":
         with self._run_lock:
@@ -490,6 +537,14 @@ class Fleet:
         show = self.shows.get(link.name)
         if show is None or link.offset is None:
             return
+        if unit.get("demo"):
+            # Playing its own standalone demo (the same player the fleet's
+            # show would run on) - leave it alone. The unit itself refuses
+            # /show/load and /show/run while a demo runs, so nothing here
+            # would land anyway; forcing it would only fight an operator
+            # who chose to play the demo on purpose. STOP still ends it
+            # (the "missed STOP" branch above, unaffected by this return).
+            return
         why = None
         if unit.get("id") != show["id"]:
             why = "show reloaded"
@@ -541,7 +596,12 @@ class Fleet:
             found = []
             for link in self.links.values():
                 unit = (link.status or {}).get("show") or {}
+                # A unit playing its own standalone demo is not running
+                # the fleet's show, even though its state also reads
+                # "running" - adopting it would have this conductor try
+                # to drive (and "correct") a demo nobody asked it to.
                 if (link.online and unit.get("state") == "running"
+                        and not unit.get("demo")
                         and unit.get("synced") and unit.get("t0") is not None
                         and link.offset is not None):
                     found.append(unit["t0"] - link.offset)

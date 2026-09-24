@@ -1379,3 +1379,173 @@ def test_a_manual_prepare_carries_the_designs_delay_tables(workspace):
         frames += [f for f in struct.unpack(">64H", raw) if f != 0xFFFF]
     assert min(frames) == 0 and max(frames) == 300      # 3.0 s in 10 ms frames
 
+
+# ---- STANDALONE DEMO ----
+
+def _demo_workspace(tmp_path):
+    ws = Workspace(tmp_path)
+    ws.save("Look22_map.csv", MAP)
+    ws.save("Look22_color_pattern01_grid.csv", GRID)
+    ws.assign("Look22", "radxa-01")
+    ws.set_timeline(600, [_cue("a", 0)])
+    return ws
+
+
+def test_write_demo_validates_the_name(tmp_path):
+    from conductor.fleet import Fleet
+    from conductor.server import DEMO_NAME_MESSAGE
+
+    _demo_workspace(tmp_path)
+    server = make_server(tmp_path, port=0, fleet=Fleet({}))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        # Empty (after stripping), too long (15), and not plain ASCII: one
+        # message for all three, so the operator sees one clear rule.
+        for name in ("", "   ", "A" * 15, "こんにちは", "デモ"):
+            status, payload = _post(port, "/api/fleet/write_demo",
+                                    {"name": name, "loop": False})
+            assert status == 400
+            assert payload["error"] == DEMO_NAME_MESSAGE
+        # Exactly 14 plain-ASCII characters is fine.
+        status, payload = _post(port, "/api/fleet/write_demo",
+                                {"name": "A" * 14, "loop": False})
+        assert status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_write_demo_loop_must_be_a_json_boolean(tmp_path):
+    from conductor.fleet import Fleet
+
+    _demo_workspace(tmp_path)
+    server = make_server(tmp_path, port=0, fleet=Fleet({}))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for loop in ("true", "false", 1, 0):
+            status, payload = _post(port, "/api/fleet/write_demo",
+                                    {"name": "DEMO", "loop": loop})
+            assert status == 400
+            assert payload["error"] == "loop must be true or false"
+        # Omitted altogether reads as False, not a refusal.
+        status, payload = _post(port, "/api/fleet/write_demo", {"name": "DEMO"})
+        assert status == 200 and payload["name"] == "DEMO"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_write_demo_response_shape_and_name_is_upper_cased(tmp_path):
+    from conductor.fleet import Fleet
+
+    _demo_workspace(tmp_path)
+    # Fleet({}) falls back to the ten default units (an empty dict is
+    # falsy) - a unit this fleet was never told about at all, so
+    # write_demo() reports it the same "unknown unit" way _each() gives
+    # every other fleet command, with no network call for it to time out on.
+    server = make_server(tmp_path, port=0, fleet=Fleet({"radxa-09": "127.0.0.1:1"}))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/write_demo",
+                                {"name": "demo paris", "loop": True})
+        assert status == 200
+        assert payload["name"] == "DEMO PARIS"
+        assert payload["problems"] == []
+        assert payload["units"] == {
+            "radxa-01": {"ok": False, "error": "unknown unit"}}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_write_demo_is_blocked_the_same_way_upload_is(tmp_path):
+    from conductor.fleet import Fleet
+
+    Workspace(tmp_path)                    # no map, no design, no timeline
+    server = make_server(tmp_path, port=0, fleet=Fleet({}))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/write_demo",
+                                {"name": "DEMO", "loop": False})
+        assert status == 200
+        assert payload["units"] == {}
+        assert payload["problems"] == ["the timeline has no cues"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_delete_demo_needs_a_slug(tmp_path):
+    from conductor.fleet import Fleet
+
+    # A single configured (but unreachable) unit, not the ten defaults -
+    # delete_demo() posts to every configured unit, and this keeps the
+    # request from waiting out ten real connection timeouts.
+    server = make_server(tmp_path, port=0, fleet=Fleet({"radxa-01": "127.0.0.1:1"}))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/delete_demo", {})
+        assert status == 400 and "no demo" in payload["error"]
+        status, payload = _post(port, "/api/fleet/delete_demo",
+                                {"slug": "demo-paris"})
+        assert status == 200
+        assert set(payload["units"]) == {"radxa-01"}
+        assert payload["units"]["radxa-01"]["ok"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _get(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
+        return json.loads(r.read())
+
+
+def test_get_fleet_demos_with_no_fleet_configured(tmp_path):
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert _get(port, "/api/fleet/demos") == {"units": {}, "offline": []}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_fleet_demos_marks_whether_each_matches_the_current_timeline(tmp_path):
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    ws = _demo_workspace(tmp_path)
+    shows, problems = ws.compile_show()
+    assert problems == []
+    current_id = shows["radxa-01"]["id"]
+    online = StubLink("radxa-01", "stopped")
+    online.demos = [
+        {"slug": "demo-a", "name": "DEMO A", "cues": 1, "duration": 600,
+         "loop": False, "saved_at": 1, "show_id": current_id},
+        {"slug": "demo-b", "name": "DEMO B", "cues": 1, "duration": 600,
+         "loop": False, "saved_at": 2, "show_id": "an-older-hash"},
+    ]
+    offline = StubLink("radxa-02", "stopped")
+    offline.online = False
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": online, "radxa-02": offline}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        payload = _get(port, "/api/fleet/demos")
+        demos = {d["slug"]: d for d in payload["units"]["radxa-01"]}
+        assert demos["demo-a"]["current"] is True
+        assert demos["demo-b"]["current"] is False
+        assert payload["offline"] == ["radxa-02"]
+    finally:
+        server.shutdown()
+        server.server_close()
+

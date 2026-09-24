@@ -1,6 +1,6 @@
 # 現在地と再開手順
 
-最終更新: 2026-09-20
+最終更新: 2026-09-24
 
 **この文書は「次に何をするか」だけを書く。** 経緯は
 [DEVELOPMENT.md](DEVELOPMENT.md)、20 枚構成の検討は [SCALING.md](SCALING.md)、
@@ -17,6 +17,41 @@
 - テスト 246 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-20)
 
 ## 2. 直近で完成したもの
+
+**スタンドアローンデモ: タイムラインを機体自身のメニューに書き込む(2026-09-24、Conductor 側)**
+
+- Units タブに新しいカード「STANDALONE DEMO」。名前(A〜Z・0〜9・記号、最大 14
+  文字 — 機体の LCD フォント DejaVu は日本語を描けないため拒否)と Loop を決めて
+  「Write demo to units」を押すと、いまのタイムラインを機体ごとに `compile_show()`
+  した結果(Upload と同じショーファイル)を各機体の `/demo/save` へ送る。
+  タイムラインに問題が残っている間は Upload と同じ判定で押せない。
+- `conductor/fleet.py`: `Fleet.write_demo(name, loop, shows)`(`upload()` と同じ
+  `_each()` の形で、`self.shows`/`run` には触れない)、`list_demos()`
+  (`GET /demo/list`、`UnitLink.get()` を新設)、`delete_demo(slug)`
+  (`POST /demo/delete`、全設定済み機体へ)。
+- `conductor/server.py`: `POST /api/fleet/write_demo` `{"name","loop"}` →
+  `{"units","problems","name"}`(名前は 1〜14 文字・印字可能 ASCII のみ、`loop` は
+  JSON の真偽値のみ許可)。`GET /api/fleet/demos` → `{"units": {unit: [demo,...]},
+  "offline": [...]}`(オフラインの機体は `units` から省き `offline` に名前で列挙)。
+  各デモに `current`(そのデモを書いた時点の per-unit ショー ID が、いまの
+  `compile_show()` の ID と一致するか)を添えて返す。`POST /api/fleet/delete_demo
+  {"slug"}`。
+- ページ: 「Demos on the units」表(名前・キュー数・長さ・Loop・**Timeline**
+  (current / older(該当機体))・保持機体・Delete)。機体タイルに「Demos」行
+  (`/status` の `demos` 件数。旧いエージェントには無いので「—」)。
+- **機体が自分のデモを再生中は PC の進行と衝突させない**: `fleet.py` の
+  `_adopt()`/`_supervise()` は、機体の `show.state` が `demo: true` のときは
+  「自分の実行として拾う」「/show/load・/show/run で正す」対象から外す
+  (機体側も `/show/load`・`/show/run` を 409 で拒否する)。Units タブの Show 行は
+  そのとき `✗ old version` の代わりに `demo` と出す。STOP は今まで通りデモも
+  含めて止める。
+- 機体側(`ui/demos.py`・`ui/agent.py`・メニュー)は別セッションの実装分。
+  この変更は凍結した契約
+  (`POST /demo/save {"name","loop","show"}` → `{"ok","slug","demos"}` など、
+  409 は `{"error"}` で per-unit の失敗として届く)に対して書かれており、
+  そちら側のブランチが未マージの間は実機での疎通確認ができていない
+  (`tests/test_fleet.py`/`test_conductor_server.py` は StubLink 相手のテストで
+  独立に確認済み、`python -m pytest -q` 521 件 pass)。
 
 **マップが制作サイトの行ごとの shift を持つように(2026-09-24)**
 

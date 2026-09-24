@@ -263,13 +263,29 @@ class StubLink:
         self.status = {"show": {"id": "showA", "state": show_state, "t0": 1005.0,
                                 "synced": True}}
         self.posted = []
+        self.demos = []           # what a GET /demo/list would answer
 
     def post(self, path, body):
         self.posted.append((path, body))
         return {}
 
+    def get(self, path):
+        if path == "/demo/list":
+            return {"demos": self.demos}
+        return {}
+
     def snapshot(self):
         return {"name": self.name, "online": True, "show": self.status["show"]}
+
+
+class FailingLink(StubLink):
+    """A unit that is offline (or refuses) for every command."""
+
+    def post(self, path, body):
+        raise RuntimeError("timed out")
+
+    def get(self, path):
+        raise RuntimeError("timed out")
 
 
 def test_a_stopped_show_is_not_adopted_back_from_a_unit_that_missed_the_stop():
@@ -596,3 +612,105 @@ def test_a_seek_is_not_held_up_by_an_offline_unit(fleet, units):
     assert set(results) == set(fleet.shows)
     assert not results["radxa-09"]["ok"]
     assert "clock not measured" in results["radxa-09"]["error"]
+
+
+# ---- the standalone demo: a named copy of the show in a unit's own menu ----
+
+def test_write_demo_posts_each_unit_its_own_show():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    a, b = StubLink("radxa-01", "stopped"), StubLink("radxa-02", "stopped")
+    fleet.links = {"radxa-01": a, "radxa-02": b}
+    shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 60},
+             "radxa-02": {"id": "showB", "cues": [], "duration": 90}}
+    results = fleet.write_demo("DEMO PARIS", True, shows)
+    assert all(r["ok"] for r in results.values())
+    assert a.posted == [("/demo/save", {"name": "DEMO PARIS", "loop": True,
+                                        "show": shows["radxa-01"]})]
+    assert b.posted == [("/demo/save", {"name": "DEMO PARIS", "loop": True,
+                                        "show": shows["radxa-02"]})]
+    # Independent of the run this conductor drives: neither is touched.
+    assert fleet.shows == {} and fleet.run is None
+
+
+def test_write_demo_reports_an_offline_unit_as_failed():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    ok, gone = StubLink("radxa-01", "stopped"), FailingLink("radxa-09", "stopped")
+    fleet.links = {"radxa-01": ok, "radxa-09": gone}
+    shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 60},
+             "radxa-09": {"id": "showA", "cues": [], "duration": 60}}
+    results = fleet.write_demo("DEMO", False, shows)
+    assert results["radxa-01"]["ok"]
+    assert not results["radxa-09"]["ok"]
+    assert "timed out" in results["radxa-09"]["error"]
+
+
+def test_write_demo_with_no_shows_posts_nothing():
+    # The server's own "whole show or not at all" rule (compile_show()
+    # returns {} while the timeline has a problem): write_demo is simply
+    # never called with anything to post, and does nothing on its own.
+    fleet = Fleet({})
+    a = StubLink("radxa-01", "stopped")
+    fleet.links = {"radxa-01": a}
+    assert fleet.write_demo("DEMO", False, {}) == {}
+    assert a.posted == []
+
+
+def test_list_demos_gathers_online_units_and_marks_the_rest_failed():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    online = StubLink("radxa-01", "stopped")
+    online.demos = [{"slug": "demo-paris", "name": "DEMO PARIS", "cues": 5,
+                     "duration": 60, "loop": False, "saved_at": 1}]
+    offline = StubLink("radxa-02", "stopped")
+    offline.online = False
+    fleet.links = {"radxa-01": online, "radxa-02": offline}
+    results = fleet.list_demos()
+    assert results["radxa-01"] == {"ok": True, "demos": online.demos}
+    assert not results["radxa-02"]["ok"]
+    assert "offline" in results["radxa-02"]["error"]
+
+
+def test_delete_demo_posts_to_every_configured_unit():
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    a, b = StubLink("radxa-01", "stopped"), StubLink("radxa-02", "stopped")
+    fleet.links = {"radxa-01": a, "radxa-02": b}
+    results = fleet.delete_demo("demo-paris")
+    assert a.posted == [("/demo/delete", {"slug": "demo-paris"})]
+    assert b.posted == [("/demo/delete", {"slug": "demo-paris"})]
+    assert all(r["ok"] for r in results.values())
+
+
+def test_delete_demo_reports_an_unknown_slug_as_failed():
+    # /demo/delete answers 409/404 with {"error": "no such demo: ..."} for
+    # a slug that is not there; UnitLink.post() already turns any non-200
+    # into a RuntimeError (see _exchange), so _each() reports it as a
+    # per-unit failure with no code of its own needed here.
+    class UnknownSlugLink(StubLink):
+        def post(self, path, body):
+            raise RuntimeError(f"no such demo: {body['slug']}")
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.links = {"radxa-01": UnknownSlugLink("radxa-01", "stopped")}
+    results = fleet.delete_demo("ghost")
+    assert not results["radxa-01"]["ok"]
+    assert "no such demo: ghost" in results["radxa-01"]["error"]
+
+
+# ---- a unit playing its own demo is not the fleet's show ----
+
+def test_a_unit_playing_a_demo_is_not_adopted():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-01", "running")
+    link.status["show"]["demo"] = True
+    fleet.links = {"radxa-01": link}
+    assert fleet.snapshot()["run"] is None      # not mistaken for the fleet's own run
+
+
+def test_supervise_leaves_a_unit_playing_a_demo_alone():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-02", "running")
+    link.status["show"]["demo"] = True
+    link.status["show"]["id"] = "someOtherShow"     # would normally read "show reloaded"
+    fleet.links = {"radxa-02": link}
+    fleet.shows = {"radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "running", "held_at": None}
+    fleet._supervise(link)
+    assert link.posted == []                        # neither /show/load nor /show/run
