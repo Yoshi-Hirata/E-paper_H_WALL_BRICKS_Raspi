@@ -199,7 +199,12 @@ class LookMap:
         seen_socket: "dict[tuple, int]" = {}
         all_rows: "set[tuple[str, int]]" = set()
         for line_no, raw in enumerate(reader, start=2):
-            row = {(k or "").strip(): (v or "").strip() for k, v in raw.items()}
+            # A row with more cells than the header (a stray trailing comma, the
+            # commonest hand-edit slip) puts a LIST under DictReader's restkey
+            # (None): never a str to strip. Such cells are ignored here; the
+            # count check below still says when a row is short.
+            row = {(k or "").strip(): (v or "").strip() for k, v in raw.items()
+                   if isinstance(v, str) or v is None}
             if not any(row.values()):
                 continue
             where = f"{name}:{line_no}"

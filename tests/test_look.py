@@ -466,3 +466,15 @@ def test_sample_grid_rows_carry_the_maps_own_shift():
     assert rows["front|1"] == str(look_map.shift("front", 1)) == "0.0"
     # back row 0 is 0.5 in the map (would default to 0.0, even row).
     assert rows["back|0"] == str(look_map.shift("back", 0)) == "0.5"
+
+
+def test_a_map_row_with_a_stray_trailing_comma_still_loads(tmp_path):
+    """csv.DictReader parks the extra cell in a list under restkey; that
+    must not become an AttributeError (a 500 on /api/state) - the row is
+    read from its named columns and the extra cell is ignored."""
+    text = MAP.replace("front,14,10,17,1,017-01", "front,14,10,17,1,017-01,", 1)
+    path = tmp_path / "Look22_map.csv"
+    path.write_text(text, encoding="utf-8")
+    look_map = LookMap.from_csv(path)
+    assert any(s.board_no == 17 and s.socket == 1 for s in look_map.scales)
+
