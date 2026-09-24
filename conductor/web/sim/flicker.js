@@ -100,9 +100,15 @@
     if (cue.refresh !== undefined) return { value: cue.refresh, source: cue.refresh_source || (cue.refresh_s != null ? "cue" : "show") };
     return cue.refresh_s != null ? { value: cue.refresh_s, source: "cue" } : { value: showRefreshS, source: "show" };
   }
-  function applySweptColors(item, cue, design, t, out, palette) {
+  function applySweptColors(item, cue, design, t, out, palette, showRefreshS) {
     const sweep = sweepOf(cue);
-    const refresh = cue.refresh ?? cue.refresh_s ?? 7;
+    // refreshOfFor(), not a second hard-coded fallback (adversarial review,
+    // 2026-09-25: this used to fall back to a bare "7" - a silent duplicate
+    // of timeline.js's own REFRESH_S default that would quietly drift the
+    // moment that constant ever changed, and wrong whenever the show's own
+    // default refresh isn't 7.0s in the first place, e.g. after Default
+    // refresh time is edited on the Timeline toolbar).
+    const refresh = refreshOfFor(cue, showRefreshS).value;
     const model = refreshModelFor(item, cue, sweep);
     item.map.scales.forEach((s, n) => {
       const key = `${s[0]}|${s[1]}|${s[2]}`;
@@ -113,9 +119,9 @@
       out[key] = tau >= refresh ? targetCode : refreshPhaseColor(n, tau, tau / refresh, targetCode, palette);
     });
   }
-  function applyFlatColors(item, cue, design, t, out) {
+  function applyFlatColors(item, cue, design, t, out, showRefreshS) {
     const sweep = sweepOf(cue);
-    const refresh = cue.refresh ?? cue.refresh_s ?? 7;
+    const refresh = refreshOfFor(cue, showRefreshS).value;
     const model = refreshModelFor(item, cue, sweep);
     item.map.scales.forEach((s, n) => {
       const key = `${s[0]}|${s[1]}|${s[2]}`;
@@ -125,11 +131,16 @@
     });
   }
   const designLabel = d => d.label || d.name;
-  // opts: {flicker (default true), cuesOf(item)->cues, palette}
+  // opts: {flicker (default true), cuesOf(item)->cues, palette, refreshS
+  // (state.show.refresh_s - the show's own default, used only for a cue
+  // that carries no override of its own; state.show.cues[] normally already
+  // has a computed .refresh by the time it reaches here, so this is a
+  // fallback path, not the common one)}
   function wornAt(item, t, opts) {
     const flicker = !opts || opts.flicker !== false;
     const cues = (opts && opts.cuesOf) ? opts.cuesOf(item) : [];
     const palette = opts && opts.palette;
+    const showRefreshS = opts && opts.refreshS;
     let colors = {}, shifts = null, label = "(as before the show)", changing = false;
     for (const cue of cues) {
       const design = item.designs.find(d => d.name === cue.design);
@@ -137,8 +148,8 @@
       if (!design) continue;
       if (cue.complete > t) {
         if (cue.sent <= t) {
-          if (flicker) applySweptColors(item, cue, design, t, colors, palette);
-          else applyFlatColors(item, cue, design, t, colors);
+          if (flicker) applySweptColors(item, cue, design, t, colors, palette, showRefreshS);
+          else applyFlatColors(item, cue, design, t, colors, showRefreshS);
         }
         continue;
       }
@@ -151,7 +162,7 @@
   globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     flicker: {
       JITTER_MAX, REFRESH_TINT, REFRESH_PHASE_A, REFRESH_PALETTE, REFRESH_PHASE_C, TINT_STEPS,
-      hash32, refreshPhaseColor, refreshModelFor, wornAt, clearCaches,
+      hash32, refreshPhaseColor, refreshModelFor, refreshOfFor, wornAt, clearCaches,
     },
   });
 })();

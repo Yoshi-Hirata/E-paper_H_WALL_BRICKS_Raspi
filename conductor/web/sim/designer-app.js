@@ -70,6 +70,12 @@
   function scheduleAutosave() {
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
+      // A `project` that fails to build is exactly the one copy autosave
+      // must NOT overwrite the last-good save with (adversarial review,
+      // 2026-09-25, on rebuild()'s own error path: the whole point of
+      // "reload to recover the autosave" only holds if the autosave itself
+      // was never poisoned in the first place).
+      if (buildError) return;
       try {
         const text = JSON.stringify(project);
         // Bytes, not JS string length (adversarial review, 2026-09-25): a
@@ -120,9 +126,31 @@
     clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", 6000);
   }
 
+  // Set the moment buildState() throws, cleared the moment it succeeds
+  // again; render() checks this FIRST and shows nothing else while it is
+  // set (see its own comment). Every mutator (addFiles, updateCue, setShow,
+  // ...) already changes `project` before calling rebuild() - if
+  // buildState() then throws, the old code below used to leave `state`
+  // (and everything on screen, built from it) exactly as it was before that
+  // mutation, while `project` already held the new, apparently-poisonous
+  // data: a silent mismatch where the screen looks fine but is describing a
+  // project that no longer exists, and the very next edit would start from
+  // the bad `project` regardless (adversarial review, 2026-09-25).
+  // Rendering the error instead - rather than trying to roll `project`
+  // back, which would need every one of those mutators to snapshot first -
+  // makes the mismatch impossible to miss instead of impossible to see.
+  let buildError = null;
   function rebuild() {
-    try { state = globalThis.SIM.buildState(project); }
-    catch (e) { console.error("buildState failed", e); toast("Internal error building the project - see the console."); return; }
+    let built;
+    try { built = globalThis.SIM.buildState(project); }
+    catch (e) {
+      console.error("buildState failed", e);
+      buildError = (e && e.message) ? e.message : String(e);
+      render();
+      return;
+    }
+    buildError = null;
+    state = built;
     globalThis.SIM.flicker.clearCaches();
     if (!state.items.some(i => i.item === ui.item)) ui.item = state.items[0]?.item ?? null;
     if (ui.item) {
@@ -137,19 +165,34 @@
     render();
   }
 
+  // Two garments can share one LOOK on purpose (the show line-up puts a top
+  // and its skirt on the same Radxa under one LOOK number - LOOK 26 in the
+  // shipped starter data is exactly this: AZ271SC6302 and AZ271SB2303).
+  // "LOOK 26" alone is ambiguous between them wherever a garment is named
+  // one at a time (a track row, the cue table, SHORTEST INTERVAL PER
+  // GARMENT) - adversarial review, 2026-09-25. lookDisplay() appends the
+  // item code only when it actually needs to.
+  function sharesLook(item) {
+    return !!(item && item.look && state.items.filter(x => x.look === item.look).length > 1);
+  }
+  function lookDisplay(item) {
+    if (!item || !item.look) return null;
+    return "LOOK " + item.look + (sharesLook(item) ? " · " + item.item : "");
+  }
   // ---- display-only rewrite of the model's bus fallback name (plan §1.3/§3.6):
   // the model always calls an unassigned item's bus "(<item>)"; the UI shows
-  // "LOOK n" (or the bare item name with no LOOK yet) instead, everywhere.
+  // "LOOK n" (or "LOOK n · ITEM" when that LOOK is shared, or the bare item
+  // name with no LOOK yet) instead, everywhere.
   function unitLabel(key) {
     const m = /^\((.+)\)$/.exec(key);
     if (!m) return key;
     const it = state.items.find(i => i.item.toLowerCase() === m[1].toLowerCase());
-    return it && it.look ? "LOOK " + it.look : m[1];
+    return (it && lookDisplay(it)) || m[1];
   }
   function labelize(msg) {
     return String(msg).replace(/ on \(([^)]+)\)/g, (m, name) => {
       const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
-      return " on " + (it && it.look ? "LOOK " + it.look : name);
+      return " on " + ((it && lookDisplay(it)) || name);
     });
   }
   // Adversarial review (2026-09-25): labelize() only ever rewrote the one
@@ -225,8 +268,8 @@
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", displayCheck);
     else displayCheck();
   }
-  const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : i.item;
-  const itemFull = i => !i ? "" : [i.look ? "LOOK " + i.look : "", i.model].filter(Boolean).join(" · ") || i.item;
+  const itemName = i => !i ? "" : lookDisplay(i) || i.item;
+  const itemFull = i => !i ? "" : [lookDisplay(i), i.model].filter(Boolean).join(" · ") || i.item;
   const designLabel = d => d.label || d.name;
   const designState = d => !d.problems.length ? "ok" : !d.partial_problems.length ? "partial" : "bad";
 
@@ -379,7 +422,7 @@
   // ==================================================================
   function trackItems() { return orderByLook(state.items.filter(i => i.map && i.map.scales.length)); }
   function cuesOf(item) { return state.show.cues.filter(c => c.item === item.item).sort((a, b) => a.sent - b.sent); }
-  const ctx = () => ({ cuesOf, palette: state.palette });
+  const ctx = () => ({ cuesOf, palette: state.palette, refreshS: state.show.refresh_s });
 
   function nextUnusedDesign(item) {
     const used = new Set(cuesOf(item).map(c => c.design));
@@ -535,7 +578,23 @@
         <div class="card" id="tl-editor-card"><h2>EDIT CUE</h2><div id="cue-editor-body"></div></div>
       </div>` : `<div class="empty">Add the map and design CSV files on the Designs tab first.</div>`}`;
     if (items.length) {
-      wireMmss("show-duration", sec => globalThis.SIM.app.setShow({ duration: sec }));
+      // Clamped to 1 s..99:59 (adversarial review, 2026-09-25), and 0
+      // itself is a revert, not a clamp-up-to-1: "0" is what an accidental
+      // double-backspace leaves behind, and silently turning that into a
+      // 1-second show is a worse surprise than just putting back what was
+      // there. wireMmss() cannot tell the difference on its own - 0 parses
+      // as a perfectly valid mm.ss - so the revert (and its echo/red-state
+      // repaint) happens here, not inside wireMmss's generic bad-input path.
+      wireMmss("show-duration", sec => {
+        const MAX_DURATION_S = 99 * 60 + 59;
+        if (sec <= 0) {
+          toast("Show length must be at least 1 s - kept " + globalThis.SIM.mmss.format(state.show.duration) + ".");
+          const input = $("#show-duration");
+          if (input) { input.value = globalThis.SIM.mmss.format(state.show.duration); input.dispatchEvent(new Event("input")); }
+          return;
+        }
+        globalThis.SIM.app.setShow({ duration: Math.min(MAX_DURATION_S, sec) });
+      });
       $("#show-refresh").onchange = e => { const v = Number(e.target.value); if (v >= 1 && v <= 60) globalThis.SIM.app.setShow({ refresh_s: v }); else e.target.value = state.show.refresh_s.toFixed(1); };
       renderCueEditor(state.show.cues.find(c => sameId(c.id, ui.cue)) || null);
       wireTrackEvents();
@@ -857,6 +916,22 @@
   // ==================================================================
   function render() {
     document.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === ui.tab));
+    if (buildError) {
+      // Deliberately not the usual tab content: `state` (everything the
+      // normal render path reads) is now stale relative to `project`, so
+      // nothing built from it - the ITEMS sidebar included - is trustworthy
+      // to show. Reload is the only escape offered because it is the only
+      // one guaranteed correct: it drops back to the last state that DID
+      // build (the autosave, or the on-disk starter if even that failed).
+      $("#items").innerHTML = ""; $("#orphans").innerHTML = ""; $("#ws").textContent = "";
+      $("#tl-dock").style.display = "none";
+      $("#content").innerHTML = `<div class="card"><h2 style="color:var(--err)">Internal error</h2>
+        <p>This project could not be rebuilt: <code>${esc(buildError)}</code></p>
+        <p>Nothing shown here can be trusted until this is fixed. Your last change is not lost, but the screen cannot reflect it - reload to get back to the last copy that DID build (the autosave, or Open project… to load a saved one).</p>
+        <button id="build-error-reload">Reload</button></div>`;
+      const btn = $("#build-error-reload"); if (btn) btn.onclick = () => location.reload();
+      return;
+    }
     renderSidebar();
     if (ui.tab === "timeline") renderTimelineTab();
     else { $("#tl-dock").style.display = "none"; syncDockHeight(); if (ui.tab === "help") renderHelp(); else renderDesigns(); }
@@ -945,10 +1020,22 @@
     addFiles(list) {
       const saved = [], refused = [];
       for (const { name, text } of list) {
-        const clean = String(name).replace(/[\\/]/g, "_");
-        if (globalThis.SIM.look.kind(clean) === null) { refused.push({ name: clean, error: refuseReason(clean) }); continue; }
-        project.files[clean] = text.replace(/\r\n?/g, "\n");
-        saved.push(clean);
+        const raw = String(name);
+        // Refused outright, not silently renamed (adversarial review,
+        // 2026-09-25): a dropped "../../../etc/foo_map.csv" or
+        // "sub/dir_map.csv" used to become "sub_dir_map.csv" and get saved
+        // as if the designer had typed that name - same refusal sentence as
+        // an unrecognised extension, since either way it is "not a
+        // *_map.csv or *_color_NAME_grid.csv" (a real file dropped from a
+        // folder never carries a path in its own `File.name`, only in the
+        // webkitGetAsEntry() traversal this page already flattens before
+        // calling here - so a name that still has one is not a plain file).
+        if (raw.includes("/") || raw.includes("\\") || raw.includes("..")) {
+          refused.push({ name: raw, error: refuseReason(raw) }); continue;
+        }
+        if (globalThis.SIM.look.kind(raw) === null) { refused.push({ name: raw, error: refuseReason(raw) }); continue; }
+        project.files[raw] = text.replace(/\r\n?/g, "\n");
+        saved.push(raw);
       }
       rebuild(); persist();
       return { saved, refused };

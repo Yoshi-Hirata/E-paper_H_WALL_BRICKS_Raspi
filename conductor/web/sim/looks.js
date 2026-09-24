@@ -69,7 +69,7 @@
       return `<div class="look-cell">
         <div class="lk-head">${esc(g.look ? "LOOK " + g.look : itemName(g.items[0]))}<span class="chg" style="display:none"></span>
           <div class="sub"></div></div>
-        ${g.items.map(item => { const worn = flicker().wornAt(item, t, { flicker: true, cuesOf: ctx.cuesOf, palette: ctx.palette }); return `<div class="lk-item">
+        ${g.items.map(item => { const worn = flicker().wornAt(item, t, { flicker: true, cuesOf: ctx.cuesOf, palette: ctx.palette, refreshS: ctx.refreshS }); return `<div class="lk-item">
           ${render().renderGarment(item, { cell: view.cell, mode: "design", labels: false, tag: true, colors: worn.colors, shifts: worn.shifts, palette: ctx.palette })}</div>`; }).join("")}
       </div>`; }).join("");
     buildLookCache(groups, view);
@@ -121,7 +121,7 @@
       let changing = false;
       const sub = [];
       for (const entry of cell.items) {
-        const worn = flicker().wornAt(entry.item, t, { flicker: true, cuesOf: ctx.cuesOf, palette: ctx.palette });
+        const worn = flicker().wornAt(entry.item, t, { flicker: true, cuesOf: ctx.cuesOf, palette: ctx.palette, refreshS: ctx.refreshS });
         if (worn.changing) changing = true;
         sub.push(`${entry.item.model || entry.item.item}: ${worn.label}`);
         for (const [key, circleEl] of entry.circles) {

@@ -51,12 +51,21 @@ CONSTANT_NAMES = ["PITCH", "MARGIN", "JITTER_MAX", "TINT_STEPS", "REFRESH_TINT",
                   "REFRESH_PHASE_A", "REFRESH_PALETTE", "REFRESH_PHASE_C"]
 
 
-def _extract_constants(text: str) -> dict:
+def _extract_constants(text: str, label: str) -> dict:
+    # \b on BOTH sides of the name (adversarial review, 2026-09-25: the old
+    # pattern had no trailing \b, so e.g. a hypothetical REFRESH_TINT2 = ...
+    # would have matched as if it were REFRESH_TINT) and findall, not
+    # search - a constant defined twice (a stray leftover copy after an
+    # edit, say) used to silently take whichever definition happened to
+    # come first instead of failing loudly.
     found = {}
     for name in CONSTANT_NAMES:
-        m = re.search(rf"\b{name}\s*=\s*(\[[^\]]*\]|[0-9.]+)", text)
-        if m:
-            found[name] = re.sub(r"\s+", "", m.group(1))
+        matches = re.findall(rf"\b{name}\b\s*=\s*(\[[^\]]*\]|[0-9.]+)", text)
+        assert len(matches) <= 1, (
+            f"{label}: {name} is defined {len(matches)} times "
+            f"(expected at most one): {matches}")
+        if matches:
+            found[name] = re.sub(r"\s+", "", matches[0])
     return found
 
 
@@ -64,8 +73,8 @@ def test_shared_constants_match_index_html():
     index_text = INDEX_HTML.read_text(encoding="utf-8")
     sim_text = "".join((REPO / "conductor" / "web" / "sim" / name).read_text(encoding="utf-8")
                         for name in ("render.js", "flicker.js"))
-    index_constants = _extract_constants(index_text)
-    sim_constants = _extract_constants(sim_text)
+    index_constants = _extract_constants(index_text, "index.html")
+    sim_constants = _extract_constants(sim_text, "render.js/flicker.js")
     assert set(index_constants) == set(CONSTANT_NAMES), \
         f"index.html is missing some of {CONSTANT_NAMES}: found {sorted(index_constants)}"
     assert set(sim_constants) == set(CONSTANT_NAMES), \
