@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Follow-up questions: pre-written pictures and autonomous playback / 追加问题：预写画面与自主播放</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm; }
+  body { font-family: "Segoe UI", "Noto Sans", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; color: #1a1a1a; font-size: 10.5pt; line-height: 1.45; max-width: 190mm; margin: 0 auto; }
+  h1 { font-size: 17pt; margin: 0 0 4px; }
+  h2 { font-size: 13pt; margin: 22px 0 6px; border-bottom: 2px solid #2440a8; padding-bottom: 3px; }
+  .sub { color: #555; margin: 0 0 14px; font-size: 9.5pt; }
+  .zh { color: #333; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 6px 0; }
+  .pair > div { min-width: 0; }
+  .lang { font-size: 8pt; letter-spacing: .08em; color: #2440a8; font-weight: 700; margin-bottom: 2px; }
+  table { border-collapse: collapse; width: 100%; font-size: 9.5pt; margin: 6px 0 10px; }
+  th, td { border: 1px solid #bbb; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef1f8; }
+  .q { margin: 8px 0; }
+  .q b { color: #2440a8; }
+  figure { margin: 10px 0 14px; page-break-inside: avoid; }
+  figcaption { font-size: 9pt; color: #444; margin-top: 4px; }
+  svg text { font-family: "Segoe UI", "Noto Sans", "Microsoft YaHei", Arial, sans-serif; }
+  code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; background: #f2f2f2; padding: 0 3px; }
+  .small { font-size: 9pt; color: #555; }
+  .note { border-left: 4px solid #2440a8; background: #f3f5fb; padding: 6px 10px; margin: 8px 0; }
+</style>
+</head>
+<body>
+
+<h1>Follow-up: pre-written pictures and autonomous playback<br><span class="zh">追加问题：预写画面与自主播放</span></h1>
+<p class="sub">From: R2 Engineering (Y. Hirata) — AZ-27SS e-paper garment project · To: Meris (LIN) · Date: 2026-09-24 · Firmware: FW_260923 (protocol V1.4) · Ref.: your reply of 2026-09-24 to MERIS_PROPOSAL_3SLOT</p>
+
+<div class="pair">
+  <div><div class="lang">EN</div>
+    <p>Thank you for the fast and complete answer. Based on it we changed our plan to something simpler and safer than the 3-slot rotation, and we have a few new questions about it.</p>
+  </div>
+  <div><div class="lang">中文</div>
+    <p class="zh">感谢贵司迅速而完整的回复。基于该回复，我们把方案改为比三槽轮换更简单、更安全的做法，并由此产生了几个新问题。</p>
+  </div>
+</div>
+
+<h2>1. New plan: write every picture before the show, send only triggers during it / 新方案：演出前写完所有画面，演出中只发触发命令</h2>
+<div class="pair">
+  <div><div class="lang">EN</div>
+    <p>Since all 20 slots are identical and persistent, we will <b>write every picture of the show into its own slot before the show</b> (during our "Upload" step, with time to re-send to any board that did not ACK), and during the show the host sends <b>only one broadcast <code>0x1D &lt;slot&gt;</code> per picture</b>. No <code>0x13</code> is sent while the show runs.</p>
+    <ul>
+      <li>Slot 0 = the white standby picture (so the master's one-time power-up autoplay of slot 0 shows white).</li>
+      <li>Slots 1–19 = the pictures of the show for that bus, in order (19 pictures per garment per show is enough for us).</li>
+      <li>One broadcast <code>0x17</code> after power-up, then only <code>0x1D</code>.</li>
+    </ul>
+  </div>
+  <div><div class="lang">中文</div>
+    <p class="zh">既然 20 个槽位完全相同且持久保存，我们将在<b>演出前把演出的每一幅画面各写入一个槽位</b>（在我们的“Upload”步骤中完成，并留出时间向未 ACK 的板补发），演出中主机<b>每幅画面只发一条广播 <code>0x1D &lt;槽位&gt;</code></b>。演出进行中不再发送任何 <code>0x13</code>。</p>
+    <ul class="zh">
+      <li>槽位 0 = 白色待机画面（主机板上电时对槽位 0 的一次性自动播放因此显示白色）。</li>
+      <li>槽位 1–19 = 该总线在本场演出中的画面，按顺序排列（每件服装每场 19 幅对我们足够）。</li>
+      <li>上电后广播一次 <code>0x17</code>，之后只发 <code>0x1D</code>。</li>
+    </ul>
+  </div>
+</div>
+
+<figure>
+<svg viewBox="0 0 760 150" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#333"/></marker></defs>
+  <text x="10" y="18" font-size="11" font-weight="700">Before the show (Upload) / 演出前(Upload)</text>
+  <rect x="10" y="28" width="330" height="26" fill="#e07a1f" opacity=".9"/><text x="16" y="45" font-size="9.5" fill="#fff">0x1B + 0x1F + 0x13 for every picture → slots 1..19, every board · 全部写入</text>
+  <text x="400" y="18" font-size="11" font-weight="700">During the show / 演出中</text>
+  <g stroke="#c8372d" stroke-width="2"><line x1="400" y1="28" x2="400" y2="56"/><line x1="480" y1="28" x2="480" y2="56"/><line x1="560" y1="28" x2="560" y2="56"/><line x1="640" y1="28" x2="640" y2="56"/></g>
+  <rect x="400" y="30" width="70" height="22" fill="#2a78d6" opacity=".85"/><text x="404" y="45" font-size="9" fill="#fff">0x1D 1</text>
+  <rect x="480" y="30" width="70" height="22" fill="#2a78d6" opacity=".85"/><text x="484" y="45" font-size="9" fill="#fff">0x1D 2</text>
+  <rect x="560" y="30" width="70" height="22" fill="#2a78d6" opacity=".85"/><text x="564" y="45" font-size="9" fill="#fff">0x1D 3</text>
+  <rect x="640" y="30" width="70" height="22" fill="#2a78d6" opacity=".85"/><text x="644" y="45" font-size="9" fill="#fff">0x1D 4 …</text>
+  <text x="400" y="76" font-size="9" fill="#555">7 s refresh + 1 s gap = 8 s per picture, any number of boards · 与板数无关</text>
+  <text x="10" y="76" font-size="9" fill="#555">36 boards × 19 pictures × 0.25 s ≈ 3 min per bus, done well before the show · 演出前完成</text>
+  <line x1="10" y1="120" x2="740" y2="120" stroke="#333" marker-end="url(#a)"/>
+  <text x="10" y="138" font-size="10">t</text>
+</svg>
+<figcaption>Fig. 1 — All writes happen before the show; the show itself is a sequence of single broadcasts. / 图 1 —— 所有写入在演出前完成；演出本身只是一串单次广播。</figcaption>
+</figure>
+
+<div class="q"><b>Q1 — Anything against this? / 对此有无异议？</b>
+<div class="pair"><div>Do you see any problem with holding 19 show pictures + the white picture in slots 0–19 of every board for the whole evening, and with a show that consists only of <code>0x1D</code> broadcasts 8 s apart (7 s refresh + 1 s)? Any state the board keeps between <code>0x1D</code> commands that we should reset?</div>
+<div class="zh">整晚在每块板的槽位 0–19 中保存 19 幅演出画面 + 白色画面，并以仅由间隔 8 秒（7 秒刷新 + 1 秒）的 <code>0x1D</code> 广播构成的演出方式运行，贵司是否认为有任何问题？板卡在两次 <code>0x1D</code> 之间是否保留任何需要我们复位的状态？</div></div></div>
+
+<h2>2. Autonomous playback if the host is lost / 主机失效时的自主播放</h2>
+<div class="pair">
+  <div><div class="lang">EN</div>
+    <p>Our second idea is a safety net: if a host (Radxa) fails during the show, the boards of that bus should be able to <b>continue the sequence by themselves</b>. Your reply mentioned that during <code>0x16</code> loop playback the master (address 0x01) advances the slaves with <code>0x1E</code>, and <code>0x1B</code> carries a start delay and a switch delay per slot. We would like to understand whether this can play a <i>timed</i> sequence — pictures at, for example, 0:00, 0:30, 1:00, 3:00, 3:45 — rather than a fixed interval.</p>
+  </div>
+  <div><div class="lang">中文</div>
+    <p class="zh">第二个想法是安全网：若演出中某台主机（Radxa）失效，该总线上的板卡应能<b>自行继续播放序列</b>。贵司回复中提到，在 <code>0x16</code> 循环播放期间主机板（地址 0x01）用 <code>0x1E</code> 推进从机，且 <code>0x1B</code> 为每个槽位携带开始延迟和切换延迟。我们想了解这是否能播放一个<i>按时刻</i>编排的序列——例如画面出现在 0:00、0:30、1:00、3:00、3:45——而不是固定间隔。</p>
+  </div>
+</div>
+
+<div class="q"><b>Q2 — Per-slot delays in 0x1B / 0x1B 的逐槽延迟.</b>
+<div class="pair"><div>For the <code>start_delay</code> and <code>switch_delay</code> fields (2 bytes each): what is the unit (seconds? 10 ms? 100 ms?), the maximum, and the exact meaning — "wait this long after the previous picture is complete before showing this slot", or "after the previous 0x1D was issued"? Are they used in single-shot mode (<code>0x1D</code>) at all, or only in <code>0x16</code> playback?</div>
+<div class="zh">关于 <code>start_delay</code> 与 <code>switch_delay</code> 字段（各 2 字节）：单位是什么（秒？10 ms？100 ms？），最大值是多少，确切含义是什么——“上一幅画面完成后等待该时长再显示本槽”，还是“上一条 0x1D 发出后计时”？它们在单张模式（<code>0x1D</code>）中是否起作用，还是仅用于 <code>0x16</code> 播放？</div></div></div>
+
+<div class="q"><b>Q3 — 0x16 loop playback as a timed sequence / 用 0x16 循环播放实现按时序列.</b>
+<div class="pair"><div>If we set a different <code>switch_delay</code> for each of slots 1..19 and start <code>0x16</code> from slot 1: will the master show slot 1, wait slot 1's delay, advance everyone to slot 2 (via <code>0x1E</code>), and so on? Does the sequence stop after the last configured slot, or loop back? Can the sequence be stopped with <code>0x17</code> and restarted from an arbitrary slot?</div>
+<div class="zh">若我们为槽位 1..19 分别设置不同的 <code>switch_delay</code> 并从槽位 1 启动 <code>0x16</code>：主机板会先显示槽位 1，等待槽位 1 的延迟，然后（通过 <code>0x1E</code>）把所有板推进到槽位 2，依此类推吗？序列在最后一个已配置的槽位后停止，还是循环回到开头？能否用 <code>0x17</code> 停止序列并从任意槽位重新开始？</div></div></div>
+
+<div class="q"><b>Q4 — Timing accuracy / 时间精度.</b>
+<div class="pair"><div>How accurate is the master's timing over a 10-minute sequence (crystal tolerance, drift in seconds)? We have 10 buses (10 masters) that must stay within about ±0.3 s of each other for the whole show. Is the delay counted from the end of the refresh (which varies by a few hundred ms per board) or from a fixed clock?</div>
+<div class="zh">主机板在 10 分钟序列中的计时精度如何（晶振公差、以秒计的漂移）？我们有 10 条总线（10 块主机板），整场演出需保持在约 ±0.3 秒之内。延迟是从刷新结束（每板相差几百毫秒）开始计，还是按固定时钟计？</div></div></div>
+
+<div class="q"><b>Q5 — Slaves that miss 0x1E / 漏收 0x1E 的从机.</b>
+<div class="pair"><div>If a slave does not receive an <code>0x1E</code> (bus noise), does it catch up at the next one (show the slot named in <code>data[0]</code>), or does it fall one step behind permanently? Does the master repeat <code>0x1E</code>?</div>
+<div class="zh">若某从机漏收一条 <code>0x1E</code>（总线噪声），它会在下一条时追上（显示 <code>data[0]</code> 指定的槽位），还是永久落后一步？主机板是否会重复发送 <code>0x1E</code>？</div></div></div>
+
+<div class="q"><b>Q6 — Starting 10 buses together / 同时启动 10 条总线.</b>
+<div class="pair"><div>Each of our 10 hosts would send <code>0x16</code> to its own bus at the same instant (our hosts are synchronised to a few ms). Is the delay between receiving <code>0x16</code> and the first refresh deterministic (so that all 10 buses start within a few tens of ms)?</div>
+<div class="zh">我们的 10 台主机会在同一时刻各自向本总线发送 <code>0x16</code>（主机之间同步到几毫秒）。从收到 <code>0x16</code> 到第一次刷新的延迟是否确定（使 10 条总线在几十毫秒内同时开始）？</div></div></div>
+
+<div class="q"><b>Q7 — Host and boards at the same time / 主机与板卡同时驱动.</b>
+<div class="pair"><div>Could both run at once — the master's sequence as the safety net and our host still sending <code>0x1D &lt;slot&gt;</code> at the same moments? If the host's <code>0x1D</code> arrives while the master's sequence is running, what happens (ignored, extra refresh, sequence reset)? If this is not sensible, we will choose one mode per show.</div>
+<div class="zh">两者能否同时运行——主机板的序列作为安全网，同时我们的主机仍在相同时刻发送 <code>0x1D &lt;槽位&gt;</code>？若主机的 <code>0x1D</code> 在主机板序列运行期间到达，会怎样（忽略、多刷一次、序列复位）？如果这样不合理，我们将每场演出只选一种模式。</div></div></div>
+
+<div class="q"><b>Q8 — Power cycle / 断电重启.</b>
+<div class="pair"><div>If a bus loses power mid-sequence and comes back, does the master resume the <code>0x16</code> sequence by itself, or wait for a command? (We would prefer: wait, and show slot 0 = white.)</div>
+<div class="zh">若某条总线在序列进行中断电并恢复，主机板会自行恢复 <code>0x16</code> 序列，还是等待命令？（我们倾向于：等待，并显示槽位 0 = 白色。）</div></div></div>
+
+<div class="note">
+  <div class="lang">EN</div>
+  <p>The plan in section 1 (pre-written pictures, host triggers) is what we will implement now; section 2 is only for the safety net and we will not use it unless your answers show it can be timed reliably. As before, the paper-quality risk of 1 s intervals is ours.</p>
+  <div class="lang">中文</div>
+  <p class="zh">第 1 节的方案（预写画面、主机触发）是我们现在就要实现的；第 2 节仅用于安全网，除非贵司的回答表明其时序足够可靠，否则我们不会采用。与之前一样，1 秒间隔的纸面质量风险由我们承担。</p>
+</div>
+
+<p class="small">Contact / 联系人: Y. Hirata, R2 Engineering — y.hirata@r2-engineering.com</p>
+</body>
+</html>
