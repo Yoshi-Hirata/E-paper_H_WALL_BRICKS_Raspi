@@ -6,6 +6,13 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "conductor", "serve", "--port", "8765"],
       "port": 8765
+    },
+    {
+      "name": "designer-static",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8791"],
+      "port": 8791,
+      "autoPort": true
     }
   ]
 }

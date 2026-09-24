@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AZ-27SS Show Simulator</title>
+<link rel="stylesheet" href="sim/designer.css">
+</head>
+<body>
+<header>
+  <h1>AZ-27SS SHOW SIMULATOR</h1>
+  <div class="tabs">
+    <button data-tab="designs">Designs</button><button data-tab="timeline">Timeline</button><button data-tab="help">Help / ヘルプ</button>
+  </div>
+  <button id="new-project" title="Start a new, empty project (your current one stays saved until you drop new CSV files or open another)">Start a new (empty) project</button>
+  <label class="filebtn">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
+  <span class="meta">or drop CSV files (or a folder of them) anywhere on the page</span>
+  <span class="ws" id="ws"></span>
+</header>
+<main id="main">
+  <aside>
+    <h2>ITEMS</h2>
+    <div id="items"></div>
+    <div id="orphans"></div>
+  </aside>
+  <div id="content"></div>
+</main>
+<div id="tl-dock" style="display:none"></div>
+<div id="drop">Drop the CSV files here</div>
+<div id="toast"></div>
+<div id="fps"></div>
+
+<!-- Script order is the dependency order (plan_designer_sim.md §1.1):
+     model → state → render → flicker → looks → transport → starter →
+     goldens → designer-app → selftest.
+     model.js / state.js (Coder P) and goldens.js / selftest.js (Coder P,
+     generated) are not wired in yet - see model.stub.js's own header comment.
+     When they land: swap the one script tag below for
+     <script src="sim/model.js"></script><script src="sim/state.js"></script>,
+     delete sim/model.stub.js, and add
+     <script src="sim/goldens.js"></script> before designer-app.js and
+     <script src="sim/selftest.js"></script> after it. -->
+<script src="sim/model.stub.js" data-stub="dev-only"></script>
+<script src="sim/render.js"></script>
+<script src="sim/flicker.js"></script>
+<script src="sim/looks.js"></script>
+<script src="sim/transport.js"></script>
+<script src="sim/starter.js"></script>
+<script src="sim/designer-app.js"></script>
+</body>
+</html>
