@@ -287,9 +287,12 @@ Raspberry Pi Zero 2 W ──USB CDC── 基板 ID:1 ──4芯(TTL UART)──
 
 ## 12. 演出家向けシミュレーター(designer sim)まわりの開発
 
-`docs/DESIGNER_SIMULATOR_PLAN.md` の方式 A(単一 HTML・サーバー不要)で作った、
-`conductor/web/sim/*.js`(Python の `look.py`/`sequence.py`/`timeline.py` を JS へ
-移植したもの)と、生成物を配布用に固めた `dist/az27ss-simulator.html` の話。使い方は
+`docs/DESIGNER_SIMULATOR_PLAN.md`(2026-09-24 決定: 方式 A、単一 HTML・サーバー不要。同
+文書が検討していた bundle = zip という案は採らず、実装は CSV 本文を埋め込んだ **JSON 1 個**
+- 音楽はどちらの案でも名前のみ)と、それを実装計画に落とした plan_designer_sim.md
+(コーダー間の作業分担メモ)で作った、`conductor/web/sim/*.js`(Python の
+`look.py`/`sequence.py`/`timeline.py` を JS へ移植したもの)と、生成物を配布用に固めた
+`dist/az27ss-simulator.html` の話。使い方は
 [SIMULATOR_FOR_DESIGNERS.md](SIMULATOR_FOR_DESIGNERS.md)(演出家向け、日本語)。
 
 ### 12.1 生成物を作り直すコマンド
