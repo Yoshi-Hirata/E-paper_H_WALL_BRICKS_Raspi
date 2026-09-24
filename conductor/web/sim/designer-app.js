@@ -1134,10 +1134,10 @@
           if (Array.isArray(show.cues)) {
             // Every cue id run through the same [A-Za-z0-9_-]{1,40} shape
             // the model itself generates (adversarial review round 2 - F1):
-            // an id is interpolated into a data-cue="..." attribute
+            // an id is interpolated into a data-cue attribute
             // (renderTracks/cueTable) and, unescaped before this fix, into a
             // querySelector string too - a hand-edited project file could
-            // carry `1"><img src=x onerror=...>` as a cue id and have it
+            // carry a quote-and-markup payload as a cue id and have it
             // execute the moment the Timeline tab rendered. esc()/
             // CSS.escape() at every use site closes the immediate hole;
             // this closes it at the source too, and de-duplicates while at
@@ -1216,6 +1216,16 @@
     wireGlobalDragHandlers();
     wireFps();
     rebuild();
+    // #displaycheck also forces the Timeline tab open (adversarial review
+    // round 2 - F4): the browser-run vocabulary test needs the real
+    // rendered DOM - tracks, cue table, SHORTEST INTERVAL PER GARMENT, the
+    // dock - not just displayCheck()'s own synthetic dirty-string fixtures,
+    // and the Timeline tab is where the operator-page vocabulary (unit/
+    // board/socket/...) would show up if a display override ever came
+    // unwired. Done here, after rebuild(), and not alongside the
+    // displayCheck() trigger itself (registered earlier, so it can and does
+    // run before `state` exists) because render() needs `state`.
+    if (/displaycheck/i.test(location.hash)) { ui.tab = "timeline"; ui.cue = null; render(); }
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();
