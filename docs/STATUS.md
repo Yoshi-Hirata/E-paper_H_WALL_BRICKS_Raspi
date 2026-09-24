@@ -18,6 +18,78 @@
 
 ## 2. 直近で完成したもの
 
+**Load bundle…: レビュー指摘の修正 - whole-or-nothing、boards も units と同じ扱い、
+危険なファイル名は拒否、上書きを申告(2026-09-24)**
+
+- 元になっている計画は plan_designer_sim.md(コーダー間の作業分担メモ。方式 A = 単一 HTML・
+  bundle は zip ではなく **CSV 本文を埋め込んだ JSON 1 個**、音楽は名前のみ。
+  `docs/DESIGNER_SIMULATOR_PLAN.md` にも決定として追記した)
+- **`boards`(基板番号の付け替え)を `units` と同じ「運用側のデータ」として扱う**: バンドルの
+  `show.boards` が空ならキーごと外して現場の付け替えに触れない(`units` と同じロジックを
+  `for key in ("units", "boards")` でまとめた)。戻り値に `boards_kept` を追加
+- **`units: {"Look22": null}` が全割り当てを消す事故を修正**: `units_kept` は生の
+  `show.get("units")` の真偽ではなく、`{k: v for k, v in ... if v}` で null/空文字を除いた
+  **後**の中身が空かどうかで決める。これで「1 項目だけ null」を含むバンドルが、
+  現場の割り当てを丸ごと `{}` に潰すことがなくなった
+- **whole-or-nothing に変更**: 以前は CSV を保存してからタイムラインを検証していたため、
+  タイムラインが壊れているとバンドルの CSV だけが書き込まれた状態になり得た。
+  `import_show()` の検証部分を `_validate_show()`(コミットしない)として切り出し、
+  **ファイル名の安全確認とタイムラインの検証を、CSV を 1 つも保存する前に**両方済ませる
+  ようにした。ファイル数の上限(200)も追加
+- **ファイル名は `/api/files` と同じ規則で確認するが、危険な名前は勝手に読み替えない**:
+  `../x_map.csv` や `/etc/x_map.csv`、NUL を含む名前は保存を試みず最初から `refused` に
+  積む(以前は `Workspace.save()` に渡して例外を拾っていたため、内部で無害化されてから
+  弾かれていた)
+- **上書きは申告制**: 既に存在していた同名 CSV の一覧を `overwritten` として返す。ボタンの
+  説明文・確認ダイアログ・トーストのいずれにも「同名の CSV は上書きされ、Undo では戻らない」
+  と明記
+- **音楽の名前は `payload.get("music") or show.get("music")`** から取るように変更(どちらかに
+  入っていれば拾う)。ページ側はバージョン不一致を確認ダイアログより前でトースト表示にし、
+  トーストは拒否されたファイルの理由・警告を(短ければ)そのまま、長ければコンソールに
+  逃がして件数だけ出す
+- レスポンス: `{"ok","saved","refused","overwritten","cues","warnings","units_kept",
+  "boards_kept","music"}`
+- テスト追加(`tests/test_bundle.py`、計 18 件 + フィクスチャ不在時は 1 件 skip): boards が
+  空のバンドルで基板の付け替えが残ること・逆にバンドルが運べば適用されること、
+  `units: {"Look22": null}` が他の割り当てを消さないこと、上書き一覧、危険なファイル名 3 種
+  が保存されずに拒否されること、値が文字列でないファイルが1つでもあると何も書き込まれない
+  こと、201 ファイルが拒否されること、バンドルの音楽名が実際の音楽ファイルを書き換えない
+  こと。`test_designer_bundle_fixture_imports` は P のフィクスチャが無い間は
+  `pytest.skip`(以前は自作の代用バンドルで黙って通していた)
+- `docs/SIMULATOR_FOR_DESIGNERS.md` §6(渡し方: 上書き・ラベル/遷移が消える項目・基板の
+  付け替えが残ることを明記)・§7(「2 着が同じ radxa」の重なりチェックだけはシミュレーターで
+  出せない、と明記)を更新
+
+**Conductor 側: 演出家のシミュレーターから「まるごとプロジェクト」を読み込む Load bundle…(2026-09-24)**
+
+- 演出家チーム向けシミュレーター(単一 HTML・サーバー不要、`docs/DESIGNER_SIMULATOR_PLAN.md`)が
+  書き出す `epaper-show-bundle` v1(CSV 一式 + タイムラインを 1 個の JSON にまとめたもの)を、
+  Conductor 側で受け取れるようにした。Timeline タブの「Load show…」の隣に「Load bundle…」を
+  追加(`conductor/web/index.html`。確認ダイアログは「デザイナーから送られたプロジェクトを
+  読み込みますか。CSV はワークスペースに追加され、タイムラインは今のものと置き換わります。
+  機体の割り当てはそのまま残ります」の趣旨)。
+- **`Workspace.import_bundle(payload)`**(新規、`conductor/server.py`): フォーマット/バージョンを
+  検証 → CSV を `POST /api/files` と同じ規則で保存(`*_map.csv` / `*_color_*_grid.csv` 以外は
+  refused に積むだけで処理は続ける) → `show = dict(payload["show"])` から `units` が空(演出家の
+  シミュレーターには機体という概念が無いので通常はこちら)なら `units` キーごと外してから
+  `import_show()` に渡す。**タイムラインの置き換えは `import_show()` と同じ 1 コミット**
+  (CSV の保存自体は show.json の undo 対象外 - `/api/files` と同じ扱い)。**現場の機体割り当ては、
+  バンドル側が自分の割り当てを運んできたときだけ上書きし、それ以外は一切触らない**
+  (戻り値の `units_kept` で判定結果を返す)。音楽はバンドルでも名前だけの参考情報 - 実体は
+  シミュレーター側の制約と同じくこのマシンで毎回選び直す。
+- **`POST /api/bundle/import`**(新規): `/api/show/import` の直後に追加。同じ例外タプルで
+  壊れた JSON(`{"show": null}` 等)も 500 ではなく 400 になる。
+- レスポンス: `{"ok","saved","refused","cues","warnings","units_kept","music"}`。
+- テスト `tests/test_bundle.py`(11 件): CSV 保存とタイムライン反映、機体割り当てを維持する
+  ケースとバンドル側の割り当てが勝つケース、undo が 1 手で完全に戻ること(CSV は戻らない)、
+  フォーマット/バージョン/ファイル名が悪いときの拒否、バンドル自身が運んできた CSV を同じ
+  取り込みの中で警告チェックが見つけられること、既存の `/api/show/import` が無傷であること
+  を確認。P 担当の `tests/fixtures/sim/bundle_v1.json` はこのコミットの時点でまだ存在しない
+  ため、`tests/test_look.py` の MAP/GRID から手作りした最小バンドルで代用(存在すればそちらを
+  優先して読む実装済み - 後で置かれれば自動的に切り替わる)。
+- デザイナー向けの使い方(開き方・CSV の入れ方・mm.ss・保存と受け渡し・制限)は日本語で
+  `docs/SIMULATOR_FOR_DESIGNERS.md` に。
+
 **Timeline: 1 秒 gap ルールをレビューで修正 - 本体の準備時間より詰めない(2026-09-24)**
 
 - ディレクターの要望:「Reflesh が終わった後、1 秒後に次のデザインへの refresh に入ることができる
