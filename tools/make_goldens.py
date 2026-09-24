@@ -704,8 +704,13 @@ def render_js(data: dict) -> str:
 
 def write_files(data: dict) -> None:
     GOLDEN_JSON.parent.mkdir(parents=True, exist_ok=True)
-    GOLDEN_JSON.write_text(dumps_sorted(data), encoding="utf-8", newline="\n")
-    GOLDEN_JS.write_text(render_js(data), encoding="utf-8", newline="\n")
+    # write_bytes, not write_text(..., newline="\n") - that parameter needs
+    # Python 3.10+ (plan_designer_sim.md: "Python 3.9 stdlib"), and dropping
+    # newline= instead of switching to write_bytes would write CRLF on
+    # Windows (adversarial review round 2 - F3). Both strings are "\n"-only
+    # already, so encoding straight to bytes is exact.
+    GOLDEN_JSON.write_bytes(dumps_sorted(data).encode("utf-8"))
+    GOLDEN_JS.write_bytes(render_js(data).encode("utf-8"))
 
 
 def main(argv=None) -> int:

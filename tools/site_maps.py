@@ -101,8 +101,12 @@ def main():
                 l["no"], int(l["sock"][1:]), l["label"], shift)))
         stem = page.stem.replace("-wiring", "")
         item = STEM_ITEM.get(stem, stem)
-        (out / f"{item}_map.csv").write_text("\r\n".join(rows) + "\r\n",
-                                             encoding="utf-8", newline="")
+        # write_bytes, not write_text(..., newline="") - that parameter
+        # needs Python 3.10+ (plan_designer_sim.md: "Python 3.9 stdlib");
+        # the string already has explicit "\r\n" line endings, so encoding
+        # straight to bytes writes exactly that with no translation either
+        # way (adversarial review round 2 - F3).
+        (out / f"{item}_map.csv").write_bytes(("\r\n".join(rows) + "\r\n").encode("utf-8"))
         boards = sorted({l["no"] for l in links})
         print("   boards", len(boards), boards[0], "-", boards[-1],
               "| sample", links[0])

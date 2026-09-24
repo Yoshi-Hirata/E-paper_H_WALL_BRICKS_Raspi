@@ -31,6 +31,7 @@
   const MAX_PROJECT_BYTES = 4 * 1024 * 1024;
   const WARN_BUNDLE_BYTES = 6 * 1024 * 1024;
   const REFUSE_BUNDLE_BYTES = 8 * 1024 * 1024;
+  const MAX_SHOW_DURATION_S = 99 * 60 + 59;   // the Show length field's own 99:59 ceiling
 
   function freshProject() {
     return { files: {}, show: { duration: 600, refresh_s: 7.0, cues: [], transitions: {}, labels: {}, boards: {}, music: null } };
@@ -502,8 +503,8 @@
         const bandW = pct(Math.max(0, cue.complete - cue.at));
         const holdX = pct(cue.complete), holdW = pct(Math.max(0, cue.end - cue.complete));
         const bad = (cue.problems || []).length > 0;
-        return `<div class="cue-band ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${cue.id}" style="left:${pct(cue.at)};width:${bandW}"></div>
-          <div class="cue-hold ${bad ? "bad" : ""} ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${cue.id}" data-drag="${cue.at <= 0 ? "0" : "1"}"
+        return `<div class="cue-band ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${esc(cue.id)}" style="left:${pct(cue.at)};width:${bandW}"></div>
+          <div class="cue-hold ${bad ? "bad" : ""} ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${esc(cue.id)}" data-drag="${cue.at <= 0 ? "0" : "1"}"
             style="left:${holdX};width:${holdW}" title="${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}">${cue.at <= 0 ? "PRESET · " : ""}${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}</div>`;
       }).join("");
       return `<div class="tl-row"><div class="tl-name">${esc(itemName(item))}<small>${esc(item.model || "")}</small></div>
@@ -513,7 +514,13 @@
       <div id="playhead"></div><div id="ph-head"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div>`;
   }
   function rulerTicks(D) {
-    const step = D > 900 ? 60 : D > 300 ? 30 : 10;
+    // The existing tiers, but never finer than D/200 (adversarial review
+    // round 2 - F2): duration is clamped to 99:59 everywhere this page
+    // writes it now, but state.show.duration ultimately comes straight from
+    // SIM.buildState(project) with no clamp of its own - a defensive floor
+    // here means a pathological D (reached some other way) draws at most
+    // ~200 ticks instead of, at the review's own example, ~83,000.
+    const step = Math.max(D > 900 ? 60 : D > 300 ? 30 : 10, D / 200);
     let html = "";
     for (let t = 0; t <= D; t += step) html += `<i style="left:${(100 * t / D).toFixed(3)}%"></i><span style="left:${(100 * t / D).toFixed(3)}%">${clockShort(t)}</span>`;
     return html;
@@ -544,7 +551,7 @@
         const trSeq = SEQ_OPTIONS().find(s => s.id === (c.sequence || "natural"));
         const tr = c.transition === "custom" ? (trSeq ? seqLabel(trSeq) : c.sequence) : "design default";
         const status = (c.problems || []).length ? `<span style="color:var(--err)">${c.problems.length} problem${c.problems.length === 1 ? "" : "s"}</span>` : '<span class="okline">OK</span>';
-        return `<tr class="pick ${sameId(c.id, ui.cue) ? "hl" : ""}" data-cue="${c.id}">
+        return `<tr class="pick ${sameId(c.id, ui.cue) ? "hl" : ""}" data-cue="${esc(c.id)}">
           <td>${clockShort(c.at)}</td><td>${clockShort(c.complete)}</td><td>${clockShort(c.end)}</td>
           <td>${esc(itemName(item))}</td><td>${esc(designLabel(item?.designs.find(d => d.name === c.design) || { name: c.design }))}${c.partial ? " (partial)" : ""}</td>
           <td>${esc(tr)}</td><td>${status}</td></tr>`;
@@ -586,14 +593,13 @@
       // as a perfectly valid mm.ss - so the revert (and its echo/red-state
       // repaint) happens here, not inside wireMmss's generic bad-input path.
       wireMmss("show-duration", sec => {
-        const MAX_DURATION_S = 99 * 60 + 59;
         if (sec <= 0) {
           toast("Show length must be at least 1 s - kept " + globalThis.SIM.mmss.format(state.show.duration) + ".");
           const input = $("#show-duration");
           if (input) { input.value = globalThis.SIM.mmss.format(state.show.duration); input.dispatchEvent(new Event("input")); }
           return;
         }
-        globalThis.SIM.app.setShow({ duration: Math.min(MAX_DURATION_S, sec) });
+        globalThis.SIM.app.setShow({ duration: Math.min(MAX_SHOW_DURATION_S, sec) });
       });
       $("#show-refresh").onchange = e => { const v = Number(e.target.value); if (v >= 1 && v <= 60) globalThis.SIM.app.setShow({ refresh_s: v }); else e.target.value = state.show.refresh_s.toFixed(1); };
       renderCueEditor(state.show.cues.find(c => sameId(c.id, ui.cue)) || null);
@@ -623,7 +629,7 @@
     document.addEventListener("pointermove", e => {
       if (cueDrag) {
         const at = cueDragAt(e);
-        const marker = document.querySelector(`.cue-hold[data-cue="${cueDrag.id}"]`);
+        const marker = document.querySelector(`.cue-hold[data-cue="${CSS.escape(cueDrag.id)}"]`);
         if (marker) marker.style.left = (100 * at / state.show.duration).toFixed(3) + "%";
       }
       if (transport) transport.dragMove(e.clientX);
@@ -914,27 +920,42 @@
   // ==================================================================
   // Master render / tab wiring
   // ==================================================================
-  function render() {
+  // Deliberately not the usual tab content: `state` (everything the normal
+  // render path reads) is stale relative to `project` the moment
+  // buildError is set, so nothing built from it - the ITEMS sidebar
+  // included - is trustworthy to show. Reload is the only escape offered
+  // because it is the only one guaranteed correct: it drops back to the
+  // last state that DID build (the autosave, or the on-disk starter if
+  // even that failed).
+  function renderBuildErrorCard(message) {
     document.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === ui.tab));
-    if (buildError) {
-      // Deliberately not the usual tab content: `state` (everything the
-      // normal render path reads) is now stale relative to `project`, so
-      // nothing built from it - the ITEMS sidebar included - is trustworthy
-      // to show. Reload is the only escape offered because it is the only
-      // one guaranteed correct: it drops back to the last state that DID
-      // build (the autosave, or the on-disk starter if even that failed).
-      $("#items").innerHTML = ""; $("#orphans").innerHTML = ""; $("#ws").textContent = "";
-      $("#tl-dock").style.display = "none";
-      $("#content").innerHTML = `<div class="card"><h2 style="color:var(--err)">Internal error</h2>
-        <p>This project could not be rebuilt: <code>${esc(buildError)}</code></p>
-        <p>Nothing shown here can be trusted until this is fixed. Your last change is not lost, but the screen cannot reflect it - reload to get back to the last copy that DID build (the autosave, or Open project… to load a saved one).</p>
-        <button id="build-error-reload">Reload</button></div>`;
-      const btn = $("#build-error-reload"); if (btn) btn.onclick = () => location.reload();
-      return;
+    $("#items").innerHTML = ""; $("#orphans").innerHTML = ""; $("#ws").textContent = "";
+    $("#tl-dock").style.display = "none";
+    document.documentElement.style.setProperty("--tl-dock-h", "0px");   // else stale from before the error (adversarial review round 2 - F10)
+    $("#content").innerHTML = `<div class="card"><h2 style="color:var(--err)">Internal error</h2>
+      <p>This project could not be rebuilt: <code>${esc(message)}</code></p>
+      <p>Nothing shown here can be trusted until this is fixed. Your last change is not lost, but the screen cannot reflect it - reload to get back to the last copy that DID build (the autosave, or Open project… to load a saved one).</p>
+      <button id="build-error-reload">Reload</button></div>`;
+    const btn = $("#build-error-reload"); if (btn) btn.onclick = () => location.reload();
+  }
+  function render() {
+    if (buildError) { renderBuildErrorCard(buildError); return; }
+    // Adversarial review round 2 (F2): rebuild()'s own try/catch only ever
+    // covered SIM.buildState() itself - a throw from any of the render
+    // functions below (all of them read `state`, none of them are proven
+    // safe against every value it can hold) used to escape render()
+    // entirely, past whatever called it, with nothing on screen updated and
+    // no indication anything had gone wrong.
+    try {
+      document.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === ui.tab));
+      renderSidebar();
+      if (ui.tab === "timeline") renderTimelineTab();
+      else { $("#tl-dock").style.display = "none"; syncDockHeight(); if (ui.tab === "help") renderHelp(); else renderDesigns(); }
+    } catch (e) {
+      console.error("render failed", e);
+      buildError = (e && e.message) ? e.message : String(e);
+      renderBuildErrorCard(buildError);
     }
-    renderSidebar();
-    if (ui.tab === "timeline") renderTimelineTab();
-    else { $("#tl-dock").style.display = "none"; syncDockHeight(); if (ui.tab === "help") renderHelp(); else renderDesigns(); }
   }
   function wireChrome() {
     document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => { ui.tab = b.dataset.tab; ui.cue = null; persist(); render(); }));
@@ -1094,9 +1115,52 @@
         saved = r.saved;
       }
       if (show && typeof show === "object") {
-        if ("duration" in show) project.show.duration = Number(show.duration) || project.show.duration;
-        if ("refresh_s" in show) project.show.refresh_s = Number(show.refresh_s) || project.show.refresh_s;
-        if ("cues" in show && Array.isArray(show.cues)) project.show.cues = show.cues.map(c => Object.assign({}, c));
+        // Clamped to the same bounds the typed fields enforce (adversarial
+        // review round 2, 2026-09-25 - F2): an untrusted project file had no
+        // bounds at all here. 5,000,000 s made the ruler draw ~83,000 ticks
+        // (a render at 600 ms and climbing); 1e9 overflowed a Number
+        // somewhere downstream into a RangeError that escaped openBundle
+        // entirely, poisoning `project` with nothing to show for it (see
+        // F2's other half in rebuild()/render() below).
+        if ("duration" in show) {
+          const d = Number(show.duration);
+          if (Number.isFinite(d)) project.show.duration = Math.max(1, Math.min(MAX_SHOW_DURATION_S, d));
+        }
+        if ("refresh_s" in show) {
+          const r = Number(show.refresh_s);
+          if (Number.isFinite(r)) project.show.refresh_s = Math.max(1, Math.min(60, r));
+        }
+        if ("cues" in show) {
+          if (Array.isArray(show.cues)) {
+            // Every cue id run through the same [A-Za-z0-9_-]{1,40} shape
+            // the model itself generates (adversarial review round 2 - F1):
+            // an id is interpolated into a data-cue="..." attribute
+            // (renderTracks/cueTable) and, unescaped before this fix, into a
+            // querySelector string too - a hand-edited project file could
+            // carry `1"><img src=x onerror=...>` as a cue id and have it
+            // execute the moment the Timeline tab rendered. esc()/
+            // CSS.escape() at every use site closes the immediate hole;
+            // this closes it at the source too, and de-duplicates while at
+            // it (two cues sharing an id would otherwise silently alias
+            // sameId() everywhere).
+            const SAFE_CUE_ID = /^[A-Za-z0-9_-]{1,40}$/;
+            const usedIds = new Set();
+            let regeneratedAnId = false;
+            let nextSpare = 1;
+            const freshId = () => { let id; do { id = String(nextSpare++); } while (usedIds.has(id)); return id; };
+            project.show.cues = show.cues.map(c => {
+              const cue = Object.assign({}, c);
+              const raw = cue.id === undefined || cue.id === null ? "" : String(cue.id);
+              if (!SAFE_CUE_ID.test(raw) || usedIds.has(raw)) { cue.id = freshId(); regeneratedAnId = true; }
+              else cue.id = raw;
+              usedIds.add(cue.id);
+              return cue;
+            });
+            if (regeneratedAnId) toast("This project had one or more invalid or duplicate cue ids - they were replaced.");
+          } else {
+            toast("Ignored an invalid project file: cues must be a list.");
+          }
+        }
         if ("transitions" in show) project.show.transitions = show.transitions || {};
         if ("labels" in show) project.show.labels = show.labels || {};
         if ("boards" in show) project.show.boards = show.boards || {};
@@ -1119,7 +1183,11 @@
         }
       }
       rebuild(); persist();
-      return { ok: true, saved, cues: (show && show.cues) ? show.cues.length : project.show.cues.length };
+      // project.show.cues.length always, not "show.cues truthy ? its length
+      // : ..." (adversarial review round 2 - F10): show.cues could be
+      // anything at all (a string, "nope".length is 4) - the actual applied
+      // count is whatever project.show.cues ended up holding above.
+      return { ok: true, saved, cues: project.show.cues.length };
     },
     pickMusic(file) {
       if (file.size > globalThis.SIM.transport.MAX_MUSIC) { toast(`${file.name} is too large - the limit is 64 MB`); return; }
