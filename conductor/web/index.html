@@ -187,7 +187,7 @@ input[type=range] { width: 100%; }
 .shownext b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
 .go button.hold { background: var(--warn); border-color: var(--warn); color: #fff; }
 .go button.stop:hover { border-color: var(--err); color: var(--err); }
-body.busy .go button { opacity: .45; pointer-events: none; }
+body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-events: none; }
 .card h2 + .sub { margin: -2px 0 8px; }
 .cue-hold, .cue-band { min-width: 7px; }
 .cue-hold { cursor: grab; } .cue-hold.dragging { cursor: grabbing; opacity: .8; z-index: 4; outline: 2px dashed var(--accent); }
@@ -215,13 +215,19 @@ body.busy .go button { opacity: .45; pointer-events: none; }
 .seek-bar { display: flex; align-items: center; gap: 8px; }
 .seek-bar input[type=range] { flex: 1; }
 .seek-bar span { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
-.go button.warnbtn { background: var(--warn); border-color: var(--warn); color: #fff; }
+.go button.warnbtn { background: var(--warn); border-color: var(--warn); color: var(--bg); }
 
 /* ---- live LOOK row (Units tab: round 3 plan §1.3) ---- */
 .thumbs.small { height: 120px; }
 .thumbs.small .lk-head { font-size: 11px; }
 .thumbs.small .lk-head .sub { font-size: 9.5px; }
 .lk-head .chg.err { color: var(--err); }
+/* Pin the head to exactly what layoutLooks() budgets (view.head = 30) so a long
+   name/unit/chip line can never grow the cell taller than the fixed 120 px row -
+   it ellipsises instead of wrapping, which used to push the garment SVG past
+   .thumbs{overflow:hidden} and clip it (fix round: LOOK row head pinned). */
+.thumbs.small .lk-head { height: 30px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.thumbs.small .lk-head .chg { float: none; margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -928,13 +934,19 @@ function updateThumbColors(t, view) {
   }
 }
 // The live LOOK row's state chip (first match wins): a unit of this LOOK
-// offline outranks it still preparing, which outranks a sweep in progress.
+// offline outranks it still preparing (only that phase - "ready"/"armed" is a
+// unit that already finished a manual Prepare and would otherwise show
+// "loading…" forever with NOT STARTED), which outranks a sweep in progress.
+// Without a run there is nothing to load or sweep for, so only "offline" can
+// ever show then - a unit merely sitting in "ready" from an unrelated manual
+// Prepare must not look like the show is doing something.
 function liveChip(cell, changing) {
   if (!fleet) return "";
   const units = [...new Set(cell.items.map(e => e.item.unit).filter(Boolean))]
     .map(name => fleet.units.find(u => u.name === name)).filter(Boolean);
   if (units.some(u => !u.online)) return "unit offline";
-  if (units.some(u => ["preparing", "ready", "armed"].includes(u.phase))) return "loading…";
+  if (!fleet.run) return "";
+  if (units.some(u => u.phase === "preparing")) return "loading…";
   if (changing) return "refreshing…";
   return "";
 }
@@ -1085,13 +1097,26 @@ function computeSeekState() {
     val = fleetShowPos(); disabled = !ui.manual;
     note = val >= D ? "The show has ended." : (ui.manual ? "Moving the bar moves the running show." : "");
   }
+  // A run's position can read slightly negative right after a seek (t0 ahead of
+  // now, by design - §2.4) or past the end once the show is over; the number
+  // shown beside the bar never should, even though the bar's own thumb clamps
+  // itself natively (fix round finding 8).
+  val = Math.max(0, Math.min(D, val));
   const dragging = ui.seekDrag !== null;
-  if (dragging) { val = ui.seekDrag; note = `Move to ${clock(val)} — let go to move the show.`; disabled = false; }
-  // "Back to 0:00" tracks start_at alone, not the run state (round 3 §1.2,
-  // "Guarding a forgotten start position"): a forgotten non-zero start_at is a
-  // trap for the next START/restart whether or not a show happens to be running
-  // right now, so the escape hatch stays available regardless.
-  return { D, startAt, run, uploaded, disabled, val, note, dragging, showReset: uploaded && startAt > 0 };
+  // Disabled tracks Manual control alone, drag or not (fix round finding 2): a
+  // stray ui.seekDrag left over from a dead click/drag (one that never fired
+  // input/change) must not re-enable the bar once Manual gets unticked - see
+  // the document pointerup/pointercancel handlers that clear it.
+  if (dragging) { val = ui.seekDrag; note = `Move to ${clock(val)} — let go to move the show.`; }
+  // "Back to 0:00" tracks start_at alone, not the run state, per §1.2's
+  // "Guarding a forgotten start position" - EXCEPT while a run exists: the
+  // server's seek(0) does not distinguish "reset a forgotten position" from
+  // "restart the live show from the top", so with a run this button would
+  // actually restart every unit (fix round finding 1, BLOCKER). The handler
+  // refuses it too, defense in depth, but hiding it here is the real fix -
+  // an operator should never see an escape hatch that would fire the whole
+  // fleet.
+  return { D, startAt, run, uploaded, disabled, val, note, dragging, showReset: uploaded && startAt > 0 && !run };
 }
 function seekBlockHtml() {
   const st = computeSeekState();
@@ -1141,16 +1166,44 @@ function previewSeek(t) {
   if (note) note.textContent = `Move to ${clock(t)} — let go to move the show.`;
   updateThumbColors(t, THUMBS.fleet);
 }
-// change on #show-seek (release): debounced 350 ms, skipped if unchanged since the
-// last commit, and never sent while another fleet command is already in flight -
-// the server refuses a seek without manual:true regardless, but the gate lives on
-// both sides (round 3 §1.2 / §2.2).
+// Cancels a pending debounced commit and drops the drag preview outright -
+// called whenever staying "in mid-seek" stops being safe: Manual unticked, a
+// successful START/STOP, or leaving the Units tab (fix round finding 3).
+function dropSeek() {
+  clearTimeout(ui.seekTimer);
+  ui.seekTimer = null;
+  ui.seekDrag = null;
+}
+// change on #show-seek (release): debounced 350 ms, skipped if unchanged since
+// the last commit (but a running show always resends - see below), and never
+// sent while another fleet command is already in flight - the server refuses
+// a seek without manual:true regardless, but the gate lives on both sides
+// (round 3 §1.2 / §2.2).
 async function commitSeek(t) {
   ui.seekTimer = null;
-  if (t !== ui.seekSent && !commandInFlight) {
-    ui.seekSent = t;
-    await fleetCommand("seek", { to_s: t, manual: true, lead_s: ui.lead }, `MOVE to ${clock(t)}`, "show");
+  // The debounce can outlive the reason it started: Manual got unticked, or the
+  // operator left the Units tab, in the 350 ms since release. Drop it silently -
+  // dropSeek() already fires from those events too, so this is the belt to that
+  // braces (fix round finding 3, BLOCKER).
+  if (!ui.manual || ui.tab !== "fleet") { ui.seekDrag = null; paintSeek(); return; }
+  // While running, the position keeps moving on its own: releasing on the same
+  // number twice (e.g. drag to 3:00, let it run to 4:30, drag back to 3:00) is
+  // two different, both real, moves - only a static target (no run / holding)
+  // makes "the same value as last time" mean "nothing to do" (fix round finding 5).
+  const running = fleet?.run?.state === "running";
+  if (!running && t === ui.seekSent) { ui.seekDrag = null; paintSeek(); return; }
+  if (commandInFlight) {
+    // Silently dropping this would look like the bar just didn't respond -
+    // .go already dims during a busy body, but the bar sits outside .go, so
+    // it needs its own word for it (fix round finding 4).
+    toast("Another command is still going out — move the bar again in a moment.");
+    ui.seekDrag = null; paintSeek(); return;
   }
+  const result = await fleetCommand("seek", { to_s: t, manual: true, lead_s: ui.lead }, `MOVE to ${clock(t)}`, "show");
+  // Only remember this as "already sent" when the position actually stays put
+  // afterwards (not running); a running show should always accept the next
+  // release even if it happens to match, and any error must not block a retry.
+  ui.seekSent = (result && !result.error && result.mode !== "running") ? t : null;
   ui.seekDrag = null;
   paintSeek();
 }
@@ -1162,7 +1215,7 @@ function renderFleet() {
   const cueCount = state.show.cues.length, cueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
   $("#content").innerHTML = `
     <div class="card"><h2>THE SHOW (${cueCount} CUES${cueBad ? ` · <span style="color:var(--err)">${cueBad} PROBLEMS — fix them on the Timeline tab</span>` : ""})</h2>
-      <div class="meta sub">The timeline is uploaded to the units; after START each unit runs it on its own clock, with or without this PC.</div>
+      <div class="meta sub" id="show-sub">The timeline is uploaded to the units; after START each unit runs it on its own clock, with or without this PC.</div>
       <div class="showbar">
         <div class="showclock" id="show-clock"><small>—</small>0:00</div>
         <div class="shownext" id="show-next"></div>
@@ -1265,6 +1318,13 @@ function showClockText() {
       ? "Units are running a show this conductor did not upload (it was restarted). STOP works; Upload again to take the show over."
       : "Upload the show first.") : loaded < want
     ? `${want - loaded} unit(s) do not hold this show yet - they are corrected automatically once they answer.` : "";
+  // The LOOK row above is drawn from this workspace's own timeline (state.show),
+  // not from whatever a unit actually holds - while some units are still behind
+  // (the hint above already says so) that is worth spelling out, since the two
+  // can disagree until they catch up (fix round finding 10).
+  const sub = $("#show-sub");
+  if (sub) sub.textContent = "The timeline is uploaded to the units; after START each unit runs it on its own clock, with or without this PC."
+    + (want > 0 && loaded < want ? " (workspace timeline)" : "");
 }
 setInterval(showClockText, 250);
 function renderTiles() {
@@ -1368,22 +1428,38 @@ document.addEventListener("click", async e => {
     else if (startAt > 0) msg = `Start the show at ${clock(startAt)} (not from the beginning)?`;
     if (msg && !confirm(msg)) return;
     const result = await fleetCommand("start", { lead_s: ui.lead, force: again }, `③ START (in ${ui.lead} s)`, "show");
-    if (result && !result.error) { ui.manual = false; ui.seekSent = null; renderSeekBlock(); }
+    // A 200 with a "nothing uploaded"/"already running" note also has
+    // result.error unset, so !result.error alone is not "it actually started" -
+    // a real start always carries from_s and at least tried to send somewhere
+    // (fix round finding 7).
+    if (result && result.from_s !== undefined && Object.keys(result.units || {}).length) {
+      ui.manual = false; ui.seekSent = null; dropSeek(); renderSeekBlock();
+    }
     return;
   }
   if (e.target.id === "show-next-cue") { await fleetCommand("next", { lead_s: ui.lead }, `NEXT (next cue in ${ui.lead} s)`, "show"); return; }
   if (e.target.id === "show-stop") {
     if (confirm("Stop the show? The panels keep what they are showing.")) {
       const result = await fleetCommand("stop", {}, "STOP", "show");
-      if (result && !result.error) { ui.manual = false; ui.seekSent = null; renderSeekBlock(); }
+      if (result && result.units !== undefined) {
+        ui.manual = false; ui.seekSent = null; dropSeek(); renderSeekBlock();
+      }
     }
     return;
   }
   if (e.target.id === "show-seek-reset") {
-    // An explicit, single action - unlike leaving the checkbox on, this really
-    // does move the remembered start position, so it may as well work whether
-    // or not Manual control happens to be ticked (the server still requires
-    // manual:true on the wire; this button simply always sends it).
+    // A running show's seek(0) does not mean "forget the forgotten start
+    // position" - it means "restart every unit from the top right now". The
+    // button is already hidden while a run exists (computeSeekState's
+    // showReset), but a stale poll or an adopted run landing between renders
+    // could still leave it on screen for a moment; refuse here too rather
+    // than trust the markup alone (fix round finding 1, BLOCKER).
+    if (fleet?.run) { toast("The show is running — Back to 0:00 would restart it. Use STOP first."); return; }
+    // Otherwise an explicit, single action - unlike leaving the checkbox on,
+    // this really does move the remembered start position, so it may as well
+    // work whether or not Manual control happens to be ticked (the server
+    // still requires manual:true on the wire; this button simply always
+    // sends it).
     await fleetCommand("seek", { to_s: 0, manual: true, lead_s: ui.lead }, "Back to 0:00", "show");
     ui.seekSent = null;
     return;
@@ -1403,7 +1479,13 @@ document.addEventListener("click", async e => {
     return;
   }
   const tab = e.target.closest("[data-tab]");
-  if (tab) { ui.tab = tab.dataset.tab; render(); return; }
+  if (tab) {
+    // Leaving the Units tab mid-seek must not let a pending debounce post
+    // behind the operator's back once they are looking at something else
+    // (fix round finding 3).
+    if (ui.tab === "fleet" && tab.dataset.tab !== "fleet") dropSeek();
+    ui.tab = tab.dataset.tab; render(); return;
+  }
   const copy = e.target.closest("[data-copy]");
   if (copy) {
     const made = await api("/api/duplicate", { item: copy.dataset.copy });
@@ -1485,7 +1567,15 @@ document.addEventListener("change", async e => {
     if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
     return;
   }
-  if (id === "show-manual") { ui.manual = e.target.checked; renderSeekBlock(); return; }
+  if (id === "show-manual") {
+    ui.manual = e.target.checked;
+    // Unticking must not leave a debounced commit alive to fire 350 ms later
+    // with the gate now off in the operator's own head, even though the
+    // request itself still carries manual:true (fix round finding 3).
+    if (!ui.manual) dropSeek();
+    renderSeekBlock();
+    return;
+  }
   if (id === "show-seek") {
     // Commit on release, never while dragging: debounced so a burst of "change"
     // events (e.g. arrow-key repeats) only sends the last one, at most once per
@@ -1656,7 +1746,19 @@ document.addEventListener("pointerdown", e => {
   if (e.target.id === "ph") seeking = true;    // the loop must not fight an in-progress scrub
   if (e.target.id === "show-seek") previewSeek(Number(e.target.value));   // preview from the very first touch, not just the first move
 });
-document.addEventListener("pointerup", () => { seeking = false; });
+document.addEventListener("pointerup", () => { seeking = false; releaseSeekIfIdle(); });
+document.addEventListener("pointercancel", () => { releaseSeekIfIdle(); });
+// A click on the thumb that never moves it, or a drag away and back to the
+// same value, fires no input/change at all - ui.seekDrag would otherwise
+// stay set forever, freezing the live LOOK row at the drag position and (via
+// computeSeekState) leaving the bar readable-but-wrongly-enabled the next
+// time Manual gets unticked (fix round finding 2, BLOCKER). Deferred one
+// tick so a "change" that *does* fire on this same release - which sets
+// ui.seekTimer - wins the race and is left alone.
+function releaseSeekIfIdle() {
+  if (ui.seekDrag === null) return;
+  setTimeout(() => { if (ui.seekDrag !== null && ui.seekTimer === null) { ui.seekDrag = null; paintSeek(); } }, 0);
+}
 document.addEventListener("input", e => {
   if (e.target.id === "show-seek") { previewSeek(Number(e.target.value)); return; }
   if (e.target.id !== "ph") return;
