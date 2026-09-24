@@ -507,11 +507,27 @@ class DemoRunner:
         last 20 ms), and the probing goes on straight after. Nothing has
         to be probed or configured for a broadcast "show slot N" - the
         picture is already in the slot."""
-        if self._firing or not self._trigger_due_soon():
+        session = self.remote
+        if session is None or self._firing or not self._trigger_due_soon():
             return
-        due = self.remote.due()
-        if due is not None and self._fire_at(bus, groups, self.remote, *due):
+        due = session.due()             # re-read: it may have just fired
+        if due is not None and self._fire_at(bus, groups, session, *due):
             self._guard_owed = time.monotonic() + self.guard_delay
+
+    def _wait_probing(self, bus, groups: int, seconds: float) -> bool:
+        """A wait inside the probing that still lets a cue through: the
+        same 50 ms tick _fire_at() uses, with _fire_before_probing() on
+        every one of them. A flat sleep here put a cue landing in the
+        gap between two sweeps 1.5 s late on the real unit (R2, review
+        round 3). False if the worker was told to stop meanwhile."""
+        end = time.monotonic() + seconds
+        while True:
+            self._fire_before_probing(bus, groups)
+            left = end - time.monotonic()
+            if left <= 0:
+                return True
+            if not self._sleep(min(left, 0.05)):
+                return False
 
     def _probe(self, bus, board: int, groups: int) -> bool:
         """One quick chance for a board to answer: silence it, set the slot.
@@ -523,10 +539,16 @@ class DemoRunner:
         if not self._request(bus, stop(board, groups), f"probe @{board:02d}",
                              attempts=1, quiet=True, bus_retries=1):
             return False
+        # Two tries, not the full ladder (which climbs to 12 s between
+        # retries): a board that answered the stop and then will not take
+        # a slot config is treated as absent and reprobed later, rather
+        # than holding the sweep - and a cue - for half a minute (R8,
+        # review round 3).
         ok = self._request(bus, slot_config(board, self.slot,
                                             group_count=groups,
                                             dev_type=self._active_dev_type()),
-                           f"cfg @{board:02d}")
+                           f"cfg @{board:02d}",
+                           attempts=min(2, self.command_attempts))
         if ok:
             self._cfg_done.add((board, self.slot))
         return ok
@@ -630,7 +652,8 @@ class DemoRunner:
         them up if they ever appear.
         """
         bus.send(stop(0xFF, groups))
-        time.sleep(0.3)
+        if not self._wait_probing(bus, groups, 0.3):
+            return False
         if self.explore:
             self.boards = list(DEFAULT_BOARDS)      # the search starts over
         # Cheap to redo, so always re-verified on a bus reopen - unlike
@@ -646,7 +669,8 @@ class DemoRunner:
         for sweep in range(self.probe_sweeps):
             if not pending:
                 break
-            if sweep and not self._sleep(self.probe_sweep_delay):
+            if sweep and not self._wait_probing(bus, groups,
+                                                self.probe_sweep_delay):
                 return False
             still = []
             # Until a board answers the whole range is searched: the
@@ -927,6 +951,11 @@ class DemoRunner:
         probe_s = time.monotonic() - began
         for n, (cue, board) in enumerate(pairs):
             slot = cue["slot"]
+            # A burn owns the port for minutes. Nothing here schedules a
+            # show (ShowPlayer waits for the burn before it arms
+            # anything), but an operator's own /prepare + /fire can be
+            # armed while one runs, and a cue is a cue (R3, round 3).
+            self._fire_before_probing(bus, groups)
             if self._stop.is_set() or not session.burn_current(epoch):
                 # Taken off the port (KEY1 on a pattern, KEY2, a shutdown)
                 # or superseded (a newer burn(), a cancel_burn()). The
@@ -1005,6 +1034,7 @@ class DemoRunner:
         for board in unknown:
             if self._stop.is_set():
                 return
+            self._fire_before_probing(bus, groups)
             if self._probe(bus, board, groups):
                 if board not in self.live:
                     self.live = [b for b in self.boards if b in
@@ -1049,11 +1079,15 @@ class DemoRunner:
                     self._stop.wait(min(remaining - FIRE_SPIN_S, 0.05))
                 else:
                     time.sleep(0.0005)
+            bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
+            sent_at = time.monotonic()
+            session.fired(cue_id, sent_at)
         finally:
+            # Released only once the session has been told: until then
+            # due() still names this cue, and a re-entrant call would
+            # send the broadcast a second time - which costs the boards
+            # a whole extra repaint (see SHOW_REPEATS).
             self._firing = False
-        bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
-        sent_at = time.monotonic()
-        session.fired(cue_id, sent_at)
         self.cycle += 1
         self.emit(f"cue {cue_id} fired slot {slot} "
                   f"{(sent_at - at) * 1000:+.0f} ms")

@@ -475,20 +475,60 @@ def test_a_restart_mid_show_fires_the_cue_before_any_probing(rig):
         runner2.stop()
 
 
-def test_a_show_long_over_is_not_resumed(rig):
+def test_a_show_long_over_is_not_resumed_and_the_standby_still_runs(rig):
+    # R1 (review round 3): the unit is power-cycled the morning after
+    # the show. Nothing is resumed - and the start-up standby must NOT
+    # be skipped, or the wall stays on last night's finale for ever.
     player, session, runner, bus, store = rig
     player.load(make_show(duration=2))
     assert wait_burned(player)
     player.run(time.monotonic() - 500)
     player.close()
-    session2, runner2, _ = make_session()
+    session2, runner2, bus2 = make_session()
     reborn = ShowPlayer(session2, store=store, tick_s=0.02)
     try:
         reborn.restore()
         assert reborn.state == LOADED and reborn.t0 is None
+        assert not reborn.restored_running      # ui/main.py paints white
+        assert reborn.applied is None and show_times(bus2) == []
     finally:
         reborn.close()
         runner2.stop()
+
+
+def test_a_held_show_keeps_its_picture_but_only_while_it_is_still_on(rig):
+    # HOLD, then the unit restarts: the garment holds a picture of this
+    # show and nothing is going to move it, so the standby must not
+    # paint over it - unless that show is long over (R1).
+    player, session, runner, bus, store = rig
+    player.load(make_show(sents=(-REFRESH, 0.4, 5.0), duration=30))
+    assert wait_burned(player)
+    player.run(time.monotonic() - 1.0)
+    assert wait_until(lambda: player.applied == "q01")
+    player.hold()
+    player.close()
+
+    session2, runner2, _ = make_session()
+    reborn = ShowPlayer(session2, store=store, tick_s=0.02)
+    try:
+        reborn.restore()
+        assert reborn.state == LOADED           # held shows wait for the PC
+        assert reborn.restored_running          # ...but keep their picture
+    finally:
+        reborn.close()
+        runner2.stop()
+
+    run = json.loads((store / "show-run.json").read_text(encoding="utf-8"))
+    run["t0_wall"] -= 10000                     # the same hold, yesterday
+    (store / "show-run.json").write_text(json.dumps(run), encoding="utf-8")
+    session3, runner3, _ = make_session()
+    older = ShowPlayer(session3, store=store, tick_s=0.02)
+    try:
+        older.restore()
+        assert not older.restored_running
+    finally:
+        older.close()
+        runner3.stop()
 
 
 def test_a_stopped_show_stays_stopped_after_a_restart(rig):
@@ -1132,6 +1172,32 @@ def test_a_garment_with_no_power_is_a_failed_burn_of_absent_pairs(tmp_path):
         player.preset()
         player.run(time.monotonic() + 0.2, force=True)
         assert player.state == RUNNING
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_the_dark_garment_sentence_is_dropped_once_the_boards_answer(tmp_path):
+    # R5 (review round 3): the boards were switched on after the burn.
+    # Their pictures are still not written - but "none of its 16 boards
+    # answered" is no longer true, and the PC must stop saying it.
+    from tests.test_ui_remote import PickyBus
+
+    session, runner, bus = make_session(PickyBus({1, 2}))
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        player.load(make_show())
+        assert wait_burn_settled(player)
+        assert player.status()["burn"]["reason"] == "none of its 2 boards answered"
+        # ...and it survives a restart, from the record on disk.
+        record = json.loads((tmp_path / BURN_FILE).read_text(encoding="utf-8"))
+        assert record["reason"] == "none of its 2 boards answered"
+        bus.silent = set()
+        runner.absent.clear()                   # the feed came back on
+        runner.live = [1, 2]
+        burn = player.status()["burn"]
+        assert burn["state"] == "failed" and "reason" not in burn
+        assert len(burn["failed"]) == 6         # still not written, though
     finally:
         player.close()
         runner.stop()

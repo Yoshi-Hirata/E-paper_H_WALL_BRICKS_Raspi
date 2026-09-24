@@ -490,7 +490,8 @@ class Fleet:
 
     # ---- the show ----
 
-    def upload(self, shows: "dict[str, dict]") -> "dict[str, dict]":
+    def upload(self, shows: "dict[str, dict]",
+               force: bool = False) -> "dict[str, dict]":
         def action(link):
             excuse = self._demo_excuse(link)
             if excuse:
@@ -503,6 +504,14 @@ class Fleet:
         # the old one may no longer even be inside it (found in review).
         with self._run_lock:
             self.start_at = 0.0
+            if force and self.run is not None:
+                # The operator has just asked, under a running show, for
+                # the pictures to be written again (the page's confirm) -
+                # to rescue a unit that lost them. If that unit's re-burn
+                # then fails on a live board, supervision must still put
+                # it BACK INTO the show rather than refuse it and leave
+                # it dark for the rest of the night (R4, review round 3).
+                self.run["force"] = True
         return results
 
     # ---- the standalone demo: a named copy of the show, in a unit's own

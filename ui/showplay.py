@@ -106,6 +106,7 @@ SAVE_S_PER_BOARD = 0.25    # a little over the measured 0.22 s
 CLEAR_S_PER_BOARD = 0.06   # the 0x25 / 0x1F beside it, first burn only
 RESTORE_GRACE_S = 6.0      # let the PC correct a restored T0 first
 RESTORE_AHEAD_S = 90.0     # a restored T0 further ahead than this is junk
+RESTORE_OVER_S = 60.0      # past its end by this much: that show is over
 CATCH_UP_LEAD_S = 0.3
 RETRY_AFTER_FAILED_S = 3.0
 END_SLACK_S = 30.0
@@ -430,16 +431,37 @@ class ShowPlayer:
         if live is not None and self._burn_id == show["id"]:
             if complete:
                 self._persist_burn(show["id"], live)
+            live = self._fresh_reason(live)
             if self._burn_record_error:
                 live = dict(live, record=self._burn_record_error)
             return live, complete
         disk = self._burn_disk
         if disk is not None and disk["show"] == show["id"]:
-            return ({"done": disk["total"], "total": disk["total"],
-                     "failed": [list(pair) for pair in disk["failed"]],
-                     "state": disk["state"]}, True)
+            back = {"done": disk["total"], "total": disk["total"],
+                    "failed": [list(pair) for pair in disk["failed"]],
+                    "state": disk["state"]}
+            if disk.get("reason"):
+                back["reason"] = disk["reason"]
+            return self._fresh_reason(back), True
         return ({"done": 0, "total": self._burn_total(show), "failed": [],
                  "state": "none"}, False)
+
+    def _fresh_reason(self, burn: dict) -> dict:
+        """"none of its 16 boards answered" stops being true the moment
+        those boards answer - the feed was switched on, they are back,
+        and they hold whatever was written before. The pairs are still
+        not written (nothing has re-burned them), but the sentence must
+        go, or the PC keeps offering "that garment keeps whatever it
+        shows" about a garment that is now awake (R5, review round 3).
+        """
+        if burn.get("state") != "failed" or not burn.get("reason"):
+            return burn
+        absent = self.session.runner.absent_snapshot()
+        if all(pair[0] in absent for pair in burn["failed"]):
+            return burn
+        burn = dict(burn)
+        burn.pop("reason")
+        return burn
 
     def hold(self) -> None:
         with self._lock:
@@ -486,7 +508,7 @@ class ShowPlayer:
         of `show_id`, once - what restore() pairs with the show file."""
         if self.store is None:
             return
-        key = (show_id, burn["state"],
+        key = (show_id, burn["state"], burn.get("reason"),
                tuple(tuple(pair) for pair in burn["failed"]))
         if key == self._burn_saved:
             return
@@ -495,6 +517,7 @@ class ShowPlayer:
             self._write(BURN_FILE, {
                 "burned": show_id, "when": self._wall(),
                 "state": burn["state"], "total": burn["total"],
+                "reason": burn.get("reason"),
                 "failed": [list(pair) for pair in burn["failed"]]})
             self._burn_saved = key
             self._burn_record_error = None
@@ -531,7 +554,7 @@ class ShowPlayer:
                 return None
             return {"show": show["id"], "state": state,
                     "total": int(record.get("total", self._burn_total(show))),
-                    "failed": failed}
+                    "reason": record.get("reason"), "failed": failed}
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
@@ -590,13 +613,22 @@ class ShowPlayer:
                 self.is_demo, self.demo_name = False, ""
                 self._persist()
                 return
-            if run.get("state") in (RUNNING, HOLDING) and self._burn_disk:
-                # Mid-show, with the pictures vouched for: whatever comes
-                # of the T0 below, the garment is holding a picture of
-                # this show and ui/main.py must leave it there rather
-                # than run its start-up standby over it.
-                self.restored_running = True
             t0_wall = run.get("t0_wall")
+            t0 = (None if t0_wall is None
+                  else self._clock() + (t0_wall - self._wall()))
+            # "Still on" is the same test for RUNNING and for HOLDING,
+            # and it decides whether ui/main.py skips its start-up
+            # standby: a run whose end is long past - last night's show,
+            # the Pi power-cycled this morning - is NOT mid-show, and
+            # the white standby is exactly what should happen then. This
+            # used to be set before the staleness tests, which left the
+            # wall on the finale for ever (R1, review round 3).
+            still_on = (t0 is not None and self._burn_disk is not None
+                        and self._clock() - t0 <= duration + RESTORE_OVER_S)
+            if run.get("state") == HOLDING and still_on:
+                # Held, not running: nothing is going to move that
+                # picture, and it is a picture of this show.
+                self.restored_running = True
             if run.get("state") != RUNNING or t0_wall is None:
                 return
             if self._burn_disk is None:
@@ -607,9 +639,11 @@ class ShowPlayer:
                 self.note = ("restarted with no record of its pictures - "
                              "waiting for the PC")
                 return
-            t0 = self._clock() + (t0_wall - self._wall())
-            if self._clock() - t0 > duration + 60:
+            if not still_on:
                 return                  # that show is long over
+            # Genuinely mid-show: keep the garment as it is, even if the
+            # T0 below turns out to need the PC's help.
+            self.restored_running = True
             if t0 - self._clock() > RESTORE_AHEAD_S:
                 # No RTC: the wall clock came up behind. Running on this T0
                 # would sit out the show waiting for a start that is past.
@@ -750,12 +784,22 @@ class ShowPlayer:
         flash (see the heal branch in _plan())."""
         if self.applied is None:
             return
-        joined = set(self.session.runner.live) - self._ever_ok
+        joined = sorted(set(self.session.runner.live) - self._ever_ok)
         if joined:
-            self._ever_ok |= joined
+            first_look = not self._ever_ok
+            self._ever_ok |= set(joined)
             self.dirty = True
-            self.note = (f"board {','.join(str(b) for b in sorted(joined))} "
-                        f"joined late: re-arming {self.applied}")
+            if first_look:
+                # Nothing was known about the garment yet (a restart, or
+                # a run starting from the top): every board there "joined
+                # late", which is not news and read as a fault on the
+                # tile - the re-arm still happens (R9, review round 3).
+                return
+            named = ",".join(str(b) for b in joined[:3])
+            if len(joined) > 3:
+                named += f" +{len(joined) - 3} more"
+            self.note = (f"board {named} joined late: "
+                         f"re-arming {self.applied}")
 
     def _plan(self) -> "tuple[float, tuple | None]":
         """(seconds until it is worth looking again, what to send now)."""

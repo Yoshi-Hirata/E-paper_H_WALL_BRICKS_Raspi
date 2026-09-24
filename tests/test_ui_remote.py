@@ -876,24 +876,28 @@ class SlowProbeBus(PickyBus):
         return super().request(frame, retries)
 
 
-def test_a_cue_due_during_the_probing_sweep_still_fires_on_time():
+@pytest.mark.parametrize("sweeps, ahead", [(1, 0.5), (3, 2.0)])
+def test_a_cue_due_during_the_probing_sweep_still_fires_on_time(sweeps, ahead):
     # radxa-01, 2026-09-25: a unit that restarted mid-show came back,
     # fired the cue it owed at once - and then the start-up probe of six
     # absent boards (15 s) sat on the NEXT cue, which went out 4 s late.
     # A broadcast trigger needs no board probed, so the sweep waits it
     # out and sends it first.
+    # sweeps=3 puts the cue in the GAP between two sweeps, which used to
+    # be a flat sleep (R2, review round 3).
     session, runner, bus = make_session(SlowProbeBus(set(range(3, 9))),
                                         boards=list(range(1, 9)),
-                                        probe_sweeps=1)
-    at = time.monotonic() + 0.5           # due in the middle of the sweep
+                                        probe_sweeps=sweeps,
+                                        probe_sweep_delay=0.6)
+    at = time.monotonic() + ahead         # due in the middle of the probing
     session.arm("c1", 2)                  # already burned into slot 2
     session.fire("c1", at)
-    assert wait_until(lambda: session.phase == FIRED, timeout=8)
+    assert wait_until(lambda: session.phase == FIRED, timeout=12)
     assert abs(session.fired_at - at) < 0.05
     shows = [f for f in bus.sent if f.cmd == SHOW]
     assert [f.data[0] for f in shows] == [2]
     # ...and the probing finished afterwards, as it always would.
-    assert wait_until(lambda: runner.absent == set(range(3, 9)), timeout=8)
+    assert wait_until(lambda: runner.absent == set(range(3, 9)), timeout=12)
     assert runner.live == [1, 2]
     runner.stop()
 

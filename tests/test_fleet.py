@@ -639,6 +639,23 @@ def test_a_garment_that_answered_on_no_board_is_named_that_way_and_forceable():
     assert fleet.run is not None and link.posted[-1][1]["force"] is True
 
 
+def test_a_forced_upload_under_a_running_show_leaves_force_on_the_run():
+    # R4 (review round 3): the rescue Upload is pointless if supervision
+    # then posts force false and the rescued unit - whose re-burn failed
+    # on a live board - is refused and never rejoins.
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-01", "stopped")
+    fleet.links = {"radxa-01": link}
+    shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.shows = dict(shows)
+    fleet.start_show(lead_s=1.0)                    # no force needed then
+    assert fleet.run["force"] is False
+    fleet.upload(shows)                             # (not under a run: no-op)
+    assert fleet.run["force"] is False
+    fleet.upload(shows, force=True)                 # the page's confirm
+    assert fleet.run["force"] is True
+
+
 def test_an_adopted_run_carries_force_so_supervision_is_not_refused():
     # A conductor restarted mid-show builds the run from what the units
     # are already playing: that show passed the burn gate when it was

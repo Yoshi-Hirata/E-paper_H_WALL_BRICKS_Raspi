@@ -1440,7 +1440,8 @@ class Handler(BaseHTTPRequestHandler):
             if fleet.run is not None and not body.get("force"):
                 raise ValueError("stop the show first")
             shows, problems = self.workspace.compile_show()
-            results = fleet.upload(shows) if shows else {}
+            results = (fleet.upload(shows, force=bool(body.get("force")))
+                       if shows else {})
             return self._json({"units": results, "problems": problems,
                                "shows": {u: s["id"] for u, s in shows.items()}})
         if command == "write_demo":

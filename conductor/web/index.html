@@ -1885,7 +1885,7 @@ function picturesText(u) {
   if (burn.state === "burning") {
     if (!burnStarted[u.name]) burnStarted[u.name] = Date.now();
     const elapsed = Math.round((Date.now() - burnStarted[u.name]) / 1000);
-    return `writing ${esc(burn.done)} / ${esc(burn.total)} (${elapsed} s)`;
+    return `writing ${esc(burn.done)}/${esc(burn.total)} (${elapsed} s)`;
   }
   delete burnStarted[u.name];
   // A burn the unit finished but could not record: it IS written, and a
@@ -2059,9 +2059,13 @@ document.addEventListener("click", async e => {
     // write nothing - the unit skips what its cache knows is in place.
     let body = {};
     if (fleet?.run) {
-      if (!confirm("The show is running. Re-write the pictures on every unit now? "
-        + "Units already holding this show write nothing; a unit that lost its "
-        + `pictures writes them again (~${burnSeconds()} s) and rejoins.`)) return;
+      if (!confirm("The show is running. Re-write the pictures on every unit now?
+
+"
+        + "Every unit briefly leaves the show and rejoins by itself a few seconds "
+        + "later. Units already holding this show write nothing; a unit that lost "
+        + `its pictures writes them again (~${burnSeconds()} s) and rejoins after `
+        + "that.")) return;
       body = { force: true };
     }
     await fleetCommand("upload", body, "① Upload", "show");
