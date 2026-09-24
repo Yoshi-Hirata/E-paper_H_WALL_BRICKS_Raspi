@@ -1065,7 +1065,7 @@ function renderTimeline() {
             <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
             || `<tr><td class="meta" colspan="8">No cues yet</td></tr>`}
           </tbody></table>
-          <div class="meta" style="margin-top:6px">Shortest interval per unit (one send to the next): ${Object.entries(show.min_interval).map(([u, s]) => `${esc(u)} ${Math.ceil(s)} s`).join(" · ")}</div>
+          <div class="meta" style="margin-top:6px">Shortest interval, one send to the next (every picture is already written into its slot at Upload; a send is just a trigger, whatever the unit's board count): ${(() => { const vals = Object.values(show.min_interval); return vals.length ? `${vals[0].toFixed(1)} s (${show.refresh_s.toFixed(0)} s refresh + 1 s)` : "—"; })()}</div>
         </div>
       </div>
       <div class="card" id="tl-editor-card">
@@ -1705,7 +1705,7 @@ function renderFleet() {
       <div class="thumbs small" id="show-thumbs" style="margin-top:8px"></div>
       ${seekBlockHtml()}
       <div class="go">
-        <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"}>① Upload</button>
+        <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"} title="Writes every picture into the boards now (one per cue, its own slot) - the show itself then only sends triggers. START waits for every unit to finish writing.">① Upload</button>
         <button class="big" id="show-preset">② Show preset (the 0:00 look)</button>
         <button class="big fire" id="show-start">③ START</button>
         <label class="meta">START / NEXT / MOVE take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
@@ -1791,7 +1791,8 @@ function showClockText() {
   $("#show-next").innerHTML = (run && run.state === "running" && upcoming.length
       ? `<b>Next: ${esc(upcoming[0].label || upcoming[0].id)}</b>${esc(upcoming[0].unit)} sends it in about ${Math.max(0, Math.round(upcoming[0].in_s - (performance.now() - fleet.at) / 1000))} s`
       : `<b>${run ? (run.state === "holding" ? "On hold" : "No cue ahead") : "—"}</b>`)
-    + `<br>uploaded to ${loaded} / ${want} units`;
+    + `<br>uploaded to ${loaded} / ${want} units`
+    + (fleet.burn && fleet.burn.total ? `<br>pictures written on ${fleet.burn.burned} / ${fleet.burn.total} units` : "");
   $("#show-fix").innerHTML = fleet.corrections.length
     ? "Corrected automatically: " + fleet.corrections.map(esc).join(" · ") : "";
   const running = !!run && run.state === "running", holding = !!run && run.state === "holding";
@@ -1849,6 +1850,10 @@ function renderTiles() {
       <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
+      <div class="row"><span>Pictures</span><b>${(() => { const burn = u.show && u.show.burn; if (!burn) return "—";
+          if (burn.state === "burning") return `writing ${burn.done} / ${burn.total}`;
+          if (burn.state === "failed") return `✗ FAILED (${(burn.failed || []).length} board·slot)`;
+          return "written"; })()}</b></div>
       <div class="row"><span>Demos</span><b>${u.demos ?? "—"}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
       ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}

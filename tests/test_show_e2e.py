@@ -64,8 +64,11 @@ def test_a_show_file_holds_every_cue_resolved_for_the_unit(tmp_path):
     assert problems == [] and list(shows) == ["radxa-02"]
     show = shows["radxa-02"]
     assert show["boards"] == [1, 2, 3, 4, 5] and show["refresh_s"] == 1.0
+    assert show["slots"] == 19            # a board holds 19 pictures
     assert [c["id"] for c in show["cues"]] == ["q00", "q01"]
     preset, accent = show["cues"]
+    assert (preset["slot"], accent["slot"]) == (1, 2)   # its own slot each,
+                                                        # in send order
     # Top and skirt share the unit and the instant: one cue, one label.
     assert preset["sent"] == -1.0
     assert preset["label"] == "Look20-Skirt P01 + Look20-Top P01"
@@ -86,7 +89,7 @@ def test_a_show_file_holds_every_cue_resolved_for_the_unit(tmp_path):
     assert ws.compile_show()[0]["radxa-02"]["id"] == show["id"]  # stable
 
 
-def test_every_unit_cue_carries_a_rotating_slot(tmp_path):
+def test_every_unit_cue_gets_its_own_slot_in_send_order(tmp_path):
     ws = workspace(tmp_path)
     ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1),
                          cue("b", "Look20-Top", 6, P2, partial=True),
@@ -96,9 +99,9 @@ def test_every_unit_cue_carries_a_rotating_slot(tmp_path):
     shows, problems = ws.compile_show()
     assert problems == []
     show = shows["radxa-02"]
-    # Four moments (the preset, q00, included) -> the slot rotates
-    # 17, 18, 19 and wraps back to 17 - conductor/showfile.py's SLOTS.
-    assert [c["slot"] for c in show["cues"]] == [17, 18, 19, 17]
+    # Four moments (the preset, q00, included) -> four slots, 1..4, one
+    # per cue in send order - nothing is rewritten once the show starts.
+    assert [c["slot"] for c in show["cues"]] == [1, 2, 3, 4]
 
 
 def test_a_show_with_a_problem_is_not_built(tmp_path):

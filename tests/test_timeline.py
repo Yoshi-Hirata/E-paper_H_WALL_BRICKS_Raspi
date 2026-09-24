@@ -13,12 +13,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.timeline import (DEFAULT_LEAD_S, REFRESH_S, UNIT_PREP_MARGIN_S,
-                                UNIT_SAVE_S_PER_BOARD, UNIT_SETUP_S,
-                                UNIT_SETUP_S_PER_BOARD, apply_transitions,
-                                clean, effective_refresh, ends, format_clock,
-                                min_interval, parse_clock, resolve, times,
-                                validate)
+from conductor.timeline import (MAX_CUES_PER_UNIT, REFRESH_S,
+                                apply_transitions, clean, effective_refresh,
+                                ends, format_clock, min_interval, parse_clock,
+                                resolve, times, validate)
 
 OK = {"full": True, "partial": True}
 ITEMS = {
@@ -57,19 +55,6 @@ def test_clock_both_ways():
         parse_clock(None)
     with pytest.raises(ValueError):
         parse_clock({})
-
-
-def test_the_unit_constants_are_mirrored_from_their_real_sources():
-    # conductor/ and ui/ do not import each other (they run on different
-    # machines), so these are copies, not the same object - this test is
-    # what keeps them from drifting apart silently.
-    from ui import showplay
-    assert UNIT_SAVE_S_PER_BOARD == showplay.SAVE_S_PER_BOARD
-    assert UNIT_PREP_MARGIN_S == showplay.PREP_MARGIN_S
-    assert UNIT_SETUP_S == showplay.SETUP_S
-    assert UNIT_SETUP_S_PER_BOARD == showplay.SETUP_S_PER_BOARD
-    from conductor.fleet import DEFAULT_LEAD_S as FLEET_DEFAULT_LEAD_S
-    assert DEFAULT_LEAD_S == FLEET_DEFAULT_LEAD_S
 
 
 def test_start_is_the_send_instant_and_complete_adds_refresh_and_sweep():
@@ -146,33 +131,14 @@ def test_clean_drops_align_and_keeps_refresh_s():
                 )[0]["refresh_s"] is None
 
 
-def test_min_interval_grows_with_the_boards_to_write():
-    # Rotation (the default) halves the write term - the ahead write
-    # spans two sends, not one - so refresh + gap (8 s) now covers many
-    # more boards than it used to.
-    assert min_interval(16) == pytest.approx(8.0)     # (16x0.25+2)/2 = 3.0 < 8
-    assert min_interval(27) == pytest.approx(8.0)      # (27x0.25+2)/2 = 4.375
-    assert min_interval(32) == pytest.approx(8.0)      # (32x0.25+2)/2 = 5.0
-    assert min_interval(36) == pytest.approx(8.0)      # (36x0.25+2)/2 = 5.5
-    # Write-bound once the HALVED term itself passes refresh + gap.
-    assert min_interval(64) == pytest.approx(9.0)      # (64x0.25+2)/2
-    assert min_interval(96) == pytest.approx(13.0)     # (96x0.25+2)/2
-    # A sweeping cue doubles the write term before it is halved.
-    assert min_interval(36, sweep=True) == pytest.approx(10.0)   # (36x0.25x2+2)/2
-    assert min_interval(16, refresh=16) == pytest.approx(17.0)   # refresh-bound
-                                                                  # regardless
-
-
-def test_the_single_slot_rule_is_still_available():
-    # rotation=False reproduces the pre-rotation numbers exactly - kept
-    # for tests and for reasoning about old show files (no "slot" key).
-    assert min_interval(16, rotation=False) == pytest.approx(8.0)   # 6.0 < 8
-    assert min_interval(24, rotation=False) == pytest.approx(8.0)   # 8.0 exactly
-    assert min_interval(27, rotation=False) == pytest.approx(8.75)  # 27x0.25+2
-    assert min_interval(32, rotation=False) == pytest.approx(10.0)  # 32x0.25+2
-    assert min_interval(36, rotation=False) == pytest.approx(11.0)  # 36x0.25+2
-    assert min_interval(16, sweep=True, rotation=False) == \
-        pytest.approx(10.0)                                        # 16x0.25x2+2
+def test_min_interval_is_just_refresh_and_gap_whatever_the_board_count():
+    # Every picture is burned into its slot at Upload time (showfile.py):
+    # a running send is a broadcast trigger, nothing is written - so the
+    # board count no longer bounds the spacing, only refresh + the 1 s gap.
+    assert min_interval(16) == pytest.approx(8.0)
+    assert min_interval(36) == pytest.approx(8.0)
+    assert min_interval(96) == pytest.approx(8.0)          # still 8.0: unaffected
+    assert min_interval(16, refresh=16) == pytest.approx(17.0)   # 16 + 1 s gap
 
 
 def test_the_next_refresh_may_start_one_second_after_the_previous_is_complete():
@@ -191,82 +157,40 @@ def test_the_next_refresh_may_start_one_second_after_the_previous_is_complete():
         "is needed (7.0 s refresh + 1.0 s gap)"]
 
 
-def test_the_interval_is_never_shorter_than_the_units_prepare_lead():
-    # The review's point: the conductor must never bless a spacing tighter
-    # than the UNIT's own prepare lead, even where refresh + gap alone
-    # would say it is fine - rotation halves that lead (the write spans
-    # two sends) but does not remove it.
-    items64 = {"look22": {"item": "Look22", "unit": "radxa-05", "boards": 64,
-                          "designs": {"p1": OK, "p2": OK}}}
-    a = cue("a", "Look22", 60, "p1")
-    b = cue("b", "Look22", 68.0, "p2")             # 8.0 s: refresh + gap only
-    found, _ = validate([a, b], items64, 600, 7.0)
-    assert found["b"] == [
-        "only 8.0 s after the previous send on radxa-05; writing its 64 "
-        "boards needs 9.0 s ((64 × 0.25 s + 2.0 s) / 2, writes overlap "
-        "the previous picture)"]
-    # 48 boards write (halved) in 7.0 s - under the 8.0 s floor.
-    items48 = {"look22": {"item": "Look22", "unit": "radxa-05", "boards": 48,
-                          "designs": {"p1": OK, "p2": OK}}}
-    assert validate([a, b], items48, 600, 7.0)[0]["b"] == []
-
-
-def test_a_sweeping_cue_doubles_the_write_term():
-    # The single-slot rule (rotation=False): a sweeping cue's delay
-    # tables double the write term outright, un-halved.
-    items = {"look22": {"item": "Look22", "unit": "radxa-06", "boards": 16,
-                        "designs": {"p1": OK,
-                                    "g1.csv": {"full": True, "partial": True}}}}
-    a = cue("a", "Look22", 60, "p1")
-    b = cue("b", "Look22", 68.0, "g1.csv")         # 8.0 s: fine without a sweep
-    assert validate([a, b], items, 600, 7.0, rotation=False)[0]["b"] == []
-    b["sweep"] = {"sequence": "top_down", "span_s": 2.0, "source": "cue"}
-    b["span"] = 2.0                        # now sweeps: its delay tables are
-    found, _ = validate([a, b], items, 600, 7.0,   # written too - double the write
-                        rotation=False)
-    assert found["b"] == [
-        "only 8.0 s after the previous send on radxa-06; writing its 16 "
-        "boards needs 10.0 s (16 × 0.25 s × 2 (its delay tables) "
-        "+ 2.0 s)"]
-
-
-def test_a_sweeping_cue_still_doubles_its_writes_under_rotation():
-    # Rotation (the default): the delay tables still double the write
-    # term, it is just the halved one that then matters.
-    items = {"look22": {"item": "Look22", "unit": "radxa-06", "boards": 36,
-                        "designs": {"p1": OK,
-                                    "g1.csv": {"full": True, "partial": True}}}}
-    a = cue("a", "Look22", 60, "p1")
-    b = cue("b", "Look22", 68.0, "g1.csv")         # 8.0 s: fine without a sweep
-    assert validate([a, b], items, 600, 7.0)[0]["b"] == []
-    b["sweep"] = {"sequence": "top_down", "span_s": 2.0, "source": "cue"}
-    b["span"] = 2.0
-    found, _ = validate([a, b], items, 600, 7.0)
-    assert found["b"] == [
-        "only 8.0 s after the previous send on radxa-06; writing its 36 "
-        "boards needs 10.0 s ((36 × 0.25 s × 2 (its delay tables) "
-        "+ 2.0 s) / 2, writes overlap the previous picture)"]
-
-
-def test_the_rotation_halves_the_write_term_but_not_the_first_cues():
-    items = {"look22": {"item": "Look22", "unit": "radxa-08", "boards": 16,
-                        "designs": {"p1": OK, "p2": OK, "p3": OK}}}
-    # An ordinary pair (not right after the preset): the halved write
-    # term (3.0 s) is well under the 8.0 s refresh + gap floor.
-    a = cue("a", "Look22", 60, "p1")
-    b = cue("b", "Look22", 68.0, "p2")
-    assert validate([a, b], items, 600, 7.0)[0]["b"] == []
-    # The very first cue after the preset still pays the full, un-halved
-    # rejoin lead - unchanged from the single-slot rule.
+def test_the_first_cue_after_the_preset_only_needs_refresh_and_gap():
+    # Nothing is written once the show runs any more - every picture was
+    # burned into its slot at Upload time - so even the very first cue
+    # after the preset only needs the ordinary refresh + gap floor, board
+    # count and all the old "rejoining" concerns aside.
+    items = {"look22": {"item": "Look22", "unit": "radxa-08", "boards": 96,
+                        "designs": {"p1": OK, "p2": OK}}}
     preset = cue("p", "Look22", 0, "p1")
-    first = cue("f", "Look22", 1, "p2")            # 8.0 s send-to-send: too tight
-    found, _ = validate([preset, first], items, 600, 7.0)
+    tight = cue("f", "Look22", 0.9, "p2")          # 7.9 s send-to-send: short
+    found, _ = validate([preset, tight], items, 600, 7.0)
     assert found["f"] == [
-        "only 8.0 s after the previous send on radxa-08; the unit may "
-        "still be rejoining and needs at least 10.4 s (16 × 0.25 s + "
-        "2.0 s prep + 1.0 s setup + 16 × 0.15 s probe + 1.0 s gap)"]
-    fine = cue("f", "Look22", 3.4, "p2")           # 10.4 s: fine
+        "only 7.9 s after the previous send on radxa-08; at least 8.0 s "
+        "is needed (7.0 s refresh + 1.0 s gap)"]
+    fine = cue("f", "Look22", 1.0, "p2")           # 8.0 s: fine
     assert validate([preset, fine], items, 600, 7.0)[0]["f"] == []
+
+
+def test_a_unit_may_carry_at_most_nineteen_pictures():
+    # A board has 19 usable slots (0 is the standby white) - the 20th
+    # distinct send on one unit's bus does not fit, however comfortably
+    # spaced, and every cue from there on is named in the problem.
+    assert MAX_CUES_PER_UNIT == 19
+    items = {"look22": {"item": "Look22", "unit": "radxa-09", "boards": 4,
+                        "designs": {"p1": OK, "p2": OK}}}
+    cues = [cue("preset", "Look22", 0, "p1")]
+    for index in range(1, 20):                     # 19 more: 20 pictures total
+        design = "p1" if index % 2 else "p2"
+        cues.append(cue(f"c{index}", "Look22", index * 10.0, design))
+    found, _ = validate(cues, items, 600, 7.0)
+    # The first 19 pictures (the preset plus 18 more) fit; the 20th does not.
+    assert all(found[c["id"]] == [] for c in cues[:19])
+    assert found["c19"] == [
+        "radxa-09 carries 20 pictures but a board holds 19 (slot 0 is "
+        "the white standby) - merge or remove cues"]
 
 
 def test_the_previous_cues_own_refresh_time_sets_the_gap():
@@ -327,23 +251,6 @@ def test_refreshes_on_one_unit_need_room():
         "is needed (16.0 s refresh + 1.0 s gap)"]
     fine16 = cue("c", "Look22", 117, "p1")
     assert validate([b, fine16], ITEMS, 600, refresh=16)[0]["c"] == []
-
-
-def test_the_first_cue_must_leave_time_to_write_the_boards_after_start():
-    # The very first pairing on a unit's bus (preset -> first real cue) is
-    # floored at the unit's full rejoin lead, not just refresh + gap: the
-    # unit only starts writing once /show/run actually lands
-    # (conductor/fleet.py's DEFAULT_LEAD_S before T0), so a unit that is
-    # only just rejoining right there pays full setup, not just a write.
-    found, _ = problems([cue("a", "Look22", 0, "p1"),
-                         cue("b", "Look22", 1, "p2")])       # 0:01: too tight
-    assert found["b"] == [
-        "only 8.0 s after the previous send on radxa-03; the unit may "
-        "still be rejoining and needs at least 10.4 s (16 × 0.25 s + "
-        "2.0 s prep + 1.0 s setup + 16 × 0.15 s probe + 1.0 s gap)"]
-    found, _ = problems([cue("a", "Look22", 0, "p1"),
-                         cue("b", "Look22", 3.4, "p2")])     # 10.4 s: fine
-    assert found["b"] == []
 
 
 def test_no_preset_is_a_warning():

@@ -349,6 +349,61 @@ def test_a_restored_unit_is_told_its_t0_even_when_it_is_close_enough():
     assert link.posted == []
 
 
+# ---- the pre-burn design: every picture written at Upload, not live ----
+
+def test_start_refuses_while_a_unit_is_still_burning_its_pictures():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-04", "stopped")
+    link.status["show"]["burn"] = {"done": 12, "total": 48, "failed": [],
+                                   "state": "burning"}
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="radxa-04: still writing 12/48"):
+        fleet.start_show(lead_s=1.0)
+    assert fleet.run is None                        # never armed
+
+
+def test_start_refuses_while_a_unit_failed_to_burn():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-05", "stopped")
+    link.status["show"]["burn"] = {"done": 40, "total": 48,
+                                   "failed": [[3, 5], [3, 6]], "state": "failed"}
+    fleet.links = {"radxa-05": link}
+    fleet.shows = {"radxa-05": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="radxa-05: 2 board"):
+        fleet.start_show(lead_s=1.0)
+
+
+def test_start_runs_once_every_unit_has_burned():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-06", "stopped")
+    link.status["show"]["burn"] = {"done": 48, "total": 48, "failed": [],
+                                   "state": "burned"}
+    fleet.links = {"radxa-06": link}
+    fleet.shows = {"radxa-06": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.start_show(lead_s=1.0)
+    assert fleet.run is not None
+    # An old agent that says nothing about burning at all is not held up.
+    fleet.run = None
+    del link.status["show"]["burn"]
+    fleet.start_show(lead_s=1.0)
+    assert fleet.run is not None
+
+
+def test_the_snapshot_counts_how_many_units_have_burned():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    burning = StubLink("radxa-07", "stopped")
+    burning.status["show"]["burn"] = {"done": 1, "total": 2, "failed": [],
+                                      "state": "burning"}
+    burned = StubLink("radxa-08", "stopped")
+    burned.status["show"]["burn"] = {"done": 2, "total": 2, "failed": [],
+                                     "state": "burned"}
+    fleet.links = {"radxa-07": burning, "radxa-08": burned}
+    fleet.shows = {"radxa-07": {"id": "showA", "cues": [], "duration": 600},
+                   "radxa-08": {"id": "showA", "cues": [], "duration": 600}}
+    assert fleet.snapshot()["burn"] == {"burned": 1, "total": 2}
+
+
 # ---- SEEK: moving the show's position by hand ----
 
 def test_seek_while_running_moves_t0_for_every_unit_alike():

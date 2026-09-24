@@ -312,13 +312,52 @@ class Fleet:
             mark = run["held_at"] if run["state"] == "holding" else self._clock()
             run["now"] = round(mark - run["t0"], 2)
         duration = self.show_duration()
+        targets = list(self.shows)
+        burned = sum(1 for name in targets
+                    if self._burn(name) is not None
+                    and self._burn(name).get("state") == "burned")
         return {"units": [link.snapshot() for link in self.links.values()],
                 "last_fire": self.last_fire, "run": run,
                 "shows": {unit: {"id": show["id"], "cues": len(show["cues"])}
                           for unit, show in self.shows.items()},
                 "corrections": self.corrections[-5:],
                 "start_at": start_at,
-                "show_duration": duration if self.shows else None}
+                "show_duration": duration if self.shows else None,
+                # Every picture is written into its slot at Upload time
+                # (conductor/showfile.py): "burned" once a unit is done
+                # writing the show it was just given. Only units with a
+                # show uploaded this session count - a unit that has not
+                # answered yet (burn still None) is not counted burned.
+                "burn": {"burned": burned, "total": len(targets)}}
+
+    def _burn(self, name: str) -> "dict | None":
+        """The unit's own `status.show.burn` (ui/showplay.py):
+        {"done", "total", "failed": [[board, slot], ...],
+        "state": "burning"|"burned"|"failed"} - `None` before it has
+        said anything (not yet polled, or an older agent)."""
+        link = self.links.get(name)
+        if link is None:
+            return None
+        return ((link.status or {}).get("show") or {}).get("burn")
+
+    def _burn_problems(self, names) -> "list[str]":
+        """One message per unit (of `names`) still burning or that
+        failed to - what start_show() refuses on."""
+        problems = []
+        for name in names:
+            burn = self._burn(name)
+            if burn is None:
+                continue
+            state = burn.get("state")
+            if state == "burning":
+                problems.append(f"{name}: still writing "
+                                f"{burn.get('done', 0)}/"
+                                f"{burn.get('total', '?')}")
+            elif state == "failed":
+                failed = burn.get("failed") or []
+                problems.append(f"{name}: {len(failed)} board(s) failed to "
+                                "write their pictures")
+        return problems
 
     def show_duration(self) -> float:
         """The longest `duration` among the uploaded shows, 0.0 when none
@@ -461,6 +500,12 @@ class Fleet:
         if not 0 <= at <= duration:
             raise ValueError(f"The show is {timeline.format_clock(0)} to "
                              f"{timeline.format_clock(duration)}.")
+        # Every picture is meant to already be sitting in its slot: START
+        # refuses while any unit is still writing them, or failed to
+        # (2026-09-24, the pre-burn design - see conductor/timeline.py).
+        burning = self._burn_problems(self._targets())
+        if burning:
+            raise ValueError("; ".join(burning))
         with self._run_lock:
             self._may_adopt, self._stopped = False, False
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",

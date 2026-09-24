@@ -91,6 +91,59 @@
   `docs/SIMULATOR_FOR_DESIGNERS.md` に。
 
 **Timeline: 1 秒 gap ルールをレビューで修正 - 本体の準備時間より詰めない(2026-09-24)**
+**Timeline/Showfile: 事前焼き込み方式に設計変更 - 本番中は基板に一切書き込まない
+(2026-09-24, Conductor 側。以下は直前の「1 秒 gap ルール」エントリ全体を置き換える)**
+
+- 依頼者(Hirata)の方針転換:「毎回リアルタイムに書き込みを行うのはショーにおいて
+  リスクが高い。Timeline 焼き込みの段階で 20 スロットをできる限り使って書き込みを
+  終了させておき、radxa からはトリガーのみ送る」。直前のエントリで実装した「書き込み
+  時間を見積もって間隔を詰めすぎない」ルール(3 スロットのローテーションで書き込みと
+  発火を重ねる案も含め)は、この方針でまるごと不要になった - 本番中に書き込みが起きない
+  なら、書き込み時間を見積もる理由がない。
+- メーカー回答(Meris, 2026-09-24、`docs/MERIS_REPLY_3SLOT.pdf`): スロット 0〜19 は
+  全て構造上同一でいつでも上書き可能、0x13/0x1F/0x1B は電源断をまたいで保持される。
+  これを踏まえた新しい割り当て: **スロット 0 = 白のスタンバイ専用**(基板の電源投入時
+  オートプレイもここになる)、**スロット 1〜19 = ショーの絵**(1 基板 19 枚まで)。
+- `conductor/showfile.py`: `build_unit_show` が各ユニットキュー(プリセット含む)に
+  送信順で `"slot": 1, 2, 3, …` を割り当てる(スロット 0 は使わない)。`show["slots"]`
+  に基板の総スロット数(19)を持たせた。
+- `conductor/timeline.py`: 前回導入した「書き込み項」「rejoin 項」(本体の
+  `UNIT_SAVE_S_PER_BOARD`/`UNIT_PREP_MARGIN_S`/`UNIT_SETUP_S`/`UNIT_SETUP_S_PER_BOARD`
+  を複製した定数群)を丸ごと削除。`validate()`/`min_interval()` は今後
+  **`refresh + gap`(既定 8.0 s)一本**になり、基板数に一切左右されない - プリセット直後の
+  最初のキューも同じ式(以前あった「本体が `/show/run` で合流し直す」ぶんの上乗せは、
+  書き込みがもう発生しないので不要)。代わりに新しい制約を追加: 1 基板が持てる絵は
+  **`MAX_CUES_PER_UNIT = 19` 枚**までで、1 機体のタイムラインがそれを超えると
+  「radxa-04 carries 20 pictures but a board holds 19 (slot 0 is the white standby) -
+  merge or remove cues」のように問題として出す(超過分の各キューに個別に出る)。
+- `conductor/fleet.py`: 機体の `/status` が返す `show.burn`(本体側 Coder が実装中の
+  形: `{"done","total","failed":[[board,slot],...],"state":"burning"|"burned"|"failed"}`)
+  を読み、`start_show()` はどれかの対象機体が `"burning"`(「radxa-04: still writing
+  12/48」)または `"failed"`(「radxa-04: 2 board(s) failed to write their pictures」)の
+  間は `ValueError` で拒否する(機体ごとのメッセージを `"; "` で連結)。`snapshot()` に
+  `"burn": {"burned": n, "total": m}`(この conductor がアップロードした機体のうち
+  書き込み完了した数)を追加 - `/api/fleet` でページに渡る。`upload()` 自体は従来どおり
+  `/show/load` を投げて即座に返る(焼き込みは機体側で非同期)。
+- `conductor/web/index.html`: Units タブの各タイルに **Pictures** 行(writing n / N・
+  written・✗ FAILED)、「THE SHOW」カードに「pictures written on n / m units」の行、
+  ① Upload ボタンに「今すぐ全ての絵を基板に書き込む・本番中はトリガーのみ」という
+  title、Timeline タブの「Shortest interval」を機体別の一覧から単一の値
+  (例: 「8.0 s (7 s refresh + 1 s)」)に変更 - 基板数で変わらなくなったため。
+- テスト: `tests/test_timeline.py`(`min_interval` は `refresh+gap` のみを検証、
+  `test_a_unit_may_carry_at_most_nineteen_pictures` を追加、書き込み項・rejoin 項の
+  テストは全て削除・置き換え)、`tests/test_show_e2e.py`
+  (`test_every_unit_cue_gets_its_own_slot_in_send_order`)、`tests/test_fleet.py`
+  (`test_start_refuses_while_a_unit_is_still_burning_its_pictures` ほか、burn 関連 5 件)。
+  `tests/test_conductor_server.py` は数値(8.0/17.0)に変更なし(元から refresh 項が
+  勝つケースだった)。
+- **未対応・要検証**: 本体側(`ui/showplay.py`・`ui/runner.py`・`ui/remote.py`)の
+  実際の焼き込みジョブ・`show.burn` 進捗報告・古い show file(`slot` なし)の扱いは
+  別のコーダーが並行実装中(このセッションの対象外)。実機(Radxa)での焼き込み所要
+  時間(36 枚 × 10 キューなど)・スロット 0 のオートプレイの実測は未確認のまま
+  (docs/STATUS.md §3 系のメーカー再質問リスト参照)。
+
+**Timeline: 1 秒 gap ルールをレビューで修正 - 本体の準備時間より詰めない(2026-09-24、
+上のエントリにより置き換え済み - 経緯として残す)**
 
 - ディレクターの要望:「Reflesh が終わった後、1 秒後に次のデザインへの refresh に入ることができる
   ようにしたい」。旧ルール `min_interval(boards, refresh) = refresh + boards×0.22 s + 3.0 s`(例:
