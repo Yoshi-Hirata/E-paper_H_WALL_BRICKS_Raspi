@@ -13,7 +13,7 @@ threads and the runner's worker, which owns the serial port:
                     path.
 
   a burn            ui/showplay.py's ShowPlayer.load() writes every
-                    cue of a show into its OWN slot (1..19) up front,
+                    cue of a show into its OWN slot (1..18) up front,
                     once, well before the show runs - see burn() and
                     docs/MERIS_REPLY_3SLOT.pdf: a colour save (0x13), a
                     delay table (0x1F) and a slot's config (0x1B) all
@@ -26,7 +26,15 @@ threads and the runner's worker, which owns the serial port:
                     worker's _fire_at() sends one broadcast "show slot
                     N" at the cue's instant. status()["burn"] is what
                     the PC and the LCD read to show "writing pictures
-                    n/N" before a show can be started.
+                    n/N" before a show can be started. Its "state":
+                    "burning" -> "burned" (all written) or "failed"
+                    (`failed` = [[board, slot], ...] not written - a
+                    burn the worker had to abandon reports what was
+                    left as failed too, so nothing sticks at
+                    "burning"); cancel_burn() turns a burn in progress
+                    into "cancelled". ShowPlayer pairs this with the
+                    show it belongs to and adds "none" (nothing burned
+                    for the loaded show since the unit started).
 
 The monotonic clock is used for fire times because the wall clock can
 step - timesyncd is active on the units whenever they see the internet
@@ -51,7 +59,7 @@ ARRAY_LEN = 64
 TABLE_LEN = 128            # a delay table: 64 sockets x uint16, big-endian
 DEV_NUMBER_BRAND = 0x03    # the layout every UI pattern sends (ui/patterns.py)
 # host/epaper/commands.py's TEST_SLOT: slot 0 is the standby white, a show's
-# cues take 1..19 (conductor/showfile.py), and this is what a manual
+# cues take 1..18 (conductor/showfile.py), and this is what a manual
 # /prepare (the Designs tab) or a demo row's one-shot preview still uses -
 # it is never part of a show's own rotation (docs/MERIS_REPLY_3SLOT.pdf,
 # the pre-burn redesign, 2026-09-24).
@@ -103,6 +111,11 @@ class RemoteSession:
         self.burn_done = 0
         self.burn_total = 0
         self.burn_failed: "list[tuple[int, int]]" = []
+        # True once the worker walked the whole list (burn_finished()):
+        # a "failed" without it is a burn the bus gave up on part way
+        # (failed_with(): no port, bus busy, an exception) whose
+        # `failed` list says nothing about what was never reached.
+        self.burn_complete = False
         self._burn_job: dict | None = None
         self._burn_epoch = 0
 
@@ -117,8 +130,9 @@ class RemoteSession:
                 slot: int = DEFAULT_SLOT) -> None:
         """`delays`: per board, the 128-byte table (64 sockets x uint16,
         big-endian, 10 ms frames) of per-socket start delays that makes
-        the change sweep the garment (written before the colours;
-        boards without one keep what they have).
+        the change sweep the garment (written before the colours; a
+        board without one gets its slot's sweep cleared, once - see
+        ui/runner.py's _save_one()).
 
         Writing here (rather than through a burn) makes the slot's
         content unknown to the burn cache - see ui/runner.py's
@@ -249,6 +263,7 @@ class RemoteSession:
             epoch = self._burn_epoch
             self.burn_state = "burning"
             self.burn_done, self.burn_total, self.burn_failed = 0, total, []
+            self.burn_complete = False
             self._burn_job = {"cues": cues, "dev_type": dev_type, "epoch": epoch}
         if not self.runner.remote and self.runner.start_remote(self) is False:
             with self._lock:
@@ -259,12 +274,16 @@ class RemoteSession:
 
     def cancel_burn(self) -> None:
         """Give up on a burn in progress; what is already written stays
-        written (and the cache still knows it)."""
+        written (and the cache still knows it). The state becomes
+        "cancelled" - never None, which would read as "nothing to worry
+        about" to ShowPlayer's gate and let a half-written show START
+        (review finding F1, 2026-09-25). A burn already burned/failed is
+        left as it is: STOP on a running show must not unsay it."""
         with self._lock:
             self._burn_epoch += 1
             self._burn_job = None
             if self.burn_state == "burning":
-                self.burn_state = None
+                self.burn_state = "cancelled"
         self._wake.set()
 
     def burn_current(self, epoch: int) -> bool:
@@ -286,20 +305,32 @@ class RemoteSession:
             self.burn_failed = list(failed)
 
     def burn_finished(self, epoch: int, failed) -> None:
+        """The worker is done with this burn: `failed` is every (board,
+        slot) not written - refused by the board, absent, or never
+        reached because the worker was taken off the port mid-burn
+        (ui/runner.py's _run_burn() reports the rest that way, so the
+        state never sticks at "burning")."""
         with self._lock:
             if epoch != self._burn_epoch:
                 return
             self.burn_failed = list(failed)
             self.burn_done = self.burn_total
+            self.burn_complete = True
             self.burn_state = "failed" if failed else "burned"
 
     def burn_status(self) -> "dict | None":
+        return self.burn_record()[0]
+
+    def burn_record(self) -> "tuple[dict | None, bool]":
+        """(burn_status(), burn_complete) read in one go - ShowPlayer's
+        gate must not see a "failed" from one instant and the flag from
+        another."""
         with self._lock:
             if self.burn_state is None:
-                return None
-            return {"done": self.burn_done, "total": self.burn_total,
-                    "failed": [list(bs) for bs in self.burn_failed],
-                    "state": self.burn_state}
+                return None, False
+            return ({"done": self.burn_done, "total": self.burn_total,
+                     "failed": [list(bs) for bs in self.burn_failed],
+                     "state": self.burn_state}, self.burn_complete)
 
     # ---- called by the runner's worker ----
 

@@ -21,11 +21,19 @@ a show.
                        reply's status.show.burn already says "burning"
                        with the total, and /show/run refuses until it
                        reads "burned" (or "failed" with only absent
-                       boards involved)
-    POST /show/preset  put the first cue's picture up, before the start
-    POST /show/run     {"t0", "show"}  second 0 of the show, in this
-                       unit's monotonic clock - also RESUME and NEXT,
-                       which are only a moved T0 (ui/showplay.py)
+                       boards involved). status.show.burn is never null
+                       for a loaded show: "burning" / "burned" / "failed"
+                       / "cancelled" (STOP during the burn) / "none"
+                       (nothing burned since the unit restarted) - see
+                       ui/showplay.py's module docstring
+    POST /show/preset  {"force"?}  put the first cue's picture up, before
+                       the start
+    POST /show/run     {"t0", "show", "force"?}  second 0 of the show,
+                       in this unit's monotonic clock - also RESUME and
+                       NEXT, which are only a moved T0 (ui/showplay.py).
+                       force=true (the operator's "START anyway") passes
+                       a burn that failed on a live board, and nothing
+                       else - never "burning", "cancelled" or "none"
     POST /show/hold    stop scheduling; POST /show/stop ends the run
                        (and gives up on a burn still in progress)
 
@@ -64,7 +72,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .remote import DEV_NUMBER_BRAND, RemoteError, RemoteSession
-from .showplay import HOLDING, RUNNING
+from .showplay import HOLDING, LOADED, RUNNING
 
 DEFAULT_PORT = 8787
 MAX_BODY = 4 * 1024 * 1024      # a show: cues x boards x 2 x 128 hex chars
@@ -169,21 +177,28 @@ class _Handler(BaseHTTPRequestHandler):
                 if player is None:
                     raise RemoteError("this unit has no show player")
                 # A demo (never a PC-driven show, is_demo is False for
-                # those) that is RUNNING/HOLDING owns the unit until the
-                # operator stops it locally or the PC sends /show/stop -
-                # load/preset/run must not retime or replace it under
-                # someone's feet; hold/stop still work, since those are
-                # exactly how the PC takes the unit back.
+                # those) that is RUNNING/HOLDING - or still writing its
+                # pictures after KEY1 (LOADED, burn "burning": review
+                # finding F7) - owns the unit until the operator stops
+                # it locally or the PC sends /show/stop - load/preset/run
+                # must not retime or replace it under someone's feet;
+                # hold/stop still work, since those are exactly how the
+                # PC takes the unit back.
                 if (self.path in ("/show/load", "/show/preset", "/show/run")
-                        and player.is_demo
-                        and player.state in (RUNNING, HOLDING)):
-                    raise RemoteError("a show is running - stop it first")
+                        and player.is_demo):
+                    if player.state in (RUNNING, HOLDING):
+                        raise RemoteError("a show is running - stop it first")
+                    burn = (player.status() or {}).get("burn") or {}
+                    if player.state == LOADED and burn.get("state") == "burning":
+                        raise RemoteError("a demo is writing its pictures - "
+                                          "stop it first")
                 if self.path == "/show/load":
                     player.load(body)
                 elif self.path == "/show/preset":
-                    player.preset()
+                    player.preset(bool(body.get("force", False)))
                 elif self.path == "/show/run":
-                    player.run(float(body["t0"]), body.get("show"))
+                    player.run(float(body["t0"]), body.get("show"),
+                               bool(body.get("force", False)))
                 elif self.path == "/show/hold":
                     player.hold()
                 elif self.path == "/show/stop":
