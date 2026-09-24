@@ -12,6 +12,14 @@
  * `state`; `renderThumbs(view, t, ctx)` / `updateThumbColors(t, view, ctx)` take
  * a `ctx = {cuesOf, palette}` bag instead of reading `state.show.cues` /
  * `state.palette` globally, and pass it straight through to SIM.flicker.wornAt.
+ *
+ * One more deliberate departure while porting index.html's own string
+ * comparisons here: `a.item < b.item ? -1 : a.item > b.item ? 1 : 0`, not
+ * `a.item.localeCompare(b.item)`. plan_designer_sim.md §2.2 bans
+ * localeCompare/Intl in the ported model (it must sort exactly like
+ * Python's `<`/`>`, which compare by code point); this file is not part of
+ * that ported model, but item names come from it, so it keeps the same
+ * comparator for one consistent order everywhere an item list is sorted.
  */
 (function () {
   "use strict";
@@ -24,7 +32,13 @@
   function lookGroups(items) {
     const groups = new Map();
     for (const item of items) {
-      const key = item.look ? "L" + item.look : "I" + item.item;
+      // Normalised, not the raw string (adversarial review, 2026-09-25):
+      // "22" and "022" are the same LOOK number to a designer typing into
+      // the sidebar's plain text field, and used to land in two separate
+      // groups here.
+      const lookNum = Number(item.look);
+      const lookKey = item.look ? (Number.isFinite(lookNum) ? String(lookNum) : item.look) : null;
+      const key = lookKey ? "L" + lookKey : "I" + item.item;
       if (!groups.has(key)) groups.set(key, { look: item.look || null, items: [] });
       groups.get(key).items.push(item);
     }

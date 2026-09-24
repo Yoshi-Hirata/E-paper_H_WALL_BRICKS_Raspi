@@ -162,9 +162,13 @@ def main():
     for old in STARTER_DIR.glob("*.csv"):
         if old.name not in files:
             old.unlink()
+    # write_bytes, not write_text(..., newline="\n") - that parameter needs
+    # Python 3.10+ and this repo promises 3.9 (plan_designer_sim.md: "Python
+    # 3.9 stdlib"). Every string here is already "\n"-only, so encoding
+    # straight to bytes is exact and platform-independent.
     for name, text in files.items():
-        (STARTER_DIR / name).write_text(text, encoding="utf-8", newline="\n")
-    STARTER_JS.write_text(js_text, encoding="utf-8", newline="\n")
+        (STARTER_DIR / name).write_bytes(text.encode("utf-8"))
+    STARTER_JS.write_bytes(js_text.encode("utf-8"))
     print(f"make_starter: wrote {len(files)} CSV(s) to {STARTER_DIR} and {STARTER_JS}")
     return 0
 

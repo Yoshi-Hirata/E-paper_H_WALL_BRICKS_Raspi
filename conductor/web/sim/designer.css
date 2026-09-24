@@ -37,8 +37,6 @@ button:disabled { opacity: .4; cursor: default; border-color: var(--line); }
 .tabs button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
 .tabs button:last-child { border-radius: 0 6px 6px 0; }
 main { display: grid; grid-template-columns: 290px 1fr; min-height: calc(100vh - 50px); }
-main.wide { grid-template-columns: 1fr; }
-main.wide aside { display: none; }
 aside { background: var(--panel); border-right: 1px solid var(--line); padding: 12px; }
 aside h2, .card h2 { font-size: 11px; letter-spacing: .1em; color: var(--dim);
   margin: 14px 0 6px; font-weight: 600; }
@@ -58,7 +56,11 @@ aside h2, .card h2 { font-size: 11px; letter-spacing: .1em; color: var(--dim);
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
 .dot.none { background: var(--line); }
-#content { padding: 14px 18px 40px; min-width: 0; }
+/* --tl-dock-h is measured and kept current by designer-app.js's
+   syncDockHeight() (0px whenever the fixed dock is hidden) - without this,
+   the dock (position:fixed, bottom:0) permanently covers the last ~220px of
+   the Timeline tab's own content. */
+#content { padding: 14px 18px calc(40px + var(--tl-dock-h, 0px)); min-width: 0; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin-bottom: 10px; }
 .group { display: flex; gap: 4px; align-items: center; min-width: 0; max-width: 100%; }
 .group select { flex: 1 1 auto; min-width: 0; max-width: 100%; }
@@ -182,10 +184,6 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
   #tl-editor-card .cue-row .why { grid-column: 2; margin-top: -2px; }
   #tl-editor-card .cue-computed { grid-column: 2; }
 }
-.card-head-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
-.card-head-toggle h2 { margin: 0; }
-.card-head-toggle:hover h2 { color: var(--accent); }
-.card-head-toggle .chev { border: 0; background: transparent; color: var(--dim); font-size: 13px; padding: 0 2px; line-height: 1; }
 #tl-dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
   background: var(--panel); border-top: 1px solid var(--line); padding: 6px 18px; }
 .tl-dock-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -193,11 +191,6 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .tl-dock-title b { font-size: 13px; letter-spacing: normal; color: var(--ink); font-weight: 600;
   font-variant-numeric: tabular-nums; margin-left: 6px; }
 #tl-dock .thumbs { margin-top: 6px; }
-#tl-dock-handle { position: absolute; left: 0; right: 0; top: 0; height: 6px; cursor: ns-resize;
-  display: flex; align-items: center; justify-content: center; touch-action: none; }
-#tl-dock-handle::before { content: ""; width: 44px; height: 3px; border-radius: 2px;
-  background: var(--line); transition: background .15s, width .15s; }
-#tl-dock-handle:hover::before, #tl-dock-handle.dragging::before { background: var(--accent); width: 64px; }
 
 /* ---- Help tab (Japanese) ---- */
 .help { max-width: 780px; }

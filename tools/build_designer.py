@@ -11,16 +11,23 @@ tags inside the inlined text are escaped rather than parsed around.
 
 Two tags are treated specially, both on purpose:
   * a script carrying `data-stub="dev-only"` (conductor/web/sim/model.stub.js,
-    Coder P's real model.js/state.js not landed yet during solo development)
-    is never inlined - the stub must not ship (plan_designer_sim.md §6).
+    a throwaway stand-in used only while Coder P's real model.js/state.js
+    were not yet on this branch) is never inlined - the stub must not ship
+    (plan_designer_sim.md §6). designer.html no longer references one, but
+    the guard stays: a stray future stub script must still never ship
+    silently.
   * `sim/starter.js` (the committed CSVs) is skipped when --no-starter is
     given - "the way out" the plan asks for, for a build without the ~ hundred
     KB of starter data.
 
-After assembly the output is checked for self-containment (no http(s)://, no
-<link, no non-data src anywhere) and for the 2 MB size budget; both failures
-abort the build. --check rebuilds into memory and diffs against the
-committed dist file without writing anything (tests/test_designer_build.py).
+After assembly the output is checked for self-containment (no http(s):// URL,
+no @import, no <link>, no external src/srcset anywhere but the one named
+exception below) and for the 2 MB size budget, and every inlined file is
+scanned for stray control characters (a literal NUL or similar has no
+business inside HTML/CSS/JS text and is refused with the offending file and
+line number); all three abort the build. --check rebuilds into memory and
+diffs against the committed dist file without writing anything
+(tests/test_designer_build.py).
 
 Usage: build_designer.py [--source PATH] [--out PATH] [--no-starter] [--check]
 """
@@ -35,7 +42,20 @@ DEFAULT_OUT = REPO / "dist" / "az27ss-simulator.html"
 SIZE_BUDGET = 2 * 1024 * 1024
 
 LINK_RE = re.compile(r'<link\b([^>]*?)href="([^"]+)"([^>]*?)/?>', re.IGNORECASE)
-SCRIPT_RE = re.compile(r'<script\b([^>]*?)src="([^"]+)"([^>]*?)></script>', re.IGNORECASE)
+# src accepts a quoted (single or double) or bare (no space, no ">") value -
+# `\bsrc="..."` alone missed e.g. <script src=sim/foo.js> (technically legal
+# HTML, and cheap for a hostile or careless edit to slip past a quote-only
+# check unnoticed).
+SRC_VALUE = r'src\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)'
+SCRIPT_RE = re.compile(r'<script\b([^>]*?)' + SRC_VALUE + r'([^>]*?)></script>', re.IGNORECASE)
+CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+SVG_XMLNS_RE = re.compile(r'xmlns\s*=\s*"http://www\.w3\.org/2000/svg"')
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
 
 
 def _refuse_if_unsafe(path: str, tag: str):
@@ -45,12 +65,40 @@ def _refuse_if_unsafe(path: str, tag: str):
         raise ValueError(f"{tag} references a path outside its folder: {path!r}")
 
 
+def _refuse_control_chars(text: str, name: str):
+    m = CONTROL_RE.search(text)
+    if not m:
+        return
+    line = text.count("\n", 0, m.start()) + 1
+    col = m.start() - text.rfind("\n", 0, m.start())
+    raise ValueError(
+        f"{name}:{line}:{col}: contains a stray control character "
+        f"(0x{ord(m.group()):02x}) - not safe to inline into HTML/JS text "
+        f"(fix the source file; a JS string separator should use a plain "
+        f"printable character, never a raw control byte)")
+
+
 def _escape_close(text: str, tag: str) -> str:
     # </script> or </style> inside the inlined text would end the wrapping
     # tag early; neither CSS nor JS legitimately contains that sequence
     # outside a string, and even there this keeps the browser's parser from
     # ever seeing it.
     return re.sub(r"</(" + tag + r")", r"<\\/\1", text, flags=re.IGNORECASE)
+
+
+def _escape_script_hazards(text: str) -> str:
+    # Beyond the plain </script> case above: HTML5's script-parsing state
+    # machine enters "script data double escaped" the moment it sees a
+    # literal "<!--" followed later by a literal "<script" INSIDE a script
+    # element - and once there, a single "</script" (even one this file
+    # already escaped as a distinct string) no longer closes the element on
+    # its own. Escaping "<!--" and "<script" too means that state can never
+    # be entered in the first place, so the earlier </script> escaping stays
+    # sufficient no matter what the inlined JS happens to contain.
+    text = _escape_close(text, "script")
+    text = re.sub(r"<!--", r"<\\!--", text)
+    text = re.sub(r"<script", r"<\\script", text, flags=re.IGNORECASE)
+    return text
 
 
 COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -71,11 +119,13 @@ def build(source: Path, no_starter: bool) -> "tuple[str, list[tuple[str, int]]]"
             return m.group(0)
         _refuse_if_unsafe(href, "<link>")
         text = (base / href).read_text(encoding="utf-8")
+        _refuse_control_chars(text, href)
         sizes.append((href, len(text.encode("utf-8"))))
         return f"<style>{_escape_close(text, 'style')}</style>"
 
     def inline_script(m: "re.Match") -> str:
-        pre, src, post = m.groups()
+        pre, raw_src, post = m.groups()
+        src = _unquote(raw_src)
         attrs = pre + post
         if "data-stub" in attrs.lower():
             return ""          # the dev-only stub never ships (see module docstring)
@@ -83,8 +133,9 @@ def build(source: Path, no_starter: bool) -> "tuple[str, list[tuple[str, int]]]"
             return ""
         _refuse_if_unsafe(src, "<script>")
         text = (base / src).read_text(encoding="utf-8")
+        _refuse_control_chars(text, src)
         sizes.append((src, len(text.encode("utf-8"))))
-        return f"<script>{_escape_close(text, 'script')}</script>"
+        return f"<script>{_escape_script_hazards(text)}</script>"
 
     html = LINK_RE.sub(inline_link, html)
     html = SCRIPT_RE.sub(inline_script, html)
@@ -95,15 +146,30 @@ def check_self_contained(html: str):
     # The one allowed exception: the SVG XML namespace URI
     # (xmlns="http://www.w3.org/2000/svg", verbatim from index.html's own
     # renderGarment() - see render.js's header) is an XML namespace name, not
-    # a network resource; nothing ever fetches it.
-    stripped = html.replace("http://www.w3.org/2000/svg", "")
+    # a network resource; nothing ever fetches it. Anchored to the exact
+    # attribute form (not a blanket string removal) so this can never mask a
+    # genuine external reference that merely contains the same substring.
+    stripped = SVG_XMLNS_RE.sub("", html)
     if re.search(r'https?://', stripped):
         raise ValueError("build is not self-contained: an http(s):// URL remains")
+    if re.search(r'@import\s+(url\(|["\'])', html, re.IGNORECASE):
+        raise ValueError("build is not self-contained: a CSS @import remains")
     if re.search(r'<link\b', html, re.IGNORECASE):
         raise ValueError("build is not self-contained: a <link> tag remains")
-    for m in re.finditer(r'\bsrc="([^"]*)"', html, re.IGNORECASE):
-        if not m.group(1).startswith("data:"):
-            raise ValueError(f"build is not self-contained: external src={m.group(1)!r} remains")
+    # Scoped to an actual HTML tag (<tagname ... >), not just "src=" or
+    # "srcset=" anywhere in the file - the inlined JS legitimately contains
+    # plain assignments like `player.src = url;` (transport.js), which is
+    # code, not a tag attribute, and must not trip this check.
+    TAG_RE = re.compile(r'<[a-zA-Z][a-zA-Z0-9-]*\b[^>]*>')
+    for m in TAG_RE.finditer(html):
+        tag = m.group(0)
+        if re.search(r'\bsrcset\s*=', tag, re.IGNORECASE):
+            raise ValueError(f"build is not self-contained: a srcset attribute remains ({tag[:80]!r})")
+        src_m = re.search(SRC_VALUE, tag, re.IGNORECASE)
+        if src_m:
+            value = _unquote(src_m.group(1))
+            if not value.startswith("data:"):
+                raise ValueError(f"build is not self-contained: external src={value!r} remains")
 
 
 def main():
@@ -139,7 +205,11 @@ def main():
         return 0
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(html, encoding="utf-8", newline="\n")
+    # write_bytes, not write_text(..., newline="\n") - that parameter needs
+    # Python 3.10+ and this tool promises 3.9 (plan_designer_sim.md: "Python
+    # 3.9 stdlib"). `html` only ever contains "\n" (every source file it
+    # reads is itself LF-only), so encoding straight to bytes is exact.
+    args.out.write_bytes(html.encode("utf-8"))
     return 0
 
 

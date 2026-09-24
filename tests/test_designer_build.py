@@ -7,7 +7,9 @@ this file is safe to run before those land, and starts actually checking
 things the moment they do.
 """
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -113,18 +115,96 @@ def _strip_comments(text: str, html: bool) -> str:
     if html:
         return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return re.sub(r"(?m)//.*$", "", text)
+    text = re.sub(r"(?m)//.*$", "", text)
+    # displayCheck()'s own `dirty` fixture array (designer-app.js) is a set
+    # of DELIBERATELY dirty strings copied from the Python templates, fed
+    # straight into deJargon() to prove it scrubs them - never displayed
+    # verbatim, so they are not "vocabulary reaching the UI" and would
+    # otherwise be a permanent false positive here.
+    text = re.sub(r"const dirty = \[.*?\];", "const dirty = [];", text, flags=re.DOTALL)
+    # displayCheck()'s own banned-word regex literal - the pattern it tests
+    # WITH, not a string that reaches the screen.
+    text = re.sub(r"const banned = /.*?/i;", "const banned = /x/i;", text)
+    # `show.boards` / `project.show.boards` / a bare `boards:` property name
+    # is the bundle schema's own field (plan §4.2: "boards": {} - a board-
+    # renumbering map the designer never sees or edits, always {} here) -
+    # a JS identifier, not UI prose. Blank it the same way property access
+    # generally would not count as "vocabulary reaching the UI".
+    text = re.sub(r"\.boards\b", ".X", text)
+    text = re.sub(r"\bboards\s*:", "X:", text)
+    text = re.sub(r'"boards"', '"X"', text)
+    return text
 
 
-def test_no_unit_vocabulary_in_designer_files():
+def test_no_unit_vocabulary_hardcoded_in_designer_source():
     # plan_designer_sim.md: "no unit/radxa/bus/board/DIP/socket vocabulary
-    # anywhere in the designer UI". Checked on the literal UI strings we
-    # write ourselves (comments may still explain the rule in those words);
-    # SIM.look/timeline problem-string *content*, and sequence LABELS ported
-    # verbatim from conductor/sequence.py (e.g. "Socket order (P01 to P60)"),
-    # are P's model layer and explicitly untouched (plan §3.6).
-    banned = re.compile(r"\b(radxa|dip switch|dip id|socket|the bus of)\b", re.IGNORECASE)
+    # anywhere in the designer UI". This is the cheap half of that check: the
+    # literal UI strings this page authors itself (comments may still
+    # explain the rule in those words). It cannot see a word that only shows
+    # up at runtime - e.g. the "natural" sequence's real label
+    # ("Socket order (P01 to P60)", ported verbatim from
+    # conductor/sequence.py, never hardcoded here) unless the display
+    # override that hides it (designer-app.js's seqLabel()) is actually
+    # wired up - see test_banned_vocabulary_never_reaches_rendered_ui below
+    # for that half (adversarial review, 2026-09-25: this test alone passed
+    # while the rendered Transition dropdown still said "Socket order").
+    banned = re.compile(r"\b(unit|units|radxa|bus|buses|board|boards|dip|socket|sockets)\b", re.IGNORECASE)
     for name, html in (("designer.html", True), ("sim/designer-app.js", False), ("sim/designer.css", False)):
         text = _strip_comments((REPO / "conductor" / "web" / name).read_text(encoding="utf-8"), html)
         hit = banned.search(text)
         assert not hit, f"{name} contains banned vocabulary: {hit.group(0)!r}"
+
+
+def _find_browser() -> "str | None":
+    env = os.environ.get("CONDUCTOR_BROWSER")
+    candidates = [env] if env else []
+    candidates += [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        shutil.which("msedge"), shutil.which("microsoft-edge"),
+        shutil.which("google-chrome"), shutil.which("chrome"),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _dump_dom(url: str, tmp_path: Path) -> str:
+    browser = _find_browser()
+    if not browser:
+        return None
+    user_data_dir = tmp_path / "user-data"
+    args = [browser, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+            f"--user-data-dir={user_data_dir}", "--virtual-time-budget=20000", "--dump-dom", url]
+    result = subprocess.run(args, capture_output=True, timeout=60)
+    return result.stdout.decode("utf-8", errors="replace")
+
+
+def test_banned_vocabulary_never_reaches_rendered_ui(tmp_path):
+    # The dynamic half of the check above: runs the REAL built page
+    # (dist/az27ss-simulator.html, the same artefact a designer double-
+    # clicks) with #displaycheck, which drives designer-app.js's own
+    # deJargon()/seqLabel() against dirty strings copied verbatim from the
+    # conductor/look.py and conductor/timeline.py f-string templates that
+    # produce them, and against every real SIM.sequence.LABELS entry - see
+    # displayCheck() in designer-app.js for exactly what it checks.
+    forced = os.environ.get("CONDUCTOR_BROWSER_TESTS") == "1"
+    if not _find_browser():
+        if forced:
+            pytest.fail("CONDUCTOR_BROWSER_TESTS=1 but no browser was found "
+                       "(set $CONDUCTOR_BROWSER to its path)")
+        pytest.skip("no Edge/Chrome found - set CONDUCTOR_BROWSER_TESTS=1 to force")
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    url = "file:///" + str(DIST.resolve()).replace("\\", "/") + "#displaycheck"
+    dom = _dump_dom(url, tmp_path)
+    match = re.search(r'data-ok="(true|false)" data-total="(\d+)" data-failed="(\d+)"', dom)
+    assert match, f"no #displaycheck-out found in the dumped DOM:\n{dom[:3000] if dom else dom}"
+    ok, total, failed = match.group(1), int(match.group(2)), int(match.group(3))
+    if ok != "true":
+        detail = re.search(r'<pre id="displaycheck-out"[^>]*>(.*?)</pre>', dom, re.S)
+        pytest.fail(f"banned vocabulary reached the rendered UI ({failed}/{total}):\n"
+                   f"{detail.group(1) if detail else dom[:3000]}")
+    assert total > 0

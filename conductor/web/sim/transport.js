@@ -86,6 +86,14 @@
       player.pause();
       if (playerUrl) player.currentTime = 0;
       playhead = 0;
+      // Unconditionally, not just in the no-music branch (adversarial
+      // review, 2026-09-25): Stop pressed mid-drag (or called
+      // programmatically while a scrub was outstanding) used to leave
+      // `seeking` true forever, since nothing else was going to clear it -
+      // tick() checks that flag on every frame and would have refused to
+      // move the playhead again until the next manual drag happened to
+      // finish cleanly.
+      seeking = false;
       cfg.onPlayingChange(false);
       updatePlayheadDom(0);
       cfg.onThumbTick(0);
@@ -153,7 +161,14 @@
       phDrag = null;
       const t = playhead;
       if (playerUrl) player.currentTime = t;
-      else { if (playing) { anchor = performance.now(); startT = t; } seeking = false; }
+      else if (playing) { anchor = performance.now(); startT = t; }
+      // Unconditionally (adversarial review, 2026-09-25), not only in the
+      // no-music branch: the playerUrl branch was relying on the audio
+      // element's own "seeked" event to clear this later, but a seek to a
+      // currentTime the element already coalesces away (or a src that never
+      // finished loading) can simply never fire it - tick() would then
+      // refuse to advance the playhead again for the rest of the session.
+      seeking = false;
     }
     function cancelDrag() { phDrag = null; seeking = false; }
 

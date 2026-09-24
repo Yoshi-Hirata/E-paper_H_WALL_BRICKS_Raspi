@@ -16,6 +16,16 @@
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // Cue ids are strings on the model side (timeline.py:241's
+  // str(raw.get("id") or f"c{len(result)}")[:40], ported as-is by
+  // model.js's clean()) but this page's own addCue() used to hand back a
+  // bare JS number, and several places compared with `===` or wrapped one
+  // side in Number(...) - either way a real id ("2") never matched a
+  // stray-typed one (2), so EDIT CUE/selection/drag silently never found
+  // their cue (adversarial review, 2026-09-25). Compare through this
+  // helper everywhere, never bare `===` or Number(...), regardless of which
+  // side happens to be a string today.
+  const sameId = (a, b) => String(a) === String(b);
   const PROJECT_KEY = "az27ss.project.v1";
   const UI_KEY = "az27ss.ui.v1";
   const MAX_PROJECT_BYTES = 4 * 1024 * 1024;
@@ -62,12 +72,28 @@
     autosaveTimer = setTimeout(() => {
       try {
         const text = JSON.stringify(project);
-        if (text.length > MAX_PROJECT_BYTES) {
-          if (!autosaveWarned) { autosaveWarned = true; toast("This project is too large to autosave (" + fmtSize(text.length) + ") - use Save project… to keep a copy."); }
+        // Bytes, not JS string length (adversarial review, 2026-09-25): a
+        // .length count under-measures anything outside the Latin-1 range
+        // (design/model names, the Japanese Help text never lands in the
+        // project, but a designer's own typed model number might) - the
+        // 4 MB figure this compares against, and the one localStorage
+        // itself enforces, are both a byte budget.
+        const bytes = new Blob([text]).size;
+        if (bytes > MAX_PROJECT_BYTES) {
+          if (!autosaveWarned) { autosaveWarned = true; toast("This project is too large to autosave (" + fmtSize(bytes) + ") - use Save project… to keep a copy."); }
           return;
         }
         localStorage.setItem(PROJECT_KEY, text);
-      } catch {}
+      } catch (e) {
+        // A quota error, localStorage disabled (Safari on file://, a
+        // private window), or any other access failure: silently doing
+        // nothing here used to mean the designer's edits looked saved but
+        // never were (adversarial review, 2026-09-25) - say so, once.
+        if (!autosaveWarned) {
+          autosaveWarned = true;
+          toast("This browser is not keeping an autosaved copy - use Save project… to keep one.");
+        }
+      }
     }, 800);
   }
   function persist() { scheduleAutosave(); saveUiPrefs(); }
@@ -75,6 +101,19 @@
   function fmtSize(bytes) {
     const mb = bytes / (1024 * 1024);
     return mb >= 1 ? mb.toFixed(1) + " MB" : Math.max(1, Math.round(bytes / 1024)) + " KB";
+  }
+  const pad2 = n => String(n).padStart(2, "0");
+  // conductor/server.py's export_show() stamps "exported" with
+  // datetime.now().isoformat(timespec="seconds") - local time, no "Z" (the
+  // machine's own clock, not UTC). exportBundle() used to call
+  // toISOString(), which is UTC (adversarial review, 2026-09-25: it also
+  // disagreed with this same function's own download filename, which was
+  // already local time) - built from local parts the same way, it now
+  // matches both.
+  function localIso(d) {
+    d = d || new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T` +
+           `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
   }
   function toast(text) {
     const t = $("#toast"); t.textContent = text; t.style.display = "block";
@@ -90,6 +129,11 @@
       const item = state.items.find(i => i.item === ui.item);
       if (!item.designs.some(d => d.name === ui.design)) ui.design = item.designs[0]?.name ?? null;
     }
+    // Same pruning as ui.item/ui.design just above (index.html:1864 does the
+    // same for its own selection state): a cue deleted, or one whose id
+    // changed shape under an Open project/self-test, must not leave EDIT CUE
+    // pointed at nothing.
+    if (ui.cue !== null && !state.show.cues.some(c => sameId(c.id, ui.cue))) ui.cue = null;
     render();
   }
 
@@ -107,6 +151,79 @@
       const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
       return " on " + (it && it.look ? "LOOK " + it.look : name);
     });
+  }
+  // Adversarial review (2026-09-25): labelize() only ever rewrote the one
+  // "on (<item>)" bus fallback - real problem/warning strings ported
+  // verbatim from conductor/look.py and conductor/timeline.py still say
+  // things like "(board 12 socket 7)", "23 boards, but one unit drives at
+  // most 60", "writing its 12 boards needs 3.2 s", "the unit may still be
+  // rejoining…". Those model strings must stay byte-identical to Python (the
+  // goldens compare them) - so this is a DISPLAY-ONLY word swap, applied
+  // after labelize() at every place a model string reaches the screen
+  // (problems, warnings, toasts - see clean() and toast() below), never
+  // touching SIM.* itself. Plain word substitution, not a rewording: the
+  // numbers and sentence structure stay exactly as Python phrased them.
+  function deJargon(msg) {
+    return String(msg)
+      .replace(/\bunits\b/gi, "garments").replace(/\bunit\b/gi, "garment")
+      .replace(/\bboards\b/gi, "segments").replace(/\bboard\b/gi, "segment")
+      .replace(/\bsockets\b/gi, "positions").replace(/\bsocket\b/gi, "position")
+      .replace(/\bbus(es)?\b/gi, "shared line")
+      .replace(/\bdip\b/gi, "").replace(/\bradxa\b/gi, "controller")
+      .replace(/[ \t]{2,}/g, " ").trim();
+  }
+  const clean = msg => deJargon(labelize(msg));
+  // The "natural" sequence's real label, ported verbatim from
+  // conductor/sequence.py's LABELS ("Socket order (P01 to P60)"), is exactly
+  // the kind of string plan_designer_sim.md §3 bans from this UI - unlike
+  // the problem/warning text above, deJargon()'s word-for-word swap would
+  // read badly here ("position order (P01 to P60)"), so this one sequence
+  // gets an outright display override instead; the other five labels
+  // ("Top to bottom" etc.) already carry no banned vocabulary and pass
+  // through untouched. SIM.sequence.LABELS itself is never modified - the
+  // override lives only in how this page prints it.
+  function seqLabel(s) { return s.id === "natural" ? "Default (as wired)" : s.label; }
+  // A tiny, deterministic self-check a headless browser can run without any
+  // UI (tests/test_designer_build.py::test_banned_vocabulary_never_reaches_ui
+  // drives this): representative dirty strings copied verbatim from the
+  // Python f-string templates that generate them (conductor/look.py,
+  // conductor/timeline.py), asserting deJargon()/seqLabel() scrub every
+  // banned word while leaving the numbers intact.
+  function displayCheck() {
+    const dirty = [
+      "(board 12 socket 7)",
+      "17: 4 boards, but one unit drives at most 60",
+      "only 2.0 s after the previous send on (AZ271SD1301); writing its 12 boards needs 3.2 s (12 × 0.20 s + 1.0 s)",
+      "only 1.0 s after the previous send on (AZ271SD1301); the unit may still be rejoining and needs at least 9.0 s",
+      "9 boards on one unit, but a bus holds at most 8",
+      "board 7 is in both front row 3 and back row 9",
+    ];
+    const banned = /\b(unit|units|radxa|bus|buses|board|boards|dip|socket|sockets)\b/i;
+    const failures = [];
+    for (const msg of dirty) {
+      const got = deJargon(msg);
+      if (banned.test(got)) failures.push(`deJargon(${JSON.stringify(msg)}) -> ${JSON.stringify(got)} still has banned vocabulary`);
+    }
+    const seqs = (globalThis.SIM.sequence && globalThis.SIM.sequence.LABELS) || {};
+    Object.keys(seqs).forEach(id => {
+      const got = seqLabel({ id, label: seqs[id] });
+      if (banned.test(got)) failures.push(`seqLabel(${id}) -> ${JSON.stringify(got)} still has banned vocabulary`);
+    });
+    const result = { ok: failures.length === 0, total: dirty.length + Object.keys(seqs).length, failed: failures.length, failures };
+    try {
+      let pre = document.getElementById("displaycheck-out");
+      if (!pre) { pre = document.createElement("pre"); pre.id = "displaycheck-out"; document.body.appendChild(pre); }
+      pre.setAttribute("data-ok", String(result.ok));
+      pre.setAttribute("data-total", String(result.total));
+      pre.setAttribute("data-failed", String(result.failed));
+      pre.textContent = JSON.stringify(result, null, 1);
+    } catch {}
+    return result;
+  }
+  globalThis.__displaycheck = displayCheck;
+  if (typeof document !== "undefined" && /#displaycheck/.test(location.hash)) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", displayCheck);
+    else displayCheck();
   }
   const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : i.item;
   const itemFull = i => !i ? "" : [i.look ? "LOOK " + i.look : "", i.model].filter(Boolean).join(" · ") || i.item;
@@ -192,7 +309,7 @@
   const SEQ_OPTIONS = () => state.sequences;
   function transitionControl(name, tr) {
     return `<select data-tr-seq="${esc(name)}">${SEQ_OPTIONS().map(s =>
-        `<option value="${esc(s.id)}" ${s.id === tr.sequence ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
+        `<option value="${esc(s.id)}" ${s.id === tr.sequence ? "selected" : ""}>${esc(seqLabel(s))}</option>`).join("")}</select>
       <span ${tr.sequence === "natural" ? 'style="display:none"' : ""}><input type="text" data-tr-span="${esc(name)}" size="4" value="${tr.span_s}"> s</span>`;
   }
   function renderDesigns() {
@@ -201,7 +318,7 @@
     if (!item) { root.innerHTML = `<div class="empty">Drop the garment's map and design CSV files here (or use Add CSV above) to begin.</div>`; return; }
     if (!item.map || !item.map.scales.length) {
       root.innerHTML = `<div class="card"><h2>${esc(itemFull(item))}</h2>
-        <ul class="problems">${item.problems.map(p => `<li>${esc(labelize(p))}</li>`).join("") || "<li>no map CSV</li>"}</ul></div>`;
+        <ul class="problems">${item.problems.map(p => `<li>${esc(clean(p))}</li>`).join("") || "<li>no map CSV</li>"}</ul></div>`;
       return;
     }
     const design = item.designs.find(d => d.name === ui.design) || null;
@@ -230,9 +347,10 @@
         <div>
           <div class="card"><h2>CHECK</h2>
             ${problems.length
-              ? `<ul class="problems">${problems.slice(0, 60).map(p => `<li>${esc(labelize(p))}</li>`).join("")}</ul>`
+              ? `<ul class="problems">${problems.slice(0, 60).map(p => `<li>${esc(clean(p))}</li>`).join("")}</ul>`
               : `<div class="okline">✓ No problems — ${item.map.scales.length} scales${design ? ` / design ${Object.keys(design.colors).length} coloured` : ""}</div>`}
             ${kind === "partial" ? `<div class="warn">A partial design: some scales are left "-" or uncoloured and keep whatever they already show. Fine as a partial cue on the Timeline.</div>` : ""}
+            ${(item.map.warnings || []).map(w => `<div class="warn">⚠ ${esc(clean(w))}</div>`).join("")}
           </div>
           <div class="card"><h2>DESIGNS OF THIS ITEM (${item.designs.length})</h2>
             <div class="dsg-list">${item.designs.map(d => {
@@ -298,7 +416,7 @@
             ${design ? `<span style="display:inline-flex;gap:8px;align-items:center;margin-left:4px">${transitionControl(cue.design, designTr)}</span>` : ""}</label>
           <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-custom" ${transitionMode === "custom" ? "checked" : ""}> this cue only
             <select id="cue-seq" ${transitionMode !== "custom" ? "disabled" : ""}>${SEQ_OPTIONS().map(s =>
-              `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select>
+              `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(seqLabel(s))}</option>`).join("")}</select>
             <span ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}><input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" ${transitionMode !== "custom" ? "disabled" : ""}> s</span></label>
         </div><div class="why"></div></div>
       <div class="cue-computed">Picture complete at ${clockShort(cue.complete)} (Start + ${refr.value.toFixed(1)} s refresh${sweep.span_s > 0 ? ` + ${sweep.span_s.toFixed(1)} s sweep` : ""})</div>
@@ -307,7 +425,7 @@
       <div class="cue-design"><label>Design <select id="cue-design">${(item?.designs || []).map(d =>
         `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))}</option>`).join("")}</select></label>
         <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label></div>
-      ${(cue.problems || []).length ? `<ul class="problems">${cue.problems.map(p => `<li>${esc(labelize(p))}</li>`).join("")}</ul>` : ""}
+      ${(cue.problems || []).length ? `<ul class="problems">${cue.problems.map(p => `<li>${esc(clean(p))}</li>`).join("")}</ul>` : ""}
     </div>`;
     wireMmss("cue-start", sec => globalThis.SIM.app.updateCue(cue.id, { at: sec }));
     wireMmss("cue-end", sec => globalThis.SIM.app.updateCue(cue.id, { end: sec }));
@@ -341,8 +459,8 @@
         const bandW = pct(Math.max(0, cue.complete - cue.at));
         const holdX = pct(cue.complete), holdW = pct(Math.max(0, cue.end - cue.complete));
         const bad = (cue.problems || []).length > 0;
-        return `<div class="cue-band ${cue.id === ui.cue ? "sel" : ""}" data-cue="${cue.id}" style="left:${pct(cue.at)};width:${bandW}"></div>
-          <div class="cue-hold ${bad ? "bad" : ""} ${cue.id === ui.cue ? "sel" : ""}" data-cue="${cue.id}" data-drag="${cue.at <= 0 ? "0" : "1"}"
+        return `<div class="cue-band ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${cue.id}" style="left:${pct(cue.at)};width:${bandW}"></div>
+          <div class="cue-hold ${bad ? "bad" : ""} ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${cue.id}" data-drag="${cue.at <= 0 ? "0" : "1"}"
             style="left:${holdX};width:${holdW}" title="${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}">${cue.at <= 0 ? "PRESET · " : ""}${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}</div>`;
       }).join("");
       return `<div class="tl-row"><div class="tl-name">${esc(itemName(item))}<small>${esc(item.model || "")}</small></div>
@@ -357,6 +475,16 @@
     for (let t = 0; t <= D; t += step) html += `<i style="left:${(100 * t / D).toFixed(3)}%"></i><span style="left:${(100 * t / D).toFixed(3)}%">${clockShort(t)}</span>`;
     return html;
   }
+  // index.html:1051's reference: the show's own warnings (overlap/sweep/
+  // preset notes that timeline.validate() emits) were never surfaced on
+  // this page at all (adversarial review, 2026-09-25) - shown once, above
+  // the cue table, same treatment (labelize+deJargon) as every other
+  // model-generated string.
+  function warningsBlock() {
+    const warnings = state.show.warnings || [];
+    if (!warnings.length) return "";
+    return `<div class="card">${warnings.map(w => `<div class="warn">⚠ ${esc(clean(w))}</div>`).join("")}</div>`;
+  }
   function minIntervalTable() {
     const rows = Object.entries(state.show.min_interval || {}).filter(([, v]) => v !== null && v !== undefined);
     if (!rows.length) return "";
@@ -370,9 +498,10 @@
     return `<table><thead><tr><th>START</th><th>COMPLETE</th><th>END</th><th>ITEM</th><th>DESIGN</th><th>TRANSITION</th><th>STATUS</th></tr></thead><tbody>
       ${rows.map(c => {
         const item = state.items.find(i => i.item === c.item);
-        const tr = c.transition === "custom" ? (SEQ_OPTIONS().find(s => s.id === (c.sequence || "natural"))?.label || c.sequence) : "design default";
+        const trSeq = SEQ_OPTIONS().find(s => s.id === (c.sequence || "natural"));
+        const tr = c.transition === "custom" ? (trSeq ? seqLabel(trSeq) : c.sequence) : "design default";
         const status = (c.problems || []).length ? `<span style="color:var(--err)">${c.problems.length} problem${c.problems.length === 1 ? "" : "s"}</span>` : '<span class="okline">OK</span>';
-        return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}">
+        return `<tr class="pick ${sameId(c.id, ui.cue) ? "hl" : ""}" data-cue="${c.id}">
           <td>${clockShort(c.at)}</td><td>${clockShort(c.complete)}</td><td>${clockShort(c.end)}</td>
           <td>${esc(itemName(item))}</td><td>${esc(designLabel(item?.designs.find(d => d.name === c.design) || { name: c.design }))}${c.partial ? " (partial)" : ""}</td>
           <td>${esc(tr)}</td><td>${status}</td></tr>`;
@@ -399,6 +528,7 @@
       ${items.length ? `<div id="tl-editing">
         <div class="tl-left">
           <div class="card">${renderTracks()}</div>
+          ${warningsBlock()}
           <div class="card"><h2>CUES</h2>${cueTable()}</div>
           ${minIntervalTable()}
         </div>
@@ -407,7 +537,7 @@
     if (items.length) {
       wireMmss("show-duration", sec => globalThis.SIM.app.setShow({ duration: sec }));
       $("#show-refresh").onchange = e => { const v = Number(e.target.value); if (v >= 1 && v <= 60) globalThis.SIM.app.setShow({ refresh_s: v }); else e.target.value = state.show.refresh_s.toFixed(1); };
-      renderCueEditor(state.show.cues.find(c => c.id === ui.cue) || null);
+      renderCueEditor(state.show.cues.find(c => sameId(c.id, ui.cue)) || null);
       wireTrackEvents();
     }
     $("#save-project").onclick = saveProjectFile;
@@ -468,15 +598,15 @@
     });
     document.querySelectorAll(".cue-hold, .cue-band").forEach(el => el.addEventListener("click", e => {
       e.stopPropagation();
-      ui.cue = Number(el.dataset.cue); render();
+      ui.cue = el.dataset.cue; render();
     }));
-    document.querySelectorAll("tr[data-cue]").forEach(tr => tr.addEventListener("click", () => { ui.cue = Number(tr.dataset.cue); render(); }));
+    document.querySelectorAll("tr[data-cue]").forEach(tr => tr.addEventListener("click", () => { ui.cue = tr.dataset.cue; render(); }));
     document.querySelectorAll('.cue-hold[data-drag="1"]').forEach(el => {
       el.addEventListener("pointerdown", e => {
         e.preventDefault(); e.stopPropagation();
         const track = el.closest(".tl-track");
         const box = track.getBoundingClientRect();
-        const cue = state.show.cues.find(c => c.id === Number(el.dataset.cue));
+        const cue = state.show.cues.find(c => sameId(c.id, el.dataset.cue));
         cueDrag = { id: cue.id, boxWidth: box.width, startAt: cue.at, startX: e.clientX };
         el.classList.add("dragging");
         try { el.setPointerCapture(e.pointerId); } catch {}
@@ -495,7 +625,13 @@
     const marker = $("#playhead"); if (marker) marker.style.left = (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
     const phTime = $("#ph-time"); if (phTime) phTime.textContent = clockShort(t);
     const tpTime = $("#tp-time"); if (tpTime) tpTime.textContent = `${clockShort(t)} / ${clockShort(D)}`;
-    const goto = $("#goto-input"); if (goto && document.activeElement !== goto) goto.value = globalThis.SIM.mmss.format(t);
+    const goto = $("#goto-input");
+    if (goto && document.activeElement !== goto) {
+      goto.value = globalThis.SIM.mmss.format(t);
+      goto.classList.remove("bad");
+      const gotoEcho = $("#goto-input-echo");
+      if (gotoEcho) { gotoEcho.classList.remove("bad"); gotoEcho.textContent = globalThis.SIM.mmss.human(t); }
+    }
   }
   function redrawThumbs(t) { if (state && $(THUMB_VIEW.sel)) globalThis.SIM.looks.updateThumbColors(t, THUMB_VIEW, ctx()); }
   function fullRedrawThumbs(t) { if (state) globalThis.SIM.looks.renderThumbs(THUMB_VIEW, t, ctx()); }
@@ -513,27 +649,47 @@
     });
     return transport;
   }
+  // The dock is `position:fixed` at the bottom of the window (designer.css)
+  // so it always floats over whatever #content last scrolled to - including
+  // the last ~220px of the Timeline tab's own content, which it simply hid
+  // behind itself with no compensating space (adversarial review,
+  // 2026-09-25). Measuring the dock's real height into a custom property
+  // and giving #content a matching padding-bottom keeps that content
+  // reachable, and self-corrects if the dock's height ever changes (a
+  // narrower window wrapping the toolbar to two lines, for one).
+  function syncDockHeight() {
+    const dock = $("#tl-dock");
+    const h = (dock && ui.tab === "timeline") ? dock.offsetHeight : 0;
+    document.documentElement.style.setProperty("--tl-dock-h", h + "px");
+  }
   function renderDock() {
     ensureTransport();
     const dock = $("#tl-dock");
     dock.style.display = ui.tab === "timeline" ? "block" : "none";
-    if (ui.tab !== "timeline") return;
+    if (ui.tab !== "timeline") { syncDockHeight(); return; }
     dock.innerHTML = `<div class="tl-dock-head">
       <span class="tl-dock-title">THE LOOKS AT <b id="tp-time"></b></span>
       <button id="tp-play">${transport.playing ? "⏸ Pause" : "▶ Play"}</button>
       <button id="tp-stop">⏹ Stop</button>
-      <span class="mmss" style="margin-left:6px"><input type="text" id="goto-input" size="6"><span class="mmss-badge">mm.ss</span></span>
+      <span style="margin-left:6px">${mmssField("goto-input", transport.playhead)}</span>
       <button id="goto-go">Go to</button>
       <button id="sim-view" class="${ui.simView ? "on" : ""}" style="margin-left:auto">Simulator view</button>
     </div>
     <div class="thumbs" id="tl-thumbs"></div>`;
     $("#tp-play").onclick = () => transport.toggle();
     $("#tp-stop").onclick = () => transport.stop();
-    $("#goto-go").onclick = () => { const sec = globalThis.SIM.mmss.parse($("#goto-input").value); if (sec !== null) transport.seek(sec); };
+    // wireMmss (not a bare parse-on-click): a typo in the go-to box gets the
+    // same red/echo treatment as every other clock field instead of Go to
+    // silently doing nothing (adversarial review, 2026-09-25); Enter/blur
+    // (wireMmss's "change") seeks, the button re-triggers the same commit
+    // for a value that is already valid.
+    wireMmss("goto-input", sec => transport.seek(sec));
+    $("#goto-go").onclick = () => $("#goto-input").dispatchEvent(new Event("change"));
     $("#sim-view").onclick = () => { ui.simView = !ui.simView; persist(); render(); };
     THUMB_VIEW.fill = ui.simView;
     fullRedrawThumbs(transport.playhead);
     wirePlayheadDrag();
+    syncDockHeight();
   }
   // Per-element pointerdown only - rebound every render since #ph-head/#ruler
   // are recreated by innerHTML each time. The move/up/cancel listeners are
@@ -544,6 +700,21 @@
     if (head) head.addEventListener("pointerdown", e => { e.preventDefault(); transport.beginDrag(ruler, e.clientX, true); try { head.setPointerCapture(e.pointerId); } catch {} });
     if (ruler) ruler.addEventListener("pointerdown", e => { if (e.target.closest("#ph-head")) return; transport.beginDrag(ruler, e.clientX, false); });
   }
+  // index.html:1248-1262's own rAF-debounced resize handler, missing here
+  // entirely (adversarial review, 2026-09-25): without it the looks row
+  // never re-measures after the window (or the dock, once its own height is
+  // wired to --tl-dock-h - see syncDockHeight()) changes size, so it clips
+  // at narrow widths instead of reflowing - worst in Simulator view, which
+  // is exactly when the row is meant to fill the window.
+  let resizeScheduled = false;
+  window.addEventListener("resize", () => {
+    if (resizeScheduled) return;
+    resizeScheduled = true;
+    requestAnimationFrame(() => {
+      resizeScheduled = false;
+      if (ui.tab === "timeline" && state) { globalThis.SIM.looks.layoutLooks(THUMB_VIEW); syncDockHeight(); }
+    });
+  });
   document.addEventListener("keydown", e => {
     if ((e.key === " " || e.code === "Space") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -568,8 +739,7 @@
     if (bytes > REFUSE_BUNDLE_BYTES) { toast(`Refused: this project is ${fmtSize(bytes)} - over the 8 MB limit.`); return; }
     if (bytes > WARN_BUNDLE_BYTES) toast(`This is a large project (${fmtSize(bytes)}) - saving anyway.`);
     const now = new Date();
-    const pad = n => String(n).padStart(2, "0");
-    const name = `az27ss-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+    const name = `az27ss-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}.json`;
     downloadBlob(text, name);
     toast(`Saved ${name} (${fmtSize(bytes)})`);
   }
@@ -597,12 +767,42 @@
       <h2>連絡先</h2><p>不具合や質問は ${esc("y.hirata@r2-engineering.com")} まで。</p>
     </div>`;
     $("#run-selftest").onclick = () => {
+      if (typeof globalThis.__selftest !== "function") { const out = $("#selftest-result"); out.textContent = "not available in this build yet"; out.className = ""; return; }
+      const r = runSelfTestSafely();
+      // Re-query, don't reuse a reference captured before the call
+      // (adversarial review follow-up, 2026-09-25's own fix): restoring the
+      // project runs rebuild()->render(), which - since the Help tab is
+      // still open - calls renderHelp() again and replaces #content
+      // wholesale; the element this closure grabbed a moment ago is now
+      // detached, so writing to it silently went nowhere.
       const out = $("#selftest-result");
-      if (typeof globalThis.__selftest !== "function") { out.textContent = "not available in this build yet"; out.className = ""; return; }
-      const r = globalThis.__selftest();
-      out.textContent = r.ok ? `OK - ${r.total} check(s) passed` : `${r.failed} of ${r.total} failed`;
-      out.className = r.ok ? "ok" : "fail";
+      if (out) { out.textContent = r.ok ? `OK - ${r.total} check(s) passed` : `${r.failed} of ${r.total} failed`; out.className = r.ok ? "ok" : "fail"; }
     };
+  }
+  // The golden self-test (selftest.js, Coder P) drives SIM.app through
+  // newProject()/addFiles()/exportBundle()/newProject()/openBundle() as its
+  // own app-smoke case - fine in isolation, but calling it from THIS page's
+  // Help tab used to run those straight against the live session: it wiped
+  // whatever the designer was working on and overwrote the autosave with
+  // the starter data (adversarial review, 2026-09-25). Snapshot everything
+  // the self-test can touch first (a deep copy of `project`, plus musicUrl
+  // and the ui selection, both of which live outside `project`), run it,
+  // then restore all three - the designer never sees so much as a flicker
+  // of the substitute project, and the autosave is untouched.
+  function runSelfTestSafely() {
+    const savedProject = JSON.parse(JSON.stringify(project));
+    const savedMusicUrl = musicUrl;
+    const savedUi = Object.assign({}, ui);
+    let result;
+    try {
+      result = globalThis.__selftest();
+    } finally {
+      Object.assign(ui, savedUi);
+      app.setProject(savedProject);
+      musicUrl = savedMusicUrl;
+      ensureTransport().setMusic(savedMusicUrl);
+    }
+    return result;
   }
 
   // ==================================================================
@@ -659,7 +859,7 @@
     document.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === ui.tab));
     renderSidebar();
     if (ui.tab === "timeline") renderTimelineTab();
-    else { $("#tl-dock").style.display = "none"; if (ui.tab === "help") renderHelp(); else renderDesigns(); }
+    else { $("#tl-dock").style.display = "none"; syncDockHeight(); if (ui.tab === "help") renderHelp(); else renderDesigns(); }
   }
   function wireChrome() {
     document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => { ui.tab = b.dataset.tab; ui.cue = null; persist(); render(); }));
@@ -713,9 +913,33 @@
   // SIM.app — the frozen seam (plan §2.3)
   // ==================================================================
   function refuseReason(name) { return `not a *_map.csv or *_color_NAME_grid.csv`; }
+  // The one place that touches `musicUrl` and `project.show.music` together
+  // (pickMusic/clearMusic/newProject/openBundle all go through it): a File
+  // (or null to clear) revokes whatever object URL was live first, then
+  // creates the new one and pushes it to the transport - so there is no
+  // window where musicUrl is stale, un-revoked, or silently mismatched with
+  // project.show.music.name (adversarial review, 2026-09-25: newProject()
+  // used to null musicUrl without revoking it - a leak, AND it left the OLD
+  // blob playable a moment longer since the transport was never told;
+  // openBundle() used to replace project.show.music without touching
+  // musicUrl at all, so state.music kept showing the OLD blob under the
+  // NEW name instead of the "re-pick the file" bar plan §3.7 promises).
+  function setMusicFile(file) {
+    if (musicUrl) { URL.revokeObjectURL(musicUrl); musicUrl = null; }
+    musicUrl = file ? URL.createObjectURL(file) : null;
+    project.show.music = file ? { name: file.name } : null;
+    ensureTransport().setMusic(musicUrl);
+  }
   const app = {
-    newProject() { project = freshProject(); musicUrl = null; ui.item = null; ui.design = null; ui.cue = null; persist(); rebuild(); },
+    newProject() {
+      setMusicFile(null);
+      project = freshProject(); ui.item = null; ui.design = null; ui.cue = null; persist(); rebuild();
+    },
     getProject() { return project; },
+    // Not part of plan_designer_sim.md §2.3's frozen list, but a natural
+    // companion to getProject() - used to put a project back exactly as it
+    // was (runSelfTestSafely() above is the one caller today).
+    setProject(p) { project = p; rebuild(); persist(); },
     getState() { return state; },
     render() { render(); },
     addFiles(list) {
@@ -733,16 +957,21 @@
     setShow(patch) { Object.assign(project.show, patch); rebuild(); persist(); },
     setLabel(item, label) { project.show.labels[item] = { look: label.look || "", model: label.model || "" }; rebuild(); persist(); },
     addCue({ item, at, design, partial }) {
-      const id = (project.show.cues.reduce((m, c) => Math.max(m, c.id || 0), 0) || 0) + 1;
+      // A string id, matching timeline.py:241's str(...) (model.js's clean()
+      // ports that exactly - see sameId()'s comment above): generating a
+      // number here was the root cause of EDIT CUE/selection/drag never
+      // matching a real cue once state.show.cues came back through
+      // SIM.buildState with everything stringified.
+      const id = String((project.show.cues.reduce((m, c) => Math.max(m, Number(c.id) || 0), 0) || 0) + 1);
       project.show.cues.push({ id, item, at, design, partial: !!partial, refresh_s: null, transition: "design", sequence: "natural", span_s: 0 });
       rebuild(); persist(); return id;
     },
     updateCue(id, patch) {
-      const cue = project.show.cues.find(c => c.id === id); if (!cue) return;
+      const cue = project.show.cues.find(c => sameId(c.id, id)); if (!cue) return;
       if ("end" in patch) {
         // "End" edits the NEXT cue's Start on the same item (or is a no-op on the last cue).
         const mine = project.show.cues.filter(c => c.item === cue.item).sort((a, b) => a.at - b.at);
-        const idx = mine.findIndex(c => c.id === id);
+        const idx = mine.findIndex(c => sameId(c.id, id));
         const next = mine[idx + 1];
         if (next) next.at = patch.end;
         delete patch.end;
@@ -750,10 +979,10 @@
       Object.assign(cue, patch);
       rebuild(); persist();
     },
-    deleteCue(id) { project.show.cues = project.show.cues.filter(c => c.id !== id); if (ui.cue === id) ui.cue = null; rebuild(); persist(); },
+    deleteCue(id) { project.show.cues = project.show.cues.filter(c => !sameId(c.id, id)); if (sameId(ui.cue, id)) ui.cue = null; rebuild(); persist(); },
     setDesignTransition(designFile, sequence, span_s) { project.show.transitions[designFile] = { sequence, span_s }; rebuild(); persist(); },
     exportBundle() {
-      const now = new Date().toISOString().replace(/\.\d+Z$/, "");
+      const now = localIso();
       return {
         format: "epaper-show-bundle", version: 1, exported: now, app: "az27ss-simulator 1.0",
         show: { format: "epaper-show", version: 1, exported: now, workspace: "designer",
@@ -784,22 +1013,35 @@
         if ("transitions" in show) project.show.transitions = show.transitions || {};
         if ("labels" in show) project.show.labels = show.labels || {};
         if ("boards" in show) project.show.boards = show.boards || {};
-        if ("music" in show) project.show.music = show.music || null;
+        if ("music" in show) {
+          // A bundle never carries the audio itself (plan §4.2: "music
+          // name only"), so a name that changed means whatever musicUrl is
+          // playing right now is for the WRONG file (or there is none) -
+          // drop it and ask the designer to re-pick, exactly the "yellow
+          // bar" musicControl() already shows for a reload with no bytes
+          // (plan §3.7). An unchanged name (re-opening the same project)
+          // keeps whatever is already loaded.
+          const newMusic = show.music || null;
+          const oldName = project.show.music && project.show.music.name;
+          const newName = newMusic && newMusic.name;
+          if (oldName !== newName) {
+            setMusicFile(null);
+            project.show.music = newMusic;
+            if (newName) toast(`Music: ${newName} - pick the file again to hear it (project files never include the audio itself).`);
+          }
+        }
       }
       rebuild(); persist();
       return { ok: true, saved, cues: (show && show.cues) ? show.cues.length : project.show.cues.length };
     },
     pickMusic(file) {
       if (file.size > globalThis.SIM.transport.MAX_MUSIC) { toast(`${file.name} is too large - the limit is 64 MB`); return; }
-      if (musicUrl) URL.revokeObjectURL(musicUrl);
-      musicUrl = URL.createObjectURL(file);
-      project.show.music = { name: file.name };
-      rebuild(); ensureTransport().setMusic(musicUrl); persist();
+      setMusicFile(file);
+      rebuild(); persist();
     },
     clearMusic() {
-      if (musicUrl) URL.revokeObjectURL(musicUrl);
-      musicUrl = null; project.show.music = null;
-      rebuild(); ensureTransport().setMusic(null); persist();
+      setMusicFile(null);
+      rebuild(); persist();
     },
     seek(sec) { ensureTransport().seek(sec); },
     play() { ensureTransport().play(); },
