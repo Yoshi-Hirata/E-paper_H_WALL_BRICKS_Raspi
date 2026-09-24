@@ -6,8 +6,8 @@ may depend on. So everything is resolved here, on the PC - designs to
 arrays, board numbers to bus addresses, "complete at 2:00" to "send at
 1:53" - and the unit's file is just a list of
 
-    {"id", "at", "sent", "refresh_s", "label",
-     "boards": {addr: hex}, "state": {addr: hex}}
+    {"id", "at", "sent", "slot", "refresh_s", "label", "span",
+     "boards": {addr: hex}, "state": {addr: hex}, "delays": {addr: hex}}
 
 in the order they are sent. `sent` is seconds from the start (the preset,
 loaded before START, has a negative one). `refresh_s` is the refresh
@@ -25,7 +25,19 @@ left with an older array in its slot would repaint that.
 `boards` is the change, `state` is the picture after it - the change
 laid over everything before. A unit that comes late to a cue (rebooted,
 started mid-show, jumped by NEXT) sends `state` instead and is right
-again in one refresh, whatever it missed.
+again in one refresh, whatever it missed. (Since the pre-burn design the
+unit burns `state` and reads nothing from `boards`; the diff stays in
+the file only because the unit's validate_show still requires the key -
+a follow-up in docs/STATUS.md.)
+
+`delays` is a delay table per board (V1.4's 0x1F: 64 sockets of uint16
+frames, or NO_DELAY) for EVERY cue and EVERY board of the unit. A cue
+without a sweep carries the all-NO_DELAY table, which the unit writes
+as "forget the sweep" (0x25) into that cue's slot: a board must never
+keep a table from an earlier upload in a slot the new show uses without
+one. The unit writes only a table that differs from the last one it
+sent to that board and slot, so the cost is file size (256 hex
+characters per board and cue), not burn time on a re-upload.
 
 Every cue also carries `"slot"`: which of the board's 20 on-board storage
 slots this picture is written into, one slot per cue in send order (the
