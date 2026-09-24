@@ -18,6 +18,66 @@
 
 ## 2. 直近で完成したもの
 
+**pre-burn レビュー修正ラウンド、conductor 側(Coder V2、2026-09-25)- F1/F2/F3/F5/F6/F7/F8/F11 の PC 側**
+
+- 対象は敵対的レビュー(`review_preburn_findings.md`)の conductor 側。unit 側(F1 の unit 半分、
+  F2 の `_burn_gate(force)`、F4、F9 の死にコード、F10)は Coder U2 が同時に `ui/*` で実装中。
+  **unit 側との契約(U2 に合わせて設計。U2 の報告が違えばコーディネータが調停)**: 焼き込み状態は
+  `"burning" | "burned" | "failed" | "cancelled" | "none"`(none = 再起動後・焼き込みを始められなかった
+  load)。新しいエージェントはロード済みショーに **必ず `burn` dict** を返し、古いエージェントは
+  `burn` キー自体を持たない。`/show/run` と `/show/preset` は `{"force": true}` を受け、force が通すのは
+  **生きている基板の "failed" だけ**(burning / cancelled / none は通さない)。
+- **F1(conductor 半分)** `Fleet._burn()`/`_burn_problems()`: 「`burn` キーなし(旧エージェント)= 止めない」と
+  「`burn: null`・`cancelled`・`none`・未知の state = 止める」を区別(`_NO_BURN_KEY` 番兵)。メッセージは
+  機体ごとに「radxa-04: pictures not written (cancelled) - Upload again」「… not written since it restarted -
+  Upload again」「… not written - Upload again」。force でも通らない。snapshot の `burn` 要約はこれらを
+  分母に入れて `burned` に数えない。Units タイルの Pictures 行も同じ言葉で出す(`"burn" in u.show` で
+  旧エージェントの「—」と区別)。
+- **F2** START の `force` を機体まで運ぶ: `start_show()` が `run["force"]` に保存し、`_send_run()`
+  (START / SEEK / RESUME / NEXT)と `_supervise()` の `/show/run` が `{"t0","show","force"}` を送る
+  (force なしでも `force: false` を明示)。fleet 側ゲートは force でも burning / cancelled / none を拒否した
+  まま。テスト: force が body に届く、burning は force でも何も送らない。
+- **F3** `Fleet.preset(force=False)`: force で "failed" だけを START と同じに通し、`/show/preset` に
+  `{"force": …}` を送る。`/api/fleet/preset` は `body.force` を渡す。ページの ② Show preset は START と同じ
+  確認ダイアログ(`burnFailedQuestion()` を共用: 「radxa-04: 2 board(s) not written (3, 7) — Show the preset
+  anyway?」)を出して force で送り、ポーリング遅れで後から同じ理由の 400 が返ったときも一度だけ聞き直して
+  再送する。
+- **F5** `conductor/showfile.py`: **全キュー・全基板に `delays` を必ず出す**(スイープの無いキュー・共有機体の
+  スイープしない側のアイテムの基板は全ソケット NO_DELAY の `NO_SWEEP_TABLE`。unit はそれを 0x25 として
+  そのスロットへ書く)。`timeline.sweeps()` をキュー単位で見るので span 0 の custom は 0 フレーム表ではなく
+  クリア表になる。`span` も全キューに出す(0.0)。**サイズ**: 6 ルックのサンプル
+  (`docs/samples/az27ss_sample_show.json`、6 機体 × 3 キュー、16〜32 基板)で合計 200,485 → 221,804 B
+  (+10.6%)。スイープの無い機体(radxa-04)は 13.9 → 26.7 KB(約 2 倍)、共有機体(radxa-03)は片側アイテムの
+  表が加わって +19%、それ以外は同一。表は 1 基板 1 キューあたり 256 文字。36 基板 × 10 キューなら
+  delays ≈ 95 KB が boards+state ≈ 95 KB に加わる見込み。初回焼き込みは基板・スロットごとに 0x25 が
+  1 フレーム増える(unit は前回送った表と同じなら送らない)。`tests/test_showfile.py` を新設。
+- **F6** `_supervise()`: `/show/load`・`/show/run` は `_post_or_refused()` 経由 - 送る**前に** `_corrected` を
+  立てるので 409 でも次のポーリングで連打しない(SUPERVISE_EVERY_S 後に再試行)。拒否は理由が変わった
+  ときだけ「radxa-04: run refused: <reason>」と 1 行記録し、通ったら忘れる。
+- **F7** `_playing_demo()` は `state == "loaded"` かつ `demo` かつ `burn.state == "burning"`(デモの焼き込み中)でも
+  真。upload()/_send_run() は「writing its demo pictures (n/N) - wait or STOP it」で断り、監視は
+  「writing its demo pictures, left alone」と 1 回だけ記録して放置する。
+- **F8** `conductor/timeline.py` docstring の 1-19/19 枚、README の「スロット 19 のみ使用する」を 0 / 1〜18 / 19 の
+  割り当てに修正。`docs/CONDUCTOR_START.md` §6 を「① Upload → Pictures written on n / n units を待つ(36 基板
+  × 10 キューで約 90 秒)→ ② → ③」にし、焼き込み中の STOP・機体の再起動は Upload し直し、FAILED は ② ③ の
+  ダイアログで force、書き込み中は force 不可、と明記。`docs/SPECIFICATION.md` §3.3 に delays 必須・焼き込み
+  状態・force の規則を追加。
+- **F11** `tests/test_show_e2e.py` の RESUME 後の許容差を「0.2 s + resume() に実際にかかった時間」に。
+- **F9(conductor 部分)は未対応・フォローアップ**: show file の各キューの `boards`(差分)は unit 側で誰も
+  読まないが、unit の `validate_show` が `boards` キーを要求しているので**残してある**。U2 が
+  `validate_show` から `boards` を外したら `showfile.py` の `"boards"` 行を消す(state と同サイズなので
+  ファイルは約 1/3 減る。`id` のハッシュが変わるので全機体が焼き直しになる - 本番前に済ませること)。
+- **e2e(`tests/test_show_e2e.py`)について**: 本ブランチの unit 側は a2987b5 のままなので、`/show/run` /
+  `/show/preset` の余分な `force` キーは無視され、burn の新 state は現れない。U2 のブランチと統合したあと
+  e2e を必ずもう一度回すこと(特に: STOP 中の burn が "cancelled" になれば `burned()` 待ちの前提が変わる)。
+- コミット: `19c68cc`(fleet/server/page/showfile の本体、停電で PM が WIP 保存)→ `fbf1096`(F5 + F3 server
+  test)→ `80f2762`(F1/F2/F3/F6/F7 の fleet tests)→ `35f017a`(F8 docs)→ `a8f9c3c`(F11)→ 本エントリ。
+  テスト: **653 件 + skip 1**(Windows、3 分 51 秒。前ラウンド 636 + 1 から +17)。ページはネットワーク無しの
+  疑似機体 6 台(failed / burned / null / cancelled / none / burn キーなし)を持つ conductor をブラウザで開いて確認:
+  Pictures 行が 6 状態とも上の言葉で出る、要約が「pictures written on 1 / 5 units」(旧エージェントは分母外)、
+  混在時は ② が質問せずサーバの拒否一覧を出す、failed だけのときは ② ③ とも「radxa-01: 2 board(s) not
+  written (3, 7) — … anyway?」を聞いて `force: true` が `/show/preset`・`/show/run` の body に届く。
+
 **pre-burn 統合(U の unit 側 + V の conductor 側を main に統合、2026-09-25)**
 
 - U のブランチを main にリベースして統合(`df2da01`/`dc21e3c`)。統合で e2e が見つけた 2 つの隙間を
