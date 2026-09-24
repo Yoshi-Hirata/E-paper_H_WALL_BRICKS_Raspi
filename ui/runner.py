@@ -1025,6 +1025,17 @@ class DemoRunner:
                                 needs_setup = True
                             if needs_setup:
                                 if not self._setup(bus, groups):
+                                    # The job is taken and nothing of it
+                                    # written: every pair goes down as
+                                    # failed (a finished burn, so the
+                                    # player's absent-only rule decides -
+                                    # with no board answering they are
+                                    # all absent), rather than left as a
+                                    # burn the bus gave up on part way.
+                                    session.burn_finished(
+                                        burn_job["epoch"],
+                                        [(b, c["slot"]) for c in burn_job["cues"]
+                                         for b in c["boards"]])
                                     session.failed_with(self.error
                                                         or "setup failed")
                                     break

@@ -498,7 +498,7 @@ class App:
             player.run(self._clock() + lead)
         except RemoteError as exc:
             if burn is not None and burn["state"] == "failed":
-                absent = player.session.runner.absent
+                absent = player.session.runner.absent_snapshot()
                 failed = {b for b, s in burn.get("failed", ())
                          if b not in absent}
                 self._demo_burn_error = f"{len(failed)} boards failed - KEY2 menu"
