@@ -45,6 +45,20 @@ loaded, how many boards took it, the countdown to the fire time. KEY2
 hands the unit back to its own menu; on a locked unit nothing does, so
 a knock on stage cannot drop a garment out of the show.
 
+A standalone demo (ui/demos.py) IS a menu row, one per show the PC has
+written into this unit, sorted in right after STANDBY. KEY1 plays it on
+the unit's own clock (ui/showplay.py's ShowPlayer, loaded with
+demo=True so a reboot does not resume it on its own) and the screen
+follows it exactly like REMOTE does a PC-driven show - same picture,
+different title ("DEMO <name>") and hints, because the player fires
+its cues through the very same session a show PC would. KEY2 releases
+that session (ending the demo and any lingering "REMOTE" claim on it in
+one move, see _stop_demo); KEY1 held restarts it from 0:00; ENDED with
+`loop` set restarts it again after LOOP_GAP_S. A show PC still wins:
+/prepare and /show/load are refused while the demo runs (ui/agent.py),
+so the operator presses STOP on the Units tab, which is /show/stop and
+ends the demo the same way KEY2 does.
+
 With `locked` set the buttons do nothing at all, except that they still
 wake the screen; the UNLOCK_SEQUENCE frees them temporarily and the lock
 returns by itself after RELOCK_AFTER_S of quiet.
@@ -53,6 +67,7 @@ returns by itself after RELOCK_AFTER_S of quiet.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from enum import Enum
 
 from . import notify, render
@@ -60,7 +75,18 @@ from .config import (BLANK_AFTER_S, FRAME_INTERVAL_S, LOG_LINES,
                      RELOCK_AFTER_S, UNLOCK_SEQUENCE, UNLOCK_WINDOW_S,
                      WATCHDOG_PERIOD_S)
 from .patterns import PATTERNS
+from .remote import RemoteError
 from .runner import DemoRunner
+from .showplay import ENDED, STOPPED
+
+# Standalone demos poll the store rather than being pushed a change from
+# the agent's HTTP thread - the two run in the same process but talking
+# across threads for a menu redraw would be one more lock to get wrong,
+# and a couple of seconds' delay in a new row appearing costs nothing.
+DEMO_POLL_S = 2.0
+# ENDED, loop set: how long the last picture stays up before it plays
+# again - long enough to read, short enough not to look stuck.
+LOOP_GAP_S = 5.0
 
 
 class Screen(Enum):
@@ -71,6 +97,18 @@ class Screen(Enum):
     PULL = "pull"
     REBOOT = "reboot"
     REMOTE = "remote"
+    DEMO = "demo"
+
+
+@dataclass(frozen=True)
+class DemoRow:
+    """A stored demo as a menu row - duck-types enough of Pattern (key,
+    label, detail) for menu_screen and _restart() to treat it as one."""
+    key: str            # "demo:<slug>"
+    label: str          # the name as written on the PC
+    detail: str         # "show · N cues · m:ss [· loop]"
+    slug: str
+    loop: bool
 
 
 class App:
@@ -80,7 +118,7 @@ class App:
                  relock_after: float = RELOCK_AFTER_S,
                  clock=time.monotonic, updater=None, puller=None,
                  host: str | None = None, versions=None, rebooter=None,
-                 remote=None):
+                 remote=None, player=None, demos=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -108,6 +146,19 @@ class App:
             remote.busy = lambda: any(
                 worker is not None and worker.busy
                 for worker in (self.updater, self.versions, self.rebooter))
+        # Standalone demos (ui/demos.py): `player` is the same ShowPlayer
+        # the PC's shows run on, `demos` is the store menu rows are built
+        # from. Either may be None (older callers, or --no-remote), and
+        # the whole feature is then simply absent - no demo rows, no
+        # DEMO screen.
+        self.player = player
+        self.demo_store = demos
+        self._demo_rows: list[DemoRow] = []
+        self._playing_demo: str | None = None
+        self._demo_name = ""
+        self._demo_loop = False
+        self._demo_ended_at: float | None = None
+        self._last_demo_poll = 0.0
         self.host = host
         self.selected = 0
         self.screen = Screen.MENU
@@ -131,6 +182,7 @@ class App:
         self._dirty = True
         self._drawn_key = None
         self._standby = False
+        self.refresh_demos()           # initial rows, right after STANDBY
 
     # ---- state transitions ----
 
@@ -198,6 +250,14 @@ class App:
                 self.screen = Screen.MENU
                 self._dirty = True
             return
+        if self.screen is Screen.DEMO:
+            if event == "key2":
+                self._stop_demo()
+            elif event == "key1_hold":
+                # Restart from 0:00: the row is still `selected`, so this
+                # is exactly _enter_demo() again on the same show.
+                self._restart()
+            return                      # KEY1 alone does nothing here
 
         if event == "key1_hold":
             # Reset: back to cycle 0 with the timer at zero, wherever we
@@ -346,6 +406,112 @@ class App:
         self.screen = Screen.MENU
         self._dirty = True
 
+    # ---- standalone demos (ui/demos.py) ----
+
+    def _start_demo_show(self, slug: str) -> bool:
+        """Load the stored show and run it from 0:00. False if it could
+        not be (a corrupt file on disk - validated at /demo/save, so
+        this is not expected in practice); the row is left on the menu
+        rather than opening a screen with nothing to show."""
+        try:
+            show = self.demo_store.load(slug)
+            self.player.load(show, demo=True)
+            # Far enough ahead that the preset cue's own lead (its boards'
+            # save time plus the port setup, ShowPlayer._lead) has room to
+            # land before its instant - the same margin preset() itself
+            # uses, plus a second of slack for the LCD's own poll.
+            lead = self.player._lead(show["cues"][0]) + 1.0
+            self.player.run(self._clock() + lead)
+            return True
+        except RemoteError:
+            return False
+
+    def _enter_demo(self, row: "DemoRow") -> None:
+        if self.player is None or self.demo_store is None:
+            return
+        if not self._start_demo_show(row.slug):
+            return
+        self._standby = False
+        self._playing_demo = row.slug
+        self._demo_name = row.label
+        self._demo_loop = row.loop
+        self._demo_ended_at = None
+        self.screen = Screen.DEMO
+        self._dirty = True
+
+    def _stop_demo(self) -> None:
+        # release(), not player.stop(): the player fires its cues through
+        # the very session a show PC would use, so ending the demo has to
+        # also let go of that session (active -> False) or _follow_remote
+        # would read it as the PC still owning the unit and bounce the
+        # screen to REMOTE the moment it next ticks.
+        if self.remote is not None:
+            self.remote.release()
+        elif self.player is not None:
+            self.player.stop()
+        self._playing_demo = None
+        self._demo_ended_at = None
+        self.screen = Screen.MENU
+        self._dirty = True
+
+    def _track_demo(self) -> None:
+        """Loop a finished demo, or notice the PC ended it from afar."""
+        if self._playing_demo is None or self.player is None:
+            return
+        status = self.player.status()
+        state = status["state"] if status else None
+        if state == STOPPED:
+            # /show/stop reached the player directly (the PC's STOP button
+            # ends a demo the same way KEY2 does) without going through
+            # this screen's own KEY2 - catch up so the LCD does not sit on
+            # a dead DEMO screen.
+            self._stop_demo()
+        elif state == ENDED:
+            if self._demo_ended_at is None:
+                self._demo_ended_at = self._clock()
+                self._dirty = True          # "ended" hint comes on
+            elif (self._demo_loop
+                  and self._clock() - self._demo_ended_at >= LOOP_GAP_S):
+                self._demo_ended_at = None
+                self._start_demo_show(self._playing_demo)
+        else:
+            self._demo_ended_at = None
+
+    def refresh_demos(self) -> None:
+        """Rebuild the menu rows from the store: at startup, after every
+        /demo/save or /demo/delete (polled from _idle_tasks - the agent's
+        HTTP thread writes the files, it does not call back into here),
+        right after STANDBY and ahead of every built-in pattern."""
+        if self.demo_store is None:
+            return
+        rows = [self._demo_row(entry) for entry in self.demo_store.list()]
+        if rows == self._demo_rows:
+            return
+        selected_key = (self.patterns[self.selected].key
+                        if self.patterns else None)
+        base = [p for p in self.patterns if p not in self._demo_rows]
+        insert_at = next((i + 1 for i, p in enumerate(base)
+                          if getattr(p, "key", None) == "standby"), 0)
+        self.patterns = base[:insert_at] + rows + base[insert_at:]
+        self._demo_rows = rows
+        for index, pattern in enumerate(self.patterns):
+            if pattern.key == selected_key:
+                self.selected = index
+                break
+        else:
+            self.selected = min(self.selected, len(self.patterns) - 1)
+        self._dirty = True
+
+    @staticmethod
+    def _demo_row(entry: dict) -> "DemoRow":
+        minutes, seconds = divmod(int(entry.get("duration") or 0), 60)
+        detail = f"show · {entry['cues']} cues · {minutes}:{seconds:02d}"
+        if entry.get("loop"):
+            detail += " · loop"
+        return DemoRow(key=f"demo:{entry['slug']}", label=entry["name"],
+                      detail=detail, slug=entry["slug"],
+                      loop=bool(entry.get("loop")))
+
     def _restart(self) -> None:
         if self.patterns[self.selected].key == "update":
             self._enter_update()
@@ -366,8 +532,12 @@ class App:
             self.enter_standby()
             self.screen = Screen.MENU
             return
+        row = self.patterns[self.selected]
+        if isinstance(row, DemoRow):
+            self._enter_demo(row)
+            return
         self._standby = False
-        self.runner.start(self.patterns[self.selected])
+        self.runner.start(row)
         self.screen = Screen.RUNNING
         self._dirty = True
 
@@ -440,6 +610,13 @@ class App:
             return render.remote_screen(
                 status, self.runner.recent(LOG_LINES), now=self._mono(),
                 locked=self.locked, host=self.host)
+        if self.screen is Screen.DEMO:
+            status = self._remote_status()
+            return render.remote_screen(
+                status, self.runner.recent(LOG_LINES), now=self._mono(),
+                locked=self.locked, host=self.host,
+                title=f"DEMO {self._demo_name}".strip(),
+                hint=self._demo_hint(status))
         if self.screen is Screen.REBOOT:
             rebooter = self.rebooter
             return render.reboot_screen(
@@ -511,6 +688,17 @@ class App:
                         show.get("state"), show.get("synced"),
                         None if show.get("now") is None else int(show["now"]),
                         tuple(self.runner.recent(LOG_LINES)), self.locked)
+            if self.screen is Screen.DEMO:
+                status = self._remote_status()
+                fire_at = status["fire_at"]
+                show = status.get("show") or {}
+                left = (None if fire_at is None or status["fired_at"]
+                        else int(max(0.0, fire_at - self._mono())))
+                return ("demo", self._playing_demo, status["phase"],
+                        len(status["saved"]), len(status["failed"]),
+                        status["error"], left, show.get("state"),
+                        None if show.get("now") is None else int(show["now"]),
+                        tuple(self.runner.recent(LOG_LINES)), self.locked)
             if self.screen is Screen.REBOOT:
                 rebooter = self.rebooter
                 return ("reboot", rebooter.phase,
@@ -529,6 +717,15 @@ class App:
         status["show"] = self.show_status() if self.show_status else None
         return status
 
+    def _demo_hint(self, status: dict) -> str:
+        if self.locked:
+            return "buttons locked"
+        show = status.get("show") or {}
+        if show.get("state") == "ended":
+            return ("looping soon - KEY2 menu" if self._demo_loop
+                    else "ended - KEY2 menu")
+        return "KEY2 stop  hold=restart  KEY3 off"
+
     @staticmethod
     def _mono() -> float:
         # Fire times are in time.monotonic() - the agent's clock - which
@@ -541,6 +738,13 @@ class App:
         remote = self.remote
         if remote is None:
             return
+        if self._playing_demo is not None:
+            # A demo we started ourselves fires its cues through this
+            # very session, so `remote.active` is true too - must not
+            # read as the PC taking the unit over (that would bounce the
+            # screen straight to REMOTE). _stop_demo()/_track_demo() are
+            # the only ways off the DEMO screen while this is set.
+            return
         if remote.active and self.screen is not Screen.REMOTE:
             self.screen = Screen.REMOTE
             self._standby = False
@@ -551,7 +755,12 @@ class App:
 
     def _idle_tasks(self) -> None:
         self._follow_remote()
+        self._track_demo()
         now = self._clock()
+        if (self.demo_store is not None
+                and now - self._last_demo_poll >= DEMO_POLL_S):
+            self._last_demo_poll = now
+            self.refresh_demos()
         idle = now - self._last_input
         if not self.blanked and 0 < self.blank_after <= idle:
             self._blank()

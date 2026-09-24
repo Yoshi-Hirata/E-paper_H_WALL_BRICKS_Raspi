@@ -347,16 +347,20 @@ _REMOTE_STATUS = {
 
 def remote_screen(status: dict, log_lines: list[str], now: float = 0.0,
                   locked: bool = False,
-                  host: str | None = None) -> Image.Image:
+                  host: str | None = None, title: str = "REMOTE",
+                  hint: "str | None" = None) -> Image.Image:
     """The unit under the show PC: what is loaded and when it fires.
 
     `status` is ui.remote.RemoteSession.status(); `now` is the monotonic
-    clock its fire time is written in.
+    clock its fire time is written in. A standalone demo (ui/app.py's
+    Screen.DEMO) reuses this screen with its own `title` ("DEMO <name>")
+    and `hint` (KEY1 does nothing, KEY2 stops it) - everything else about
+    what is loaded and when it fires reads exactly the same.
     """
     image, draw = _blank()
     word, color = _REMOTE_STATUS.get(status["phase"],
                                      (status["phase"].upper(), DIM))
-    _header(draw, "REMOTE", status=word, status_color=color, host=host)
+    _header(draw, title, status=word, status_color=color, host=host)
 
     label = status["label"] or status["cue"] or "waiting for a cue"
     draw.text((8, 30), _ellipsize(label, FONT_L, WIDTH - 16), font=FONT_L,
@@ -413,7 +417,8 @@ def remote_screen(status: dict, log_lines: list[str], now: float = 0.0,
                   font=FONT_S, fill=tint)
         y += 15
 
-    _hint(draw, "buttons locked" if locked else "KEY2 local menu  KEY3 off")
+    _hint(draw, hint if hint is not None else
+          ("buttons locked" if locked else "KEY2 local menu  KEY3 off"))
     return image
 
 

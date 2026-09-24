@@ -18,6 +18,36 @@
 
 ## 2. 直近で完成したもの
 
+**機体側: スタンドアローンデモの書き込み・再生(2026-09-24、Unit side のみ。PC/Conductor 側は別対応)**
+
+- `ui/demos.py`(新規)に `DemoStore`: PC がユニットごとに作る show ファイル(`conductor/showfile.py`
+  の出力そのもの)を名前つきで `~/.epaper/demos/<slug>.json` に 1 デモ 1 ファイルで保存。スラグは名前の
+  `[a-z0-9-]` 化、同名なら上書き・別名の衝突は `-2` 採番、上限 20 件(超えると
+  `"demo store full - delete one first"`)。バリデーションは `ui/showplay.py` に切り出した
+  `validate_show()` を共用 - 壊れた show は書き込み時に弾く。
+- `ui/agent.py`: `POST /demo/save {"name","loop","show"}` → `{"ok","slug","demos":[...]}`、
+  `GET /demo/list` → `{"demos":[...]}`、`POST /demo/delete {"slug"}` → `{"ok","demos":[...]}`。
+  `/demo/save` は show 実行中・HOLD 中は `/show/load` と同じ文言で拒否。`/status` に `"demos": 件数`。
+  `/show/load` は **デモ実行中のときだけ**同じ文言で拒否 - PC 主導の show 実行中の再読込
+  (`conductor/fleet.py` の supervise の再送)は今まで通り塞がない。
+- `ui/app.py`: メニューは STANDBY の直後にデモを 1 行ずつ差し込む(`DemoRow`、店の内容が変われば
+  `refresh_demos()` で 2 秒ごとに追随)。KEY1 で `ShowPlayer.load(show, demo=True)` →
+  `run(t0=いま+リード)`(プリセットが 0:00 に間に合う)。画面は新設の `Screen.DEMO` -
+  `render.remote_screen()` を `title="DEMO <name>"` で再利用(カウントダウン・ログはそのまま)。
+  KEY2 は `remote.release()`(show PC と同じセッションを解放 - そうしないと画面が REMOTE に
+  跳ねる)、KEY1 長押しで 0:00 から再走、`loop` 指定なら ENDED から `LOOP_GAP_S=5s` 後に自走再開。
+  ロック中は他の行と同じく無効。
+- ついでに見つけたバグを修正: `ShowPlayer._tally()` が旧 run の FIRED セッションを新しい run の
+  ものと誤認する経路があった(1 キューだけの show を再走すると、最初と最後のキュー id が同じ
+  `"q00"` になるため顕在化)。run 番号もキーに含めて比較するよう修正。
+- `tests/test_ui_demos.py`(新規、23 件): store の保存/一覧/削除/スラグ衝突/上限、agent の
+  3 エンドポイントと拒否、メニュー行の増減、KEY1 再生(fake bus でプリセット→次キューの発火時刻を確認)、
+  KEY2 停止、ループ再開、ロック無効化。既存テストは無変更で全通過(全 517 件)。
+- 未対応(Conductor/Coder B 側): `conductor/fleet.py` の `write_demo`/`list_demos`/`delete_demo`、
+  `POST /api/fleet/write_demo` 等のサーバ API、Units タブの「STANDALONE DEMO」カード、README/
+  CONDUCTOR_START.md。LCD のフォント(DejaVuSans / Windows は Segoe UI)は日本語グリフを持たないため、
+  ユニットに表示する名前は ASCII のみに制限すること(14 文字、PC 側での強制が必要)。
+
 **Timeline: 赤い再生ヘッドがシーク操作そのものに(2026-09-24)**
 
 - ドックのスライダー(ドック全幅)とトラック上の再生ヘッド(名前列 150 px の右から)が同じ時刻で別の x に

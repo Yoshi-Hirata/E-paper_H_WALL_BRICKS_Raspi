@@ -65,6 +65,31 @@ LOADED, RUNNING, HOLDING, STOPPED, ENDED = (
 DELAY_UNIT_MS = 10        # conductor/showfile.py's DELAY_UNIT_MS (10 ms frames)
 
 
+def validate_show(show: dict) -> None:
+    """What `ShowPlayer.load()` needs a show file to have - also used by
+    ui/demos.py so a bad show is refused at /demo/save, not at KEY1."""
+    if not isinstance(show, dict) or not show.get("id"):
+        raise RemoteError("the show has no id")
+    cues = show.get("cues")
+    if not isinstance(cues, list) or not cues:
+        raise RemoteError("the show has no cues")
+    try:
+        float(show["refresh_s"]), float(show["duration"])
+    except (KeyError, TypeError, ValueError):
+        raise RemoteError("the show needs refresh_s and duration")
+    unit_ms = show.get("delay_unit_ms")
+    if unit_ms is not None and unit_ms != DELAY_UNIT_MS:
+        raise RemoteError(f"this unit's delay tables are "
+                          f"{DELAY_UNIT_MS} ms frames; the show says "
+                          f"{unit_ms!r}")
+    for cue in cues:
+        if not isinstance(cue, dict):
+            raise RemoteError("a cue must be an object")
+        for key in ("id", "sent", "boards", "state"):
+            if key not in cue:
+                raise RemoteError(f"cue without {key}")
+
+
 class ShowPlayer:
     def __init__(self, session, store: "Path | None" = STORE,
                  clock=time.monotonic, wall=time.time,
@@ -86,6 +111,11 @@ class ShowPlayer:
         self.state = STOPPED
         self.t0: "float | None" = None
         self.synced = False            # T0 came from the PC, not from disk
+        # A show loaded with load(show, demo=True) - ui/demos.py's stored
+        # standalone shows, played from the unit's own menu. Only changes
+        # what restore() does after a reboot (see there); everything else
+        # about running one is identical to a PC-driven show.
+        self.is_demo = False
         self.applied: "str | None" = None      # cue id on the garment now
         self.dirty = False             # some board does not show `applied`
         self.note = ""
@@ -109,31 +139,13 @@ class ShowPlayer:
 
     # ---- commands (from the agent) ----
 
-    def load(self, show: dict) -> None:
-        if not isinstance(show, dict) or not show.get("id"):
-            raise RemoteError("the show has no id")
-        cues = show.get("cues")
-        if not isinstance(cues, list) or not cues:
-            raise RemoteError("the show has no cues")
-        try:
-            float(show["refresh_s"]), float(show["duration"])
-        except (KeyError, TypeError, ValueError):
-            raise RemoteError("the show needs refresh_s and duration")
-        unit_ms = show.get("delay_unit_ms")
-        if unit_ms is not None and unit_ms != DELAY_UNIT_MS:
-            raise RemoteError(f"this unit's delay tables are "
-                              f"{DELAY_UNIT_MS} ms frames; the show says "
-                              f"{unit_ms!r}")
-        for cue in cues:
-            if not isinstance(cue, dict):
-                raise RemoteError("a cue must be an object")
-            for key in ("id", "sent", "boards", "state"):
-                if key not in cue:
-                    raise RemoteError(f"cue without {key}")
+    def load(self, show: dict, demo: bool = False) -> None:
+        validate_show(show)
         with self._lock:
             self._epoch += 1
             self._disarm()
             self.show = show
+            self.is_demo = bool(demo)
             self.state, self.t0, self.synced = LOADED, None, False
             self._forget_garment()
             self.note = ""
@@ -256,6 +268,7 @@ class ShowPlayer:
             self._write("show-run.json", {
                 "show": self.show["id"] if self.show else None,
                 "state": self.state, "applied": self.applied,
+                "demo": self.is_demo,
                 # T0 as wall time: what survives a reboot.
                 "t0_wall": (None if self.t0 is None else
                             self._wall() + (self.t0 - self._clock()))})
@@ -278,7 +291,13 @@ class ShowPlayer:
         with self._lock:
             self.show = show
             self.state = LOADED
+            self.is_demo = bool(run.get("demo"))
             if run.get("show") != show.get("id"):
+                return
+            if self.is_demo:
+                # A demo is simpler and safer left alone: it restarts only
+                # when the operator presses KEY1 again, never on its own
+                # after a power cut (a PC-driven show still resumes below).
                 return
             t0_wall = run.get("t0_wall")
             if run.get("state") != RUNNING or t0_wall is None:
@@ -336,6 +355,13 @@ class ShowPlayer:
         cue_id = key.rsplit(":", 1)[1]
         return (cue_id[:-1], True) if cue_id.endswith("+") else (cue_id, False)
 
+    @staticmethod
+    def _run_no_of(key: str) -> "int | None":
+        try:
+            return int(key.split(":", 2)[1])
+        except (IndexError, ValueError):
+            return None
+
     def _send(self, show: dict, cue: dict, whole: bool, fire_at: float,
               epoch: int) -> None:
         """Make the session hold this cue, timed for `fire_at`.
@@ -375,7 +401,16 @@ class ShowPlayer:
         whether or not the show runs (the preset comes first)."""
         session = self.session
         key = session.cue_id
-        if session.phase != FIRED or not self._owns(key) or key == self._counted:
+        if (session.phase != FIRED or not self._owns(key)
+                or key == self._counted
+                # A FIRED cue left over from a run that has since been
+                # restarted (run() bumps _run_no every time T0 starts a
+                # fresh top) must not be mistaken for this run's - most
+                # visibly on a one-cue show, where the last cue of the
+                # old run and the first of the new one are the same id
+                # and _forget_garment() has just cleared `applied` and
+                # `_counted`, so nothing else here tells them apart.
+                or self._run_no_of(key) != self._run_no):
             return
         self._counted = key
         cue_id, whole = self._parse(key)
