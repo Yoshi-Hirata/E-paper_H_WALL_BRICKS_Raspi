@@ -1,0 +1,210 @@
+"""The JS/Python cross-check for the designer simulator (plan section 2).
+
+tools/make_goldens.py reads tests/fixtures/sim/*.csv and writes
+tests/goldens/model.json and conductor/web/sim/goldens.js from the SAME
+data, computed by the real conductor.look/sequence/timeline. This file
+checks that those generated artefacts are current, and (the one test
+that actually runs JavaScript) that a browser's SIM implementation
+scores 0 failures against them.
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from conductor.look import Design, LookError, LookMap  # noqa: E402
+from conductor import sequence  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "tools"))
+import make_goldens as mg  # noqa: E402
+
+SIM_DIR = ROOT / "conductor" / "web" / "sim"
+GOLDEN_JSON = ROOT / "tests" / "goldens" / "model.json"
+
+
+@pytest.fixture(scope="module")
+def golden():
+    return json.loads(GOLDEN_JSON.read_text(encoding="utf-8"))
+
+
+def test_goldens_are_current():
+    """python tools/make_goldens.py --check must see no drift - the
+    generator recomputes goldens.js/model.json bit-for-bit deterministic
+    (sorted keys, no timestamps, no absolute paths)."""
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "make_goldens.py"), "--check"],
+        cwd=str(ROOT), capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f"tests/goldens/model.json or conductor/web/sim/goldens.js is stale - "
+        f"run python tools/make_goldens.py\nstdout={result.stdout}\nstderr={result.stderr}")
+
+
+def test_goldens_js_is_well_formed(golden):
+    text = (SIM_DIR / "goldens.js").read_text(encoding="utf-8")
+    assert text.endswith("\n")
+    assert "\r\n" not in text
+    assert str(ROOT).replace("\\", "/") not in text.replace("\\\\", "/")
+    assert "globalThis.SIM = Object.assign" in text and "GOLDENS:" in text
+    assert golden["format"] == "epaper-sim-goldens"
+
+
+def test_fixture_csvs_parse_the_same_in_python(golden):
+    """Every fixture CSV parses (or fails) the same way when read fresh
+    through conductor.look, independently of tools/make_goldens.py's own
+    caching - guards against a fixture edited without regenerating."""
+    fixtures_dir = ROOT / "tests" / "fixtures" / "sim"
+    for case in golden["cases"]:
+        if case["kind"] == "map":
+            text = fixtures_dir.joinpath(case["fixture"]).read_text(encoding="utf-8")
+            opts = case["opts"]
+            try:
+                m = LookMap.parse(io.StringIO(text), name=opts["name"], item=opts["item"])
+                ok, problems = True, []
+            except LookError as exc:
+                m, ok, problems = None, False, list(exc.problems)
+            assert ok == case["expect"]["ok"], case["fixture"]
+            if not ok:
+                assert problems == case["expect"]["problems"], case["fixture"]
+        elif case["kind"] == "design":
+            text = fixtures_dir.joinpath(case["fixture"]).read_text(encoding="utf-8")
+            opts = case["opts"]
+            try:
+                Design.parse(io.StringIO(text), name=opts["name"], item=opts["item"],
+                             pattern=opts["pattern"])
+                ok = True
+            except LookError:
+                ok = False
+            assert ok == case["expect"]["ok"], case["fixture"]
+
+
+def test_goldens_cover_every_sequence_and_rule(golden):
+    seq_covered = {c["sequence"] for c in golden["cases"] if c["kind"] == "ranks"}
+    assert seq_covered == set(sequence.SEQUENCES)
+
+    kinds = {c["kind"] for c in golden["cases"]}
+    for expected_kind in ("fmt", "clock", "mmss", "map", "design", "check", "ranks",
+                          "timeline", "state"):
+        assert expected_kind in kinds, f"no golden cases of kind {expected_kind!r}"
+
+    # The exact half-to-even landmark: Python rounds 2.25 to one decimal
+    # as "2.2" (even), not the "2.3" a naive JS Math.round-based toFixed
+    # would give - this is the whole reason SIM.fmt exists.
+    tie = [c for c in golden["cases"]
+          if c["kind"] == "fmt" and c["op"] == "fixed" and c["x"] == 2.25 and c["n"] == 1]
+    assert tie and tie[0]["expect"] == "2.2"
+
+    # Every validate() spacing "binding" (write/refresh/rejoin) and the
+    # design-kind/no-preset/sweep rules appear somewhere in the timeline
+    # goldens, not just as Python unit tests nobody ported.
+    all_problems = " ".join(
+        p for c in golden["cases"] if c["kind"] == "timeline"
+        for plist in c["expect"]["problems"].values() for p in plist)
+    all_warnings = " ".join(
+        w for c in golden["cases"] if c["kind"] == "timeline" for w in c["expect"]["warnings"])
+    for phrase in ("refresh + ", "writing its", "may still be rejoining",
+                  "is not loaded", "make this a partial cue", "after the end of the show",
+                  "already has a cue sent at the same moment",
+                  "previous picture is complete", "sweep is at most 30 s",
+                  "needs the item's map to be timed"):
+        assert phrase in all_problems, phrase
+    assert "no preset at 0:00" in all_warnings
+
+
+def test_canonical_and_digest_match_a_recorded_table():
+    """A pinned table (computed once, by hand-inspecting the output) that
+    both tools/make_goldens.py's canonical()/digest64() and model.js's
+    SIM.fmt.canonical()/digest64() must reproduce - this is the browser
+    self-test's real cross-check, recorded here so a Python-only run
+    still catches a regression in the Python half."""
+    table = [
+        (0, "0", "af63ad4c86019caf"),
+        (5, "5", "af63a84c86019430"),
+        (-5, "-5", "07d00f07b497d7f7"),
+        (2.5, "2.500", "ac5b7dc41134559c"),
+        (0.5, "0.500", "d45564b0f53aea22"),
+        ("a", '"a"', "d4272417d7c77eea"),
+        ('a"b', '"a\\"b"', "aea405f405787fda"),
+        (True, "true", "5b5c98ef514dbfa5"),
+        (False, "false", "b5fae2c14238b978"),
+        (None, "null", "5b9bc4ba528108e4"),
+        ([1, 2, "x"], '[1,2,"x"]', "6893ac5ba04fa4f2"),
+        ({"b": 1, "a": 2}, '{"a":2,"b":1}', "f85f5878cbf2dc03"),
+        ("\u65e5\u672c\u8a9e", '"\\u65e5\\u672c\\u8a9e"', "9a5893e1cdc4beb6"),
+    ]
+    for value, expect_canonical, expect_digest in table:
+        got_canonical = mg.canonical(value)
+        assert got_canonical == expect_canonical, value
+        assert mg.digest64(got_canonical) == expect_digest, value
+
+
+def _find_browser() -> "str | None":
+    env = os.environ.get("CONDUCTOR_BROWSER")
+    candidates = [env] if env else []
+    candidates += [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        shutil.which("msedge"),
+        shutil.which("microsoft-edge"),
+        shutil.which("google-chrome"),
+        shutil.which("chrome"),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _standalone_harness() -> str:
+    """A tiny self-contained page (no designer.html, no UI) that inlines
+    model.js + state.js + goldens.js + selftest.js in dependency order -
+    until Q's dist/az27ss-simulator.html exists, this is what proves
+    Coder P's branch is testable standalone (plan section 6)."""
+    parts = []
+    for name in ("model.js", "state.js", "goldens.js", "selftest.js"):
+        text = (SIM_DIR / name).read_text(encoding="utf-8")
+        assert "</script" not in text.lower(), f"{name} contains a literal </script"
+        parts.append(f"<script>\n{text}\n</script>")
+    body = "\n".join(parts)
+    return f"<!doctype html>\n<html><head><meta charset=\"utf-8\"></head><body>\n{body}\n</body></html>\n"
+
+
+def test_browser_selftest_passes(tmp_path):
+    browser = _find_browser()
+    forced = os.environ.get("CONDUCTOR_BROWSER_TESTS") == "1"
+    if not browser:
+        if forced:
+            pytest.fail("CONDUCTOR_BROWSER_TESTS=1 but no browser was found "
+                       "(set $CONDUCTOR_BROWSER to its path)")
+        pytest.skip("no Edge/Chrome found - set CONDUCTOR_BROWSER_TESTS=1 to force")
+
+    html_path = tmp_path / "selftest_harness.html"
+    html_path.write_text(_standalone_harness(), encoding="utf-8")
+    url = "file:///" + str(html_path.resolve()).replace("\\", "/") + "#selftest"
+    user_data_dir = tmp_path / "user-data"
+    args = [browser, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+           f"--user-data-dir={user_data_dir}", "--virtual-time-budget=20000",
+           "--dump-dom", url]
+    result = subprocess.run(args, capture_output=True, timeout=60)
+    dom = result.stdout.decode("utf-8", errors="replace")
+    match = re.search(r'data-ok="(true|false)" data-total="(\d+)" data-failed="(\d+)"', dom)
+    assert match, f"no #selftest-out found in the dumped DOM (rc={result.returncode}):\n{dom[:3000]}\n" \
+                  f"stderr: {result.stderr.decode('utf-8', errors='replace')[:2000]}"
+    ok, total, failed = match.group(1), int(match.group(2)), int(match.group(3))
+    if ok != "true":
+        detail = re.search(r'<pre id="selftest-out"[^>]*>(.*?)</pre>', dom, re.S)
+        pytest.fail(f"browser self-test failed ({failed}/{total}):\n"
+                   f"{detail.group(1) if detail else dom[:3000]}")
+    assert total > 900          # sanity: the goldens really did load and run

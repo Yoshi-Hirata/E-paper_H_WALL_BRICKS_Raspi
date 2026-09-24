@@ -1,0 +1,11093 @@
+{
+ "cases": [
+  {
+   "expect": "-5.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.95
+  },
+  {
+   "expect": -5.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.95
+  },
+  {
+   "expect": "-4.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.8500000000000005
+  },
+  {
+   "expect": -4.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.8500000000000005
+  },
+  {
+   "expect": "-4.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.750000000000001
+  },
+  {
+   "expect": -4.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.750000000000001
+  },
+  {
+   "expect": "-4.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.65
+  },
+  {
+   "expect": -4.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.65
+  },
+  {
+   "expect": "-4.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.550000000000001
+  },
+  {
+   "expect": -4.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.550000000000001
+  },
+  {
+   "expect": "-4.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.45
+  },
+  {
+   "expect": -4.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.45
+  },
+  {
+   "expect": "-4.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.3500000000000005
+  },
+  {
+   "expect": -4.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.3500000000000005
+  },
+  {
+   "expect": "-4.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.25
+  },
+  {
+   "expect": -4.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.25
+  },
+  {
+   "expect": "-4.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.15
+  },
+  {
+   "expect": -4.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.15
+  },
+  {
+   "expect": "-4.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -4.050000000000001
+  },
+  {
+   "expect": -4.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -4.050000000000001
+  },
+  {
+   "expect": "-4.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.95
+  },
+  {
+   "expect": -4.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.95
+  },
+  {
+   "expect": "-3.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.8500000000000005
+  },
+  {
+   "expect": -3.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.8500000000000005
+  },
+  {
+   "expect": "-3.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.7500000000000004
+  },
+  {
+   "expect": -3.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.7500000000000004
+  },
+  {
+   "expect": "-3.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.6500000000000004
+  },
+  {
+   "expect": -3.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.6500000000000004
+  },
+  {
+   "expect": "-3.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.5500000000000003
+  },
+  {
+   "expect": -3.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.5500000000000003
+  },
+  {
+   "expect": "-3.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.45
+  },
+  {
+   "expect": -3.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.45
+  },
+  {
+   "expect": "-3.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.3500000000000005
+  },
+  {
+   "expect": -3.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.3500000000000005
+  },
+  {
+   "expect": "-3.3",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.2500000000000004
+  },
+  {
+   "expect": -3.3,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.2500000000000004
+  },
+  {
+   "expect": "-3.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.1500000000000004
+  },
+  {
+   "expect": -3.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.1500000000000004
+  },
+  {
+   "expect": "-3.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -3.0500000000000003
+  },
+  {
+   "expect": -3.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -3.0500000000000003
+  },
+  {
+   "expect": "-3.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.95
+  },
+  {
+   "expect": -3.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.95
+  },
+  {
+   "expect": "-2.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.8500000000000005
+  },
+  {
+   "expect": -2.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.8500000000000005
+  },
+  {
+   "expect": "-2.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.7500000000000004
+  },
+  {
+   "expect": -2.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.7500000000000004
+  },
+  {
+   "expect": "-2.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.6500000000000004
+  },
+  {
+   "expect": -2.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.6500000000000004
+  },
+  {
+   "expect": "-2.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.5500000000000003
+  },
+  {
+   "expect": -2.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.5500000000000003
+  },
+  {
+   "expect": "-2.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.45
+  },
+  {
+   "expect": -2.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.45
+  },
+  {
+   "expect": "-2.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.3500000000000005
+  },
+  {
+   "expect": -2.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.3500000000000005
+  },
+  {
+   "expect": "-2.3",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.2500000000000004
+  },
+  {
+   "expect": -2.3,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.2500000000000004
+  },
+  {
+   "expect": "-2.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.1500000000000004
+  },
+  {
+   "expect": -2.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.1500000000000004
+  },
+  {
+   "expect": "-2.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.0500000000000003
+  },
+  {
+   "expect": -2.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.0500000000000003
+  },
+  {
+   "expect": "-1.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.95
+  },
+  {
+   "expect": -1.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.95
+  },
+  {
+   "expect": "-1.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.85
+  },
+  {
+   "expect": -1.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.85
+  },
+  {
+   "expect": "-1.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.75
+  },
+  {
+   "expect": -1.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.75
+  },
+  {
+   "expect": "-1.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.6500000000000001
+  },
+  {
+   "expect": -1.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.6500000000000001
+  },
+  {
+   "expect": "-1.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.55
+  },
+  {
+   "expect": -1.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.55
+  },
+  {
+   "expect": "-1.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.45
+  },
+  {
+   "expect": -1.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.45
+  },
+  {
+   "expect": "-1.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.35
+  },
+  {
+   "expect": -1.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.35
+  },
+  {
+   "expect": "-1.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.25
+  },
+  {
+   "expect": -1.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.25
+  },
+  {
+   "expect": "-1.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.1500000000000001
+  },
+  {
+   "expect": -1.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.1500000000000001
+  },
+  {
+   "expect": "-1.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -1.05
+  },
+  {
+   "expect": -1.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -1.05
+  },
+  {
+   "expect": "-0.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.95
+  },
+  {
+   "expect": -0.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.95
+  },
+  {
+   "expect": "-0.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.85
+  },
+  {
+   "expect": -0.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.85
+  },
+  {
+   "expect": "-0.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.75
+  },
+  {
+   "expect": -0.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.75
+  },
+  {
+   "expect": "-0.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.65
+  },
+  {
+   "expect": -0.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.65
+  },
+  {
+   "expect": "-0.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.55
+  },
+  {
+   "expect": -0.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.55
+  },
+  {
+   "expect": "-0.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.45
+  },
+  {
+   "expect": -0.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.45
+  },
+  {
+   "expect": "-0.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.35000000000000003
+  },
+  {
+   "expect": -0.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.35000000000000003
+  },
+  {
+   "expect": "-0.3",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.25000000000000006
+  },
+  {
+   "expect": -0.3,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.25000000000000006
+  },
+  {
+   "expect": "-0.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.15000000000000002
+  },
+  {
+   "expect": -0.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.15000000000000002
+  },
+  {
+   "expect": "-0.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.05
+  },
+  {
+   "expect": -0.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.05
+  },
+  {
+   "expect": "0.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.05
+  },
+  {
+   "expect": 0.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.05
+  },
+  {
+   "expect": "0.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.15000000000000002
+  },
+  {
+   "expect": 0.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.15000000000000002
+  },
+  {
+   "expect": "0.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.25
+  },
+  {
+   "expect": 0.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.25
+  },
+  {
+   "expect": "0.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.35000000000000003
+  },
+  {
+   "expect": 0.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.35000000000000003
+  },
+  {
+   "expect": "0.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.45
+  },
+  {
+   "expect": 0.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.45
+  },
+  {
+   "expect": "0.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.55
+  },
+  {
+   "expect": 0.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.55
+  },
+  {
+   "expect": "0.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.6500000000000001
+  },
+  {
+   "expect": 0.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.6500000000000001
+  },
+  {
+   "expect": "0.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.7500000000000001
+  },
+  {
+   "expect": 0.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.7500000000000001
+  },
+  {
+   "expect": "0.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.8500000000000001
+  },
+  {
+   "expect": 0.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.8500000000000001
+  },
+  {
+   "expect": "1.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.9500000000000001
+  },
+  {
+   "expect": 1.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.9500000000000001
+  },
+  {
+   "expect": "1.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.05
+  },
+  {
+   "expect": 1.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.05
+  },
+  {
+   "expect": "1.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.1500000000000001
+  },
+  {
+   "expect": 1.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.1500000000000001
+  },
+  {
+   "expect": "1.3",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.2500000000000002
+  },
+  {
+   "expect": 1.3,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.2500000000000002
+  },
+  {
+   "expect": "1.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.35
+  },
+  {
+   "expect": 1.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.35
+  },
+  {
+   "expect": "1.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.4500000000000002
+  },
+  {
+   "expect": 1.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.4500000000000002
+  },
+  {
+   "expect": "1.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.55
+  },
+  {
+   "expect": 1.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.55
+  },
+  {
+   "expect": "1.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.6500000000000001
+  },
+  {
+   "expect": 1.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.6500000000000001
+  },
+  {
+   "expect": "1.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.7500000000000002
+  },
+  {
+   "expect": 1.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.7500000000000002
+  },
+  {
+   "expect": "1.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.85
+  },
+  {
+   "expect": 1.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.85
+  },
+  {
+   "expect": "2.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.9500000000000002
+  },
+  {
+   "expect": 2.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.9500000000000002
+  },
+  {
+   "expect": "2.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.05
+  },
+  {
+   "expect": 2.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.05
+  },
+  {
+   "expect": "2.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.15
+  },
+  {
+   "expect": 2.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.15
+  },
+  {
+   "expect": "2.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.25
+  },
+  {
+   "expect": 2.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.25
+  },
+  {
+   "expect": "2.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.35
+  },
+  {
+   "expect": 2.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.35
+  },
+  {
+   "expect": "2.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.45
+  },
+  {
+   "expect": 2.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.45
+  },
+  {
+   "expect": "2.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.55
+  },
+  {
+   "expect": 2.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.55
+  },
+  {
+   "expect": "2.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.65
+  },
+  {
+   "expect": 2.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.65
+  },
+  {
+   "expect": "2.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.75
+  },
+  {
+   "expect": 2.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.75
+  },
+  {
+   "expect": "2.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.85
+  },
+  {
+   "expect": 2.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.85
+  },
+  {
+   "expect": "3.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.95
+  },
+  {
+   "expect": 3.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.95
+  },
+  {
+   "expect": "3.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.05
+  },
+  {
+   "expect": 3.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.05
+  },
+  {
+   "expect": "3.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.15
+  },
+  {
+   "expect": 3.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.15
+  },
+  {
+   "expect": "3.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.25
+  },
+  {
+   "expect": 3.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.25
+  },
+  {
+   "expect": "3.4",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.35
+  },
+  {
+   "expect": 3.4,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.35
+  },
+  {
+   "expect": "3.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.45
+  },
+  {
+   "expect": 3.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.45
+  },
+  {
+   "expect": "3.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.55
+  },
+  {
+   "expect": 3.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.55
+  },
+  {
+   "expect": "3.6",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.65
+  },
+  {
+   "expect": 3.6,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.65
+  },
+  {
+   "expect": "3.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.75
+  },
+  {
+   "expect": 3.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.75
+  },
+  {
+   "expect": "3.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.85
+  },
+  {
+   "expect": 3.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.85
+  },
+  {
+   "expect": "4.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 3.95
+  },
+  {
+   "expect": 4.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 3.95
+  },
+  {
+   "expect": "4.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.05
+  },
+  {
+   "expect": 4.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.05
+  },
+  {
+   "expect": "4.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.15
+  },
+  {
+   "expect": 4.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.15
+  },
+  {
+   "expect": "4.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.25
+  },
+  {
+   "expect": 4.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.25
+  },
+  {
+   "expect": "4.3",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.35
+  },
+  {
+   "expect": 4.3,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.35
+  },
+  {
+   "expect": "4.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.45
+  },
+  {
+   "expect": 4.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.45
+  },
+  {
+   "expect": "4.5",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.55
+  },
+  {
+   "expect": 4.5,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.55
+  },
+  {
+   "expect": "4.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.65
+  },
+  {
+   "expect": 4.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.65
+  },
+  {
+   "expect": "4.8",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.75
+  },
+  {
+   "expect": 4.8,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.75
+  },
+  {
+   "expect": "4.9",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.8500000000000005
+  },
+  {
+   "expect": 4.9,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.8500000000000005
+  },
+  {
+   "expect": "5.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 4.95
+  },
+  {
+   "expect": 5.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 4.95
+  },
+  {
+   "expect": "5.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 5.05
+  },
+  {
+   "expect": 5.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 5.05
+  },
+  {
+   "expect": "-0.99",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.995
+  },
+  {
+   "expect": -0.99,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.995
+  },
+  {
+   "expect": "-0.98",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.985
+  },
+  {
+   "expect": -0.98,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.985
+  },
+  {
+   "expect": "-0.97",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.975
+  },
+  {
+   "expect": -0.97,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.975
+  },
+  {
+   "expect": "-0.96",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.965
+  },
+  {
+   "expect": -0.96,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.965
+  },
+  {
+   "expect": "-0.95",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.955
+  },
+  {
+   "expect": -0.95,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.955
+  },
+  {
+   "expect": "-0.95",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.9450000000000001
+  },
+  {
+   "expect": -0.95,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.9450000000000001
+  },
+  {
+   "expect": "-0.94",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.935
+  },
+  {
+   "expect": -0.94,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.935
+  },
+  {
+   "expect": "-0.93",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.925
+  },
+  {
+   "expect": -0.93,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.925
+  },
+  {
+   "expect": "-0.92",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.915
+  },
+  {
+   "expect": -0.92,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.915
+  },
+  {
+   "expect": "-0.91",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.905
+  },
+  {
+   "expect": -0.91,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.905
+  },
+  {
+   "expect": "-0.90",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.895
+  },
+  {
+   "expect": -0.9,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.895
+  },
+  {
+   "expect": "-0.89",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.885
+  },
+  {
+   "expect": -0.89,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.885
+  },
+  {
+   "expect": "-0.88",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.875
+  },
+  {
+   "expect": -0.88,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.875
+  },
+  {
+   "expect": "-0.86",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.865
+  },
+  {
+   "expect": -0.86,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.865
+  },
+  {
+   "expect": "-0.85",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.855
+  },
+  {
+   "expect": -0.85,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.855
+  },
+  {
+   "expect": "-0.84",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.845
+  },
+  {
+   "expect": -0.84,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.845
+  },
+  {
+   "expect": "-0.83",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.835
+  },
+  {
+   "expect": -0.83,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.835
+  },
+  {
+   "expect": "-0.83",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.8250000000000001
+  },
+  {
+   "expect": -0.83,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.8250000000000001
+  },
+  {
+   "expect": "-0.82",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.8150000000000001
+  },
+  {
+   "expect": -0.82,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.8150000000000001
+  },
+  {
+   "expect": "-0.81",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.805
+  },
+  {
+   "expect": -0.81,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.805
+  },
+  {
+   "expect": "-0.80",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.795
+  },
+  {
+   "expect": -0.8,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.795
+  },
+  {
+   "expect": "-0.79",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.785
+  },
+  {
+   "expect": -0.79,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.785
+  },
+  {
+   "expect": "-0.78",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.775
+  },
+  {
+   "expect": -0.78,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.775
+  },
+  {
+   "expect": "-0.77",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.765
+  },
+  {
+   "expect": -0.77,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.765
+  },
+  {
+   "expect": "-0.76",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.755
+  },
+  {
+   "expect": -0.76,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.755
+  },
+  {
+   "expect": "-0.74",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.745
+  },
+  {
+   "expect": -0.74,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.745
+  },
+  {
+   "expect": "-0.73",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.735
+  },
+  {
+   "expect": -0.73,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.735
+  },
+  {
+   "expect": "-0.72",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.725
+  },
+  {
+   "expect": -0.72,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.725
+  },
+  {
+   "expect": "-0.71",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.715
+  },
+  {
+   "expect": -0.71,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.715
+  },
+  {
+   "expect": "-0.70",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.705
+  },
+  {
+   "expect": -0.7,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.705
+  },
+  {
+   "expect": "-0.70",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.6950000000000001
+  },
+  {
+   "expect": -0.7,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.6950000000000001
+  },
+  {
+   "expect": "-0.69",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.685
+  },
+  {
+   "expect": -0.69,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.685
+  },
+  {
+   "expect": "-0.68",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.675
+  },
+  {
+   "expect": -0.68,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.675
+  },
+  {
+   "expect": "-0.67",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.665
+  },
+  {
+   "expect": -0.67,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.665
+  },
+  {
+   "expect": "-0.66",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.655
+  },
+  {
+   "expect": -0.66,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.655
+  },
+  {
+   "expect": "-0.65",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.645
+  },
+  {
+   "expect": -0.65,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.645
+  },
+  {
+   "expect": "-0.64",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.635
+  },
+  {
+   "expect": -0.64,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.635
+  },
+  {
+   "expect": "-0.62",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.625
+  },
+  {
+   "expect": -0.62,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.625
+  },
+  {
+   "expect": "-0.61",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.615
+  },
+  {
+   "expect": -0.61,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.615
+  },
+  {
+   "expect": "-0.60",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.605
+  },
+  {
+   "expect": -0.6,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.605
+  },
+  {
+   "expect": "-0.59",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.595
+  },
+  {
+   "expect": -0.59,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.595
+  },
+  {
+   "expect": "-0.58",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.585
+  },
+  {
+   "expect": -0.58,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.585
+  },
+  {
+   "expect": "-0.57",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.575
+  },
+  {
+   "expect": -0.57,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.575
+  },
+  {
+   "expect": "-0.57",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.5650000000000001
+  },
+  {
+   "expect": -0.57,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.5650000000000001
+  },
+  {
+   "expect": "-0.56",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.555
+  },
+  {
+   "expect": -0.56,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.555
+  },
+  {
+   "expect": "-0.55",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.545
+  },
+  {
+   "expect": -0.55,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.545
+  },
+  {
+   "expect": "-0.54",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.535
+  },
+  {
+   "expect": -0.54,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.535
+  },
+  {
+   "expect": "-0.53",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.525
+  },
+  {
+   "expect": -0.53,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.525
+  },
+  {
+   "expect": "-0.52",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.515
+  },
+  {
+   "expect": -0.52,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.515
+  },
+  {
+   "expect": "-0.51",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.505
+  },
+  {
+   "expect": -0.51,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.505
+  },
+  {
+   "expect": "-0.49",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.495
+  },
+  {
+   "expect": -0.49,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.495
+  },
+  {
+   "expect": "-0.48",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.485
+  },
+  {
+   "expect": -0.48,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.485
+  },
+  {
+   "expect": "-0.47",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.475
+  },
+  {
+   "expect": -0.47,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.475
+  },
+  {
+   "expect": "-0.47",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.465
+  },
+  {
+   "expect": -0.47,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.465
+  },
+  {
+   "expect": "-0.46",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.455
+  },
+  {
+   "expect": -0.46,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.455
+  },
+  {
+   "expect": "-0.45",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.445
+  },
+  {
+   "expect": -0.45,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.445
+  },
+  {
+   "expect": "-0.43",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.435
+  },
+  {
+   "expect": -0.43,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.435
+  },
+  {
+   "expect": "-0.42",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.425
+  },
+  {
+   "expect": -0.42,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.425
+  },
+  {
+   "expect": "-0.41",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.415
+  },
+  {
+   "expect": -0.41,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.415
+  },
+  {
+   "expect": "-0.41",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.405
+  },
+  {
+   "expect": -0.41,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.405
+  },
+  {
+   "expect": "-0.40",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.395
+  },
+  {
+   "expect": -0.4,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.395
+  },
+  {
+   "expect": "-0.39",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.385
+  },
+  {
+   "expect": -0.39,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.385
+  },
+  {
+   "expect": "-0.38",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.375
+  },
+  {
+   "expect": -0.38,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.375
+  },
+  {
+   "expect": "-0.36",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.365
+  },
+  {
+   "expect": -0.36,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.365
+  },
+  {
+   "expect": "-0.35",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.355
+  },
+  {
+   "expect": -0.35,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.355
+  },
+  {
+   "expect": "-0.35",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.34500000000000003
+  },
+  {
+   "expect": -0.35,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.34500000000000003
+  },
+  {
+   "expect": "-0.34",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.335
+  },
+  {
+   "expect": -0.34,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.335
+  },
+  {
+   "expect": "-0.33",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.325
+  },
+  {
+   "expect": -0.33,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.325
+  },
+  {
+   "expect": "-0.32",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.315
+  },
+  {
+   "expect": -0.32,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.315
+  },
+  {
+   "expect": "-0.30",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.305
+  },
+  {
+   "expect": -0.3,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.305
+  },
+  {
+   "expect": "-0.29",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.295
+  },
+  {
+   "expect": -0.29,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.295
+  },
+  {
+   "expect": "-0.28",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.285
+  },
+  {
+   "expect": -0.28,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.285
+  },
+  {
+   "expect": "-0.28",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.275
+  },
+  {
+   "expect": -0.28,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.275
+  },
+  {
+   "expect": "-0.27",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.265
+  },
+  {
+   "expect": -0.27,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.265
+  },
+  {
+   "expect": "-0.26",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.255
+  },
+  {
+   "expect": -0.26,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.255
+  },
+  {
+   "expect": "-0.24",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.245
+  },
+  {
+   "expect": -0.24,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.245
+  },
+  {
+   "expect": "-0.23",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.235
+  },
+  {
+   "expect": -0.23,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.235
+  },
+  {
+   "expect": "-0.23",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.225
+  },
+  {
+   "expect": -0.23,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.225
+  },
+  {
+   "expect": "-0.21",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.215
+  },
+  {
+   "expect": -0.21,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.215
+  },
+  {
+   "expect": "-0.20",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.205
+  },
+  {
+   "expect": -0.2,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.205
+  },
+  {
+   "expect": "-0.20",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.195
+  },
+  {
+   "expect": -0.2,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.195
+  },
+  {
+   "expect": "-0.18",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.185
+  },
+  {
+   "expect": -0.18,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.185
+  },
+  {
+   "expect": "-0.17",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.175
+  },
+  {
+   "expect": -0.17,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.175
+  },
+  {
+   "expect": "-0.17",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.165
+  },
+  {
+   "expect": -0.17,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.165
+  },
+  {
+   "expect": "-0.15",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.155
+  },
+  {
+   "expect": -0.15,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.155
+  },
+  {
+   "expect": "-0.14",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.145
+  },
+  {
+   "expect": -0.14,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.145
+  },
+  {
+   "expect": "-0.14",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.135
+  },
+  {
+   "expect": -0.14,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.135
+  },
+  {
+   "expect": "-0.12",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.125
+  },
+  {
+   "expect": -0.12,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.125
+  },
+  {
+   "expect": "-0.11",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.11499999999999999
+  },
+  {
+   "expect": -0.11,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.11499999999999999
+  },
+  {
+   "expect": "-0.10",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.105
+  },
+  {
+   "expect": -0.1,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.105
+  },
+  {
+   "expect": "-0.10",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.095
+  },
+  {
+   "expect": -0.1,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.095
+  },
+  {
+   "expect": "-0.08",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.08499999999999999
+  },
+  {
+   "expect": -0.08,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.08499999999999999
+  },
+  {
+   "expect": "-0.07",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.075
+  },
+  {
+   "expect": -0.07,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.075
+  },
+  {
+   "expect": "-0.07",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.065
+  },
+  {
+   "expect": -0.07,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.065
+  },
+  {
+   "expect": "-0.06",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.055
+  },
+  {
+   "expect": -0.06,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.055
+  },
+  {
+   "expect": "-0.05",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.045000000000000005
+  },
+  {
+   "expect": -0.05,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.045000000000000005
+  },
+  {
+   "expect": "-0.04",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.035
+  },
+  {
+   "expect": -0.04,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.035
+  },
+  {
+   "expect": "-0.02",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.024999999999999998
+  },
+  {
+   "expect": -0.02,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.024999999999999998
+  },
+  {
+   "expect": "-0.01",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.015
+  },
+  {
+   "expect": -0.01,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.015
+  },
+  {
+   "expect": "-0.01",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.005
+  },
+  {
+   "expect": -0.01,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": -0.005
+  },
+  {
+   "expect": "0.01",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.005
+  },
+  {
+   "expect": 0.01,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.005
+  },
+  {
+   "expect": "0.01",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.015
+  },
+  {
+   "expect": 0.01,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.015
+  },
+  {
+   "expect": "0.03",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.025
+  },
+  {
+   "expect": 0.03,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.025
+  },
+  {
+   "expect": "0.03",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.034999999999999996
+  },
+  {
+   "expect": 0.03,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.034999999999999996
+  },
+  {
+   "expect": "0.04",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.045
+  },
+  {
+   "expect": 0.04,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.045
+  },
+  {
+   "expect": "0.06",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.055
+  },
+  {
+   "expect": 0.06,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.055
+  },
+  {
+   "expect": "0.07",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.065
+  },
+  {
+   "expect": 0.07,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.065
+  },
+  {
+   "expect": "0.08",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.07500000000000001
+  },
+  {
+   "expect": 0.08,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.07500000000000001
+  },
+  {
+   "expect": "0.09",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.085
+  },
+  {
+   "expect": 0.09,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.085
+  },
+  {
+   "expect": "0.10",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.095
+  },
+  {
+   "expect": 0.1,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.095
+  },
+  {
+   "expect": "0.11",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.10500000000000001
+  },
+  {
+   "expect": 0.11,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.10500000000000001
+  },
+  {
+   "expect": "0.12",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.115
+  },
+  {
+   "expect": 0.12,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.115
+  },
+  {
+   "expect": "0.12",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.125
+  },
+  {
+   "expect": 0.12,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.125
+  },
+  {
+   "expect": "0.14",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.135
+  },
+  {
+   "expect": 0.14,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.135
+  },
+  {
+   "expect": "0.15",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.14500000000000002
+  },
+  {
+   "expect": 0.15,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.14500000000000002
+  },
+  {
+   "expect": "0.15",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.155
+  },
+  {
+   "expect": 0.15,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.155
+  },
+  {
+   "expect": "0.17",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.165
+  },
+  {
+   "expect": 0.17,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.165
+  },
+  {
+   "expect": "0.18",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.17500000000000002
+  },
+  {
+   "expect": 0.18,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.17500000000000002
+  },
+  {
+   "expect": "0.18",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.185
+  },
+  {
+   "expect": 0.18,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.185
+  },
+  {
+   "expect": "0.20",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.195
+  },
+  {
+   "expect": 0.2,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.195
+  },
+  {
+   "expect": "0.21",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.20500000000000002
+  },
+  {
+   "expect": 0.21,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.20500000000000002
+  },
+  {
+   "expect": "0.21",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.215
+  },
+  {
+   "expect": 0.21,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.215
+  },
+  {
+   "expect": "0.23",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.225
+  },
+  {
+   "expect": 0.23,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.225
+  },
+  {
+   "expect": "0.24",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.23500000000000001
+  },
+  {
+   "expect": 0.24,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.23500000000000001
+  },
+  {
+   "expect": "0.24",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.245
+  },
+  {
+   "expect": 0.24,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.245
+  },
+  {
+   "expect": "0.26",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.255
+  },
+  {
+   "expect": 0.26,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.255
+  },
+  {
+   "expect": "0.27",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.265
+  },
+  {
+   "expect": 0.27,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.265
+  },
+  {
+   "expect": "0.28",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.275
+  },
+  {
+   "expect": 0.28,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.275
+  },
+  {
+   "expect": "0.29",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.28500000000000003
+  },
+  {
+   "expect": 0.29,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.28500000000000003
+  },
+  {
+   "expect": "0.29",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.295
+  },
+  {
+   "expect": 0.29,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.295
+  },
+  {
+   "expect": "0.30",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.305
+  },
+  {
+   "expect": 0.3,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.305
+  },
+  {
+   "expect": "0.32",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.315
+  },
+  {
+   "expect": 0.32,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.315
+  },
+  {
+   "expect": "0.33",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.325
+  },
+  {
+   "expect": 0.33,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.325
+  },
+  {
+   "expect": "0.34",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.335
+  },
+  {
+   "expect": 0.34,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.335
+  },
+  {
+   "expect": "0.35",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.34500000000000003
+  },
+  {
+   "expect": 0.35,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.34500000000000003
+  },
+  {
+   "expect": "0.36",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.35500000000000004
+  },
+  {
+   "expect": 0.36,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.35500000000000004
+  },
+  {
+   "expect": "0.36",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.365
+  },
+  {
+   "expect": 0.36,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.365
+  },
+  {
+   "expect": "0.38",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.375
+  },
+  {
+   "expect": 0.38,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.375
+  },
+  {
+   "expect": "0.39",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.385
+  },
+  {
+   "expect": 0.39,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.385
+  },
+  {
+   "expect": "0.40",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.395
+  },
+  {
+   "expect": 0.4,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.395
+  },
+  {
+   "expect": "0.41",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.405
+  },
+  {
+   "expect": 0.41,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.405
+  },
+  {
+   "expect": "0.42",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.41500000000000004
+  },
+  {
+   "expect": 0.42,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.41500000000000004
+  },
+  {
+   "expect": "0.42",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.425
+  },
+  {
+   "expect": 0.42,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.425
+  },
+  {
+   "expect": "0.43",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.435
+  },
+  {
+   "expect": 0.43,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.435
+  },
+  {
+   "expect": "0.45",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.445
+  },
+  {
+   "expect": 0.45,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.445
+  },
+  {
+   "expect": "0.46",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.455
+  },
+  {
+   "expect": 0.46,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.455
+  },
+  {
+   "expect": "0.47",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.465
+  },
+  {
+   "expect": 0.47,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.465
+  },
+  {
+   "expect": "0.48",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.47500000000000003
+  },
+  {
+   "expect": 0.48,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.47500000000000003
+  },
+  {
+   "expect": "0.48",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.485
+  },
+  {
+   "expect": 0.48,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.485
+  },
+  {
+   "expect": "0.49",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.495
+  },
+  {
+   "expect": 0.49,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.495
+  },
+  {
+   "expect": "0.51",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.505
+  },
+  {
+   "expect": 0.51,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.505
+  },
+  {
+   "expect": "0.52",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.515
+  },
+  {
+   "expect": 0.52,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.515
+  },
+  {
+   "expect": "0.53",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.525
+  },
+  {
+   "expect": 0.53,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.525
+  },
+  {
+   "expect": "0.54",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.535
+  },
+  {
+   "expect": 0.54,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.535
+  },
+  {
+   "expect": "0.55",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.545
+  },
+  {
+   "expect": 0.55,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.545
+  },
+  {
+   "expect": "0.56",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.555
+  },
+  {
+   "expect": 0.56,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.555
+  },
+  {
+   "expect": "0.57",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.5650000000000001
+  },
+  {
+   "expect": 0.57,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.5650000000000001
+  },
+  {
+   "expect": "0.58",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.5750000000000001
+  },
+  {
+   "expect": 0.58,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.5750000000000001
+  },
+  {
+   "expect": "0.58",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.585
+  },
+  {
+   "expect": 0.58,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.585
+  },
+  {
+   "expect": "0.59",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.595
+  },
+  {
+   "expect": 0.59,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.595
+  },
+  {
+   "expect": "0.60",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.605
+  },
+  {
+   "expect": 0.6,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.605
+  },
+  {
+   "expect": "0.61",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.615
+  },
+  {
+   "expect": 0.61,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.615
+  },
+  {
+   "expect": "0.62",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.625
+  },
+  {
+   "expect": 0.62,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.625
+  },
+  {
+   "expect": "0.64",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.635
+  },
+  {
+   "expect": 0.64,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.635
+  },
+  {
+   "expect": "0.65",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.645
+  },
+  {
+   "expect": 0.65,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.645
+  },
+  {
+   "expect": "0.66",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.655
+  },
+  {
+   "expect": 0.66,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.655
+  },
+  {
+   "expect": "0.67",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.665
+  },
+  {
+   "expect": 0.67,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.665
+  },
+  {
+   "expect": "0.68",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.675
+  },
+  {
+   "expect": 0.68,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.675
+  },
+  {
+   "expect": "0.69",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.685
+  },
+  {
+   "expect": 0.69,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.685
+  },
+  {
+   "expect": "0.70",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.6950000000000001
+  },
+  {
+   "expect": 0.7,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.6950000000000001
+  },
+  {
+   "expect": "0.71",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.7050000000000001
+  },
+  {
+   "expect": 0.71,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.7050000000000001
+  },
+  {
+   "expect": "0.71",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.715
+  },
+  {
+   "expect": 0.71,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.715
+  },
+  {
+   "expect": "0.72",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.725
+  },
+  {
+   "expect": 0.72,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.725
+  },
+  {
+   "expect": "0.73",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.735
+  },
+  {
+   "expect": 0.73,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.735
+  },
+  {
+   "expect": "0.74",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.745
+  },
+  {
+   "expect": 0.74,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.745
+  },
+  {
+   "expect": "0.76",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.755
+  },
+  {
+   "expect": 0.76,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.755
+  },
+  {
+   "expect": "0.77",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.765
+  },
+  {
+   "expect": 0.77,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.765
+  },
+  {
+   "expect": "0.78",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.775
+  },
+  {
+   "expect": 0.78,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.775
+  },
+  {
+   "expect": "0.79",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.785
+  },
+  {
+   "expect": 0.79,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.785
+  },
+  {
+   "expect": "0.80",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.795
+  },
+  {
+   "expect": 0.8,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.795
+  },
+  {
+   "expect": "0.81",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.805
+  },
+  {
+   "expect": 0.81,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.805
+  },
+  {
+   "expect": "0.82",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.8150000000000001
+  },
+  {
+   "expect": 0.82,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.8150000000000001
+  },
+  {
+   "expect": "0.83",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.8250000000000001
+  },
+  {
+   "expect": 0.83,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.8250000000000001
+  },
+  {
+   "expect": "0.84",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.8350000000000001
+  },
+  {
+   "expect": 0.84,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.8350000000000001
+  },
+  {
+   "expect": "0.84",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.845
+  },
+  {
+   "expect": 0.84,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.845
+  },
+  {
+   "expect": "0.85",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.855
+  },
+  {
+   "expect": 0.85,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.855
+  },
+  {
+   "expect": "0.86",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.865
+  },
+  {
+   "expect": 0.86,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.865
+  },
+  {
+   "expect": "0.88",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.875
+  },
+  {
+   "expect": 0.88,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.875
+  },
+  {
+   "expect": "0.89",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.885
+  },
+  {
+   "expect": 0.89,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.885
+  },
+  {
+   "expect": "0.90",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.895
+  },
+  {
+   "expect": 0.9,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.895
+  },
+  {
+   "expect": "0.91",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.905
+  },
+  {
+   "expect": 0.91,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.905
+  },
+  {
+   "expect": "0.92",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.915
+  },
+  {
+   "expect": 0.92,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.915
+  },
+  {
+   "expect": "0.93",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.925
+  },
+  {
+   "expect": 0.93,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.925
+  },
+  {
+   "expect": "0.94",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.935
+  },
+  {
+   "expect": 0.94,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.935
+  },
+  {
+   "expect": "0.95",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.9450000000000001
+  },
+  {
+   "expect": 0.95,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.9450000000000001
+  },
+  {
+   "expect": "0.96",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.9550000000000001
+  },
+  {
+   "expect": 0.96,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.9550000000000001
+  },
+  {
+   "expect": "0.96",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.965
+  },
+  {
+   "expect": 0.96,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.965
+  },
+  {
+   "expect": "0.97",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.975
+  },
+  {
+   "expect": 0.97,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.975
+  },
+  {
+   "expect": "0.98",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.985
+  },
+  {
+   "expect": 0.98,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.985
+  },
+  {
+   "expect": "0.99",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.995
+  },
+  {
+   "expect": 0.99,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 0.995
+  },
+  {
+   "expect": "1.00",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 1.005
+  },
+  {
+   "expect": 1.0,
+   "kind": "fmt",
+   "n": 2,
+   "op": "round",
+   "x": 1.005
+  },
+  {
+   "expect": -20,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -19.5
+  },
+  {
+   "expect": -20.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -19.5
+  },
+  {
+   "expect": -18,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -18.5
+  },
+  {
+   "expect": -18.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -18.5
+  },
+  {
+   "expect": -18,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -17.5
+  },
+  {
+   "expect": -18.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -17.5
+  },
+  {
+   "expect": -16,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -16.5
+  },
+  {
+   "expect": -16.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -16.5
+  },
+  {
+   "expect": -16,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -15.5
+  },
+  {
+   "expect": -16.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -15.5
+  },
+  {
+   "expect": -14,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -14.5
+  },
+  {
+   "expect": -14.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -14.5
+  },
+  {
+   "expect": -14,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -13.5
+  },
+  {
+   "expect": -14.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -13.5
+  },
+  {
+   "expect": -12,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -12.5
+  },
+  {
+   "expect": -12.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -12.5
+  },
+  {
+   "expect": -12,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -11.5
+  },
+  {
+   "expect": -12.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -11.5
+  },
+  {
+   "expect": -10,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -10.5
+  },
+  {
+   "expect": -10.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -10.5
+  },
+  {
+   "expect": -10,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -9.5
+  },
+  {
+   "expect": -10.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -9.5
+  },
+  {
+   "expect": -8,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -8.5
+  },
+  {
+   "expect": -8.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -8.5
+  },
+  {
+   "expect": -8,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -7.5
+  },
+  {
+   "expect": -8.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -7.5
+  },
+  {
+   "expect": -6,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -6.5
+  },
+  {
+   "expect": -6.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -6.5
+  },
+  {
+   "expect": -6,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -5.5
+  },
+  {
+   "expect": -6.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -5.5
+  },
+  {
+   "expect": -4,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -4.5
+  },
+  {
+   "expect": -4.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -4.5
+  },
+  {
+   "expect": -4,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -3.5
+  },
+  {
+   "expect": -4.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -3.5
+  },
+  {
+   "expect": -2,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -2.5
+  },
+  {
+   "expect": -2.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -2.5
+  },
+  {
+   "expect": -2,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -1.5
+  },
+  {
+   "expect": -2.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -1.5
+  },
+  {
+   "expect": 0,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -0.5
+  },
+  {
+   "expect": -0.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": -0.5
+  },
+  {
+   "expect": 0,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 0.5
+  },
+  {
+   "expect": 0.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 0.5
+  },
+  {
+   "expect": 2,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 1.5
+  },
+  {
+   "expect": 2.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 1.5
+  },
+  {
+   "expect": 2,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 2.5
+  },
+  {
+   "expect": 2.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 2.5
+  },
+  {
+   "expect": 4,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 3.5
+  },
+  {
+   "expect": 4.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 3.5
+  },
+  {
+   "expect": 4,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 4.5
+  },
+  {
+   "expect": 4.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 4.5
+  },
+  {
+   "expect": 6,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 5.5
+  },
+  {
+   "expect": 6.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 5.5
+  },
+  {
+   "expect": 6,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 6.5
+  },
+  {
+   "expect": 6.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 6.5
+  },
+  {
+   "expect": 8,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 7.5
+  },
+  {
+   "expect": 8.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 7.5
+  },
+  {
+   "expect": 8,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 8.5
+  },
+  {
+   "expect": 8.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 8.5
+  },
+  {
+   "expect": 10,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 9.5
+  },
+  {
+   "expect": 10.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 9.5
+  },
+  {
+   "expect": 10,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 10.5
+  },
+  {
+   "expect": 10.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 10.5
+  },
+  {
+   "expect": 12,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 11.5
+  },
+  {
+   "expect": 12.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 11.5
+  },
+  {
+   "expect": 12,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 12.5
+  },
+  {
+   "expect": 12.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 12.5
+  },
+  {
+   "expect": 14,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 13.5
+  },
+  {
+   "expect": 14.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 13.5
+  },
+  {
+   "expect": 14,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 14.5
+  },
+  {
+   "expect": 14.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 14.5
+  },
+  {
+   "expect": 16,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 15.5
+  },
+  {
+   "expect": 16.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 15.5
+  },
+  {
+   "expect": 16,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 16.5
+  },
+  {
+   "expect": 16.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 16.5
+  },
+  {
+   "expect": 18,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 17.5
+  },
+  {
+   "expect": 18.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 17.5
+  },
+  {
+   "expect": 18,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 18.5
+  },
+  {
+   "expect": 18.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 18.5
+  },
+  {
+   "expect": 20,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 19.5
+  },
+  {
+   "expect": 20.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 19.5
+  },
+  {
+   "expect": 20,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 20.5
+  },
+  {
+   "expect": 20.0,
+   "kind": "fmt",
+   "n": 0,
+   "op": "round",
+   "x": 20.5
+  },
+  {
+   "expect": "2.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.25
+  },
+  {
+   "expect": "2.25",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 2.25
+  },
+  {
+   "expect": 2.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.25
+  },
+  {
+   "expect": 2,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 2.25
+  },
+  {
+   "expect": "-2.2",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -2.25
+  },
+  {
+   "expect": "-2.25",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -2.25
+  },
+  {
+   "expect": -2.2,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -2.25
+  },
+  {
+   "expect": -2,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -2.25
+  },
+  {
+   "expect": "0.1",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.125
+  },
+  {
+   "expect": "0.12",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.125
+  },
+  {
+   "expect": 0.1,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.125
+  },
+  {
+   "expect": 0,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 0.125
+  },
+  {
+   "expect": "2.7",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 2.675
+  },
+  {
+   "expect": "2.67",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 2.675
+  },
+  {
+   "expect": 2.7,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 2.675
+  },
+  {
+   "expect": 3,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 2.675
+  },
+  {
+   "expect": "1.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 1.005
+  },
+  {
+   "expect": "1.00",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 1.005
+  },
+  {
+   "expect": 1.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 1.005
+  },
+  {
+   "expect": 1,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 1.005
+  },
+  {
+   "expect": "0.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 0.0
+  },
+  {
+   "expect": "0.00",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 0.0
+  },
+  {
+   "expect": 0.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 0.0
+  },
+  {
+   "expect": 0,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 0.0
+  },
+  {
+   "expect": "-0.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": -0.0
+  },
+  {
+   "expect": "-0.00",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": -0.0
+  },
+  {
+   "expect": -0.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": -0.0
+  },
+  {
+   "expect": 0,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": -0.0
+  },
+  {
+   "expect": "7.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 7.0
+  },
+  {
+   "expect": "7.00",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 7.0
+  },
+  {
+   "expect": 7.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 7.0
+  },
+  {
+   "expect": 7,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 7.0
+  },
+  {
+   "expect": "100.0",
+   "kind": "fmt",
+   "n": 1,
+   "op": "fixed",
+   "x": 100.0
+  },
+  {
+   "expect": "100.00",
+   "kind": "fmt",
+   "n": 2,
+   "op": "fixed",
+   "x": 100.0
+  },
+  {
+   "expect": 100.0,
+   "kind": "fmt",
+   "n": 1,
+   "op": "round",
+   "x": 100.0
+  },
+  {
+   "expect": 100,
+   "kind": "fmt",
+   "n": null,
+   "op": "roundInt",
+   "x": 100.0
+  },
+  {
+   "expect": "7",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 7.0
+  },
+  {
+   "expect": "0.5",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 0.5
+  },
+  {
+   "expect": "99",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 99.0
+  },
+  {
+   "expect": "-3",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": -3.0
+  },
+  {
+   "expect": "0.3",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 0.3
+  },
+  {
+   "expect": "61.5",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 61.5
+  },
+  {
+   "expect": "1",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 1.0
+  },
+  {
+   "expect": "60",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 60.0
+  },
+  {
+   "expect": "0.0001",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 0.0001
+  },
+  {
+   "expect": "123456",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 123456.0
+  },
+  {
+   "expect": "1.23456e+06",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 1234565.0
+  },
+  {
+   "expect": "100",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": 100.0
+  },
+  {
+   "expect": "-0",
+   "kind": "fmt",
+   "n": null,
+   "op": "g",
+   "x": -0.0
+  },
+  {
+   "error": false,
+   "expect": 185,
+   "input": "3:05",
+   "kind": "clock",
+   "op": "parseClock"
+  },
+  {
+   "error": false,
+   "expect": 3785,
+   "input": "1:03:05",
+   "kind": "clock",
+   "op": "parseClock"
+  },
+  {
+   "error": false,
+   "expect": 185.0,
+   "input": "185",
+   "kind": "clock",
+   "op": "parseClock"
+  },
+  {
+   "error": false,
+   "expect": 185.0,
+   "input": 185,
+   "kind": "clock",
+   "op": "parseClock"
+  },
+  {
+   "error": true,
+   "expect": null,
+   "input": "soon",
+   "kind": "clock",
+   "op": "parseClock"
+  },
+  {
+   "error": false,
+   "expect": "3:05",
+   "input": 185,
+   "kind": "clock",
+   "op": "formatClock"
+  },
+  {
+   "error": false,
+   "expect": "-0:16",
+   "input": -16,
+   "kind": "clock",
+   "op": "formatClock"
+  },
+  {
+   "error": false,
+   "expect": "0:00",
+   "input": 0,
+   "kind": "clock",
+   "op": "formatClock"
+  },
+  {
+   "error": false,
+   "expect": "59:59",
+   "input": 3599,
+   "kind": "clock",
+   "op": "formatClock"
+  },
+  {
+   "expect": 185,
+   "input": "3.05",
+   "kind": "mmss",
+   "op": "parse"
+  },
+  {
+   "expect": 185,
+   "input": "3.5",
+   "kind": "mmss",
+   "op": "parse"
+  },
+  {
+   "expect": 180,
+   "input": "3",
+   "kind": "mmss",
+   "op": "parse"
+  },
+  {
+   "expect": 185,
+   "input": "3:05",
+   "kind": "mmss",
+   "op": "parse"
+  },
+  {
+   "expect": null,
+   "input": "3.63",
+   "kind": "mmss",
+   "op": "parse"
+  },
+  {
+   "expect": null,
+   "input": "soon",
+   "kind": "mmss",
+   "op": "parse"
+  },
+  {
+   "expect": 0,
+   "input": "0",
+   "kind": "mmss",
+   "op": "parse"
+  },
+  {
+   "expect": 59999,
+   "input": "999.59",
+   "kind": "mmss",
+   "op": "parse"
+  },
+  {
+   "expect": "3.05",
+   "input": 185,
+   "kind": "mmss",
+   "op": "format"
+  },
+  {
+   "expect": "0.00",
+   "input": 0,
+   "kind": "mmss",
+   "op": "format"
+  },
+  {
+   "expect": "0.05",
+   "input": 5,
+   "kind": "mmss",
+   "op": "format"
+  },
+  {
+   "expect": "1.05",
+   "input": 65,
+   "kind": "mmss",
+   "op": "format"
+  },
+  {
+   "expect": "3 min 05 s",
+   "input": 185,
+   "kind": "mmss",
+   "op": "human"
+  },
+  {
+   "expect": "0 min 00 s",
+   "input": 0,
+   "kind": "mmss",
+   "op": "human"
+  },
+  {
+   "expect": "1 min 05 s",
+   "input": 65,
+   "kind": "mmss",
+   "op": "human"
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      17,
+      18,
+      20
+     ],
+     "item": "Sample",
+     "name": "Sample_map.csv",
+     "scales": [
+      [
+       "front",
+       1,
+       1,
+       17,
+       1,
+       "017-01"
+      ],
+      [
+       "front",
+       1,
+       2,
+       17,
+       60,
+       "017-60"
+      ],
+      [
+       "front",
+       0,
+       1,
+       20,
+       5,
+       "020-05"
+      ],
+      [
+       "back",
+       0,
+       2,
+       18,
+       12,
+       "018-12"
+      ]
+     ],
+     "shifts": {},
+     "sides": [
+      "front",
+      "back"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "Sample_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "Sample",
+    "name": "Sample_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      17,
+      18,
+      20
+     ],
+     "item": "SampleShift",
+     "name": "SampleShift_map.csv",
+     "scales": [
+      [
+       "front",
+       1,
+       1,
+       17,
+       1,
+       "017-01"
+      ],
+      [
+       "front",
+       1,
+       2,
+       17,
+       60,
+       "017-60"
+      ],
+      [
+       "front",
+       0,
+       1,
+       20,
+       5,
+       "020-05"
+      ],
+      [
+       "back",
+       0,
+       2,
+       18,
+       12,
+       "018-12"
+      ]
+     ],
+     "shifts": {
+      "back|0": 0.5,
+      "front|0": 0.0,
+      "front|1": 0.0
+     },
+     "sides": [
+      "front",
+      "back"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "SampleShift_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "SampleShift",
+    "name": "SampleShift_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      1,
+      2
+     ],
+     "item": "Skirt",
+     "name": "Skirt_map.csv",
+     "scales": [
+      [
+       "front",
+       1,
+       1,
+       1,
+       7,
+       "001-07"
+      ],
+      [
+       "front",
+       0,
+       1,
+       2,
+       8,
+       "002-08"
+      ]
+     ],
+     "shifts": {},
+     "sides": [
+      "front"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "Skirt_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "Skirt",
+    "name": "Skirt_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "ok": false,
+    "problems": [
+     "BadHeader_map.csv: missing column(s) board_no, socket - expected side, row, col, board_no, socket,label"
+    ]
+   },
+   "fixture": "BadHeader_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "BadHeader",
+    "name": "BadHeader_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "ok": false,
+    "problems": [
+     "DoubledColumn_map.csv: column(s) socket appear more than once"
+    ]
+   },
+   "fixture": "DoubledColumn_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "DoubledColumn",
+    "name": "DoubledColumn_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "ok": false,
+    "problems": [
+     "SocketRange_map.csv:3: socket 61 is not 1-60"
+    ]
+   },
+   "fixture": "SocketRange_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "SocketRange",
+    "name": "SocketRange_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "ok": false,
+    "problems": [
+     "DupSocket_map.csv:3: board 17 socket 1 is already used (line 2)"
+    ]
+   },
+   "fixture": "DupSocket_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "DupSocket",
+    "name": "DupSocket_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "ok": false,
+    "problems": [
+     "BadShift_map.csv:4: shift must be 0 or 0.5, not '0.3'"
+    ]
+   },
+   "fixture": "BadShift_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "BadShift",
+    "name": "BadShift_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      17,
+      18,
+      20
+     ],
+     "item": "BlankShift",
+     "name": "BlankShift_map.csv",
+     "scales": [
+      [
+       "front",
+       1,
+       1,
+       17,
+       1,
+       "017-01"
+      ],
+      [
+       "front",
+       1,
+       2,
+       17,
+       60,
+       "017-60"
+      ],
+      [
+       "front",
+       0,
+       1,
+       20,
+       5,
+       "020-05"
+      ],
+      [
+       "back",
+       0,
+       2,
+       18,
+       12,
+       "018-12"
+      ]
+     ],
+     "shifts": {
+      "back|0": 0.5,
+      "front|1": 0.0
+     },
+     "sides": [
+      "front",
+      "back"
+     ],
+     "warnings": [
+      "BlankShift_map.csv: shift is blank for front row 0 - falls back to the odd/even rule there"
+     ]
+    },
+    "ok": true
+   },
+   "fixture": "BlankShift_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "BlankShift",
+    "name": "BlankShift_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      9
+     ],
+     "item": "OneBoard",
+     "name": "OneBoard_map.csv",
+     "scales": [
+      [
+       "front",
+       0,
+       1,
+       9,
+       1,
+       ""
+      ]
+     ],
+     "shifts": {},
+     "sides": [
+      "front"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "OneBoard_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      5
+     ],
+     "item": "SingleScale",
+     "name": "SingleScale_map.csv",
+     "scales": [
+      [
+       "front",
+       0,
+       1,
+       5,
+       1,
+       ""
+      ]
+     ],
+     "shifts": {},
+     "sides": [
+      "front"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "SingleScale_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      17,
+      18
+     ],
+     "item": "Seq",
+     "name": "Seq_map.csv",
+     "scales": [
+      [
+       "front",
+       2,
+       1,
+       17,
+       1,
+       ""
+      ],
+      [
+       "front",
+       2,
+       2,
+       17,
+       2,
+       ""
+      ],
+      [
+       "front",
+       2,
+       3,
+       17,
+       3,
+       ""
+      ],
+      [
+       "front",
+       1,
+       1,
+       17,
+       4,
+       ""
+      ],
+      [
+       "front",
+       1,
+       2,
+       17,
+       5,
+       ""
+      ],
+      [
+       "front",
+       1,
+       3,
+       17,
+       6,
+       ""
+      ],
+      [
+       "front",
+       0,
+       2,
+       17,
+       7,
+       ""
+      ],
+      [
+       "back",
+       1,
+       1,
+       18,
+       1,
+       ""
+      ],
+      [
+       "back",
+       1,
+       3,
+       18,
+       2,
+       ""
+      ],
+      [
+       "back",
+       0,
+       2,
+       18,
+       3,
+       ""
+      ]
+     ],
+     "shifts": {},
+     "sides": [
+      "front",
+      "back"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "Seq_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      1
+     ],
+     "item": "CenterPlain",
+     "name": "CenterPlain_map.csv",
+     "scales": [
+      [
+       "front",
+       0,
+       1,
+       1,
+       1,
+       ""
+      ],
+      [
+       "front",
+       0,
+       2,
+       1,
+       2,
+       ""
+      ],
+      [
+       "front",
+       1,
+       1,
+       1,
+       3,
+       ""
+      ],
+      [
+       "front",
+       1,
+       2,
+       1,
+       4,
+       ""
+      ],
+      [
+       "front",
+       1,
+       3,
+       1,
+       5,
+       ""
+      ],
+      [
+       "front",
+       1,
+       4,
+       1,
+       6,
+       ""
+      ],
+      [
+       "front",
+       2,
+       2,
+       1,
+       7,
+       ""
+      ]
+     ],
+     "shifts": {},
+     "sides": [
+      "front"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "CenterPlain_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "map": {
+     "boardNos": [
+      1
+     ],
+     "item": "CenterShift",
+     "name": "CenterShift_map.csv",
+     "scales": [
+      [
+       "front",
+       0,
+       1,
+       1,
+       1,
+       ""
+      ],
+      [
+       "front",
+       0,
+       2,
+       1,
+       2,
+       ""
+      ],
+      [
+       "front",
+       1,
+       1,
+       1,
+       3,
+       ""
+      ],
+      [
+       "front",
+       1,
+       2,
+       1,
+       4,
+       ""
+      ],
+      [
+       "front",
+       1,
+       3,
+       1,
+       5,
+       ""
+      ],
+      [
+       "front",
+       1,
+       4,
+       1,
+       6,
+       ""
+      ],
+      [
+       "front",
+       2,
+       2,
+       1,
+       7,
+       ""
+      ]
+     ],
+     "shifts": {
+      "front|0": 0.0,
+      "front|1": 0.0,
+      "front|2": 0.0
+     },
+     "sides": [
+      "front"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "CenterShift_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   }
+  },
+  {
+   "expect": {
+    "design": {
+     "colors": {
+      "back|0|2": 5,
+      "front|0|1": 15,
+      "front|1|1": 3,
+      "front|1|2": 0
+     },
+     "item": "Sample",
+     "label": "P01",
+     "name": "Sample_color_pattern01_grid.csv",
+     "pattern": 1,
+     "shifts": {
+      "back|0": 0.0,
+      "front|0": 0.0,
+      "front|1": 0.5
+     },
+     "undecided": []
+    },
+    "ok": true
+   },
+   "fixture": "Sample_color_pattern01_grid.csv",
+   "kind": "design",
+   "opts": {
+    "item": "Sample",
+    "name": "Sample_color_pattern01_grid.csv",
+    "pattern": 1
+   }
+  },
+  {
+   "expect": {
+    "design": {
+     "colors": {
+      "front|0|1": 11,
+      "front|1|1": 10
+     },
+     "item": "Skirt",
+     "label": "P01",
+     "name": "Skirt_color_pattern01_grid.csv",
+     "pattern": 1,
+     "shifts": {
+      "front|0": 0.0,
+      "front|1": 0.5
+     },
+     "undecided": []
+    },
+    "ok": true
+   },
+   "fixture": "Skirt_color_pattern01_grid.csv",
+   "kind": "design",
+   "opts": {
+    "item": "Skirt",
+    "name": "Skirt_color_pattern01_grid.csv",
+    "pattern": 1
+   }
+  },
+  {
+   "expect": {
+    "design": {
+     "colors": {
+      "back|0|2": 5,
+      "front|0|1": 15,
+      "front|1|1": 3
+     },
+     "item": "Sample",
+     "label": "undecided",
+     "name": "Sample_color_undecided_grid.csv",
+     "pattern": null,
+     "shifts": {
+      "back|0": 0.0,
+      "front|0": 0.0,
+      "front|1": 0.5
+     },
+     "undecided": [
+      "front|1|2"
+     ]
+    },
+    "ok": true
+   },
+   "fixture": "Sample_color_undecided_grid.csv",
+   "kind": "design",
+   "opts": {
+    "item": "Sample",
+    "name": "Sample_color_undecided_grid.csv",
+    "pattern": null
+   }
+  },
+  {
+   "expect": {
+    "design": {
+     "colors": {
+      "back|0|2": 5,
+      "front|0|1": 15,
+      "front|1|1": 3
+     },
+     "item": "Sample",
+     "label": "zerowhite",
+     "name": "Sample_color_zerowhite_grid.csv",
+     "pattern": null,
+     "shifts": {
+      "back|0": 0.0,
+      "front|0": 0.0,
+      "front|1": 0.5
+     },
+     "undecided": []
+    },
+    "ok": true
+   },
+   "fixture": "Sample_color_zerowhite_grid.csv",
+   "kind": "design",
+   "opts": {
+    "item": "Sample",
+    "name": "Sample_color_zerowhite_grid.csv",
+    "pattern": null
+   }
+  },
+  {
+   "expect": {
+    "ok": false,
+    "problems": [
+     "Sample_color_extracells_grid.csv:2: 2 cells but only 1 position columns"
+    ]
+   },
+   "fixture": "Sample_color_extracells_grid.csv",
+   "kind": "design",
+   "opts": {
+    "item": "Sample",
+    "name": "Sample_color_extracells_grid.csv",
+    "pattern": null
+   }
+  },
+  {
+   "calls": [
+    false
+   ],
+   "designFixture": "Sample_color_pattern01_grid.csv",
+   "designOpts": {
+    "item": "Sample",
+    "name": "Sample_color_pattern01_grid.csv",
+    "pattern": 1
+   },
+   "expect": {
+    "results": [
+     []
+    ],
+    "warningsAfter": []
+   },
+   "kind": "check",
+   "mapFixture": "Sample_map.csv",
+   "mapOpts": {
+    "item": "Sample",
+    "name": "Sample_map.csv"
+   },
+   "note": ""
+  },
+  {
+   "calls": [
+    false
+   ],
+   "designFixture": "Sample_color_pattern01_grid.csv",
+   "designOpts": {
+    "item": "Sample",
+    "name": "Sample_color_pattern01_grid.csv",
+    "pattern": 1
+   },
+   "expect": {
+    "results": [
+     []
+    ],
+    "warningsAfter": [
+     "Sample_color_pattern01_grid.csv: the design's row shift differs from the map on 2 rows"
+    ]
+   },
+   "kind": "check",
+   "mapFixture": "SampleShift_map.csv",
+   "mapOpts": {
+    "item": null,
+    "name": "SampleShift_map.csv"
+   },
+   "note": "the design's own shift disagrees with the map's shift column on 2 rows"
+  },
+  {
+   "calls": [
+    false,
+    true
+   ],
+   "designFixture": "Sample_color_pattern01_grid.csv",
+   "designOpts": {
+    "item": "Sample",
+    "name": "Sample_color_pattern01_grid.csv",
+    "pattern": 1
+   },
+   "expect": {
+    "results": [
+     [],
+     []
+    ],
+    "warningsAfter": [
+     "Sample_color_pattern01_grid.csv: the design's row shift differs from the map on 2 rows"
+    ]
+   },
+   "kind": "check",
+   "mapFixture": "SampleShift_map.csv",
+   "mapOpts": {
+    "item": null,
+    "name": "SampleShift_map.csv"
+   },
+   "note": "de-duplicated warning across two calls"
+  },
+  {
+   "calls": [
+    false,
+    true
+   ],
+   "designFixture": "Sample_color_undecided_grid.csv",
+   "designOpts": {
+    "item": "Sample",
+    "name": "Sample_color_undecided_grid.csv",
+    "pattern": null
+   },
+   "expect": {
+    "results": [
+     [
+      "Sample_color_undecided_grid.csv: colour not decided (-) for front row 1 col 2 (board 17 socket 60)"
+     ],
+     []
+    ],
+    "warningsAfter": []
+   },
+   "kind": "check",
+   "mapFixture": "Sample_map.csv",
+   "mapOpts": {
+    "item": "Sample",
+    "name": "Sample_map.csv"
+   },
+   "note": "undecided colour: blocks a full cue, not a partial one"
+  },
+  {
+   "calls": [
+    false,
+    true
+   ],
+   "designFixture": "Sample_color_zerowhite_grid.csv",
+   "designOpts": {
+    "item": "Sample",
+    "name": "Sample_color_zerowhite_grid.csv",
+    "pattern": null
+   },
+   "expect": {
+    "results": [
+     [
+      "Sample_color_zerowhite_grid.csv: no colour for front row 1 col 2 (board 17 socket 60) - 0 means no hole, white is 0x00"
+     ],
+     []
+    ],
+    "warningsAfter": []
+   },
+   "kind": "check",
+   "mapFixture": "Sample_map.csv",
+   "mapOpts": {
+    "item": "Sample",
+    "name": "Sample_map.csv"
+   },
+   "note": "0 typed for white is caught, not lost - even when partial"
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 0,
+     "back|1|1": 0,
+     "back|1|3": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|2|1": 0,
+     "front|2|2": 0,
+     "front|2|3": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "natural",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 0,
+     "back|1|1": 0,
+     "back|1|3": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|2|1": 0,
+     "front|2|2": 0,
+     "front|2|3": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "natural",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 0,
+     "back|1|1": 0,
+     "back|1|3": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|2|1": 0,
+     "front|2|2": 0,
+     "front|2|3": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "natural",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 0,
+     "back|1|1": 0,
+     "back|1|3": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|2|1": 0,
+     "front|2|2": 0,
+     "front|2|3": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "natural",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|2|1": 1,
+     "front|2|2": 1,
+     "front|2|3": 1
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "center",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|2|1": 1,
+     "front|2|2": 1,
+     "front|2|3": 1
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "center",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|2|1": 1,
+     "front|2|2": 1,
+     "front|2|3": 1
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "center",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|2|1": 1,
+     "front|2|2": 1,
+     "front|2|3": 1
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "center",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 2,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|2|1": 0,
+     "front|2|2": 0,
+     "front|2|3": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 2,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|2|1": 0,
+     "front|2|2": 0,
+     "front|2|3": 0
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 2,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|2|1": 0,
+     "front|2|2": 0,
+     "front|2|3": 0
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 2,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|2|1": 0,
+     "front|2|2": 0,
+     "front|2|3": 0
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 0,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|2|1": 2,
+     "front|2|2": 2,
+     "front|2|3": 2
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 0,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|2|1": 2,
+     "front|2|2": 2,
+     "front|2|3": 2
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 0,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|2|1": 2,
+     "front|2|2": 2,
+     "front|2|3": 2
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 0,
+     "back|1|1": 1,
+     "back|1|3": 1,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|2|1": 2,
+     "front|2|2": 2,
+     "front|2|3": 2
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 0,
+     "back|1|3": 2,
+     "front|0|2": 1,
+     "front|1|1": 2,
+     "front|1|2": 1,
+     "front|1|3": 0,
+     "front|2|1": 2,
+     "front|2|2": 1,
+     "front|2|3": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 0,
+     "back|1|3": 2,
+     "front|0|2": 1,
+     "front|1|1": 2,
+     "front|1|2": 1,
+     "front|1|3": 0,
+     "front|2|1": 2,
+     "front|2|2": 1,
+     "front|2|3": 0
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 0,
+     "back|1|3": 2,
+     "front|0|2": 1,
+     "front|1|1": 2,
+     "front|1|2": 1,
+     "front|1|3": 0,
+     "front|2|1": 2,
+     "front|2|2": 1,
+     "front|2|3": 0
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 0,
+     "back|1|3": 2,
+     "front|0|2": 1,
+     "front|1|1": 2,
+     "front|1|2": 1,
+     "front|1|3": 0,
+     "front|2|1": 2,
+     "front|2|2": 1,
+     "front|2|3": 0
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 2,
+     "back|1|3": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|2|1": 0,
+     "front|2|2": 1,
+     "front|2|3": 2
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 2,
+     "back|1|3": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|2|1": 0,
+     "front|2|2": 1,
+     "front|2|3": 2
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 2,
+     "back|1|3": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|2|1": 0,
+     "front|2|2": 1,
+     "front|2|3": 2
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "back|0|2": 1,
+     "back|1|1": 2,
+     "back|1|3": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|2|1": 0,
+     "front|2|2": 1,
+     "front|2|3": 2
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "Seq_map.csv",
+   "opts": {
+    "item": "Seq",
+    "name": "Seq_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "natural",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "natural",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "natural",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "natural",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "center",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "center",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "center",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "center",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "OneBoard_map.csv",
+   "opts": {
+    "item": "OneBoard",
+    "name": "OneBoard_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "natural",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "natural",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "natural",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "natural",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "center",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "center",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "center",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "center",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "SingleScale_map.csv",
+   "opts": {
+    "item": "SingleScale",
+    "name": "SingleScale_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|1|4": 0,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "natural",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|1|4": 0,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "natural",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|1|4": 0,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "natural",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|1|4": 0,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "natural",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|1|4": 2,
+     "front|2|2": 1
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "center",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|1|4": 2,
+     "front|2|2": 1
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "center",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|1|4": 2,
+     "front|2|2": 1
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "center",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|1|4": 2,
+     "front|2|2": 1
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "center",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 0
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 0
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 0
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 2
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 2
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 2
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 2
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|0|2": 2,
+     "front|1|1": 3,
+     "front|1|2": 2,
+     "front|1|3": 1,
+     "front|1|4": 0,
+     "front|2|2": 2
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|0|2": 2,
+     "front|1|1": 3,
+     "front|1|2": 2,
+     "front|1|3": 1,
+     "front|1|4": 0,
+     "front|2|2": 2
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|0|2": 2,
+     "front|1|1": 3,
+     "front|1|2": 2,
+     "front|1|3": 1,
+     "front|1|4": 0,
+     "front|2|2": 2
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|0|2": 2,
+     "front|1|1": 3,
+     "front|1|2": 2,
+     "front|1|3": 1,
+     "front|1|4": 0,
+     "front|2|2": 2
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|1|4": 3,
+     "front|2|2": 1
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|1|4": 3,
+     "front|2|2": 1
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|1|4": 3,
+     "front|2|2": 1
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|1|4": 3,
+     "front|2|2": 1
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterPlain_map.csv",
+   "opts": {
+    "item": "CenterPlain",
+    "name": "CenterPlain_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|1|4": 0,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "natural",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|1|4": 0,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "natural",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|1|4": 0,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "natural",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 0,
+     "front|1|2": 0,
+     "front|1|3": 0,
+     "front|1|4": 0,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "natural",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 1,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|1|4": 2,
+     "front|2|2": 1
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "center",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 1,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|1|4": 2,
+     "front|2|2": 1
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "center",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 1,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|1|4": 2,
+     "front|2|2": 1
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "center",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 1,
+     "front|0|2": 1,
+     "front|1|1": 1,
+     "front|1|2": 0,
+     "front|1|3": 1,
+     "front|1|4": 2,
+     "front|2|2": 1
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "center",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 0
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 0
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 2,
+     "front|0|2": 2,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 0
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 2
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 2
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 2
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 0,
+     "front|1|1": 1,
+     "front|1|2": 1,
+     "front|1|3": 1,
+     "front|1|4": 1,
+     "front|2|2": 2
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|0|2": 2,
+     "front|1|1": 3,
+     "front|1|2": 2,
+     "front|1|3": 1,
+     "front|1|4": 0,
+     "front|2|2": 2
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|0|2": 2,
+     "front|1|1": 3,
+     "front|1|2": 2,
+     "front|1|3": 1,
+     "front|1|4": 0,
+     "front|2|2": 2
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|0|2": 2,
+     "front|1|1": 3,
+     "front|1|2": 2,
+     "front|1|3": 1,
+     "front|1|4": 0,
+     "front|2|2": 2
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|0|2": 2,
+     "front|1|1": 3,
+     "front|1|2": 2,
+     "front|1|3": 1,
+     "front|1|4": 0,
+     "front|2|2": 2
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|1|4": 3,
+     "front|2|2": 1
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|1|4": 3,
+     "front|2|2": 1
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|1|4": 3,
+     "front|2|2": 1
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|0|2": 1,
+     "front|1|1": 0,
+     "front|1|2": 1,
+     "front|1|3": 2,
+     "front|1|4": 3,
+     "front|2|2": 1
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterShift_map.csv",
+   "opts": {
+    "item": "CenterShift",
+    "name": "CenterShift_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 30.1
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     }
+    ],
+    "minInterval": {
+     "radxa-03": 8.0
+    },
+    "problems": {
+     "a": []
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "accent": {
+       "full": false,
+       "partial": true
+      },
+      "broken": {
+       "full": false,
+       "partial": false
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-03"
+    }
+   },
+   "kind": "timeline",
+   "name": "basic_times",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 1.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 1.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": -7.0
+     },
+     {
+      "complete": 8.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 1.0
+     }
+    ],
+    "minInterval": {
+     "radxa-03": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 8.0 s after the previous send on radxa-03; the unit may still be rejoining and needs at least 10.4 s (16 \u00d7 0.25 s + 2.0 s prep + 1.0 s setup + 16 \u00d7 0.15 s probe + 1.0 s gap)"
+     ]
+    },
+    "warnings": []
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "accent": {
+       "full": false,
+       "partial": true
+      },
+      "broken": {
+       "full": false,
+       "partial": false
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-03"
+    }
+   },
+   "kind": "timeline",
+   "name": "rejoin_after_preset",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 3.0,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 63.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "a",
+      "refresh": 3.0,
+      "refresh_source": "cue",
+      "sent": 60.0
+     }
+    ],
+    "minInterval": {
+     "radxa-03": 8.0
+    },
+    "problems": {
+     "a": []
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "accent": {
+       "full": false,
+       "partial": true
+      },
+      "broken": {
+       "full": false,
+       "partial": false
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-03"
+    }
+   },
+   "kind": "timeline",
+   "name": "own_refresh",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "c",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 99.0,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 159.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "c",
+      "refresh": 99.0,
+      "refresh_source": "cue",
+      "sent": 60.0
+     }
+    ],
+    "minInterval": {
+     "radxa-03": 8.0
+    },
+    "problems": {
+     "c": [
+      "this cue's refresh time (99 s) must be 1-60 s"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "accent": {
+       "full": false,
+       "partial": true
+      },
+      "broken": {
+       "full": false,
+       "partial": false
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-03"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh_out_of_range",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 65.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 65.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 72.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 65.0
+     }
+    ],
+    "minInterval": {
+     "radxa-01": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "starts before the previous picture is complete (1:07)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 2,
+     "designs": {
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-01"
+    }
+   },
+   "kind": "timeline",
+   "name": "same_item_overlap",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 72.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 72.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 79.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 72.0
+     }
+    ],
+    "minInterval": {
+     "radxa-01": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": []
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 2,
+     "designs": {
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-01"
+    }
+   },
+   "kind": "timeline",
+   "name": "same_item_overlap_cleared",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 67.9,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 67.9,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 74.9,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 67.9
+     }
+    ],
+    "minInterval": {
+     "radxa-04": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 7.9 s after the previous send on radxa-04; at least 8.0 s is needed (7.0 s refresh + 1.0 s gap)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-04"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh_binding_tight",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 68.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 68.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 75.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 68.0
+     }
+    ],
+    "minInterval": {
+     "radxa-04": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": []
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-04"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh_binding_fine",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 68.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 68.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 75.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 68.0
+     }
+    ],
+    "minInterval": {
+     "radxa-05": 10.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 8.0 s after the previous send on radxa-05; writing its 32 boards needs 10.0 s (32 \u00d7 0.25 s + 2.0 s)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 32,
+     "designs": {
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-05"
+    }
+   },
+   "kind": "timeline",
+   "name": "write_binding",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 68.0,
+     "design": "g1.csv",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": 2.0,
+     "sweep": {
+      "sequence": "top_down",
+      "source": "cue",
+      "span_s": 2.0
+     }
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 68.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 77.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 68.0
+     }
+    ],
+    "minInterval": {
+     "radxa-06": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 8.0 s after the previous send on radxa-06; writing its 16 boards needs 10.0 s (16 \u00d7 0.25 s \u00d7 2 (its delay tables) + 2.0 s)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-06"
+    }
+   },
+   "kind": "timeline",
+   "name": "sweep_doubles_write_term",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 49.0,
+     "design": "g1.csv",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": 4.0,
+     "sweep": {
+      "sequence": "top_down",
+      "source": "cue",
+      "span_s": 4.0
+     }
+    },
+    {
+     "at": 60.0,
+     "design": "g1.csv",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 60.0,
+      "end": 60.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 49.0
+     },
+     {
+      "complete": 67.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     }
+    ],
+    "minInterval": {
+     "radxa-01": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 11.0 s after the previous send on radxa-01; at least 12.0 s is needed (7.0 s refresh + 4.0 s sweep + 1.0 s gap)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 2,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-01"
+    }
+   },
+   "kind": "timeline",
+   "name": "sweep_lengthens_the_gap",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "g1.csv",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": {
+      "sequence": "center",
+      "source": "cue",
+      "span_s": 0.1
+     }
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     }
+    ],
+    "minInterval": {
+     "(Look22)": 8.0
+    },
+    "problems": {
+     "a": [
+      "the sweep needs the item's map to be timed"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 2,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": null
+    }
+   },
+   "kind": "timeline",
+   "name": "sweep_without_its_map",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "g1.csv",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": 30.1,
+     "sweep": {
+      "sequence": "top_down",
+      "source": "cue",
+      "span_s": 30.1
+     }
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 97.1,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     }
+    ],
+    "minInterval": {
+     "radxa-01": 8.0
+    },
+    "problems": {
+     "a": [
+      "a sweep is at most 30 s from the first scale to the last (the firmware's limit)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 2,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-01"
+    }
+   },
+   "kind": "timeline",
+   "name": "sweep_over_max_delay",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 5.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 12.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 5.0
+     }
+    ],
+    "minInterval": {
+     "radxa-03": 8.0
+    },
+    "problems": {
+     "a": []
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "accent": {
+       "full": false,
+       "partial": true
+      },
+      "broken": {
+       "full": false,
+       "partial": false
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-03"
+    }
+   },
+   "kind": "timeline",
+   "name": "no_preset_warning",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "nope",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 120.0,
+     "design": "accent",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 180.0,
+     "design": "accent",
+     "id": "c",
+     "item": "Look22",
+     "partial": true,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 240.0,
+     "design": "broken",
+     "id": "d",
+     "item": "Look22",
+     "partial": true,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 300.0,
+     "design": "p1",
+     "id": "e",
+     "item": "Look99",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 67.0,
+      "end": 120.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 127.0,
+      "end": 180.0,
+      "end_source": "next",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 120.0
+     },
+     {
+      "complete": 187.0,
+      "end": 240.0,
+      "end_source": "next",
+      "id": "c",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 180.0
+     },
+     {
+      "complete": 247.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "d",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 240.0
+     },
+     {
+      "complete": 307.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "e",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 300.0
+     }
+    ],
+    "minInterval": {
+     "radxa-03": 8.0
+    },
+    "problems": {
+     "a": [
+      "design nope is not loaded"
+     ],
+     "b": [
+      "accent has problems (see the Designs tab) - it has undecided scales: make this a partial cue"
+     ],
+     "c": [],
+     "d": [
+      "broken has problems (see the Designs tab)"
+     ],
+     "e": [
+      "Look99: no such item (is its map loaded?)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "accent": {
+       "full": false,
+       "partial": true
+      },
+      "broken": {
+       "full": false,
+       "partial": false
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-03"
+    }
+   },
+   "kind": "timeline",
+   "name": "design_kind_checks",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 360.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 360.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 300.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 367.0,
+      "end": 360.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 360.0
+     },
+     {
+      "complete": 367.0,
+      "end": 300.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 360.0
+     }
+    ],
+    "minInterval": {
+     "radxa-03": 8.0
+    },
+    "problems": {
+     "a": [
+      "6:00 is after the end of the show (5:00)"
+     ],
+     "b": [
+      "6:00 is after the end of the show (5:00)",
+      "Look22 already has a cue sent at the same moment"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "accent": {
+       "full": false,
+       "partial": true
+      },
+      "broken": {
+       "full": false,
+       "partial": false
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-03"
+    }
+   },
+   "kind": "timeline",
+   "name": "after_end_and_double_booking",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 53.0,
+     "design": "t1",
+     "id": "a",
+     "item": "Look20-Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 53.0,
+     "design": "s1",
+     "id": "b",
+     "item": "Look20-Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 60.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 53.0
+     },
+     {
+      "complete": 60.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 53.0
+     }
+    ],
+    "minInterval": {
+     "radxa-02": 10.0
+    },
+    "problems": {
+     "a": [],
+     "b": []
+    },
+    "warnings": [
+     "Look20-Skirt: no preset at 0:00 - it opens on whatever it showed before the show",
+     "Look20-Top: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look20-skirt": {
+     "boards": 16,
+     "designs": {
+      "s1": {
+       "full": true,
+       "partial": true
+      },
+      "s2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look20-Skirt",
+     "unit": "radxa-02"
+    },
+    "look20-top": {
+     "boards": 16,
+     "designs": {
+      "t1": {
+       "full": true,
+       "partial": true
+      },
+      "t2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look20-Top",
+     "unit": "radxa-02"
+    }
+   },
+   "kind": "timeline",
+   "name": "items_share_a_unit_same_moment",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
+     "at": 53.0,
+     "design": "t1",
+     "id": "a",
+     "item": "Look20-Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 59.0,
+     "design": "s1",
+     "id": "b",
+     "item": "Look20-Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 60.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 53.0
+     },
+     {
+      "complete": 66.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 59.0
+     }
+    ],
+    "minInterval": {
+     "radxa-02": 10.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 6.0 s after the previous send on radxa-02; writing its 32 boards needs 10.0 s (32 \u00d7 0.25 s + 2.0 s)"
+     ]
+    },
+    "warnings": [
+     "Look20-Skirt: no preset at 0:00 - it opens on whatever it showed before the show",
+     "Look20-Top: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look20-skirt": {
+     "boards": 16,
+     "designs": {
+      "s1": {
+       "full": true,
+       "partial": true
+      },
+      "s2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look20-Skirt",
+     "unit": "radxa-02"
+    },
+    "look20-top": {
+     "boards": 16,
+     "designs": {
+      "t1": {
+       "full": true,
+       "partial": true
+      },
+      "t2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look20-Top",
+     "unit": "radxa-02"
+    }
+   },
+   "kind": "timeline",
+   "name": "items_share_a_unit_staggered",
+   "refresh": 7.0
+  },
+  {
+   "expect": {
+    "items": [
+     {
+      "boards": [
+       {
+        "board_no": 1,
+        "dip_id": 1,
+        "scales": 2,
+        "source_no": 1,
+        "switches_on": "1"
+       }
+      ],
+      "designs": [
+       {
+        "colors": {
+         "front|0|1": 2
+        },
+        "label": "P01",
+        "name": "BagA_color_pattern01_grid.csv",
+        "partial_problems": [],
+        "pattern": 1,
+        "problems": [
+         "BagA_color_pattern01_grid.csv: colour not decided (-) for front row 0 col 2 (board 1 socket 2)"
+        ],
+        "shifts": {
+         "front|0": 0.0
+        },
+        "transition": {
+         "sequence": "natural",
+         "span_s": 0.0
+        },
+        "undecided": [
+         "front|0|2"
+        ]
+       },
+       {
+        "colors": {
+         "front|0|1": 2,
+         "front|0|2": 3
+        },
+        "label": "P02",
+        "name": "BagA_color_pattern02_grid.csv",
+        "partial_problems": [],
+        "pattern": 2,
+        "problems": [],
+        "shifts": {
+         "front|0": 0.0
+        },
+        "transition": {
+         "sequence": "natural",
+         "span_s": 0.0
+        },
+        "undecided": []
+       }
+      ],
+      "item": "BagA",
+      "look": "",
+      "map": {
+       "name": "BagA_map.csv",
+       "scales": [
+        [
+         "front",
+         0,
+         1,
+         1,
+         1
+        ],
+        [
+         "front",
+         0,
+         2,
+         1,
+         2
+        ]
+       ],
+       "shifts": {},
+       "sides": [
+        "front"
+       ],
+       "warnings": []
+      },
+      "model": "AZ271SB2303",
+      "problems": [],
+      "sequences": {
+       "bottom_up": [
+        0,
+        0
+       ],
+       "center": [
+        0,
+        0
+       ],
+       "left_right": [
+        1,
+        0
+       ],
+       "right_left": [
+        0,
+        1
+       ],
+       "top_down": [
+        0,
+        0
+       ]
+      },
+      "unit": null
+     },
+     {
+      "boards": [
+       {
+        "board_no": 17,
+        "dip_id": 1,
+        "scales": 2,
+        "source_no": 17,
+        "switches_on": "1"
+       },
+       {
+        "board_no": 18,
+        "dip_id": 2,
+        "scales": 1,
+        "source_no": 18,
+        "switches_on": "2"
+       },
+       {
+        "board_no": 20,
+        "dip_id": 3,
+        "scales": 1,
+        "source_no": 20,
+        "switches_on": "1 2"
+       }
+      ],
+      "designs": [
+       {
+        "colors": {
+         "back|0|2": 5,
+         "front|0|1": 15,
+         "front|1|1": 3,
+         "front|1|2": 0
+        },
+        "label": "P01",
+        "name": "Look22_color_pattern01_grid.csv",
+        "partial_problems": [],
+        "pattern": 1,
+        "problems": [],
+        "shifts": {
+         "back|0": 0.0,
+         "front|0": 0.0,
+         "front|1": 0.5
+        },
+        "transition": {
+         "sequence": "top_down",
+         "span_s": 2.0
+        },
+        "undecided": []
+       }
+      ],
+      "item": "Look22",
+      "look": "22",
+      "map": {
+       "name": "Look22_map.csv",
+       "scales": [
+        [
+         "front",
+         1,
+         1,
+         17,
+         1
+        ],
+        [
+         "front",
+         1,
+         2,
+         17,
+         60
+        ],
+        [
+         "front",
+         0,
+         1,
+         20,
+         5
+        ],
+        [
+         "back",
+         0,
+         2,
+         18,
+         12
+        ]
+       ],
+       "shifts": {},
+       "sides": [
+        "front",
+        "back"
+       ],
+       "warnings": []
+      },
+      "model": "AZ271SD1305",
+      "problems": [],
+      "sequences": {
+       "bottom_up": [
+        1,
+        1,
+        0,
+        0
+       ],
+       "center": [
+        0,
+        1,
+        1,
+        1
+       ],
+       "left_right": [
+        1,
+        0,
+        1,
+        0
+       ],
+       "right_left": [
+        0,
+        1,
+        0,
+        0
+       ],
+       "top_down": [
+        0,
+        0,
+        1,
+        1
+       ]
+      },
+      "unit": null
+     }
+    ],
+    "music": {
+     "name": "demo.mp3",
+     "url": null
+    },
+    "orphans": [],
+    "palette": [
+     {
+      "name": "White",
+      "rgb": [
+       137,
+       173,
+       195
+      ]
+     },
+     {
+      "name": "Yellow",
+      "rgb": [
+       180,
+       174,
+       64
+      ]
+     },
+     {
+      "name": "Blue",
+      "rgb": [
+       0,
+       92,
+       182
+      ]
+     },
+     {
+      "name": "Red",
+      "rgb": [
+       114,
+       71,
+       59
+      ]
+     },
+     {
+      "name": "Black",
+      "rgb": [
+       26,
+       55,
+       87
+      ]
+     },
+     {
+      "name": "Green",
+      "rgb": [
+       67,
+       131,
+       114
+      ]
+     },
+     {
+      "name": "Turquoise",
+      "rgb": [
+       118,
+       148,
+       76
+      ]
+     },
+     {
+      "name": "Almond",
+      "rgb": [
+       119,
+       122,
+       101
+      ]
+     },
+     {
+      "name": "Light Pink",
+      "rgb": [
+       112,
+       112,
+       112
+      ]
+     },
+     {
+      "name": "Sky Blue",
+      "rgb": [
+       36,
+       115,
+       179
+      ]
+     },
+     {
+      "name": "Orange",
+      "rgb": [
+       129,
+       82,
+       66
+      ]
+     },
+     {
+      "name": "Yellow Green",
+      "rgb": [
+       134,
+       174,
+       89
+      ]
+     },
+     {
+      "name": "Olive Gray",
+      "rgb": [
+       60,
+       131,
+       116
+      ]
+     },
+     {
+      "name": "Brown",
+      "rgb": [
+       126,
+       85,
+       63
+      ]
+     },
+     {
+      "name": "Dark Brown",
+      "rgb": [
+       108,
+       99,
+       75
+      ]
+     },
+     {
+      "name": "Smoke Blue",
+      "rgb": [
+       56,
+       119,
+       147
+      ]
+     }
+    ],
+    "sequences": [
+     {
+      "id": "natural",
+      "label": "Socket order (P01 to P60)"
+     },
+     {
+      "id": "center",
+      "label": "Centre outward"
+     },
+     {
+      "id": "top_down",
+      "label": "Top to bottom"
+     },
+     {
+      "id": "bottom_up",
+      "label": "Bottom to top"
+     },
+     {
+      "id": "left_right",
+      "label": "Left to right (audience)"
+     },
+     {
+      "id": "right_left",
+      "label": "Right to left (audience)"
+     }
+    ],
+    "show": {
+     "cues": [
+      {
+       "at": 0.0,
+       "complete": 0.0,
+       "design": "BagA_color_pattern02_grid.csv",
+       "end": 90.0,
+       "end_source": "next",
+       "id": "c3",
+       "item": "BagA",
+       "partial": false,
+       "problems": [],
+       "refresh": 7.0,
+       "refresh_s": null,
+       "refresh_source": "show",
+       "sent": -7.0,
+       "sequence": "natural",
+       "span": 0.0,
+       "span_s": 0.0,
+       "sweep": {
+        "sequence": "natural",
+        "source": "design",
+        "span_s": 0.0
+       },
+       "transition": "design"
+      },
+      {
+       "at": 0.0,
+       "complete": 2.0,
+       "design": "Look22_color_pattern01_grid.csv",
+       "end": 60.0,
+       "end_source": "next",
+       "id": "c1",
+       "item": "Look22",
+       "partial": false,
+       "problems": [],
+       "refresh": 7.0,
+       "refresh_s": null,
+       "refresh_source": "show",
+       "sent": -7.0,
+       "sequence": "natural",
+       "span": 2.0,
+       "span_s": 0.0,
+       "sweep": {
+        "sequence": "top_down",
+        "source": "design",
+        "span_s": 2.0
+       },
+       "transition": "design"
+      },
+      {
+       "at": 60.0,
+       "complete": 65.0,
+       "design": "Look22_color_pattern01_grid.csv",
+       "end": 600.0,
+       "end_source": "show",
+       "id": "c2",
+       "item": "Look22",
+       "partial": false,
+       "problems": [],
+       "refresh": 3.0,
+       "refresh_s": 3.0,
+       "refresh_source": "cue",
+       "sent": 60.0,
+       "sequence": "natural",
+       "span": 2.0,
+       "span_s": 0.0,
+       "sweep": {
+        "sequence": "top_down",
+        "source": "design",
+        "span_s": 2.0
+       },
+       "transition": "design"
+      },
+      {
+       "at": 90.0,
+       "complete": 97.0,
+       "design": "BagA_color_pattern01_grid.csv",
+       "end": 600.0,
+       "end_source": "show",
+       "id": "c4",
+       "item": "BagA",
+       "partial": true,
+       "problems": [],
+       "refresh": 7.0,
+       "refresh_s": null,
+       "refresh_source": "show",
+       "sent": 90.0,
+       "sequence": "natural",
+       "span": 0.0,
+       "span_s": 0.0,
+       "sweep": {
+        "sequence": "natural",
+        "source": "design",
+        "span_s": 0.0
+       },
+       "transition": "design"
+      }
+     ],
+     "duration": 600.0,
+     "min_interval": {
+      "(BagA)": 8.0,
+      "(Look22)": 8.0
+     },
+     "refresh_s": 7.0,
+     "warnings": []
+    },
+    "transitions": {
+     "Look22_color_pattern01_grid.csv": {
+      "sequence": "top_down",
+      "span_s": 2.0
+     }
+    },
+    "units": []
+   },
+   "kind": "state",
+   "name": "bundle_v1",
+   "project": {
+    "files": {
+     "BagA_color_pattern01_grid.csv": "side,row,shift,1,2\nfront,0,0,0x02,-\n",
+     "BagA_color_pattern02_grid.csv": "side,row,shift,1,2\nfront,0,0,0x02,0x03\n",
+     "BagA_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,1,1,001-01\nfront,0,2,1,2,001-02\n",
+     "Look22_color_pattern01_grid.csv": "side,row,shift,1,2,3\nfront,1,0.5,0x03,0x00,0\nfront,0,0,0x0F,0,0\nback,0,0,0,0x05,0\n",
+     "Look22_map.csv": "side,row,col,board_no,socket,label\nfront,1,1,17,1,017-01\nfront,1,2,17,60,017-60\nfront,0,1,20,5,020-05\nback,0,2,18,12,018-12\n"
+    },
+    "show": {
+     "boards": {},
+     "cues": [
+      {
+       "at": 0.0,
+       "design": "BagA_color_pattern02_grid.csv",
+       "id": "c3",
+       "item": "BagA",
+       "partial": false,
+       "refresh_s": null,
+       "sequence": "natural",
+       "span_s": 0.0,
+       "transition": "design"
+      },
+      {
+       "at": 0.0,
+       "design": "Look22_color_pattern01_grid.csv",
+       "id": "c1",
+       "item": "Look22",
+       "partial": false,
+       "refresh_s": null,
+       "sequence": "natural",
+       "span_s": 0.0,
+       "transition": "design"
+      },
+      {
+       "at": 60.0,
+       "design": "Look22_color_pattern01_grid.csv",
+       "id": "c2",
+       "item": "Look22",
+       "partial": false,
+       "refresh_s": 3.0,
+       "sequence": "natural",
+       "span_s": 0.0,
+       "transition": "design"
+      },
+      {
+       "at": 90.0,
+       "design": "BagA_color_pattern01_grid.csv",
+       "id": "c4",
+       "item": "BagA",
+       "partial": true,
+       "refresh_s": null,
+       "sequence": "natural",
+       "span_s": 0.0,
+       "transition": "design"
+      }
+     ],
+     "duration": 600.0,
+     "exported": "2026-09-24T14:20:05",
+     "format": "epaper-show",
+     "labels": {
+      "BagA": {
+       "look": "",
+       "model": "AZ271SB2303"
+      },
+      "Look22": {
+       "look": "22",
+       "model": "AZ271SD1305"
+      }
+     },
+     "music": {
+      "name": "demo.mp3"
+     },
+     "refresh_s": 7.0,
+     "transitions": {
+      "Look22_color_pattern01_grid.csv": {
+       "sequence": "top_down",
+       "span_s": 2.0
+      }
+     },
+     "version": 1,
+     "workspace": "designer"
+    }
+   }
+  },
+  {
+   "expect": {
+    "items": [
+     {
+      "boards": [
+       {
+        "board_no": 17,
+        "dip_id": 1,
+        "scales": 2,
+        "source_no": 17,
+        "switches_on": "1"
+       },
+       {
+        "board_no": 18,
+        "dip_id": 2,
+        "scales": 1,
+        "source_no": 18,
+        "switches_on": "2"
+       },
+       {
+        "board_no": 20,
+        "dip_id": 3,
+        "scales": 1,
+        "source_no": 20,
+        "switches_on": "1 2"
+       }
+      ],
+      "designs": [
+       {
+        "colors": {
+         "back|0|2": 5,
+         "front|0|1": 15,
+         "front|1|1": 3,
+         "front|1|2": 0
+        },
+        "label": "P01",
+        "name": "Sample_color_pattern01_grid.csv",
+        "partial_problems": [],
+        "pattern": 1,
+        "problems": [],
+        "shifts": {
+         "back|0": 0.0,
+         "front|0": 0.0,
+         "front|1": 0.5
+        },
+        "transition": {
+         "sequence": "natural",
+         "span_s": 0.0
+        },
+        "undecided": []
+       }
+      ],
+      "item": "Sample",
+      "look": "",
+      "map": {
+       "name": "Sample_map.csv",
+       "scales": [
+        [
+         "front",
+         1,
+         1,
+         17,
+         1
+        ],
+        [
+         "front",
+         1,
+         2,
+         17,
+         60
+        ],
+        [
+         "front",
+         0,
+         1,
+         20,
+         5
+        ],
+        [
+         "back",
+         0,
+         2,
+         18,
+         12
+        ]
+       ],
+       "shifts": {},
+       "sides": [
+        "front",
+        "back"
+       ],
+       "warnings": []
+      },
+      "model": "",
+      "problems": [],
+      "sequences": {
+       "bottom_up": [
+        1,
+        1,
+        0,
+        0
+       ],
+       "center": [
+        0,
+        1,
+        1,
+        1
+       ],
+       "left_right": [
+        1,
+        0,
+        1,
+        0
+       ],
+       "right_left": [
+        0,
+        1,
+        0,
+        0
+       ],
+       "top_down": [
+        0,
+        0,
+        1,
+        1
+       ]
+      },
+      "unit": null
+     }
+    ],
+    "music": {
+     "name": null,
+     "url": null
+    },
+    "orphans": [],
+    "palette": [
+     {
+      "name": "White",
+      "rgb": [
+       137,
+       173,
+       195
+      ]
+     },
+     {
+      "name": "Yellow",
+      "rgb": [
+       180,
+       174,
+       64
+      ]
+     },
+     {
+      "name": "Blue",
+      "rgb": [
+       0,
+       92,
+       182
+      ]
+     },
+     {
+      "name": "Red",
+      "rgb": [
+       114,
+       71,
+       59
+      ]
+     },
+     {
+      "name": "Black",
+      "rgb": [
+       26,
+       55,
+       87
+      ]
+     },
+     {
+      "name": "Green",
+      "rgb": [
+       67,
+       131,
+       114
+      ]
+     },
+     {
+      "name": "Turquoise",
+      "rgb": [
+       118,
+       148,
+       76
+      ]
+     },
+     {
+      "name": "Almond",
+      "rgb": [
+       119,
+       122,
+       101
+      ]
+     },
+     {
+      "name": "Light Pink",
+      "rgb": [
+       112,
+       112,
+       112
+      ]
+     },
+     {
+      "name": "Sky Blue",
+      "rgb": [
+       36,
+       115,
+       179
+      ]
+     },
+     {
+      "name": "Orange",
+      "rgb": [
+       129,
+       82,
+       66
+      ]
+     },
+     {
+      "name": "Yellow Green",
+      "rgb": [
+       134,
+       174,
+       89
+      ]
+     },
+     {
+      "name": "Olive Gray",
+      "rgb": [
+       60,
+       131,
+       116
+      ]
+     },
+     {
+      "name": "Brown",
+      "rgb": [
+       126,
+       85,
+       63
+      ]
+     },
+     {
+      "name": "Dark Brown",
+      "rgb": [
+       108,
+       99,
+       75
+      ]
+     },
+     {
+      "name": "Smoke Blue",
+      "rgb": [
+       56,
+       119,
+       147
+      ]
+     }
+    ],
+    "sequences": [
+     {
+      "id": "natural",
+      "label": "Socket order (P01 to P60)"
+     },
+     {
+      "id": "center",
+      "label": "Centre outward"
+     },
+     {
+      "id": "top_down",
+      "label": "Top to bottom"
+     },
+     {
+      "id": "bottom_up",
+      "label": "Bottom to top"
+     },
+     {
+      "id": "left_right",
+      "label": "Left to right (audience)"
+     },
+     {
+      "id": "right_left",
+      "label": "Right to left (audience)"
+     }
+    ],
+    "show": {
+     "cues": [
+      {
+       "at": 0.0,
+       "complete": 0.0,
+       "design": "Sample_color_pattern01_grid.csv",
+       "end": 120.0,
+       "end_source": "show",
+       "id": "a",
+       "item": "Sample",
+       "partial": false,
+       "problems": [],
+       "refresh": 7.0,
+       "refresh_s": null,
+       "refresh_source": "show",
+       "sent": -7.0,
+       "sequence": "natural",
+       "span": 0.0,
+       "span_s": 0.0,
+       "sweep": {
+        "sequence": "natural",
+        "source": "design",
+        "span_s": 0.0
+       },
+       "transition": "design"
+      }
+     ],
+     "duration": 120.0,
+     "min_interval": {
+      "(Sample)": 8.0
+     },
+     "refresh_s": 7.0,
+     "warnings": []
+    },
+    "transitions": {},
+    "units": []
+   },
+   "kind": "state",
+   "name": "single_item_preset",
+   "project": {
+    "files": {
+     "Sample_color_pattern01_grid.csv": "side,row,shift,1,2,3\nfront,1,0.5,0x03,0x00,0\nfront,0,0,0x0F,0,0\nback,0,0,0,0x05,0\n",
+     "Sample_map.csv": "side,row,col,board_no,socket,label\nfront,1,1,17,1,017-01\nfront,1,2,17,60,017-60\nfront,0,1,20,5,020-05\nback,0,2,18,12,018-12\n"
+    },
+    "show": {
+     "boards": {},
+     "cues": [
+      {
+       "at": 0,
+       "design": "Sample_color_pattern01_grid.csv",
+       "id": "a",
+       "item": "Sample"
+      }
+     ],
+     "duration": 120.0,
+     "labels": {},
+     "music": null,
+     "refresh_s": 7.0,
+     "transitions": {}
+    }
+   }
+  }
+ ],
+ "fixtureText": {
+  "BadHeader_map.csv": "side,row,col\nfront,0,1\n",
+  "BadShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,1,1,17,1,017-01,0\nfront,1,2,17,60,017-60,0\nfront,0,1,20,5,020-05,0.3\nback,0,2,18,12,018-12,0.5\n",
+  "BlankShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,1,1,17,1,017-01,0\nfront,1,2,17,60,017-60,0\nfront,0,1,20,5,020-05,\nback,0,2,18,12,018-12,0.5\n",
+  "CenterPlain_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,1,1,\nfront,0,2,1,2,\nfront,1,1,1,3,\nfront,1,2,1,4,\nfront,1,3,1,5,\nfront,1,4,1,6,\nfront,2,2,1,7,\n",
+  "CenterShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,0,1,1,1,,0\nfront,0,2,1,2,,0\nfront,1,1,1,3,,0\nfront,1,2,1,4,,0\nfront,1,3,1,5,,0\nfront,1,4,1,6,,0\nfront,2,2,1,7,,0\n",
+  "DoubledColumn_map.csv": "side,row,col,board_no,socket,socket\nfront,0,1,17,1,\n",
+  "DupSocket_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,17,1,\nback,5,5,17,1,\n",
+  "OneBoard_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,9,1,\n",
+  "SampleShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,1,1,17,1,017-01,0\nfront,1,2,17,60,017-60,0\nfront,0,1,20,5,020-05,0\nback,0,2,18,12,018-12,0.5\n",
+  "Sample_color_extracells_grid.csv": "side,row,shift,1\nfront,1,0.5,0x0A,0x0B\n",
+  "Sample_color_pattern01_grid.csv": "side,row,shift,1,2,3\nfront,1,0.5,0x03,0x00,0\nfront,0,0,0x0F,0,0\nback,0,0,0,0x05,0\n",
+  "Sample_color_undecided_grid.csv": "side,row,shift,1,2,3\nfront,1,0.5,0x03,-,0\nfront,0,0,0x0F,0,0\nback,0,0,0,0x05,0\n",
+  "Sample_color_zerowhite_grid.csv": "side,row,shift,1,2,3\nfront,1,0.5,0x03,0,0\nfront,0,0,0x0F,0,0\nback,0,0,0,0x05,0\n",
+  "Sample_map.csv": "side,row,col,board_no,socket,label\nfront,1,1,17,1,017-01\nfront,1,2,17,60,017-60\nfront,0,1,20,5,020-05\nback,0,2,18,12,018-12\n",
+  "Seq_map.csv": "side,row,col,board_no,socket,label\nfront,2,1,17,1,\nfront,2,2,17,2,\nfront,2,3,17,3,\nfront,1,1,17,4,\nfront,1,2,17,5,\nfront,1,3,17,6,\nfront,0,2,17,7,\nback,1,1,18,1,\nback,1,3,18,2,\nback,0,2,18,3,\n",
+  "SingleScale_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,5,1,\n",
+  "Skirt_color_pattern01_grid.csv": "side,row,shift,1\nfront,1,0.5,0x0A\nfront,0,0,0x0B\n",
+  "Skirt_map.csv": "side,row,col,board_no,socket,label\nfront,1,1,1,7,001-07\nfront,0,1,2,8,002-08\n",
+  "SocketRange_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,17,1,\nback,6,6,17,61,\n"
+ },
+ "fixtures": {
+  "BadHeader_map.csv": "9df3c47dc984271c",
+  "BadShift_map.csv": "0306f9463cae58f3",
+  "BlankShift_map.csv": "4c4dd228b074edac",
+  "CenterPlain_map.csv": "e6b49ccdf1af7978",
+  "CenterShift_map.csv": "d575cbc9a5e70e08",
+  "DoubledColumn_map.csv": "6d591302268ee5bb",
+  "DupSocket_map.csv": "1ad90d923296016c",
+  "OneBoard_map.csv": "4872ee67ecedea69",
+  "SampleShift_map.csv": "e040c3a08c754f3e",
+  "Sample_color_extracells_grid.csv": "f36ac5be7b2d3ac9",
+  "Sample_color_pattern01_grid.csv": "43df1492a2336cb3",
+  "Sample_color_undecided_grid.csv": "c37ec68ffbd41540",
+  "Sample_color_zerowhite_grid.csv": "62fafbd9339eb6bf",
+  "Sample_map.csv": "47d0ffcf8eb52ca5",
+  "Seq_map.csv": "64efbedf8d6d09fb",
+  "SingleScale_map.csv": "cc37920cefe8731d",
+  "Skirt_color_pattern01_grid.csv": "49bfa1ffb5149de8",
+  "Skirt_map.csv": "b05d93993f88ec44",
+  "SocketRange_map.csv": "8cc4006c8c4b8750"
+ },
+ "format": "epaper-sim-goldens",
+ "version": 1
+}

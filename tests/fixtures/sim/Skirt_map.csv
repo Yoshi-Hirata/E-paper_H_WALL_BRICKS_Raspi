@@ -1,0 +1,3 @@
+side,row,col,board_no,socket,label
+front,1,1,1,7,001-07
+front,0,1,2,8,002-08
