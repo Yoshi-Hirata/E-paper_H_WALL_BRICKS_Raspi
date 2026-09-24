@@ -1929,7 +1929,9 @@ function burnFailedQuestion(question) {
     .join("; ") + ` — ${question}`;
 }
 // A server refusal `force` would get past: every unit it names merely
-// failed some boards (fleet.py's "<unit>: n board(s) not written (...)").
+// failed on some boards (fleet.py's "<unit>: 10 of 12 pictures not written
+// on boards 1, 2, 3"). A cancelled or restarted unit says "pictures not
+// written ..." without the count, and no answer here would help it.
 const onlyFailedBoards = error => !!error && error.split("; ").every(
   part => /\d+ of \d+ pictures not written/.test(part));
 function renderTiles() {
