@@ -18,44 +18,76 @@
 
 ## 2. 直近で完成したもの
 
-**Timeline: 次の refresh は前の絵が完成してから 1 秒後でよい(2026-09-24)**
+**Timeline: 1 秒 gap ルールをレビューで修正 - 本体の準備時間より詰めない(2026-09-24)**
 
 - ディレクターの要望:「Reflesh が終わった後、1 秒後に次のデザインへの refresh に入ることができる
-  ようにしたい」。
-- 旧ルール `min_interval(boards, refresh) = refresh + boards×0.22 s + 3.0 s`(例: 16 枚・refresh 7 s
-  → 13.5 s、36 枚 → 17.9 s、refresh 16 s・16 枚 → 22.5 s)は、次のキューの書き込みが前の絵の完成後に
-  始まる、という前提だった。実際は `ui/showplay.py` の `_plan()` の分岐1が前のキューの送信の瞬間から
-  次のキューの書き込みを始めており(`_lead()` は「遅くともこの時刻までに」であって「早くてもこの
-  時刻から」ではない)、基板は再描画中に届いたコマンドもキューに積んで受け付ける(`ui/runner.py` の
-  SHOW_REPEATS 付近のコメント、2026-08-14 測定)。つまり書き込みは再描画と重なって進んでおり、旧
-  ルールの余裕は refresh 分と書き込み分を単純に足していて二重取りだった。
-- 新ルール: `GAP_AFTER_REFRESH_S = 1.0`(絵の完成から次の送信までのディレクターの最小間隔)、
-  `WRITE_MARGIN_S = 1.0`(書き込み後の余裕)として
-  `min_interval(boards, refresh, gap) = max(refresh + gap, boards×0.22 s + WRITE_MARGIN_S)`(足し算
-  ではなく大きい方)。16 枚・refresh 7 s → 8.0 s(旧 13.5 s)。27 枚 → max(8.0, 6.94)=8.0 s。32 枚 →
-  max(8.0, 8.04)=8.04 s(表示は 8 s)。36 枚 → max(8.0, 8.92)=8.92 s(旧 17.9 s)。refresh 16 s・16 枚
-  → 17.0 s(旧 22.5 s)。`validate()` の 1 台のバス内チェックも同じ式(前のキューがスイープならその
-  span を refresh 側に、次のキューがスイープなら書き込み側を 2 倍)。文言は refresh 側が効くとき
-  「only N s after the previous refresh on UNIT; the next one may start M s after it (R s refresh +
-  G s gap)」、書き込み側が効くとき「only N s after the previous send on UNIT; its B boards take M s
-  to write」。「前の絵が完成する前に次が始まる」という同一アイテム内のルールは変更なし(同じ事実の
-  特別な場合)。
-- 安全と考える理由: 上記の通り書き込みは前の再描画と重なって進み、基板は再描画中のコマンドも
-  キューに積んで受け付ける(2026-08-14 測定)。**ただしこの詰めた間隔は実機(Radxa)でまだ確認して
-  いない**: 再描画中の save が受理されること・絵が正しく仕上がること・「完成 + 1 秒」で確実に発火
-  することを、Radxa が戻り次第、実機で確認する必要がある。
+  ようにしたい」。旧ルール `min_interval(boards, refresh) = refresh + boards×0.22 s + 3.0 s`(例:
+  16 枚・refresh 7 s → 13.5 s、36 枚 → 17.9 s)は、次のキューの書き込みが前の絵の完成後に始まる、
+  という前提だった。
+- **このセッションの最初の実装がレビューで指摘された問題**: 「refresh + gap か、書き込み時間か、
+  大きい方」という式自体は妥当だが、書き込み時間の見積もりに `conductor/timeline.py` 独自の楽観的な
+  定数(0.22 s/基板・余裕 1.0 s)を使っていた。これは本体(`ui/showplay.py`)が実際に使っている値
+  (`SAVE_S_PER_BOARD = 0.25 s`・`PREP_MARGIN_S = 2.0 s`)より短く、その結果 conductor が「問題なし」
+  と判定する間隔が、本体自身の準備時間より詰まってしまうケースがあった。今日のコードではこれが
+  起きると、本体側 `ui/showplay.py` の `_plan()` がまだ発火していないキューを追い越して次を書き始め
+  てしまう(本体側の対策は別のコーダーが別ブランチで対応中)。**conductor は、本体が実際に必要と
+  する時間より短い間隔を安全だと太鼓判を押してはならない** - この回はその修正。
+- 新ルール(`conductor/timeline.py`): 3 つの候補のうち一番大きいものを `need` とする。
+  - refresh 項: 「前のキュー自身の」refresh(`effective_refresh(before, refresh)`。show 既定値では
+    なく、前のキューが `refresh_s` を持てばその値)+ 前のキューのスイープ span + `GAP_AFTER_REFRESH_S`
+    (1.0 s、ディレクターの最小値)。
+  - 書き込み項: 本体の定数をそのまま複製した `UNIT_SAVE_S_PER_BOARD = 0.25 s`・
+    `UNIT_PREP_MARGIN_S = 2.0 s` を使い、`boards × 0.25 s + 2.0 s`(次のキューがスイープするなら
+    delay table も書くので `boards × 2 × 0.25 s + 2.0 s`)。
+  - rejoin 項: 前のキューがプリセット(`at <= 0`)のときだけ、書き込み項にさらに
+    `UNIT_SETUP_S = 1.0 s`(本体の `SETUP_S`)+ `boards × UNIT_SETUP_S_PER_BOARD`(`0.15 s`、本体の
+    `SETUP_S_PER_BOARD`)+ gap を足したもの。本体は `/show/run` が届いて初めて書き込みを始め、PC は
+    それを T0 の `DEFAULT_LEAD_S`(`conductor/fleet.py`、3 秒)前に送るだけなので、プリセット直後の
+    最初のキューでは「ちょうど今 `/show/run` で合流し直した本体」を想定しないと安全でない。
+  - `min_interval(boards, refresh, gap, sweep=False)` は refresh 項と書き込み項のみ(ページの
+    「1 台あたりの最短間隔」表示に使う値。スイープなしの数値であることに注意 - ページはスイープする
+    キールを想定していない)。数値: **16 枚・スイープなし 8.0 s、16 枚・スイープあり 10.0 s、
+    24 枚 8.0 s、27 枚 8.75 s、32 枚 10.0 s、36 枚 11.0 s**。プリセット直後の最初のキュー(16 枚・
+    スイープなし)は rejoin 項が効いて **10.4 s**(旧ルールでは 10 s だったので実は旧ルールより厳しい
+    - 旧ルールはこのケースを想定していなかった)。
+  - 同一アイテム内の「前の絵が完成する前に始まる」ルール(重複を避けるための `overlapped` 抑制)は、
+    **refresh 項が binding のときだけ**バス側のメッセージを黙らせる。書き込み項・rejoin 項が binding
+    のときは必ず出す(本体の書き込み時間が足りないという事実は、絵の完成時刻の話とは別物なので)。
+  - 文言は 1 桁小数で曖昧さなし。どちらも「after the previous send」で統一:
+    refresh 項が binding「only 7.5 s after the previous send on radxa-04; at least 8.0 s is needed
+    (7.0 s refresh + 1.0 s gap)」、書き込み項が binding「only 8.0 s after the previous send on
+    radxa-04; writing its 32 boards needs 10.0 s (32 × 0.25 s + 2.0 s)」。
+- **証拠の見直し(誠実な書き直し)**: 前回のこのセッションは「2026-08-14 の記録が repaint 中の save
+  実行を証明した」と書いたが、これは言い過ぎだった。**2026-08-14 の記録が実際に示すのは**、repaint
+  中に届いたコマンドが**キューに積まれ、repaint が終わってから実行される**こと、そして 1 回余分な
+  show コマンドを送ると 1 回余分な repaint が起きること、の 2 点だけである。**示していないもの**:
+  repaint の途中で save が実際に実行されること(むしろ上の観測はその逆、実行が repaint 後に遅延する
+  ことを示唆する)。また、既定の refresh 7 秒は最新ファームウェアの**報告値**であって測定値ではない
+  (`REFRESH_S` のコメント参照)。
+- **実機(Radxa)が戻ったら測定すべきこと**(この 1 秒 gap を実ショーで使う前に、すべて未確認):
+  1. 基板 1 枚あたりの実際の repaint 時間(command → 絵が完成するまで)。
+  2. repaint 開始 1〜2 秒後に stop/save を送った場合: ACK が返るか、それがいつ実行されるか、絵が
+     壊れずに残るか。
+  3. 同じスロットへの上書き保存が repaint 中に届いた場合の挙動。
+  4. ある基板がまだ repaint 中に、次の show(全体ブロードキャスト)が届いた場合の挙動。
+  5. 基板 32 枚・36 枚時の、リトライを含めた基板ごとの実際の save 時間。
+  6. 10 キュー連続のショーを流し、発火回数(show コマンド数)が想定通りであることの確認。
+  7. 重なった書き込み(複数基板が同時に stop/save 中)での 12 V レールの電圧・電流。
 - `gap` は将来ショーの設定(`show.json` の `gap_s`、0〜30 s・小数点 1 桁、デフォルト 1.0)にして操作
   側で緩められるようにする予定だが、`timeline.clean()`/`set_timeline()` の配線は `conductor/server.py`
-  にあり今回のセッションでは触れないため、モデル側(`min_interval(..., gap=...)`・
+  にあり今回のセッションでは触れないため、モデル側(`min_interval(..., gap=..., sweep=...)`・
   `validate(..., gap=...)`、デフォルト `GAP_AFTER_REFRESH_S`)のみ実装した。**TODO: `gap_s` を
   ショー設定として保存・編集できるようにする server.py 側・ページ側の配線(別セッションで割り当て)。**
-- テスト: `tests/test_timeline.py`(`min_interval` の新しい期待値、新ルールの文言、
-  `test_the_next_refresh_may_start_one_second_after_the_previous_is_complete`・
-  `test_many_boards_are_bound_by_their_write_time`・`test_a_sweep_adds_its_span_before_the_gap` を
-  追加)、`tests/test_conductor_server.py`(`min_interval` の 10.66/19.66 → 8.0/17.0)、
-  `tests/test_showplay.py`(`test_a_refresh_plus_gap_apart_writes_the_next_cue_during_the_previous_repaint`:
-  refresh + 1 s 間隔の 2 キューで、2 枚目の書き込みが 1 枚目の発火後・絵の完成前に始まり、時刻通りに
-  発火することを確認)。
+- テスト: `tests/test_timeline.py`(`min_interval` の新しい期待値と `sweep=` 引数、本体定数のミラーが
+  `ui/showplay.py`(と `conductor/fleet.py` の `DEFAULT_LEAD_S`)と一致することを確認するテスト、
+  `test_the_interval_is_never_shorter_than_the_units_prepare_lead`・
+  `test_a_sweeping_cue_doubles_the_write_term`・
+  `test_the_previous_cues_own_refresh_time_sets_the_gap`・
+  `test_the_first_cue_must_leave_time_to_write_the_boards_after_start`(rejoin 項、10.4 s)を追加/更新)、
+  `tests/test_conductor_server.py`(3 枚では書き込み項が効かないため数値は 8.0/17.0 のまま変更なし)、
+  `tests/test_showplay.py`(`test_the_write_is_issued_right_after_the_previous_fire` に改名 - 前の
+  refresh 完了前に書き込みが始まることまでは主張せず、次のキュー自身の送信時刻までに書き込みが
+  始まっていること・時刻通りに発火することだけを確認するよう、判定窓を広げてフレーク耐性を上げた)。
 
 **マップが制作サイトの行ごとの shift を持つように(2026-09-24)**
 

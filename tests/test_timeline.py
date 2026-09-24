@@ -13,8 +13,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.timeline import (REFRESH_S, apply_transitions, clean,
-                                effective_refresh, ends, format_clock,
+from conductor.timeline import (DEFAULT_LEAD_S, REFRESH_S, UNIT_PREP_MARGIN_S,
+                                UNIT_SAVE_S_PER_BOARD, UNIT_SETUP_S,
+                                UNIT_SETUP_S_PER_BOARD, apply_transitions,
+                                clean, effective_refresh, ends, format_clock,
                                 min_interval, parse_clock, resolve, times,
                                 validate)
 
@@ -55,6 +57,19 @@ def test_clock_both_ways():
         parse_clock(None)
     with pytest.raises(ValueError):
         parse_clock({})
+
+
+def test_the_unit_constants_are_mirrored_from_their_real_sources():
+    # conductor/ and ui/ do not import each other (they run on different
+    # machines), so these are copies, not the same object - this test is
+    # what keeps them from drifting apart silently.
+    from ui import showplay
+    assert UNIT_SAVE_S_PER_BOARD == showplay.SAVE_S_PER_BOARD
+    assert UNIT_PREP_MARGIN_S == showplay.PREP_MARGIN_S
+    assert UNIT_SETUP_S == showplay.SETUP_S
+    assert UNIT_SETUP_S_PER_BOARD == showplay.SETUP_S_PER_BOARD
+    from conductor.fleet import DEFAULT_LEAD_S as FLEET_DEFAULT_LEAD_S
+    assert DEFAULT_LEAD_S == FLEET_DEFAULT_LEAD_S
 
 
 def test_start_is_the_send_instant_and_complete_adds_refresh_and_sweep():
@@ -107,7 +122,8 @@ def test_a_next_cue_before_the_picture_is_complete_is_a_problem_in_those_words()
     found, _ = validate([early, late], items, 600, 7.0)
     assert any("previous picture is complete" in p and "1:07" in p
               for p in found["b"])
-    # It replaces the bus-spacing message for this pair, not adds to it.
+    # It replaces the bus-spacing message for this pair (the refresh term
+    # is what would have bound here) - not add to it.
     assert not any("after the previous" in p for p in found["b"])
     # Comfortably clear of both the overlap and the bus-room rule: no
     # problem at all.
@@ -131,20 +147,23 @@ def test_clean_drops_align_and_keeps_refresh_s():
 
 
 def test_min_interval_grows_with_the_boards_to_write():
-    # Refresh-bound: writing 16 boards (4.52 s) is well under refresh + the
-    # director's 1 s gap, so that gap is what binds.
-    assert min_interval(16) == pytest.approx(8.0)
-    # Write-bound: writing 36 boards (8.92 s) now takes longer than the gap.
-    assert min_interval(36) == pytest.approx(36 * 0.22 + 1)      # 8.92 s
+    # Refresh-bound while the unit's own write time (its constants, not
+    # this module's) stays under refresh + the 1 s gap (8 s).
+    assert min_interval(16) == pytest.approx(8.0)          # 16x0.25+2 = 6.0 < 8
+    assert min_interval(24) == pytest.approx(8.0)          # 24x0.25+2 = 8.0 exactly
+    # Write-bound once the unit's own write time passes that.
+    assert min_interval(27) == pytest.approx(8.75)         # 27x0.25+2
+    assert min_interval(32) == pytest.approx(10.0)         # 32x0.25+2
+    assert min_interval(36) == pytest.approx(11.0)         # 36x0.25+2
+    # A sweeping cue doubles the write term: its delay tables are written too.
+    assert min_interval(16, sweep=True) == pytest.approx(10.0)   # 16x0.25x2+2
     assert min_interval(16, refresh=16) == pytest.approx(17.0)   # 16 + 1 s gap
 
 
 def test_the_next_refresh_may_start_one_second_after_the_previous_is_complete():
-    # The unit is writing the next cue's boards while the previous one is
-    # still repainting (ui/showplay.py _plan()'s branch 1, ui/runner.py's
-    # queue-during-repaint), so the director's 1 s gap after the picture
-    # completes is all two sends on one unit need - 16 boards' own write
-    # time (4.52 s) is well inside that.
+    # The director's 1 s gap after the picture completes is all two sends
+    # on one unit need, as long as writing 16 boards (well under that,
+    # with the unit's own constants) does not need more room.
     items = {"look22": {"item": "Look22", "unit": "radxa-04", "boards": 16,
                         "designs": {"p1": OK, "p2": OK}}}
     a = cue("a", "Look22", 60, "p1")               # complete at 67
@@ -152,25 +171,56 @@ def test_the_next_refresh_may_start_one_second_after_the_previous_is_complete():
     assert validate([a, fine], items, 600, 7.0)[0]["b"] == []
     tight = cue("b", "Look22", 67.9, "p2")         # 7.9 s later: 0.1 s short
     found, _ = validate([a, tight], items, 600, 7.0)
-    assert len(found["b"]) == 1
-    assert "after the previous refresh on radxa-04" in found["b"][0]
-    assert "may start 8 s after it (7 s refresh + 1 s gap)" in found["b"][0]
+    assert found["b"] == [
+        "only 7.9 s after the previous send on radxa-04; at least 8.0 s "
+        "is needed (7.0 s refresh + 1.0 s gap)"]
 
 
-def test_many_boards_are_bound_by_their_write_time():
-    # 36 boards take 8.92 s to write - more than refresh + the 1 s gap -
-    # so writing them, not the director's gap, is what needs the room.
-    items = {"look22": {"item": "Look22", "unit": "radxa-04", "boards": 36,
-                        "designs": {"p1": OK, "p2": OK}}}
+def test_the_interval_is_never_shorter_than_the_units_prepare_lead():
+    # The review's point: the conductor must never bless a spacing tighter
+    # than the UNIT's own prepare lead, even where refresh + gap alone
+    # would say it is fine.
+    items32 = {"look22": {"item": "Look22", "unit": "radxa-05", "boards": 32,
+                          "designs": {"p1": OK, "p2": OK}}}
     a = cue("a", "Look22", 60, "p1")
-    b = cue("b", "Look22", 68.5, "p2")             # 8.5 s: short of 8.92 s
-    found, _ = validate([a, b], items, 600, 7.0)
-    assert len(found["b"]) == 1
-    msg = found["b"][0]
-    assert msg.startswith("only ") and "after the previous send on radxa-04" in msg
-    assert "36 boards take 9 s to write" in msg
-    fine = cue("b", "Look22", 69.0, "p2")          # 9.0 s: enough to write them
+    b = cue("b", "Look22", 68.0, "p2")             # 8.0 s: refresh + gap only
+    found, _ = validate([a, b], items32, 600, 7.0)
+    assert found["b"] == [
+        "only 8.0 s after the previous send on radxa-05; writing its 32 "
+        "boards needs 10.0 s (32 × 0.25 s + 2.0 s)"]
+    # 24 boards write in 8.0 s - exactly what 8.0 s apart provides.
+    items24 = {"look22": {"item": "Look22", "unit": "radxa-05", "boards": 24,
+                          "designs": {"p1": OK, "p2": OK}}}
+    assert validate([a, b], items24, 600, 7.0)[0]["b"] == []
+
+
+def test_a_sweeping_cue_doubles_the_write_term():
+    items = {"look22": {"item": "Look22", "unit": "radxa-06", "boards": 16,
+                        "designs": {"p1": OK,
+                                    "g1.csv": {"full": True, "partial": True}}}}
+    a = cue("a", "Look22", 60, "p1")
+    b = cue("b", "Look22", 68.0, "g1.csv")         # 8.0 s: fine without a sweep
+    assert validate([a, b], items, 600, 7.0)[0]["b"] == []
+    b["sweep"] = {"sequence": "top_down", "span_s": 2.0, "source": "cue"}
+    b["span"] = 2.0                        # now sweeps: its delay tables are
+    found, _ = validate([a, b], items, 600, 7.0)   # written too - double the write
+    assert found["b"] == [
+        "only 8.0 s after the previous send on radxa-06; writing its 16 "
+        "boards needs 10.0 s (16 × 0.25 s × 2 (its delay tables) "
+        "+ 2.0 s)"]
+
+
+def test_the_previous_cues_own_refresh_time_sets_the_gap():
+    items = {"look22": {"item": "Look22", "unit": "radxa-07", "boards": 16,
+                        "designs": {"p1": OK, "p2": OK}}}
+    a = cue("a", "Look22", 60, "p1", refresh_s=20.0)   # its own, slower refresh
+    fine = cue("b", "Look22", 81.0, "p2")              # 21 s later: 20 + 1 s gap
     assert validate([a, fine], items, 600, 7.0)[0]["b"] == []
+    tight = cue("b", "Look22", 80.5, "p2")             # 20.5 s: short of 21 s
+    found, _ = validate([a, tight], items, 600, 7.0)
+    assert found["b"] == [
+        "only 20.5 s after the previous send on radxa-07; at least 21.0 s "
+        "is needed (20.0 s refresh + 1.0 s gap)"]
 
 
 def test_a_sweep_adds_its_span_before_the_gap():
@@ -185,9 +235,9 @@ def test_a_sweep_adds_its_span_before_the_gap():
     assert validate([swept, fine], items, 600, 7.0)[0]["b"] == []
     tight = cue("b", "Look22", 60.5, "g1.csv")      # 11.5 s: short of 12 s
     found, _ = validate([swept, tight], items, 600, 7.0)
-    assert len(found["b"]) == 1
-    assert ("may start 12 s after it (7 s refresh + 4 s sweep + 1 s gap)"
-           in found["b"][0])
+    assert found["b"] == [
+        "only 11.5 s after the previous send on radxa-01; at least 12.0 s "
+        "is needed (7.0 s refresh + 4.0 s sweep + 1.0 s gap)"]
 
 
 def test_a_plain_show_has_no_problems():
@@ -204,31 +254,36 @@ def test_refreshes_on_one_unit_need_room():
     b = cue("b", "Look22", 100, "p2")
     tight = cue("c", "Look22", 107.3, "p1")       # 7.3 s after send: too tight
     found, _ = problems([b, tight])
-    assert len(found["c"]) == 1 and "only 7 s" in found["c"][0]
-    assert "may start 8 s after it (7 s refresh + 1 s gap)" in found["c"][0]
+    assert found["c"] == [
+        "only 7.3 s after the previous send on radxa-03; at least 8.0 s "
+        "is needed (7.0 s refresh + 1.0 s gap)"]
     # 8 s apart (refresh + the 1 s gap) is enough room at a 7 s refresh -
     # not at a 16 s one, where that same gap needs 17 s.
     fine = cue("c", "Look22", 108, "p1")
     assert problems([b, fine])[0]["c"] == []
     tight16 = cue("c", "Look22", 116.3, "p1")     # 16.3 s after send
     found, _ = validate([b, tight16], ITEMS, 600, refresh=16)
-    assert "only 16 s" in found["c"][0]
-    assert "may start 17 s after it (16 s refresh + 1 s gap)" in found["c"][0]
+    assert found["c"] == [
+        "only 16.3 s after the previous send on radxa-03; at least 17.0 s "
+        "is needed (16.0 s refresh + 1.0 s gap)"]
     fine16 = cue("c", "Look22", 117, "p1")
     assert validate([b, fine16], ITEMS, 600, refresh=16)[0]["c"] == []
 
 
 def test_the_first_cue_must_leave_time_to_write_the_boards_after_start():
-    # The preset's refresh ends at 0:00 - 16 boards only need 4.5 s to
-    # write, but the director's rule still wants the next send no sooner
-    # than refresh + 1 s gap (8 s) after it: 0.1 s is far too tight, 8 s
-    # exactly is fine.
+    # The very first pairing on a unit's bus (preset -> first real cue) is
+    # floored at the unit's full rejoin lead, not just refresh + gap: the
+    # unit only starts writing once /show/run actually lands
+    # (conductor/fleet.py's DEFAULT_LEAD_S before T0), so a unit that is
+    # only just rejoining right there pays full setup, not just a write.
     found, _ = problems([cue("a", "Look22", 0, "p1"),
-                         cue("b", "Look22", 0.1, "p2")])
-    assert found["b"] and "only 7 s" in found["b"][0]
-    assert "may start 8 s after it (7 s refresh + 1 s gap)" in found["b"][0]
+                         cue("b", "Look22", 1, "p2")])       # 0:01: too tight
+    assert found["b"] == [
+        "only 8.0 s after the previous send on radxa-03; the unit may "
+        "still be rejoining and needs at least 10.4 s (16 × 0.25 s + "
+        "2.0 s prep + 1.0 s setup + 16 × 0.15 s probe + 1.0 s gap)"]
     found, _ = problems([cue("a", "Look22", 0, "p1"),
-                         cue("b", "Look22", 1, "p2")])
+                         cue("b", "Look22", 3.4, "p2")])     # 10.4 s: fine
     assert found["b"] == []
 
 
@@ -256,9 +311,10 @@ def test_items_sharing_a_unit_share_its_bus():
     assert found["a"] == found["b"] == []           # one refresh for both
     staggered = [cue("a", "Look20-Top", 53, "t1"),
                  cue("b", "Look20-Skirt", 59, "s1")]     # 6 s: writing 32
-    found, _ = problems(staggered)                       # boards takes 8 s
-    assert "radxa-02" in found["b"][0] and "32 boards" in found["b"][0]
-    assert "previous send" in found["b"][0] and "take 8 s to write" in found["b"][0]
+    found, _ = problems(staggered)                       # boards needs 10 s
+    assert found["b"] == [
+        "only 6.0 s after the previous send on radxa-02; writing its 32 "
+        "boards needs 10.0 s (32 × 0.25 s + 2.0 s)"]
     # Another unit is another bus: no conflict with Look22 ten seconds on.
     found, _ = problems(same_moment + [cue("c", "Look22", 63, "p1")])
     assert found["c"] == []
@@ -305,7 +361,7 @@ def test_a_sweep_lengthens_the_change_and_the_room_after_it():
     items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
                         "designs": {"g1.csv": {"full": True, "partial": True}}}}
     # Sent at 49; the previous cue's picture (7 + 4 s sweep) plus the 1 s
-    # gap is 12 s - more than writing 2 boards would need on its own.
+    # gap is 12 s - more than writing 2 boards would ever need on its own.
     later = cue("b", "Look22", 49 + 12 - 1, "g1.csv")     # 1 s short
     problems, _ = validate([swept, later], items, 600, 7.0)
     assert problems["b"] and "sweep" in problems["b"][0]

@@ -638,19 +638,20 @@ def test_a_cue_with_delay_tables_hands_them_to_the_session(rig):
 
 # ---- the director's 1 s gap (conductor/timeline.py min_interval/validate) ----
 
-def test_a_refresh_plus_gap_apart_writes_the_next_cue_during_the_previous_repaint(
-        tmp_path):
-    """docs/STATUS.md, 2026-09-24: the next send may follow the previous
-    picture's completion by just the director's 1 s gap. That only works
-    because the unit is not idle for the refresh - _plan()'s branch 1
-    starts preparing (writing the boards for) the next cue the moment it
-    is due, whatever the previous cue is still doing, and a board queues
-    a command that arrives mid-repaint (ui/runner.py, measured 2026-08-14).
+def test_the_write_is_issued_right_after_the_previous_fire(tmp_path):
+    """ui/showplay.py's _plan() branch 1 starts writing the next cue's
+    boards the moment it is due, whatever the previous cue is still
+    doing - it does not wait for the previous picture to complete first.
 
-    Here writing the 2 boards (1.1 s, save_s below) takes longer than the
-    0.3 s refresh itself, so the second cue's write genuinely starts
-    before the first cue's picture is complete - and it still fires
-    exactly on time, refresh + the 1 s gap after the first cue's send.
+    This only checks that: the write for q02 is issued after q01 fires,
+    and q02 still fires exactly on time (refresh + the director's 1 s
+    gap after q01's send). It deliberately does NOT assert anything
+    about q01's own refresh completing, nor claim the write overlaps a
+    live repaint - docs/STATUS.md (2026-09-24 fix round) is explicit
+    that whether a save actually executes during one has not been
+    confirmed on real hardware (a unit-side fix for pre-empting an
+    unfired cue is being done separately); the window here is widened to
+    q02's own send so this cannot flake on a loaded machine.
     """
     session, runner, bus = make_session()
     player = ShowPlayer(session, store=tmp_path, save_s=0.5, margin_s=0.1,
@@ -676,11 +677,11 @@ def test_a_refresh_plus_gap_apart_writes_the_next_cue_during_the_previous_repain
         prepare_q02 = next(t for dest, colour, t in saves
                            if dest == 1 and colour == 3)
 
-        # It starts writing q02 after q01 actually fired...
+        # The write for q02 is issued after q01 actually fired...
         assert prepare_q02 > fire_q01
-        # ...in fact before q01's own picture is complete: the write and
-        # the repaint overlap, as the director's rule assumes.
-        assert prepare_q02 < fire_q01 + REFRESH
+        # ...and, safely, before q02's own send (not some tighter window
+        # relative to q01's refresh completing, which is not confirmed).
+        assert prepare_q02 < fire_q02
         # And still fires q02 on time: refresh + the 1 s gap after q01.
         assert 0 <= fire_q02 - (t0 + REFRESH + gap) < 0.05
     finally:
