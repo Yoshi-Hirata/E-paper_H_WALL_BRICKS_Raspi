@@ -69,6 +69,14 @@ python -m conductor serve --open
 **別の PC でも同じショーを使うには `showdata/` ごとコピーする**(演出だけなら Timeline の Save show… / Load show… の JSON でも移せる。音楽は別途)。 バックアップもこのフォルダを
 丸ごと取ればよい。UI を起動したまま `showdata/files/` に CSV を置いても、次の再描画で拾う。
 
+### サンプル演出(6 ルック通し)
+
+`docs/samples/az27ss_sample_show.json` は 2026-09-24 に組んだ 6 ルック通しのサンプル(LOOK 23〜28、
+19 キュー、遷移 6 種、機体は radxa-01〜06 に仮割り当て)。Timeline の **Load show…** で読み込める
+(CSV は `showdata/files/` にあるものを参照するので、`showdata/` ごと移した先で使う)。デザイン CSV
+がまだ無いルックに仮のデザイン(`*_color_sampleA/B_grid.csv`)を作るには、UI を起動したまま
+`python tools/make_sample_grids.py . http://127.0.0.1:8765`(map から生成し、check を通してから取り込む)。
+
 ## 5b. 別の PC へ移す(移植)
 
 コードは GitHub、ショーのデータは `showdata/` フォルダ、の 2 つを持っていけばよい。

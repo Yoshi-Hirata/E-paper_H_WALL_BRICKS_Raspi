@@ -1,0 +1,288 @@
+{
+ "format": "epaper-show",
+ "version": 1,
+ "exported": "2026-09-24T11:46:52",
+ "workspace": "showdata",
+ "duration": 600.0,
+ "refresh_s": 7.0,
+ "cues": [
+  {
+   "id": "s26sa",
+   "item": "AZ271SB2303",
+   "at": 0.0,
+   "design": "AZ271SB2303_color_sampleA_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s26ta",
+   "item": "AZ271SC6302",
+   "at": 0.0,
+   "design": "AZ271SC6302_color_sampleA_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s25a",
+   "item": "AZ271SD1301",
+   "at": 0.0,
+   "design": "AZ271SD1301_color_sampleA_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s23a",
+   "item": "AZ271SD1305",
+   "at": 0.0,
+   "design": "AZ271SD1305_color_ref_multicolor_redorange_s22_grid_A-1.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s24a",
+   "item": "AZ271SD1305_B",
+   "at": 0.0,
+   "design": "AZ271SD1305_B_color_ref_multicolor_redorange_s22_grid_A-1.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s27a",
+   "item": "AZ271SD1306",
+   "at": 0.0,
+   "design": "AZ271SD1306_color_sampleA_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s28a",
+   "item": "AZ271SD1307",
+   "at": 0.0,
+   "design": "AZ271SD1307_color_pattern01_grid_B-1.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s23b",
+   "item": "AZ271SD1305",
+   "at": 30.0,
+   "design": "AZ271SD1305_color_ref_multicolor_redorange_s22_grid-2_A-2.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s23c",
+   "item": "AZ271SD1305",
+   "at": 60.0,
+   "design": "AZ271SD1305_color_ref_multicolor_redorange_s22_grid-2_A-3.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s24b",
+   "item": "AZ271SD1305_B",
+   "at": 100.0,
+   "design": "AZ271SD1305_B_color_ref_multicolor_redorange_s22_grid-2_A-2.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s24c",
+   "item": "AZ271SD1305_B",
+   "at": 130.0,
+   "design": "AZ271SD1305_B_color_ref_multicolor_redorange_s22_grid-2_A-3.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s25b",
+   "item": "AZ271SD1301",
+   "at": 180.0,
+   "design": "AZ271SD1301_color_sampleB_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s25c",
+   "item": "AZ271SD1301",
+   "at": 215.0,
+   "design": "AZ271SD1301_color_sampleA_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s26tb",
+   "item": "AZ271SC6302",
+   "at": 250.0,
+   "design": "AZ271SC6302_color_sampleB_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s26sb",
+   "item": "AZ271SB2303",
+   "at": 280.0,
+   "design": "AZ271SB2303_color_sampleB_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s27b",
+   "item": "AZ271SD1306",
+   "at": 340.0,
+   "design": "AZ271SD1306_color_sampleB_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s27c",
+   "item": "AZ271SD1306",
+   "at": 375.0,
+   "design": "AZ271SD1306_color_sampleA_grid.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s28b",
+   "item": "AZ271SD1307",
+   "at": 410.0,
+   "design": "AZ271SD1307_color_pattern01_grid_B-2.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  },
+  {
+   "id": "s28c",
+   "item": "AZ271SD1307",
+   "at": 440.0,
+   "design": "AZ271SD1307_color_pattern01_grid_B-3.csv",
+   "partial": false,
+   "refresh_s": null,
+   "transition": "design",
+   "sequence": "natural",
+   "span_s": 0.0
+  }
+ ],
+ "transitions": {
+  "AZ271SD1305_B_color_ref_multicolor_redorange_s22_grid-2_A-3.csv": {
+   "sequence": "top_down",
+   "span_s": 3.0
+  },
+  "AZ271SD1301_color_sampleB_grid.csv": {
+   "sequence": "bottom_up",
+   "span_s": 3.0
+  },
+  "AZ271SC6302_color_sampleB_grid.csv": {
+   "sequence": "left_right",
+   "span_s": 2.0
+  },
+  "AZ271SB2303_color_sampleB_grid.csv": {
+   "sequence": "right_left",
+   "span_s": 2.0
+  },
+  "AZ271SD1306_color_sampleB_grid.csv": {
+   "sequence": "center",
+   "span_s": 3.0
+  },
+  "AZ271SD1307_color_pattern01_grid_B-2.csv": {
+   "sequence": "top_down",
+   "span_s": 3.0
+  }
+ },
+ "labels": {
+  "AZ271SD1301": {
+   "look": "25",
+   "model": "AZ271SD1301"
+  },
+  "AZ271SC6302": {
+   "look": "26",
+   "model": "AZ271SC6302 (Tops)"
+  },
+  "AZ271SD1305": {
+   "look": "23",
+   "model": "AZ271SD1305"
+  },
+  "AZ271SD1306": {
+   "look": "27",
+   "model": "AZ271SD1306"
+  },
+  "AZ271SD1307": {
+   "look": "28",
+   "model": "AZ271SD1307"
+  },
+  "AZ271SB2303": {
+   "look": "26",
+   "model": "AZ271SB2303 (Skirt)"
+  },
+  "AZ271SD1305_B": {
+   "look": "24",
+   "model": "AZ271SD1305"
+  }
+ },
+ "units": {
+  "AZ271SD1305": "radxa-04",
+  "AZ271SD1305_B": "radxa-01",
+  "AZ271SD1301": "radxa-02",
+  "AZ271SC6302": "radxa-03",
+  "AZ271SB2303": "radxa-03",
+  "AZ271SD1306": "radxa-05",
+  "AZ271SD1307": "radxa-06"
+ },
+ "boards": {},
+ "music": {
+  "name": "AZ 27SS.DEMO.mp3"
+ }
+}
