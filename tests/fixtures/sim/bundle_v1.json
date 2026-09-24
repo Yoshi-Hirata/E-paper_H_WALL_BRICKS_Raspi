@@ -1,0 +1,49 @@
+{
+ "format": "epaper-show-bundle",
+ "version": 1,
+ "exported": "2026-09-24T14:20:05",
+ "app": "az27ss-simulator 1.0",
+ "show": {
+  "format": "epaper-show",
+  "version": 1,
+  "exported": "2026-09-24T14:20:05",
+  "workspace": "designer",
+  "duration": 600.0,
+  "refresh_s": 7.0,
+  "cues": [
+   {"id": "c3", "item": "BagA", "at": 0.0,
+    "design": "BagA_color_pattern02_grid.csv", "partial": false,
+    "refresh_s": null, "transition": "design", "sequence": "natural",
+    "span_s": 0.0},
+   {"id": "c1", "item": "Look22", "at": 0.0,
+    "design": "Look22_color_pattern01_grid.csv", "partial": false,
+    "refresh_s": null, "transition": "design", "sequence": "natural",
+    "span_s": 0.0},
+   {"id": "c2", "item": "Look22", "at": 60.0,
+    "design": "Look22_color_pattern01_grid.csv", "partial": false,
+    "refresh_s": 3.0, "transition": "design", "sequence": "natural",
+    "span_s": 0.0},
+   {"id": "c4", "item": "BagA", "at": 90.0,
+    "design": "BagA_color_pattern01_grid.csv", "partial": true,
+    "refresh_s": null, "transition": "design", "sequence": "natural",
+    "span_s": 0.0}
+  ],
+  "transitions": {
+   "Look22_color_pattern01_grid.csv": {"sequence": "top_down", "span_s": 2.0}
+  },
+  "labels": {
+   "Look22": {"look": "22", "model": "AZ271SD1305"},
+   "BagA": {"look": "", "model": "AZ271SB2303"}
+  },
+  "boards": {},
+  "music": {"name": "demo.mp3"}
+ },
+ "files": {
+  "Look22_map.csv": "side,row,col,board_no,socket,label\nfront,1,1,17,1,017-01\nfront,1,2,17,60,017-60\nfront,0,1,20,5,020-05\nback,0,2,18,12,018-12\n",
+  "Look22_color_pattern01_grid.csv": "side,row,shift,1,2,3\nfront,1,0.5,0x03,0x00,0\nfront,0,0,0x0F,0,0\nback,0,0,0,0x05,0\n",
+  "BagA_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,1,1,001-01\nfront,0,2,1,2,001-02\n",
+  "BagA_color_pattern01_grid.csv": "side,row,shift,1,2\nfront,0,0,0x02,-\n",
+  "BagA_color_pattern02_grid.csv": "side,row,shift,1,2\nfront,0,0,0x02,0x03\n"
+ },
+ "music": {"name": "demo.mp3"}
+}
