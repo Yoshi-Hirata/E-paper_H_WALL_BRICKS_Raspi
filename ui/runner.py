@@ -41,6 +41,12 @@ from epaper.commands import (TEST_SLOT, clear_pipeline, save_color,
 from epaper.protocol import ACK_INVALID_CMD, ACK_SUCCESS, DEV_NUMBER_BRAND
 
 NO_DELAY = 0xFFFF          # in a show file's table: no delay for this socket
+# "No sweep anywhere" as a table: what a cue that carries no delay table
+# for a (board, slot) means (review finding F5, 2026-09-25) - the slot's
+# pipeline is cleared (0x25) once and remembered in _delays_sent, so a
+# re-upload that took every sweep off the timeline does not leave the
+# previous upload's tables in the boards.
+NO_TABLE = struct.pack(">64H", *([NO_DELAY] * 64))
 from epaper.transport import Bus, find_port
 
 from .config import LOG_HISTORY
@@ -507,11 +513,20 @@ class DemoRunner:
         board holds, so the next burn must not skip it."""
         self._burn_cache.pop((board, slot), None)
 
+    def absent_snapshot(self) -> "set[int]":
+        """A copy of `absent` for other threads (ui/showplay.py's burn
+        gate, ui/app.py's DEMO screen): the worker changes the set in
+        place, and iterating a live set from another thread can raise
+        "set changed size during iteration" mid-show (review F10)."""
+        with self._lock:
+            return set(self.absent)
+
     def _drop(self, board: int) -> None:
         """Stop bothering an unreachable board until a reprobe finds it."""
         if board in self.live:
             self.live.remove(board)
-        self.absent.add(board)
+        with self._lock:
+            self.absent.add(board)
         self._forget_board(board)
         self.emit(f"board {board} dropped, will reprobe")
 
@@ -547,7 +562,8 @@ class DemoRunner:
                   and self._probe(bus, board, groups)]
         if not joined:
             return False
-        self.absent -= set(joined)
+        with self._lock:
+            self.absent -= set(joined)
         keep = set(self.live) | set(joined)
         self.live = [b for b in self.boards if b in keep]
         if self.explore:                    # look a little past the newcomer
@@ -555,7 +571,8 @@ class DemoRunner:
             beyond = [b for b in DEFAULT_BOARDS if b > max(self.boards)
                       and b <= horizon]
             self.boards += beyond
-            self.absent |= set(beyond)
+            with self._lock:
+                self.absent |= set(beyond)
         self.emit(f"board {self._fmt_boards(joined)} joined "
                   f"({len(self.live)}/{self.expected})")
         return True
@@ -752,21 +769,26 @@ class DemoRunner:
     def _save_one(self, bus, groups: int, slot: int, dev_type: int,
                  board: int, array: bytes,
                  table: "bytes | None" = None) -> bool:
-        """Write one board's picture (and its delay table, if it carries
-        one) into `slot`. No per-board stop first: 0x13 is pure storage
-        and never needs the board silenced (docs/MERIS_REPLY_3SLOT.pdf)
-        - unlike _cycle()'s live pattern loop, which still silences
-        before it draws."""
+        """Write one board's picture and its delay table into `slot`. No
+        per-board stop first: 0x13 is pure storage and never needs the
+        board silenced (docs/MERIS_REPLY_3SLOT.pdf) - unlike _cycle()'s
+        live pattern loop, which still silences before it draws.
+
+        No `table` means "no sweep": the slot's pipeline is cleared
+        (NO_TABLE -> 0x25) unless _save_delays() remembers it already
+        is, so a slot never keeps a sweep from a previous show or a
+        previous manual cue (review finding F5, 2026-09-25)."""
         if board not in self.live:
             return False
+        if table is None:
+            table = NO_TABLE
         if (board, slot) not in self._cfg_done and not self._request(
                 bus, slot_config(board, slot, group_count=groups,
                                  dev_type=dev_type), f"cfg @{board:02d}"):
             self._drop(board)
             return False
         self._cfg_done.add((board, slot))
-        if table is not None and not self._save_delays(bus, groups, board,
-                                                        table, dev_type, slot):
+        if not self._save_delays(bus, groups, board, table, dev_type, slot):
             self._forget_board(board)
             return False
         if not self._request(bus, save_color(board, slot, array, groups,
@@ -851,25 +873,39 @@ class DemoRunner:
         thing to finish."""
         epoch, dev_type = burn_job["epoch"], burn_job["dev_type"]
         done, failed = 0, []
-        for cue in burn_job["cues"]:
+        pairs = [(cue, board) for cue in burn_job["cues"]
+                 for board in sorted(cue["boards"])]
+        for n, (cue, board) in enumerate(pairs):
             slot = cue["slot"]
-            delays = cue.get("delays") or {}
-            for board in sorted(cue["boards"]):
-                if self._stop.is_set() or not session.burn_current(epoch):
-                    return
-                array = cue["boards"][board]
-                table = delays.get(board)
-                if board not in self.live:
-                    failed.append((board, slot))
-                elif self._burn_cache.get((board, slot)) == (array, table):
-                    pass                 # unchanged: nothing to write
-                elif self._save_one(bus, groups, slot, dev_type, board,
-                                    array, table):
-                    self._burn_cache[(board, slot)] = (array, table)
-                else:
-                    failed.append((board, slot))
-                done += 1
-                session.burn_progress(epoch, done, failed)
+            if self._stop.is_set() or not session.burn_current(epoch):
+                # Taken off the port (KEY1 on a pattern, KEY2, a shutdown)
+                # or superseded (a newer burn(), a cancel_burn()). What
+                # was never reached is reported as failed so the state
+                # cannot stick at "burning" for ever (review finding F4,
+                # 2026-09-25); for a superseded burn burn_finished() is a
+                # no-op (its epoch has moved on) and the new state stands.
+                rest = [(b, c["slot"]) for c, b in pairs[n:]]
+                session.burn_finished(epoch, failed + rest)
+                self.emit(f"burn interrupted: {done - len(failed)}/{len(pairs)}"
+                          f" boards written, {len(rest)} left")
+                return
+            array = cue["boards"][board]
+            # No table in the cue = "no sweep" (NO_TABLE, cleared once):
+            # the same key whether the show file says so or says nothing.
+            table = (cue.get("delays") or {}).get(board)
+            if table is None:
+                table = NO_TABLE
+            if board not in self.live:
+                failed.append((board, slot))
+            elif self._burn_cache.get((board, slot)) == (array, table):
+                pass                     # unchanged: nothing to write
+            elif self._save_one(bus, groups, slot, dev_type, board,
+                                array, table):
+                self._burn_cache[(board, slot)] = (array, table)
+            else:
+                failed.append((board, slot))
+            done += 1
+            session.burn_progress(epoch, done, failed)
         session.burn_finished(epoch, failed)
         self.emit(f"burn done: {done - len(failed)}/{done} boards written, "
                   f"{len(failed)} failed")
@@ -1034,6 +1070,14 @@ class DemoRunner:
                 session.failed_with(str(exc))
             if not self._stop.is_set() and not self._sleep(self.reopen_delay):
                 break
+        pending = session.take_burn_job()
+        if pending is not None:
+            # Queued after the last take_burn_job() and never started:
+            # nothing of it is written, and nobody else would ever say so.
+            session.burn_finished(pending["epoch"],
+                                  [(b, c["slot"]) for c in pending["cues"]
+                                   for b in c["boards"]])
+            self.emit("burn never started: the worker was stopped first")
         self.emit("stopped")
 
     # ---- worker ----
