@@ -69,6 +69,34 @@ python -m conductor serve --open
 **別の PC でも同じショーを使うには `showdata/` ごとコピーする**(演出だけなら Timeline の Save show… / Load show… の JSON でも移せる。音楽は別途)。 バックアップもこのフォルダを
 丸ごと取ればよい。UI を起動したまま `showdata/files/` に CSV を置いても、次の再描画で拾う。
 
+## 5b. 別の PC へ移す(移植)
+
+コードは GitHub、ショーのデータは `showdata/` フォルダ、の 2 つを持っていけばよい。
+
+1. 新しい PC に **Python 3.9 以降** を入れる(https://www.python.org/ 、インストーラで
+   「Add python.exe to PATH」にチェック)。追加パッケージは不要
+2. **Git** を入れて(https://git-scm.com/)、置きたい場所で:
+
+   ```bash
+   git clone https://github.com/Yoshi-Hirata/E-paper_H_WALL_BRICKS_Raspi.git
+   ```
+
+   Git を入れたくないときは GitHub のページの **Code → Download ZIP** を展開してもよい
+   (その場合、以後の更新も ZIP を取り直す)
+3. 元の PC で **`Backup showdata.bat`** をダブルクリック → リポジトリの隣に
+   `showdata-YYYYMMDD-HHMM.zip` ができる(CSV・タイムライン・機体割り当て・音楽・履歴のすべて)。
+   これを新しい PC のリポジトリ直下に展開して `showdata/` フォルダにする
+   (`showdata/files/…` という階層になっていること)
+4. `Start Conductor.bat` をダブルクリック → http://localhost:8765 が開き、Designs / Timeline に
+   同じ内容が出る。Units タブは専用ルータにつなげば online になる(機体のアドレスは
+   `192.168.51.101〜110` 固定で、設定不要)
+5. コードを最新にするときはリポジトリのフォルダで `git pull`(黒いウィンドウを閉じてから
+   `Start Conductor.bat` をやり直す)。`showdata/` は Git の管理外なので `git pull` で消えない
+
+- 機体のアドレスを変えたいときだけ `showdata/fleet.json` を作る:
+  `{"units": {"radxa-01": "192.168.51.101:8787", ...}}`(書いた機体だけ上書き)
+- 別 PC で開発・テストもするなら `pip install pytest` のうえ `python -m pytest -q`(約 3 分)
+
 ## 6. ショー当日の順番(要点)
 
 1. PC を専用ルータにつなぐ → `Start Conductor.bat`
