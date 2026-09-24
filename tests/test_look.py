@@ -263,13 +263,21 @@ def test_excel_bom_is_tolerated(tmp_path):
     assert len(LookMap.from_csv(path).scales) == 4
 
 
-def test_palette_is_the_fw_260917_chart():
+def test_palette_names_the_fw_chart_and_shows_the_site_sample_colours():
+    """Codes and names are the FW_260917 chart (shared with the boards);
+    the RGB is the production site's chart 260921 - the colour of the
+    real paper as seen, so the page looks like the garment will."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
-    from epaper.pattern import COLOR_LABELS_16, COLOR_RGB_16
+    from epaper.pattern import COLOR_LABELS_16
 
-    assert PALETTE == list(zip(COLOR_LABELS_16, COLOR_RGB_16))
-    assert PALETTE[0x05] == ("Green", (0, 200, 0))
-    assert PALETTE[0x06] == ("Turquoise", (64, 224, 208))
+    assert [name for name, _ in PALETTE] == COLOR_LABELS_16
+    assert PALETTE[0x05][0] == "Green" and PALETTE[0x06][0] == "Turquoise"
+    site_260921 = {0x00: "#89ADC3", 0x01: "#B4AE40", 0x02: "#005CB6", 0x03: "#72473B",
+                   0x04: "#1A3757", 0x05: "#438372", 0x06: "#76944C", 0x07: "#777A65",
+                   0x08: "#707070", 0x09: "#2473B3", 0x0A: "#815242", 0x0B: "#86AE59",
+                   0x0C: "#3C8374", 0x0D: "#7E553F", 0x0E: "#6C634B", 0x0F: "#387793"}
+    for code, hex_ in site_260921.items():
+        assert PALETTE[code][1] == tuple(int(hex_[i:i + 2], 16) for i in (1, 3, 5))
     assert len(PALETTE) == look_mod.COLOR_COUNT == 16
 
 
@@ -317,7 +325,7 @@ def test_preview_draws_both_views(files, tmp_path):
     wiring = render(look_map)
     assert designed.size == wiring.size and designed.width > designed.height / 4
     # The red scale at front row 1 col 1 is somewhere in the design view.
-    assert (255, 0, 0) in {rgb for _, rgb in designed.getcolors(1 << 24)}
+    assert PALETTE[0x03][1] in {rgb for _, rgb in designed.getcolors(1 << 24)}   # red, as seen
     out = tmp_path / "p.png"
     assert main(["preview", str(map_path), str(grid_path), "-o", str(out)]) == 0
     assert out.stat().st_size > 0

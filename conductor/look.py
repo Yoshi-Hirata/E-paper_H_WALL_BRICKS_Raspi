@@ -51,27 +51,31 @@ SOCKETS = range(1, 61)
 MAX_BOARDS = 60            # one unit's bus, by the project's own limit
 COLOR_COUNT = 16
 
-# FW_260917 palette - FW/FW_260917/260917_16_Color_Chart_ changed.xlsx,
-# the chart the designers work from: green is 0x05, turquoise 0x06.
-# Kept in step with host/epaper/pattern.py by tests/test_look.py; it is
-# repeated here so this module stays importable with the stdlib alone.
+# The 16 colours as the operator should SEE them: the production site's
+# colour chart 260921 (vglabjp.synology.me, "表示色 = 実機見本(肉眼)色"),
+# i.e. what each e-paper colour really looks like on the garment, not
+# the nominal chart value (white is a pale steel blue on the glass).
+# Codes and names are the FW_260917 chart (green 0x05, turquoise 0x06)
+# and stay in step with host/epaper/pattern.py (tests/test_look.py);
+# the RGB here is only for the page and the previews - the boards get
+# the codes.
 PALETTE = [
-    ("White", (255, 255, 255)),
-    ("Yellow", (255, 255, 0)),
-    ("Blue", (0, 0, 255)),
-    ("Red", (255, 0, 0)),
-    ("Black", (0, 0, 0)),
-    ("Green", (0, 200, 0)),
-    ("Turquoise", (64, 224, 208)),
-    ("Almond", (235, 210, 180)),
-    ("Light Pink", (255, 209, 220)),
-    ("Sky Blue", (135, 206, 235)),
-    ("Orange", (255, 140, 0)),
-    ("Yellow Green", (154, 205, 50)),
-    ("Olive Gray", (112, 116, 85)),
-    ("Brown", (139, 69, 19)),
-    ("Dark Brown", (92, 51, 23)),
-    ("Smoke Blue", (110, 130, 150)),
+    ("White", (137, 173, 195)),        # #89ADC3
+    ("Yellow", (180, 174, 64)),        # #B4AE40
+    ("Blue", (0, 92, 182)),            # #005CB6
+    ("Red", (114, 71, 59)),            # #72473B
+    ("Black", (26, 55, 87)),           # #1A3757
+    ("Green", (67, 131, 114)),         # #438372
+    ("Turquoise", (118, 148, 76)),     # #76944C
+    ("Almond", (119, 122, 101)),       # #777A65
+    ("Light Pink", (112, 112, 112)),   # #707070
+    ("Sky Blue", (36, 115, 179)),      # #2473B3
+    ("Orange", (129, 82, 66)),         # #815242
+    ("Yellow Green", (134, 174, 89)),  # #86AE59
+    ("Olive Gray", (60, 131, 116)),    # #3C8374
+    ("Brown", (126, 85, 63)),          # #7E553F
+    ("Dark Brown", (108, 99, 75)),     # #6C634B
+    ("Smoke Blue", (56, 119, 147)),    # #387793
 ]
 assert len(PALETTE) == COLOR_COUNT
 
