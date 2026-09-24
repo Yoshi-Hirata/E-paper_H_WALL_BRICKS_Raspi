@@ -86,6 +86,21 @@ def test_a_show_file_holds_every_cue_resolved_for_the_unit(tmp_path):
     assert ws.compile_show()[0]["radxa-02"]["id"] == show["id"]  # stable
 
 
+def test_every_unit_cue_carries_a_rotating_slot(tmp_path):
+    ws = workspace(tmp_path)
+    ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1),
+                         cue("b", "Look20-Top", 6, P2, partial=True),
+                         cue("c", "Look20-Top", 9, P1),
+                         cue("d", "Look20-Top", 12, P2, partial=True)],
+                    refresh=1.0)
+    shows, problems = ws.compile_show()
+    assert problems == []
+    show = shows["radxa-02"]
+    # Four moments (the preset, q00, included) -> the slot rotates
+    # 17, 18, 19 and wraps back to 17 - conductor/showfile.py's SLOTS.
+    assert [c["slot"] for c in show["cues"]] == [17, 18, 19, 17]
+
+
 def test_a_show_with_a_problem_is_not_built(tmp_path):
     ws = workspace(tmp_path)
     ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1),

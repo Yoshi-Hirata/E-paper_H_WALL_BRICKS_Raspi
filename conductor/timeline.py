@@ -58,6 +58,22 @@ Items sharing a unit (Look 20's top and skirt) share that budget -
 unless their cues fall on the same instant, which is one refresh for
 both.
 
+Every cue rotates over three on-board slots (conductor/showfile.py's
+SLOTS, 17/18/19 - confirmed identical and safely overwritable by the
+manufacturer, docs/MERIS_REPLY_3SLOT.pdf, 2026-09-24), so the next
+cue's colours are never written into the slot the current cue is still
+showing or refreshing. That means the write for the next cue may start
+as soon as the current one is saved, not only after it fires - the
+write happens over the span of TWO sends, not one - so the write term
+above is HALVED for a rotated show (`rotation=True`, the default: every
+show built since this feature now carries slots). `rotation=False`
+gives the original, un-halved single-slot rule, kept for tests, for
+documenting where the number came from, and for anything that reasons
+about the old show files (no `slot` key) that still play on slot 19
+alone. The one exception is the very first cue after the preset: its
+write can only start once /show/run actually lands, so the rejoin
+floor always uses the full, un-halved term.
+
 Pure data in, problems out: no files, no clock, so the rules are
 testable and the web page and the units can both rely on them.
 """
@@ -127,7 +143,7 @@ def format_clock(seconds: float) -> str:
 
 def min_interval(boards: int, refresh: float = REFRESH_S,
                  gap: float = GAP_AFTER_REFRESH_S,
-                 sweep: bool = False) -> float:
+                 sweep: bool = False, rotation: bool = True) -> float:
     """Seconds one unit needs between the send times of two refreshes:
     long enough after the previous picture completes (refresh + gap), or
     long enough for the unit to actually write every board first (its
@@ -136,15 +152,24 @@ def min_interval(boards: int, refresh: float = REFRESH_S,
     whichever is larger. The two are not added: the write happens while
     the previous refresh is still under way, not after it.
 
+    `rotation` (default True) is conductor/showfile.py's slot rotation:
+    the next cue never shares a slot with the current one, so its write
+    may start as soon as the current cue is saved - a span of two sends,
+    not one - and the write term above is halved. `rotation=False` is
+    the older single-slot rule (no `slot` on the cues), kept for tests
+    and for reasoning about old show files.
+
     This is what conductor/server.py shows as the show's "shortest
     interval per unit" (`sweep` defaults to False there: the page shows
     the ordinary figure, not the higher one a sweeping cue may need -
     see docs/STATUS.md). validate() below applies the same floor cue by
     cue, with the previous cue's own refresh time and a further floor
-    for the very first cue after the preset.
+    for the very first cue after the preset (never halved: see there).
     """
     write_term = (boards * UNIT_SAVE_S_PER_BOARD * (2 if sweep else 1)
                  + UNIT_PREP_MARGIN_S)
+    if rotation:
+        write_term /= 2
     return max(refresh + gap, write_term)
 
 
@@ -283,13 +308,19 @@ def apply_transitions(cues: "list[dict]", transitions: dict) -> None:
 def validate(cues: "list[dict]", items: "dict[str, dict]",
              duration: float = DEFAULT_DURATION_S,
              refresh: float = REFRESH_S,
-             gap: float = GAP_AFTER_REFRESH_S) -> "tuple[dict, list[str]]":
+             gap: float = GAP_AFTER_REFRESH_S,
+             rotation: bool = True) -> "tuple[dict, list[str]]":
     """({cue id: [problems]}, [warnings about the whole show]).
 
     `items` maps the lower-cased item name to
         {"item", "unit", "boards": n, "designs": {file: {"full": bool,
                                                        "partial": bool}}}
     where full/partial say whether the design passes that check.
+
+    `rotation` (default True, see the module docstring) halves the
+    per-unit write term - except for the very first cue after the
+    preset, whose write can only start once /show/run lands, so its
+    rejoin floor always uses the full term.
     """
     problems: "dict[str, list[str]]" = {cue["id"]: [] for cue in cues}
     warnings: "list[str]" = []
@@ -380,11 +411,15 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                 # not just a write.
                 before_refresh = effective_refresh(before, refresh)
                 refresh_term = before_refresh + span_of(before) + gap
-                write_term = (boards * UNIT_SAVE_S_PER_BOARD
-                             * (2 if sweep_next else 1) + UNIT_PREP_MARGIN_S)
+                write_term_full = (boards * UNIT_SAVE_S_PER_BOARD
+                                   * (2 if sweep_next else 1)
+                                   + UNIT_PREP_MARGIN_S)
+                write_term = write_term_full / 2 if rotation else write_term_full
                 candidates = [("write", write_term)]
-                if before["at"] <= 0:          # before is the preset
-                    candidates.append(("rejoin", write_term + UNIT_SETUP_S
+                if before["at"] <= 0:          # before is the preset: its
+                    # write can only start once /show/run lands, so the
+                    # rejoin floor is never halved, rotation or not.
+                    candidates.append(("rejoin", write_term_full + UNIT_SETUP_S
                                        + boards * UNIT_SETUP_S_PER_BOARD
                                        + gap))
                 candidates.append(("refresh", refresh_term))
@@ -413,11 +448,17 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                         boardterm = f"{boards} × {UNIT_SAVE_S_PER_BOARD:.2f} s"
                         if sweep_next:
                             boardterm += " × 2 (its delay tables)"
+                        if rotation:
+                            detail = (f"(({boardterm} + "
+                                     f"{UNIT_PREP_MARGIN_S:.1f} s) / 2, "
+                                     "writes overlap the previous picture)")
+                        else:
+                            detail = (f"({boardterm} + "
+                                     f"{UNIT_PREP_MARGIN_S:.1f} s)")
                         problems[cue["id"]].append(
                             f"only {spacing:.1f} s after the previous send "
                             f"on {unit}; writing its {boards} boards needs "
-                            f"{need:.1f} s ({boardterm} + "
-                            f"{UNIT_PREP_MARGIN_S:.1f} s)")
+                            f"{need:.1f} s {detail}")
                     else:                       # rejoin
                         problems[cue["id"]].append(
                             f"only {spacing:.1f} s after the previous send "

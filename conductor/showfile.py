@@ -26,6 +26,19 @@ left with an older array in its slot would repaint that.
 laid over everything before. A unit that comes late to a cue (rebooted,
 started mid-show, jumped by NEXT) sends `state` instead and is right
 again in one refresh, whatever it missed.
+
+Every cue also carries `"slot"`: which of the board's on-board storage
+slots (SLOTS below - 17, 18, 19) this picture is written into, rotating
+in cue order (the preset included, as q00). The point is that the NEXT
+cue's colours never share a slot with the one still armed or refreshing,
+so the unit can write cue N+1 while cue N is still waiting to fire or
+mid-refresh, instead of only after it completes - the write and the
+refresh overlap (conductor/timeline.py halves the write term for this
+reason). Confirmed safe by the manufacturer
+(docs/MERIS_REPLY_3SLOT.pdf, 2026-09-24): all 20 slots are identical,
+17 and 18 may be permanently overwritten, and a slot write arriving
+while a refresh is under way is executed immediately and never disturbs
+that refresh.
 """
 
 from __future__ import annotations
@@ -41,6 +54,15 @@ from .sequence import FRAME_S, compile_delays
 DELAY_UNIT_MS = round(FRAME_S * 1000)   # 10: what a unit table's frame is
 
 NUMBER_BRAND = 0x03
+
+# The board's on-board slots this system uses, in the order a show's
+# cues rotate through them (see the module docstring). All three are
+# identical (docs/MERIS_REPLY_3SLOT.pdf); 17 and 18 are the factory
+# demo pictures, permanently overwritten. 19 is last, not first: Manual
+# Prepare (Designs tab) and the demo runner send a single cue and keep
+# using 19 alone (a show file without "slot" plays there too) - putting
+# it last keeps that one-slot habit out of a rotating show's own path.
+SLOTS = (17, 18, 19)
 
 
 def blank() -> bytearray:
@@ -107,6 +129,7 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
             "id": f"q{number:02d}",
             "at": min(float(c["at"]) for c in moments[sent]),
             "sent": round(sent, 3),
+            "slot": SLOTS[number % 3],
             # Items sharing a moment (one broadcast) may want different
             # refresh times (different firmware): the unit waits for the
             # slowest one before it may write the next cue's boards.
