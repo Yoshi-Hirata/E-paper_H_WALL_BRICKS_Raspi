@@ -36,7 +36,9 @@ NOTHING = bytes([0xFE] + [0xFF] * 62 + [0xFE]).hex()
 def make_show(sents=(-REFRESH, 0.8, 1.7), duration=2.2):
     """Preset all 1s (slot 1); then all 2s (slot 2); then a partial cue
     touching board 1 only (slot 3) - "partial" only changes what the
-    `boards` diff carries; `state` (what gets burned) is always whole."""
+    `boards` diff carries; `state` (what gets burned) is always whole.
+    Cues use slots 1..18 (19 is the manual/demo one-shot slot, 0 is the
+    standby white - the contract as of 2026-09-24)."""
     colors = [1, 2, 3]
     cues = []
     for n, sent in enumerate(sents):
@@ -44,14 +46,14 @@ def make_show(sents=(-REFRESH, 0.8, 1.7), duration=2.2):
         color = colors[n % 3]
         cues.append({
             "id": f"q{n:02d}", "at": max(0.0, sent + REFRESH), "sent": sent,
-            "label": f"Look22 P{n + 1:02d}", "slot": (n % 19) + 1,
+            "label": f"Look22 P{n + 1:02d}", "slot": (n % 18) + 1,
             "boards": {"1": array(color),
                        "2": NOTHING if partial else array(color)},
             "state": {"1": array(color),
                       "2": array(2) if partial else array(color)}})
     return {"id": "abc1234567", "name": "test", "unit": "radxa-03",
             "dev_type": 3, "refresh_s": REFRESH, "duration": duration,
-            "boards": [1, 2], "cues": cues}
+            "boards": [1, 2], "slot_capacity": 20, "cues": cues}
 
 
 @pytest.fixture
@@ -459,17 +461,20 @@ def test_a_stopped_show_stays_stopped_after_a_restart(rig):
 # ---- healing: a board that missed a trigger outright ----
 
 def test_a_board_that_joins_late_gets_the_current_cues_slot_re_armed(rig):
+    # Healing only happens while RUNNING (_plan() is a no-op otherwise),
+    # and only once there is nothing else to keep the session's one
+    # fire-time slot busy - a single-cue show (nxt is always None) is
+    # the clean case: nothing else ever competes for it.
     from tests.test_ui_remote import PickyBus
 
-    bus = PickyBus(set())
+    bus = PickyBus({2})                             # board 2 is off from the start
     session, runner, bus = make_session(bus)
     player = ShowPlayer(session, store=None, save_s=0.01, margin_s=0.1,
                         grace_s=0.1, tick_s=0.02, retry_s=0.2)
     try:
-        player.load(make_show(sents=(-REFRESH, 0.3, 4.0), duration=30))
-        assert wait_burned(player)
-        bus.silent = {2}                            # board 2 is off for now
-        player.preset()
+        player.load(make_show(sents=(-REFRESH,), duration=60))
+        assert wait_burn_settled(player)             # "failed" (board 2 absent)
+        player.run(time.monotonic() + 0.2)
         assert wait_until(lambda: player.applied == "q00")
         n0 = len([e for e in events(bus) if e[0] == "show"])
         bus.silent = set()                          # ...and comes back
@@ -493,7 +498,7 @@ def test_a_board_that_stays_dead_does_not_re_arm_for_ever(rig):
     player = ShowPlayer(session, store=None, save_s=0.01, margin_s=0.1,
                         grace_s=0.1, tick_s=0.02, retry_s=0.2)
     try:
-        player.load(make_show(sents=(-REFRESH, 0.6, 30.0), duration=60))
+        player.load(make_show(sents=(-REFRESH, 30.0), duration=60))
         assert wait_until(lambda: (player.status() or {}).get("burn", {})
                           .get("state") == "failed")
         assert 2 in runner.absent

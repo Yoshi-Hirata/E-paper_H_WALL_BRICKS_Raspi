@@ -883,6 +883,14 @@ class DemoRunner:
         already past (a late command) fires at once and the lateness is
         what the session reports. Nothing is written here - the picture
         is already burned into `slot`.
+
+        A show's cues can now be far apart (nothing to write ahead of
+        time any more, so ui/showplay.py arms the next one the moment
+        the current one applies, however far off its own instant is) -
+        this call is where the runner would otherwise sit for that whole
+        stretch, so it keeps reprobing (cheap: _reprobe() only touches
+        the bus once every reprobe_interval) rather than only doing so
+        between cues.
         """
         while True:
             remaining = at - time.monotonic()
@@ -892,6 +900,7 @@ class DemoRunner:
                     or session.due() != (cue_id, at, slot, dev_type)):
                 return False                    # stopped, cancelled or moved
             if remaining > FIRE_SPIN_S:
+                self._reprobe(bus, groups)
                 self._stop.wait(min(remaining - FIRE_SPIN_S, 0.05))
             else:
                 time.sleep(0.0005)

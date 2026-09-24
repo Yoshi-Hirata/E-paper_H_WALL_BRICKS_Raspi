@@ -22,7 +22,8 @@ from ui.inputs import ScriptedInput
 from ui.remote import RemoteError
 from ui.showplay import ENDED, LOADED, RUNNING, STOPPED, ShowPlayer
 
-from tests.test_showplay import REFRESH, events, make_show, ordered_bus, show_times
+from tests.test_showplay import (REFRESH, events, make_show, ordered_bus,
+                                 show_times, wait_burned)
 from tests.test_ui_remote import call, make_session, shows, wait_until
 
 ordered_bus = ordered_bus            # re-exported: keeps the autouse fixture
@@ -150,6 +151,7 @@ def test_demo_save_is_refused_while_a_show_runs_or_holds(rig):
     agent, session, runner, bus, player, demos = rig
     show = make_show()
     player.load(show)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     code, body = call(agent, "/demo/save", {"name": "x", "show": show})
     assert code == 409 and "stop it first" in body["error"]
@@ -165,6 +167,7 @@ def test_show_load_is_refused_while_a_demo_plays_not_while_a_pc_show_runs(rig):
     agent, session, runner, bus, player, demos = rig
     show = make_show()
     player.load(show, demo=True)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     code, body = call(agent, "/show/load", show)
     assert code == 409 and "stop it first" in body["error"]
@@ -174,6 +177,7 @@ def test_show_load_is_refused_while_a_demo_plays_not_while_a_pc_show_runs(rig):
     # the conductor's own supervision (fleet.py resends a mismatched id
     # even mid-show), unchanged by this feature.
     player.load(show)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     code, body = call(agent, "/show/load", show)
     assert code == 200
@@ -187,6 +191,7 @@ def test_show_preset_and_run_are_also_refused_while_a_demo_plays(rig):
     agent, session, runner, bus, player, demos = rig
     show = make_show()
     player.load(show, demo=True)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     code, body = call(agent, "/show/preset", {})
     assert code == 409 and "stop it first" in body["error"]
@@ -205,6 +210,7 @@ def test_show_preset_and_run_are_also_refused_while_a_demo_plays(rig):
 
     # A PC-driven show (is_demo False) is unaffected.
     player.load(show)
+    assert wait_burned(player)
     player.run(time.monotonic() + 0.3)
     assert call(agent, "/show/run", {"t0": time.monotonic() + 1,
                                      "show": show["id"]})[0] == 200
@@ -254,6 +260,35 @@ def test_status_show_carries_the_demo_flag_and_name(rig):
     player.load(show)
     status = call(agent, "/status")[1]["show"]
     assert status["demo"] is False and status["demo_name"] == ""
+
+
+def test_show_load_reply_already_shows_burning_for_the_new_show(rig):
+    # The conductor's fleet-wide START gate polls status.show.burn right
+    # after /show/load's own reply - it must already say "burning" (with
+    # the total worked out) for THIS show, not "burned" from a previous
+    # one or state that has not caught up yet. load() calls
+    # RemoteSession.burn() synchronously (it only queues the write; the
+    # write itself is what runs on the worker), so this is true by
+    # construction, but is worth pinning down at the HTTP boundary.
+    agent, session, runner, bus, player, demos = rig
+    show_a = make_show()
+    code, status = call(agent, "/show/load", show_a)
+    assert code == 200
+    assert status["show"]["id"] == show_a["id"]
+    burn = status["show"]["burn"]
+    assert burn is not None and burn["state"] in ("burning", "burned")
+    assert burn["total"] == sum(len(c["boards"]) for c in show_a["cues"])
+    assert wait_burned(player)
+
+    # A second, different show: the reply's burn must belong to THIS
+    # show, not linger as "burned" from show_a.
+    show_b = make_show(sents=(-REFRESH, 0.5, 0.9, 1.3))
+    code, status = call(agent, "/show/load", show_b)
+    assert code == 200
+    assert status["show"]["id"] == show_b["id"]
+    burn = status["show"]["burn"]
+    assert burn is not None
+    assert burn["total"] == sum(len(c["boards"]) for c in show_b["cues"])
 
 
 def test_demo_routes_without_a_store_are_not_found():
@@ -551,6 +586,7 @@ def test_restore_of_a_demo_clears_is_demo_and_never_auto_resumes(tmp_path):
     try:
         show = make_show(sents=(-REFRESH, 5.0), duration=30)
         player.load(show, demo=True)
+        assert wait_burned(player)
         player.run(time.monotonic() + 0.2)
         assert wait_until(lambda: player.state == RUNNING)
         player.close()

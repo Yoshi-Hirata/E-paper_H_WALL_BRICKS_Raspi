@@ -15,12 +15,19 @@ a show.
     POST /standby    white out the panels, keep the unit under remote
     POST /release    back to the unit's own menu
 
-    POST /show/load    the unit's whole show file (conductor/showfile.py)
+    POST /show/load    the unit's whole show file (conductor/showfile.py);
+                       starts writing every cue into its own slot right
+                       away (ui/remote.py's RemoteSession.burn()) - the
+                       reply's status.show.burn already says "burning"
+                       with the total, and /show/run refuses until it
+                       reads "burned" (or "failed" with only absent
+                       boards involved)
     POST /show/preset  put the first cue's picture up, before the start
     POST /show/run     {"t0", "show"}  second 0 of the show, in this
                        unit's monotonic clock - also RESUME and NEXT,
                        which are only a moved T0 (ui/showplay.py)
     POST /show/hold    stop scheduling; POST /show/stop ends the run
+                       (and gives up on a burn still in progress)
 
     POST /demo/save    {"name", "loop", "show"} write a standalone show
                        into the unit's own menu (ui/demos.py); refused

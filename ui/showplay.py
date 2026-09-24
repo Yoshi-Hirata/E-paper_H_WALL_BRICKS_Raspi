@@ -48,9 +48,13 @@ import threading
 import time
 from pathlib import Path
 
-from .remote import ARMED, FAILED, FIRED, PREPARING, READY, RemoteError
+from .remote import ARMED, DEFAULT_SLOT, FAILED, FIRED, PREPARING, READY, RemoteError
 
 STORE = Path.home() / ".epaper"
+# A show's own cues take 1..18: 19 (DEFAULT_SLOT) stays the manual
+# Prepare / demo one-shot slot, and 0 is the standby white (contract
+# update, 2026-09-24 - boards hold slot_capacity == 20 slots, 0..19).
+SHOW_SLOT_MIN, SHOW_SLOT_MAX = 1, DEFAULT_SLOT - 1
 # Pre-burn (docs/MERIS_REPLY_3SLOT.pdf, 2026-09-24): every cue's picture is
 # written into its own slot at /show/load time (RemoteSession.burn()), so
 # RUNNING a show is triggers only - a broadcast "show slot N", nothing to
@@ -98,11 +102,27 @@ def validate_show(show: dict) -> None:
         for key in ("id", "sent", "boards", "state"):
             if key not in cue:
                 raise RemoteError(f"cue without {key}")
-    if any("slot" not in cue for cue in cues):
-        # The pre-burn redesign (2026-09-24): a cue with no slot cannot be
-        # burned, and this unit no longer knows how to play a show any
-        # other way - conductor/showfile.py always assigns one now.
+    # The pre-burn redesign (2026-09-24): a cue with no slot cannot be
+    # burned, and this unit no longer knows how to play a show any other
+    # way - conductor/showfile.py always assigns one now. "slot_capacity"
+    # (boards hold slots 0..19) is how a burned show file identifies
+    # itself; an old file carries neither and gets the same refusal.
+    # Cues use 1..SHOW_SLOT_MAX only: SHOW_SLOT_MAX+1 (19) stays the
+    # manual Prepare / demo one-shot slot, so a show's own burn can never
+    # be overwritten by one, and slot 0 is the standby white.
+    if "slot_capacity" not in show or any("slot" not in cue for cue in cues):
         raise RemoteError("show file has no slots - update the conductor")
+    for cue in cues:
+        try:
+            slot = int(cue["slot"])
+        except (TypeError, ValueError):
+            raise RemoteError(f"cue {cue.get('id', '?')}: bad slot "
+                              f"{cue['slot']!r}")
+        if not SHOW_SLOT_MIN <= slot <= SHOW_SLOT_MAX:
+            raise RemoteError(f"cue {cue.get('id', '?')}: slot {slot} must "
+                              f"be {SHOW_SLOT_MIN}-{SHOW_SLOT_MAX} "
+                              f"({DEFAULT_SLOT} is the manual slot, 0 is "
+                              f"the standby)")
 
 
 class ShowPlayer:
@@ -161,6 +181,18 @@ class ShowPlayer:
         validate_show(show)
         with self._lock:
             self._epoch += 1
+            # A fresh run_no here too, not just in run()'s own "start from
+            # the top" branch: the burn this triggers below always takes
+            # real time (even a fast one leaves a window between load()
+            # returning and the operator's next /show/run), and the
+            # background loop keeps calling _tally() the whole time - a
+            # FIRED session key left over from a PREVIOUS run of the same
+            # show can share this one's cue ids, and without a bump here
+            # its run_no would still match self._run_no, resurrecting
+            # `applied` before this run ever sends anything of its own
+            # (found reproducing "load(); wait for the burn; run()" back
+            # to back on a fast bus, 2026-09-24).
+            self._run_no += 1
             self._disarm()
             self.show = show
             self.is_demo = bool(demo)
@@ -397,6 +429,20 @@ class ShowPlayer:
         self._ever_ok = set()
         self._counted = None
 
+    def _lead(self, cue: "dict | None" = None,
+              after_another: bool = False) -> float:
+        """Kept for ui/app.py's KEY1 handler (_start_demo_show() /
+        _loop_demo_show() add this to their own margin before their own
+        run()): the pre-burn redesign needs no per-cue write-time
+        estimate here any more, since nothing is written while RUNNING -
+        this is just arm()'s own small margin (see preset()). NOTE: a
+        freshly load()ed show still needs its burn to finish before
+        run() succeeds (RemoteError "still writing the pictures") -
+        ui/app.py's KEY1 flow does not yet wait for that (2026-09-24
+        pre-burn redesign left as a follow-up); this margin alone is not
+        enough for anything but a trivially small demo."""
+        return CATCH_UP_LEAD_S
+
     def _disarm(self) -> None:
         """Take the fire time off whatever this show has in the session -
         loading as much as armed: a cue still arming already carries its
@@ -558,6 +604,25 @@ class ShowPlayer:
 
             action = None
             heal = False
+            # `self.applied` (from _tally(), reading the session's FIRED
+            # state) and `current` (from THIS tick's own clock read) are
+            # two independent clocks - right on a cue boundary they can
+            # disagree by a hair: the runner's _fire_at() may have just
+            # fired `nxt` on its own slightly-later read of the clock,
+            # so applied is already `nxt`'s id while this tick's `now`
+            # still classifies `current` as the cue before it. Comparing
+            # by each cue's own `sent` (order in the show), not id
+            # equality, is what tells "genuinely behind" apart from
+            # "already there, just a hair off" - id equality alone would
+            # otherwise re-arm the cue that just fired one instant late,
+            # right after its own successor already went out (found
+            # chasing a one-cue-show-run-twice test firing 5 shows for a
+            # 3-cue show instead of 3, 2026-09-24).
+            applied_cue = next((c for c in cues if c["id"] == self.applied),
+                               None)
+            behind = (current is not None
+                     and (applied_cue is None
+                          or applied_cue["sent"] < current["sent"]))
             # 1. The garment must show `current` right now - either it
             #    never has (a start, a jump, a restart) or it did and a
             #    board joined late since (dirty). A trigger is instant,
@@ -574,7 +639,7 @@ class ShowPlayer:
             #    lead", so redeciding it every tick cannot livelock.
             if (current is not None
                     and not (owned_unfired and owned != current["id"])
-                    and (self.applied != current["id"] or self.dirty)):
+                    and (behind or self.dirty)):
                 heal = self.applied == current["id"]
                 self.dirty = False
                 action = (show, current, self.t0 + current["sent"])
