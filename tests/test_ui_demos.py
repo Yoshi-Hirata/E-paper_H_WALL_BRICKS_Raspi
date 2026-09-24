@@ -550,10 +550,11 @@ def test_the_demo_screen_shows_the_burn_progress(tmp_path):
         app.select(f"demo:{slug}")
         app.handle("key1")
         assert app.screen is Screen.DEMO
-        # Caught mid-burn at least once - "writing pictures n/N", not the
-        # ordinary running hint, and never yet actually running.
-        assert _pump(app, lambda: "writing pictures" in app._demo_hint(
-            app._remote_status()))
+        # Caught mid-burn at least once - "writing n/N  KEY2 cancel", not
+        # the ordinary running hint, and never yet actually running.
+        hint = lambda: app._demo_hint(app._remote_status())
+        assert _pump(app, lambda: hint().startswith("writing "))
+        assert len(hint()) <= 32               # the LCD's hint strip
         assert player.t0 is None
         assert _pump(app, lambda: player.t0 is not None)
     finally:

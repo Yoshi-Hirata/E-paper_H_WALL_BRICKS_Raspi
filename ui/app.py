@@ -50,7 +50,7 @@ written into this unit, sorted in right after STANDBY. KEY1 loads it
 (ui/showplay.py's ShowPlayer, with demo=True so a reboot does not
 resume it on its own) and the DEMO screen opens right away, on the
 burn ui/remote.py's RemoteSession.burn() just started - it shows
-"writing pictures n/N" (status.show.burn) while that runs, and KEY2
+"writing n/N  KEY2 cancel" (status.show.burn) while that runs, and KEY2
 during it cancels the burn and returns to the menu, same as any other
 time on this screen. Once burn.state is "burned" the App itself calls
 run() - once, not on every tick - and the screen then follows a
@@ -502,6 +502,12 @@ class App:
                 failed = {b for b, s in burn.get("failed", ())
                          if b not in absent}
                 self._demo_burn_error = f"{len(failed)} boards failed - KEY2 menu"
+            elif (burn is not None and burn["state"] == "cancelled"
+                    and burn.get("reason")):
+                # The burn never finished (no board answered, the port
+                # was taken): the reason alone fits the hint strip,
+                # where the gate's whole sentence would be ellipsized.
+                self._demo_burn_error = f"{burn['reason']} - KEY2 menu"
             else:
                 # Some other refusal (e.g. the unit went busy under us) -
                 # say what it actually was rather than guess "boards".
@@ -858,7 +864,10 @@ class App:
         show = status.get("show") or {}
         burn = show.get("burn")
         if burn is not None and burn["state"] == "burning":
-            return f"writing pictures {burn['done']}/{burn['total']} - KEY2 cancel"
+            # Kept to the width of the other hints (ui/render.py's _hint
+            # ellipsizes at 240 px / DejaVu 12 px, about 32 characters,
+            # and "writing pictures 480/480 - KEY2 cancel" did not fit).
+            return f"writing {burn['done']}/{burn['total']}  KEY2 cancel"
         if self._demo_burn_error:
             return self._demo_burn_error
         if show.get("state") == "ended":

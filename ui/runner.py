@@ -51,6 +51,7 @@ from epaper.transport import Bus, find_port
 
 from .config import LOG_HISTORY
 from .patterns import DEFAULT_PALETTE, Pattern
+from .remote import READY          # ui/remote.py imports nothing of ours
 
 # A garment carries up to 60 boards, addressed 1..n by rank. Without a
 # list from the show PC the runner explores: it probes upwards from 1 and
@@ -80,6 +81,7 @@ PROBE_SWEEPS = 3          # setup passes over the board list
 PROBE_SWEEP_DELAY_S = 3.0 # between passes, so a repaint can finish meanwhile
 REPROBE_INTERVAL_S = 60.0 # how often absent boards get another chance
 FIRE_SPIN_S = 0.02        # the last stretch before a timed show is polled
+ARM_GRACE_S = 0.25        # how long a fresh worker waits for a cue's fire time
 # How long a new start waits for a worker that did not end within stop()'s
 # timeout. One request into a wedged CDC can block for ~7.5 s (three
 # tries of 2 s write timeout + 0.5 s read), and a save retries that.
@@ -870,24 +872,30 @@ class DemoRunner:
         burn() or a cancel_burn() bumps the session's burn epoch, and
         this notices between boards, not just between cues, so
         /show/stop or a fresh /show/load never waits for the whole
-        thing to finish."""
+        thing to finish - an interrupted burn ends "cancelled" with its
+        reason, never "failed" (review round 2, 2026-09-25)."""
         epoch, dev_type = burn_job["epoch"], burn_job["dev_type"]
         done, failed = 0, []
+        began = time.monotonic()
         pairs = [(cue, board) for cue in burn_job["cues"]
                  for board in sorted(cue["boards"])]
+        self._probe_burn_boards(bus, groups, burn_job)
         for n, (cue, board) in enumerate(pairs):
             slot = cue["slot"]
             if self._stop.is_set() or not session.burn_current(epoch):
                 # Taken off the port (KEY1 on a pattern, KEY2, a shutdown)
-                # or superseded (a newer burn(), a cancel_burn()). What
-                # was never reached is reported as failed so the state
-                # cannot stick at "burning" for ever (review finding F4,
-                # 2026-09-25); for a superseded burn burn_finished() is a
-                # no-op (its epoch has moved on) and the new state stands.
-                rest = [(b, c["slot"]) for c, b in pairs[n:]]
-                session.burn_finished(epoch, failed + rest)
+                # or superseded (a newer burn(), a cancel_burn()). The
+                # burn is CANCELLED with its reason, not "failed": what
+                # was never reached is not a board that refused a write,
+                # and a "failed" would have the PC offer a force this
+                # unit refuses (review finding F4 + round 2, 2026-09-25).
+                # For a superseded burn this is a no-op (its epoch has
+                # moved on) and the newer state stands.
+                left = len(pairs) - n
+                why = "the port was taken" if self._stop.is_set() else "stopped"
+                session.burn_cancelled(epoch, f"interrupted: {why}")
                 self.emit(f"burn interrupted: {done - len(failed)}/{len(pairs)}"
-                          f" boards written, {len(rest)} left")
+                          f" boards written, {left} left")
                 return
             array = cue["boards"][board]
             # No table in the cue = "no sweep" (NO_TABLE, cleared once):
@@ -907,8 +915,42 @@ class DemoRunner:
             done += 1
             session.burn_progress(epoch, done, failed)
         session.burn_finished(epoch, failed)
-        self.emit(f"burn done: {done - len(failed)}/{done} boards written, "
-                  f"{len(failed)} failed")
+        absent = len([b for b in self.boards if b in self.absent])
+        self.emit(f"burn done: {done - len(failed)}/{done} in "
+                  f"{time.monotonic() - began:.1f} s "
+                  f"({len(self.live)} live boards, {absent} absent)")
+
+    def _probe_burn_boards(self, bus, groups: int, burn_job: dict) -> None:
+        """Give every board this burn names, and that nothing is known
+        about yet, one short probe before the first slot is written.
+
+        Measured on radxa-01 (2026-09-25): a board that is not there
+        costs about 1.5 s of serial timeout. Without this pass those
+        timeouts landed inside the first slot's writes (14 unknown
+        boards of a 16-board garment = 22 s on the first slot, 0.3 s on
+        each of the next), so the PC's "writing 0/64" sat still for 22 s
+        and then raced - and nothing said why. Paid once here instead,
+        with the absent boards named in the log; a board that appears
+        later is picked up by the periodic reprobe as always.
+        """
+        wanted = sorted({b for cue in burn_job["cues"]
+                         for b in cue["boards"]})
+        unknown = [b for b in wanted
+                   if b not in self.live and b not in self.absent]
+        for board in unknown:
+            if self._stop.is_set():
+                return
+            if self._probe(bus, board, groups):
+                if board not in self.live:
+                    self.live = [b for b in self.boards if b in
+                                 set(self.live) | {board}]
+            else:
+                with self._lock:
+                    self.absent.add(board)
+        gone = [b for b in wanted if b in self.absent]
+        if gone:
+            self.emit(f"{len(gone)} board{'' if len(gone) == 1 else 's'} "
+                      f"absent ({self._fmt_boards(gone)}) - skipped")
 
     def _fire_at(self, bus, groups: int, session, cue_id: str, at: float,
                  slot: int, dev_type: int) -> bool:
@@ -1026,16 +1068,18 @@ class DemoRunner:
                             if needs_setup:
                                 if not self._setup(bus, groups):
                                     # The job is taken and nothing of it
-                                    # written: every pair goes down as
-                                    # failed (a finished burn, so the
-                                    # player's absent-only rule decides -
-                                    # with no board answering they are
-                                    # all absent), rather than left as a
-                                    # burn the bus gave up on part way.
-                                    session.burn_finished(
+                                    # written, and with no board
+                                    # answering there is no telling what
+                                    # would have been: the burn is
+                                    # CANCELLED with the reason ("no
+                                    # boards answering"), not "failed"
+                                    # over pairs nobody tried - the PC
+                                    # then says "Upload again" instead of
+                                    # offering a force this unit refuses
+                                    # (review round 2, 2026-09-25).
+                                    session.burn_cancelled(
                                         burn_job["epoch"],
-                                        [(b, c["slot"]) for c in burn_job["cues"]
-                                         for b in c["boards"]])
+                                        self.error or "setup failed")
                                     session.failed_with(self.error
                                                         or "setup failed")
                                     break
@@ -1044,6 +1088,29 @@ class DemoRunner:
                             self._run_burn(bus, groups, session, burn_job)
                             continue
 
+                        if (needs_setup and session.phase == READY
+                                and session.due() is None):
+                            # ui/showplay.py's _send() arms the cue and
+                            # sets its time in two steps (arm() may have
+                            # to take the port first - which is what
+                            # started this worker), so a moment's
+                            # patience here is what lets the branch
+                            # below see the time at all.
+                            session.wait(ARM_GRACE_S)
+                        late = session.due()
+                        if (needs_setup and late is not None
+                                and late[1] <= time.monotonic()):
+                            # A unit that restarted in the middle of the
+                            # show: its cue's trigger is already overdue,
+                            # and a broadcast "show slot N" needs no
+                            # board probed or configured (the picture is
+                            # burned into the slot and the 0x1B with it).
+                            # So it goes out BEFORE the probing sweep -
+                            # 16 s of it with 6 absent boards on the real
+                            # unit (2026-09-25), which on stage is the
+                            # garment sitting on the wrong picture.
+                            if self._fire_at(bus, groups, session, *late):
+                                guard_due = time.monotonic() + self.guard_delay
                         if needs_setup:
                             # The one broadcast 0x17 for this port session
                             # (docs/MERIS_REPLY_3SLOT.pdf: one is enough
@@ -1084,10 +1151,11 @@ class DemoRunner:
         pending = session.take_burn_job()
         if pending is not None:
             # Queued after the last take_burn_job() and never started:
-            # nothing of it is written, and nobody else would ever say so.
-            session.burn_finished(pending["epoch"],
-                                  [(b, c["slot"]) for c in pending["cues"]
-                                   for b in c["boards"]])
+            # nothing of it is written, nothing was even tried, and
+            # nobody else would ever say so - "cancelled", not a
+            # "failed" the PC would offer to force past (review round 2).
+            session.burn_cancelled(pending["epoch"],
+                                   "the worker was stopped first")
             self.emit("burn never started: the worker was stopped first")
         self.emit("stopped")
 

@@ -28,13 +28,17 @@ threads and the runner's worker, which owns the serial port:
                     the PC and the LCD read to show "writing pictures
                     n/N" before a show can be started. Its "state":
                     "burning" -> "burned" (all written) or "failed"
-                    (`failed` = [[board, slot], ...] not written - a
-                    burn the worker had to abandon reports what was
-                    left as failed too, so nothing sticks at
-                    "burning"); cancel_burn() turns a burn in progress
-                    into "cancelled". ShowPlayer pairs this with the
-                    show it belongs to and adds "none" (nothing burned
-                    for the loaded show since the unit started).
+                    (`failed` = [[board, slot], ...] not written, the
+                    whole list walked). A burn that never got that far
+                    is "cancelled" with a "reason" - cancel_burn()
+                    (STOP, no reason needed), burn_cancelled() (the
+                    worker taken off the port) or failed_with() (no
+                    port, a busy bus, no board answering) - never
+                    "failed", whose empty list would have the PC offer
+                    a force over "0 board(s) not written" (review round
+                    2, 2026-09-25). ShowPlayer pairs this with the show
+                    it belongs to and adds "none" (nothing burned for
+                    the loaded show since the unit started).
 
 The monotonic clock is used for fire times because the wall clock can
 step - timesyncd is active on the units whenever they see the internet
@@ -111,6 +115,11 @@ class RemoteSession:
         self.burn_done = 0
         self.burn_total = 0
         self.burn_failed: "list[tuple[int, int]]" = []
+        # Why a burn ended as "cancelled" ("no serial port", "bus busy:
+        # ...", "no boards answering", "interrupted: ..."), carried into
+        # the burn dict as "reason" so the PC's tile can say it rather
+        # than only "cancelled" (review round 2, 2026-09-25).
+        self.burn_reason: str | None = None
         # True once the worker walked the whole list (burn_finished()):
         # a "failed" without it is a burn the bus gave up on part way
         # (failed_with(): no port, bus busy, an exception) whose
@@ -263,27 +272,48 @@ class RemoteSession:
             epoch = self._burn_epoch
             self.burn_state = "burning"
             self.burn_done, self.burn_total, self.burn_failed = 0, total, []
+            self.burn_reason = None
             self.burn_complete = False
             self._burn_job = {"cues": cues, "dev_type": dev_type, "epoch": epoch}
         if not self.runner.remote and self.runner.start_remote(self) is False:
-            with self._lock:
-                self.burn_state = "failed"
+            # Not "failed": nothing was even attempted, so the failed
+            # list would be empty and the PC would offer a force over
+            # "0 board(s) not written" that this unit refuses anyway -
+            # failed_with() cancels it with the reason (review round 2).
             self.failed_with("bus busy: the previous worker has not finished")
             return
         self._wake.set()
 
-    def cancel_burn(self) -> None:
+    def cancel_burn(self, reason: "str | None" = None) -> None:
         """Give up on a burn in progress; what is already written stays
         written (and the cache still knows it). The state becomes
         "cancelled" - never None, which would read as "nothing to worry
         about" to ShowPlayer's gate and let a half-written show START
-        (review finding F1, 2026-09-25). A burn already burned/failed is
-        left as it is: STOP on a running show must not unsay it."""
+        (review finding F1, 2026-09-25) - and never "failed", which the
+        PC would offer to force past. A burn already burned/failed is
+        left as it is: STOP on a running show must not unsay it.
+
+        `reason` (None for the operator's own STOP, which needs none) is
+        what the PC's tile shows after "cancelled:"."""
         with self._lock:
             self._burn_epoch += 1
             self._burn_job = None
             if self.burn_state == "burning":
                 self.burn_state = "cancelled"
+                self.burn_reason = reason
+        self._wake.set()
+
+    def burn_cancelled(self, epoch: int, reason: str) -> None:
+        """The worker gave up on the burn it was working through (the
+        port taken, a shutdown): "cancelled" with its reason, not
+        "failed" - nothing says what was never reached, so there is
+        nothing for the PC to force past (review round 2, 2026-09-25)."""
+        with self._lock:
+            if epoch != self._burn_epoch:
+                return              # superseded: the newer state stands
+            self.burn_state = "cancelled"
+            self.burn_reason = reason
+            self.burn_complete = False
         self._wake.set()
 
     def burn_current(self, epoch: int) -> bool:
@@ -303,13 +333,17 @@ class RemoteSession:
                 return
             self.burn_done = done
             self.burn_failed = list(failed)
+            if self.burn_state == "cancelled":
+                # The worker IS writing (an unsuperseded epoch is the
+                # proof - cancel_burn() bumps it), so a "cancelled" from
+                # a moment when the port was missing is out of date.
+                self.burn_state, self.burn_reason = "burning", None
 
     def burn_finished(self, epoch: int, failed) -> None:
-        """The worker is done with this burn: `failed` is every (board,
-        slot) not written - refused by the board, absent, or never
-        reached because the worker was taken off the port mid-burn
-        (ui/runner.py's _run_burn() reports the rest that way, so the
-        state never sticks at "burning")."""
+        """The worker walked the whole list: `failed` is every (board,
+        slot) not written - refused by the board, or absent. A burn that
+        did NOT get that far ends at burn_cancelled() instead, so a
+        "failed" always names every pair it is about."""
         with self._lock:
             if epoch != self._burn_epoch:
                 return
@@ -317,6 +351,7 @@ class RemoteSession:
             self.burn_done = self.burn_total
             self.burn_complete = True
             self.burn_state = "failed" if failed else "burned"
+            self.burn_reason = None
 
     def burn_status(self) -> "dict | None":
         return self.burn_record()[0]
@@ -328,9 +363,18 @@ class RemoteSession:
         with self._lock:
             if self.burn_state is None:
                 return None, False
-            return ({"done": self.burn_done, "total": self.burn_total,
-                     "failed": [list(bs) for bs in self.burn_failed],
-                     "state": self.burn_state}, self.burn_complete)
+            return self._burn_dict_locked(), self.burn_complete
+
+    def _burn_dict_locked(self) -> dict:
+        """The burn as the PC and the LCD read it. "reason" is only
+        there when there is one (a cancelled burn), so a plain burned /
+        failed / burning dict keeps the exact shape it always had."""
+        burn = {"done": self.burn_done, "total": self.burn_total,
+                "failed": [list(bs) for bs in self.burn_failed],
+                "state": self.burn_state}
+        if self.burn_reason:
+            burn["reason"] = self.burn_reason
+        return burn
 
     # ---- called by the runner's worker ----
 
@@ -378,7 +422,14 @@ class RemoteSession:
                 self.phase = FAILED
             self.error = message
             if self.burn_state == "burning":
-                self.burn_state = "failed"
+                # An unfinished burn is "cancelled", never "failed": no
+                # port, a busy bus or no board answering leaves nothing
+                # written and an EMPTY failed list, which the PC used to
+                # read as "0 board(s) not written" and offer a force this
+                # unit refuses anyway (review round 2, 2026-09-25). The
+                # message stays as the reason.
+                self.burn_state = "cancelled"
+                self.burn_reason = message
 
     # ---- what the PC and the LCD read ----
 
@@ -389,9 +440,7 @@ class RemoteSession:
                        else round((self.fired_at - self.fire_at) * 1000, 1))
             burn = None
             if self.burn_state is not None:
-                burn = {"done": self.burn_done, "total": self.burn_total,
-                       "failed": [list(bs) for bs in self.burn_failed],
-                       "state": self.burn_state}
+                burn = self._burn_dict_locked()
             return {
                 "active": self.active, "phase": self.phase,
                 "cue": self.cue_id, "label": self.label,

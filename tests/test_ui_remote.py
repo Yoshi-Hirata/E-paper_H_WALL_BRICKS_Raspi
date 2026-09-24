@@ -807,8 +807,10 @@ def test_cancel_burn_stops_a_burn_in_progress():
     session.cancel_burn()
     time.sleep(0.2)
     # "cancelled", never back to None (review F1: None read as "nothing
-    # to worry about" to ShowPlayer's gate).
+    # to worry about" to ShowPlayer's gate). The operator's own STOP
+    # needs no reason, so the key is simply absent.
     assert session.burn_status()["state"] == "cancelled"
+    assert "reason" not in session.burn_status()
     assert session.status()["burn"]["state"] == "cancelled"
     runner.stop()
 
@@ -823,6 +825,42 @@ def test_cancel_burn_leaves_a_finished_burn_alone():
     runner.stop()
 
 
+def test_a_burn_probes_the_boards_it_has_never_heard_from_once(tmp_path):
+    # Real unit, 2026-09-25: a board that is not there costs about 1.5 s
+    # of serial timeout, and 14 of them (a 16-board garment on a wall
+    # with two boards powered) used to be paid INSIDE the first slot's
+    # writes - 22 s of "writing 0/64" followed by 0.3 s a slot. Paid
+    # once before slot 1 now, with the absent boards named in the log.
+    session, runner, bus = make_session(PickyBus({3, 4}))
+    runner.boards = [1, 2, 3, 4]
+    runner.live, runner.absent = [1, 2], set()          # 3, 4 unheard of
+    cues = [{"slot": 1, "boards": {b: array(1) for b in (1, 2, 3, 4)},
+             "delays": {}},
+            {"slot": 2, "boards": {b: array(2) for b in (1, 2, 3, 4)},
+             "delays": {}}]
+    runner._probe_burn_boards(bus, 4, {"cues": cues, "dev_type": 3,
+                                       "epoch": 1})
+    assert runner.absent == {3, 4} and runner.live == [1, 2]
+    probes = [f.dest for f in bus.requested if f.dest in (3, 4)]
+    assert probes == [3, 4]                  # one short probe each, once
+    assert any("2 boards absent (3-4) - skipped" in line
+               for line in runner.recent(10))
+    runner.stop()
+
+
+def test_a_finished_burn_logs_its_timing_and_how_many_boards_answered():
+    session, runner, bus = make_session(PickyBus({2}))
+    session.burn([{"slot": 1, "boards": {1: array(1), 2: array(1)},
+                   "delays": {}}], dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "failed")
+    log = runner.recent(20)
+    assert any("1 board absent (2) - skipped" in line for line in log)
+    assert any("burn done: 1/2 in " in line
+               and "(1 live boards, 1 absent)" in line for line in log)
+    runner.stop()
+
+
 class _SlowBurnBus(FakeBus):
     def request(self, frame, retries=3):
         if frame.cmd == SAVE:
@@ -830,9 +868,10 @@ class _SlowBurnBus(FakeBus):
         return super().request(frame, retries)
 
 
-def test_a_worker_stopped_mid_burn_reports_the_rest_as_failed():
+def test_a_worker_stopped_mid_burn_cancels_the_burn_with_its_reason():
     # Review F4: the worker used to return on _stop with the state left
-    # at "burning" for ever.
+    # at "burning" for ever. Review round 2: and then with "failed" over
+    # pairs nobody ever tried - the PC offered a force this unit refuses.
     session, runner, bus = make_session(_SlowBurnBus())
     cues = [{"slot": n, "boards": {1: array(n)}, "delays": {}}
             for n in range(1, 19)]
@@ -840,15 +879,13 @@ def test_a_worker_stopped_mid_burn_reports_the_rest_as_failed():
     assert wait_until(lambda: (session.burn_status() or {}).get("done", 0) > 0)
     runner.stop()                        # KEY2, KEY1 on a pattern, shutdown
     status, complete = session.burn_record()
-    assert status["state"] == "failed" and complete
-    assert status["done"] == status["total"] == 18
-    written = {f.data[0] for f in bus.requested if f.cmd == SAVE}
-    assert written and [pair for pair in status["failed"]] == [
-        [1, slot] for slot in range(1, 19) if slot not in written]
+    assert status["state"] == "cancelled" and not complete
+    assert status["reason"] == "interrupted: the port was taken"
+    assert status["done"] < status["total"] == 18
     assert any("burn interrupted" in line for line in runner.recent(20))
 
 
-def test_a_burn_queued_while_the_worker_is_stopping_is_failed_not_stuck():
+def test_a_burn_queued_while_the_worker_is_stopping_is_cancelled_not_stuck():
     # runner.stop() waits for the worker to leave the bus; a burn() that
     # lands meanwhile still sees `runner.remote` set and only queues its
     # job - for a worker that is on its way out and, before this fix,
@@ -866,6 +903,8 @@ def test_a_burn_queued_while_the_worker_is_stopping_is_failed_not_stuck():
     stopper.join(timeout=5)
     assert wait_until(lambda: session.burn_status()["state"] != "burning")
     status, complete = session.burn_record()
-    assert status["state"] == "failed" and status["failed"] == [[1, 2]]
-    assert complete
+    # Nothing of it was even tried, so it is cancelled with its reason -
+    # not a "failed" listing pairs no board refused (review round 2).
+    assert status["state"] == "cancelled" and not complete
+    assert status["reason"] == "the worker was stopped first"
     assert any("burn never started" in line for line in runner.recent(20))

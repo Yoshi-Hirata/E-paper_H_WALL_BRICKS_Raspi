@@ -50,10 +50,20 @@ show, and its "state" is one of
                  known gap and passes; a live board that refused is
                  refused back ("did not take the burn") unless run() or
                  preset() is given force=True
-    "cancelled"  STOP gave up on it - Upload again
+    "cancelled"  the burn never walked its whole list, so nothing says
+                 what is in which slot: STOP, the port taken by a local
+                 pattern, no serial port, a busy bus, no board
+                 answering. "reason" carries which of those (absent for
+                 the operator's own STOP) - Upload again, and force
+                 does NOT pass it
     "none"       nothing burned for THIS show since the unit started (a
                  restart after Upload, or a burn that never began) -
                  Upload again
+
+Two more keys appear only when they apply: "reason" (above) and
+"record": "unsaved: <err>" - the burn finished but the disk would not
+take the record, so a restart will come back "none" (the PC's tile says
+so; the write is retried on the next load(), not on every poll).
 
 A finished burn is recorded on disk (BURN_FILE, beside show-run.json)
 and restore() reads it back only when it names the restored show; the
@@ -187,7 +197,18 @@ class ShowPlayer:
         self._burn_id: "str | None" = None
         self._burn_disk: "dict | None" = None
         self._burn_saved = None
+        # A burn record the disk would not take: carried in the burn
+        # dict ("record": "unsaved: <err>") rather than in `note`, which
+        # status() reads before the burn and run() clears, so the PC saw
+        # it a poll late or not at all (review round 2, 2026-09-25). Not
+        # retried on every poll - the next load() tries again.
+        self._burn_record_error: "str | None" = None
         self._burn_none_why = "(the burn never started)"
+        # restore() found this unit in the middle of a show: ui/main.py
+        # must not paint the standby white over the picture the garment
+        # is still holding (real unit, 2026-09-25 - 16 s of probing and
+        # then WHITE, mid-show, before the show came back).
+        self.restored_running = False
         self._retry_at = 0.0
         self._not_before = 0.0
         # Bumped by every command. _send() runs without the lock (it may
@@ -233,6 +254,7 @@ class ShowPlayer:
             # the burn (even of the same show id) comes back "none", never
             # "burned" (review finding F1, 2026-09-25).
             self._burn_id, self._burn_disk, self._burn_saved = None, None, None
+            self._burn_record_error = None       # one more try, this show
             self._burn_none_why = "(the burn never started)"
             self._forget_burn_record()
             self.show = show
@@ -365,7 +387,9 @@ class ShowPlayer:
             raise RemoteError(f"still writing the pictures: "
                               f"{burn['done']}/{burn['total']}")
         if state == "cancelled":
-            raise RemoteError("the pictures were not written (cancelled) - "
+            why = burn.get("reason")
+            raise RemoteError("the pictures were not written "
+                              f"(cancelled{': ' + why if why else ''}) - "
                               "Upload again")
         if state == "none":
             raise RemoteError(f"pictures not written {self._burn_none_why} - "
@@ -381,7 +405,7 @@ class ShowPlayer:
         if stuck and not force:
             names = ",".join(str(b) for b in stuck)
             raise RemoteError(f"board {names} did not take the burn - "
-                              f"reload the show")
+                              f"Upload again")
 
     def _burn_total(self, show: dict) -> int:
         return sum(len(cue["state"]) for cue in show["cues"])
@@ -398,6 +422,8 @@ class ShowPlayer:
         if live is not None and self._burn_id == show["id"]:
             if complete:
                 self._persist_burn(show["id"], live)
+            if self._burn_record_error:
+                live = dict(live, record=self._burn_record_error)
             return live, complete
         disk = self._burn_disk
         if disk is not None and disk["show"] == show["id"]:
@@ -463,8 +489,14 @@ class ShowPlayer:
                 "state": burn["state"], "total": burn["total"],
                 "failed": [list(pair) for pair in burn["failed"]]})
             self._burn_saved = key
+            self._burn_record_error = None
         except OSError as exc:
-            self.note = f"cannot save the burn record: {exc}"
+            # Said in the burn dict, which the PC's tile shows, and not
+            # tried again until the next load(): _burn_record_locked()
+            # runs on every poll, and a full disk would have it fail
+            # (slowly) every second (review round 2, 2026-09-25).
+            self._burn_saved = key
+            self._burn_record_error = f"unsaved: {exc}"
 
     def _forget_burn_record(self) -> None:
         if self.store is None:
@@ -550,6 +582,12 @@ class ShowPlayer:
                 self.is_demo, self.demo_name = False, ""
                 self._persist()
                 return
+            if run.get("state") in (RUNNING, HOLDING) and self._burn_disk:
+                # Mid-show, with the pictures vouched for: whatever comes
+                # of the T0 below, the garment is holding a picture of
+                # this show and ui/main.py must leave it there rather
+                # than run its start-up standby over it.
+                self.restored_running = True
             t0_wall = run.get("t0_wall")
             if run.get("state") != RUNNING or t0_wall is None:
                 return
@@ -574,6 +612,12 @@ class ShowPlayer:
             self._forget_garment()      # unknown after a restart: send state
             self.note = "restored after restart"
             self._not_before = self._clock() + self.grace_s
+            behind = [c for c in show["cues"] if c["sent"] <= self._clock() - t0]
+            cue = (behind[-1] if behind else show["cues"][0])["id"]
+            # On the unit's own log and the PC's tile: this is the line
+            # that says the white standby was skipped on purpose.
+            self.session.runner.emit(f"resumed the show after a restart: "
+                                     f"cue {cue}, no standby")
         self._wake.set()
 
     # ---- the one rule ----

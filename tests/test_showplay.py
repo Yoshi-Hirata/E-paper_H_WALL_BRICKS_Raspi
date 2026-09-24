@@ -438,6 +438,42 @@ def test_a_restarted_unit_rejoins_from_disk(rig):
         runner2.stop()
 
 
+def test_a_restart_mid_show_fires_the_cue_before_any_probing(rig):
+    # Real unit, 2026-09-25: a restarted epaper-ui ran its start-up
+    # standby first - open the port, probe boards 1-8 (16 s with six
+    # absent), paint slot 0 WHITE and show it - and only then came back
+    # to the show, 24 s late. On stage that is the garment going white
+    # in the middle of the show. Nothing may touch slot 0 now, and the
+    # overdue trigger goes out before the probing sweep.
+    player, session, runner, bus, store = rig
+    player.load(make_show(sents=(-REFRESH, 0.4, 20.0), duration=60))
+    assert wait_burned(player)
+    t0 = time.monotonic() - 1.0
+    player.run(t0)
+    assert wait_until(lambda: player.applied == "q01")
+    player.close()                                          # epaper-ui restart
+
+    session2, runner2, bus2 = make_session()
+    reborn = ShowPlayer(session2, store=store, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        reborn.restore()
+        # What ui/main.py reads to skip its start-up standby.
+        assert reborn.restored_running and reborn.state == RUNNING
+        assert any("resumed the show after a restart: cue q01, no standby"
+                   in line for line in runner2.recent(10))
+        assert wait_until(lambda: reborn.applied == "q01")
+        # The very first frame on the bus is the cue's own trigger.
+        assert bus2.log[0].cmd == SHOW and bus2.log[0].data[0] == 2
+        # ...and nothing ever writes or shows slot 0 (the standby white).
+        assert not [f for f in bus2.log if f.cmd == SAVE]
+        assert 0 not in [f.data[0] for f in bus2.log if f.cmd == SHOW]
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
 def test_a_show_long_over_is_not_resumed(rig):
     player, session, runner, bus, store = rig
     player.load(make_show(duration=2))
@@ -682,14 +718,24 @@ def test_the_same_goes_for_stop_and_for_a_new_show(rig):
 def test_the_show_ends_on_the_clock_even_if_the_last_cue_never_lands(tmp_path):
     from tests.test_ui_remote import PickyBus
 
-    session, runner, bus = make_session(PickyBus({1, 2}))
+    session, runner, bus = make_session()
     player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.15,
                         grace_s=0.3, tick_s=0.02, retry_s=0.2)
+
+    def gone(port):
+        raise OSError("port gone")
+
     try:
         import ui.showplay as showplay
 
         player.load(make_show(sents=(-REFRESH, 0.3, 0.6), duration=1))
-        assert wait_burn_settled(player)
+        assert wait_burned(player)
+        # The port disappears AFTER the burn (the USB pulled between
+        # Upload and START): the pictures are written and vouched for,
+        # so the show is allowed to run - but no trigger can leave. It
+        # must still end on the clock.
+        runner._open_bus = gone
+        runner.stop()                   # the next arm() reopens the bus
         old, showplay.END_SLACK_S = showplay.END_SLACK_S, 1.0
         try:
             player.run(time.monotonic() - 0.2)
@@ -697,7 +743,7 @@ def test_the_show_ends_on_the_clock_even_if_the_last_cue_never_lands(tmp_path):
         finally:
             showplay.END_SLACK_S = old
         assert player.applied is None and show_times(bus) == []
-        assert session.fire_at is None              # nothing left armed
+        assert session.due() is None                # nothing left armed
     finally:
         player.close()
         runner.stop()
@@ -1030,28 +1076,104 @@ def test_force_never_passes_a_burn_still_in_progress(tmp_path):
         runner.stop()
 
 
-def test_a_burn_the_bus_gave_up_on_is_refused_even_with_force(tmp_path):
+def test_a_burn_the_bus_gave_up_on_is_cancelled_and_refused_with_force(tmp_path):
     session, runner, bus = make_session()
     runner.start_remote = lambda session: False   # a worker that will not let go
     player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
     try:
         player.load(make_show())
         burn = player.status()["burn"]
-        assert burn["state"] == "failed" and burn["failed"] == []
-        # An empty `failed` list used to pass the gate (no board named).
+        # An empty `failed` list used to pass the gate (no board named),
+        # and then read as "0 board(s) not written" on the PC (review
+        # round 2): a burn that never ran is cancelled, with the reason.
+        assert burn["state"] == "cancelled" and burn["failed"] == []
+        assert burn["reason"] == ("bus busy: the previous worker has not "
+                                  "finished")
         for force in (False, True):
-            with pytest.raises(RemoteError, match="did not finish"):
+            with pytest.raises(RemoteError, match="cancelled: bus busy"):
                 player.run(time.monotonic() + 0.2, force=force)
+            with pytest.raises(RemoteError, match="cancelled: bus busy"):
+                player.preset(force=force)
         assert not (tmp_path / BURN_FILE).exists()
     finally:
         player.close()
         runner.stop()
 
 
-def test_a_local_pattern_taking_the_port_mid_burn_leaves_it_failed(tmp_path):
+def test_no_board_answering_cancels_the_burn_and_force_cannot_start_it(tmp_path):
+    # Review round 2: _setup() failing ("no boards answering") used to
+    # put down every pair as "failed", which the gate's absent-only rule
+    # waved through - a show started on pictures nobody had written.
+    from tests.test_ui_remote import PickyBus
+
+    session, runner, bus = make_session(PickyBus({1, 2}))
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        player.load(make_show())
+        assert wait_until(lambda: player.status()["burn"]["state"]
+                          == "cancelled")
+        assert player.status()["burn"]["reason"] == "no boards answering"
+        for force in (False, True):
+            with pytest.raises(RemoteError,
+                               match="cancelled: no boards answering"):
+                player.run(time.monotonic() + 0.3, force=force)
+            with pytest.raises(RemoteError,
+                               match="cancelled: no boards answering"):
+                player.preset(force=force)
+        assert show_times(bus) == [] and player.state == LOADED
+        assert not (tmp_path / BURN_FILE).exists()
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_burn_record_the_disk_refuses_is_said_in_the_burn_not_retried(tmp_path):
+    # Review round 2 (F-low): the failure used to land in `note`, which
+    # status() reads BEFORE the burn (one poll late) and run() clears -
+    # and _persist_burn() ran again on every single poll.
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    tries = []
+
+    write = player._write
+
+    def refuse(name, payload):
+        if name != BURN_FILE:               # the show file still saves
+            return write(name, payload)
+        tries.append(name)
+        raise OSError("no space left on device")
+
+    try:
+        player._write = refuse
+        player.load(make_show())
+        assert wait_burned(player)
+        burn = player.status()["burn"]
+        assert burn["state"] == "burned"
+        assert burn["record"] == "unsaved: no space left on device"
+        # Not retried on every poll: the burn record is written once.
+        for _ in range(5):
+            player.status()
+        assert tries.count(BURN_FILE) == 1
+        # Never in `note`, which status() reads before the burn and a
+        # run() would clear.
+        assert "burn record" not in player.note
+        # The next load() tries again - and succeeds once the disk does.
+        player._write = write
+        player.load(dict(make_show(), id="abc7654321"))
+        assert wait_burned(player)
+        assert "record" not in player.status()["burn"]
+        assert (tmp_path / BURN_FILE).exists()
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_local_pattern_taking_the_port_mid_burn_leaves_it_cancelled(tmp_path):
     # Review F4: KEY1 on a pattern row during an Upload's burn used to
     # freeze the state at "burning n/N" for ever (START blocked, nothing
-    # to do about it but reboot).
+    # to do about it but reboot). Review round 2: and then to call it
+    # "failed" over pairs it never reached, so the PC offered a force
+    # this unit refuses - it is CANCELLED, with the reason.
     from ui.patterns import BY_KEY
 
     session, runner, bus = make_session(SlowSaveBus())
@@ -1061,20 +1183,21 @@ def test_a_local_pattern_taking_the_port_mid_burn_leaves_it_failed(tmp_path):
         player.load(show)
         assert wait_until(lambda: player.status()["burn"]["done"] > 0)
         runner.start(BY_KEY["wave"])                         # KEY1 on a pattern
-        assert wait_until(lambda: player.status()["burn"]["state"] == "failed")
+        assert wait_until(lambda: player.status()["burn"]["state"]
+                          == "cancelled")
         burn = player.status()["burn"]
         written = saved_pairs(bus)
-        failed = {tuple(pair) for pair in burn["failed"]}
-        assert burn["done"] == burn["total"] == 36
-        assert failed and not (failed & written)
-        assert failed | written == {(b, slot) for b in (1, 2)
-                                    for slot in range(1, 19)}
-        with pytest.raises(RemoteError, match="did not take the burn"):
-            player.run(time.monotonic() + 0.3)
+        every = {(b, slot) for b in (1, 2) for slot in range(1, 19)}
+        assert burn["reason"] == "interrupted: the port was taken"
+        assert 0 < burn["done"] < burn["total"] == 36
+        assert written and written < every
+        for force in (False, True):
+            with pytest.raises(RemoteError, match="cancelled: interrupted"):
+                player.run(time.monotonic() + 0.3, force=force)
         # Upload again: a new burn (the cache skips what was written).
         player.load(show)
         assert wait_burned(player)
-        assert saved_pairs(bus) == failed | written
+        assert saved_pairs(bus) == every
         player.run(time.monotonic() + 0.3)
         assert player.state == RUNNING
     finally:
