@@ -1874,11 +1874,16 @@ function picturesText(u) {
 }
 // The units whose burn FAILED some boards, as the one question START and
 // ② Show preset ask before they go on without those boards (`force`) - or
-// null when there is nothing to ask. The server refuses this same case
-// without `force` too: the dialog is a courtesy, not the only guard.
+// null when there is nothing to ask, or nothing `force` could fix: a unit
+// still burning, or with nothing written at all (burn null / "cancelled" /
+// "none"), is refused by the server whatever the answer, so the command
+// then goes out plain and the refusal names every such unit. The server
+// refuses the failed case without `force` too: the dialog is a courtesy,
+// not the only guard.
 function burnFailedQuestion(question) {
-  const failed = (fleet?.units || []).filter(u => u.show
-    && u.show.burn && u.show.burn.state === "failed");
+  const reporting = (fleet?.units || []).filter(u => u.show && "burn" in u.show);
+  if (reporting.some(u => !u.show.burn || !["burned", "failed"].includes(u.show.burn.state))) return null;
+  const failed = reporting.filter(u => u.show.burn.state === "failed");
   if (!failed.length) return null;
   return failed.map(u => {
     const boards = [...new Set((u.show.burn.failed || []).map(f => f[0]))];
@@ -1886,6 +1891,9 @@ function burnFailedQuestion(question) {
       + (boards.length ? ` (${boards.join(", ")})` : "");
   }).join("; ") + ` — ${question}`;
 }
+// A server refusal `force` would get past: every unit it names merely
+// failed some boards (fleet.py's "<unit>: n board(s) not written (...)").
+const onlyFailedBoards = error => !!error && error.split("; ").every(part => /board\(s\) not written/.test(part));
 function renderTiles() {
   showClockText();
   const box = $("#tiles");
@@ -2006,10 +2014,11 @@ document.addEventListener("click", async e => {
     const msg = burnFailedQuestion("Show the preset anyway?");
     if (msg) { if (!confirm(msg)) return; force = true; }
     const result = await fleetCommand("preset", { force }, "② Show preset", "show");
-    // The tiles can lag the units by a poll: a refusal for exactly this
-    // reason that arrived after the check above gets the same question, and
-    // one retry - not a loop.
-    if (result && result.error && !force && /board\(s\) not written/.test(result.error)
+    // The tiles can lag the units by a poll: a refusal that `force` would
+    // get past (failed boards only) that arrived after the check above gets
+    // the same question, and one retry - not a loop. Any other refusal
+    // (still burning, nothing written) stands as the log shows it.
+    if (result && !force && onlyFailedBoards(result.error)
         && confirm(`${result.error} — Show the preset anyway?`))
       await fleetCommand("preset", { force: true }, "② Show preset", "show");
     return;
