@@ -374,6 +374,25 @@ def test_start_needs_an_upload_and_does_not_restart_by_accident(tmp_path):
         assert fleet.run["t0"] > t0
         assert "not on hold" in post("/api/fleet/resume", {})["note"]
         post("/api/fleet/stop", {})
+        # PRESET carries the page's `force` to the fleet (review F3): a
+        # unit that failed to burn some boards is refused without it
+        # and shown the preset with it, the unit hearing the same force.
+        link.status["show"]["burn"] = {"done": 1, "total": 2,
+                                       "failed": [[3, 1]], "state": "failed"}
+        link.posted.clear()
+        status, refused = _post(port, "/api/fleet/preset", {})
+        assert status == 400
+        assert "radxa-01: 1 board(s) not written (3)" in refused["error"]
+        assert link.posted == []
+        shown = post("/api/fleet/preset", {"force": True})
+        assert shown["units"]["radxa-01"]["ok"]
+        assert link.posted == [("/show/preset", {"force": True})]
+        # ...but a burn still in flight is refused whatever the page says.
+        link.status["show"]["burn"]["state"] = "burning"
+        link.posted.clear()
+        status, refused = _post(port, "/api/fleet/preset", {"force": True})
+        assert status == 400 and "still writing 1/2" in refused["error"]
+        assert link.posted == []
         assert "not running" in post("/api/fleet/hold", {})["note"]
         assert "No cue ahead" in post("/api/fleet/next", {"lead_s": 1})["note"]
     finally:
@@ -579,10 +598,15 @@ def test_the_show_file_carries_uint16_delay_tables_and_the_unit_of_ten_ms(worksp
     assert swept[1] == 0 and swept[60] == 0                 # row 1 is the top row
     row0 = struct.unpack(">64H", bytes.fromhex(cues[1]["delays"]["3"]))    # board 20, row 0
     assert row0[5] == 200                                    # 2.0 s = 200 frames of 10 ms
-    # No sweep anywhere: no tables at all (the units need not write any).
+    # No sweep anywhere: still a table per board, all NO_DELAY - the unit
+    # writes it as "forget the sweep" into the slot, so a board keeps no
+    # table from an earlier upload that had one (review F5, 2026-09-25).
     workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0, "design": grid}])
     shows, _ = workspace.compile_show()
-    assert "delays" not in shows["radxa-01"]["cues"][0]
+    plain = shows["radxa-01"]["cues"][0]
+    assert set(plain["delays"]) == {"1", "2", "3"}
+    assert all(struct.unpack(">64H", bytes.fromhex(h)) == (0xFFFF,) * 64
+               for h in plain["delays"].values())
 
 
 # ---- per-design transitions ----
@@ -945,7 +969,10 @@ def test_a_custom_cue_with_zero_span_is_not_charged_bus_room_for_a_sweep(workspa
     assert b["problems"] == []
     shows, problems = workspace.compile_show()
     assert problems == []
-    assert "delays" not in shows["radxa-01"]["cues"][1]     # nothing sweeps
+    # Nothing sweeps: the cue's tables are the clearing all-NO_DELAY ones,
+    # not a "sweep" of all-zero frames (every cue carries tables now).
+    assert all(struct.unpack(">64H", bytes.fromhex(h)) == (0xFFFF,) * 64
+               for h in shows["radxa-01"]["cues"][1]["delays"].values())
 
 
 # ---- adversarial-review fixes ----

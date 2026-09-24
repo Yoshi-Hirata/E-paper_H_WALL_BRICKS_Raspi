@@ -36,7 +36,8 @@ seconds it actually adds (which needs the garment's map) come from the
 server, as cue["sweep"] and cue["span"].
 
 What one unit can do bounds the timeline. Every cue's picture is
-written into its own on-board slot (1-19; slot 0 is the standby white)
+written into its own on-board slot (1-18; slot 0 is the standby white,
+slot 19 the manual one-shot of the Designs tab and the demo rows)
 at Upload time - conductor/showfile.py's `build_unit_show` - so nothing
 is written any more while the show runs: a running cue's send is one
 broadcast trigger (`show_single`) naming its slot. There is therefore
@@ -51,10 +52,11 @@ picture already sits in its slot, burned at Upload time). Items sharing
 a unit (Look 20's top and skirt) share that budget - unless their cues
 fall on the same instant, which is one refresh for both.
 
-A board holds 19 pictures (slots 1-19; slot 0 is the standby white), so
-a unit's bus may carry at most 19 distinct sends (the preset counts as
-one) - validate() below reports a show that asks for more, naming how
-many it actually carries.
+A board holds 18 show pictures (slots 1-18, MAX_CUES_PER_UNIT; slot 0 is
+the standby white, slot 19 the manual one-shot), so a unit's bus may
+carry at most 18 distinct sends (the preset counts as one) - validate()
+below reports a show that asks for more, naming how many it actually
+carries.
 
 Pure data in, problems out: no files, no clock, so the rules are
 testable and the web page and the units can both rely on them.

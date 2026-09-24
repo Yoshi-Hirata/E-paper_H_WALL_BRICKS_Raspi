@@ -251,9 +251,14 @@ def test_hold_resume_and_next_move_every_unit_alike(stage):
     held_now = fleet.snapshot()["run"]["now"]
     time.sleep(0.5)
     assert fleet.snapshot()["run"]["now"] == held_now        # the clock stands
+    resumed = time.perf_counter()
     fleet.resume()
     assert all(u.player.state == "running" for u in units.values())
-    assert abs(fleet.snapshot()["run"]["now"] - held_now) < 0.2
+    # resume() fixes T0 before it posts to the units, and the clock runs
+    # from then on: under load those posts take real time (0.5 s seen),
+    # so the slack is the time actually spent, not a flat 0.2 s.
+    assert (abs(fleet.snapshot()["run"]["now"] - held_now)
+            < 0.2 + (time.perf_counter() - resumed))
 
     results = fleet.next_cue(lead_s=1.2)                    # 0:20's cue, now
     assert all(r["ok"] for r in results.values())

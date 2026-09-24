@@ -1459,7 +1459,11 @@ class Handler(BaseHTTPRequestHandler):
             slug = _demo_slug(body.get("slug"))
             return self._json({"units": fleet.delete_demo(slug)})
         if command == "preset":
-            return self._json({"units": fleet.preset()})
+            # The same `force` as START's: waves through a unit that
+            # failed to burn some boards (the page asks first), never
+            # one still burning or with nothing written (fleet.py).
+            return self._json({"units": fleet.preset(
+                force=bool(body.get("force")))})
         if command == "seek":
             if body.get("manual") is not True:
                 raise ValueError('Manual control is off. Tick "Manual '

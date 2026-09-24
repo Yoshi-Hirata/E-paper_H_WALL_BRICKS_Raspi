@@ -1851,8 +1851,14 @@ setInterval(showClockText, 250);
 // that unit stops burning (a fresh burn, or a different show, starts over).
 const burnStarted = {};
 function picturesText(u) {
-  const burn = u.show && typeof u.show.burn === "object" ? u.show.burn : null;
-  if (!burn) { delete burnStarted[u.name]; return "—"; }
+  // An agent older than the pre-burn design has no "burn" key at all and is
+  // not held up; a current one always sends it for a loaded show - a null
+  // there, or "cancelled" (STOP during the burn) / "none" (the unit
+  // restarted since), means the slots do NOT hold this show's pictures and
+  // START/PRESET refuse until the operator uploads again (fleet.py F1).
+  if (!u.show || !("burn" in u.show)) { delete burnStarted[u.name]; return "—"; }
+  const burn = u.show.burn;
+  if (!burn || typeof burn !== "object") { delete burnStarted[u.name]; return "✗ not written — Upload again"; }
   if (burn.state === "burning") {
     if (!burnStarted[u.name]) burnStarted[u.name] = Date.now();
     const elapsed = Math.round((Date.now() - burnStarted[u.name]) / 1000);
@@ -1861,8 +1867,33 @@ function picturesText(u) {
   delete burnStarted[u.name];
   if (burn.state === "failed")
     return `✗ FAILED (${esc((burn.failed || []).length)} board·slot)`;
-  return "written";
+  if (burn.state === "burned") return "written";
+  if (burn.state === "cancelled") return "✗ not written (cancelled) — Upload again";
+  if (burn.state === "none") return "✗ not written since it restarted — Upload again";
+  return `✗ not written (${esc(burn.state)}) — Upload again`;
 }
+// The units whose burn FAILED some boards, as the one question START and
+// ② Show preset ask before they go on without those boards (`force`) - or
+// null when there is nothing to ask, or nothing `force` could fix: a unit
+// still burning, or with nothing written at all (burn null / "cancelled" /
+// "none"), is refused by the server whatever the answer, so the command
+// then goes out plain and the refusal names every such unit. The server
+// refuses the failed case without `force` too: the dialog is a courtesy,
+// not the only guard.
+function burnFailedQuestion(question) {
+  const reporting = (fleet?.units || []).filter(u => u.show && "burn" in u.show);
+  if (reporting.some(u => !u.show.burn || !["burned", "failed"].includes(u.show.burn.state))) return null;
+  const failed = reporting.filter(u => u.show.burn.state === "failed");
+  if (!failed.length) return null;
+  return failed.map(u => {
+    const boards = [...new Set((u.show.burn.failed || []).map(f => f[0]))];
+    return `${u.name}: ${boards.length} board(s) not written`
+      + (boards.length ? ` (${boards.join(", ")})` : "");
+  }).join("; ") + ` — ${question}`;
+}
+// A server refusal `force` would get past: every unit it names merely
+// failed some boards (fleet.py's "<unit>: n board(s) not written (...)").
+const onlyFailedBoards = error => !!error && error.split("; ").every(part => /board\(s\) not written/.test(part));
 function renderTiles() {
   showClockText();
   const box = $("#tiles");
@@ -1970,28 +2001,40 @@ document.addEventListener("click", async e => {
     }
     return;
   }
-  const showButtons = { "show-upload": ["upload", "① Upload"], "show-preset": ["preset", "② Show preset"],
+  const showButtons = { "show-upload": ["upload", "① Upload"],
     "show-hold": ["hold", "HOLD"], "show-resume": ["resume", "RESUME"] };
   if (showButtons[e.target.id]) { const [command, title] = showButtons[e.target.id]; await fleetCommand(command, {}, title, "show"); return; }
+  if (e.target.id === "show-preset") {
+    // The same question START asks: a unit that failed to burn some boards
+    // (one absent board is the common case) does not keep the 0:00 look off
+    // the others - the operator is asked, and the preset goes out with
+    // `force`. Never a unit still burning or with nothing written: the
+    // server refuses those whatever the answer here.
+    let force = false;
+    const msg = burnFailedQuestion("Show the preset anyway?");
+    if (msg) { if (!confirm(msg)) return; force = true; }
+    const result = await fleetCommand("preset", { force }, "② Show preset", "show");
+    // The tiles can lag the units by a poll: a refusal that `force` would
+    // get past (failed boards only) that arrived after the check above gets
+    // the same question, and one retry - not a loop. Any other refusal
+    // (still burning, nothing written) stands as the log shows it.
+    if (result && !force && onlyFailedBoards(result.error)
+        && confirm(`${result.error} — Show the preset anyway?`))
+      await fleetCommand("preset", { force: true }, "② Show preset", "show");
+    return;
+  }
   if (e.target.id === "show-start") {
     const again = !!fleet?.run, startAt = fleetStartAt();
     // A unit that failed to burn some boards does not block START outright -
     // the operator may choose to start anyway, missing boards and all - but
     // is asked first, the same way an already-running show asks before it
-    // is restarted (the server refuses this same case without `force` too:
-    // this is a courtesy, not the only guard).
-    const failed = (fleet?.units || []).filter(u => u.show
-      && u.show.burn && u.show.burn.state === "failed");
+    // is restarted (burnFailedQuestion; the server refuses this same case
+    // without `force` too).
+    const failedMsg = burnFailedQuestion("start anyway?");
     let msg = null, force = again;
     if (again) msg = `The show is running. Start it again from ${clock(startAt)}?`;
-    else if (failed.length) {
-      msg = failed.map(u => {
-        const boards = [...new Set((u.show.burn.failed || []).map(f => f[0]))];
-        return `${u.name}: ${boards.length} board(s) not written`
-          + (boards.length ? ` (${boards.join(", ")})` : "");
-      }).join("; ") + " — start anyway?";
-      force = true;
-    } else if (startAt > 0) msg = `Start the show at ${clock(startAt)} (not from the beginning)?`;
+    else if (failedMsg) { msg = failedMsg; force = true; }
+    else if (startAt > 0) msg = `Start the show at ${clock(startAt)} (not from the beginning)?`;
     if (msg && !confirm(msg)) return;
     const result = await fleetCommand("start", { lead_s: ui.lead, force }, `③ START (in ${ui.lead} s)`, "show");
     // A 200 with a "nothing uploaded"/"already running" note also has
