@@ -32,6 +32,12 @@ button:hover, .filebtn:hover { border-color: var(--accent); }
 button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger:hover { border-color: var(--err); color: var(--err); }
 button:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+/* Play is green and Stop is red - the simulator transport AND the show's own
+   ③ START / STOP - so they read at a glance in a dark venue (user, 2026-09-25).
+   Disabled ones keep the plain look, so a grey START still means "not yet". */
+#tp-play, #show-start:not(:disabled) { background: var(--ok); border-color: var(--ok); color: var(--bg); font-weight: 600; }
+#tp-stop, #show-stop:not(:disabled) { background: var(--err); border-color: var(--err); color: var(--bg); font-weight: 600; }
+#tp-play:hover, #tp-stop:hover, #show-start:not(:disabled):hover, #show-stop:not(:disabled):hover { filter: brightness(1.12); color: var(--bg); }
 .filebtn input { display: none; }
 .tabs { display: flex; gap: 0; }
 .tabs button { border-radius: 0; margin-left: -1px; padding: 5px 16px; }
