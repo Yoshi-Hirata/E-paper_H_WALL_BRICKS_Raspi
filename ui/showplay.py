@@ -298,7 +298,12 @@ class ShowPlayer:
                 "boards": {int(a): bytes.fromhex(h)
                           for a, h in cue["state"].items()},
                 "delays": {int(a): bytes.fromhex(h)
-                          for a, h in (cue.get("delays") or {}).items()}}
+                          for a, h in (cue.get("delays") or {}).items()},
+                # Not written anywhere: it is what the burn's own log
+                # line says the sweep was ASKED for, so a board whose
+                # last start falls short of it reads as "the farthest
+                # scales are on another board" rather than a bug.
+                "span_s": cue.get("span")}
                for cue in show["cues"]]
 
     def run(self, t0: float, show_id: "str | None" = None,
@@ -738,7 +743,14 @@ class ShowPlayer:
         key = self._key(show, cue)
         if heal or session.cue_id != key or session.phase == FAILED:
             session.arm(key, int(cue["slot"]),
-                       int(show.get("dev_type", 3)), cue.get("label", ""))
+                       int(show.get("dev_type", 3)), cue.get("label", ""),
+                       # How long this cue needs after it fires, so the
+                       # guard STOP waits for the sweep instead of
+                       # landing inside it (ui/runner.py's _guard_for()).
+                       # A show file from before cues carried a span
+                       # says nothing and keeps the flat guard.
+                       span_s=cue.get("span"),
+                       refresh_s=cue.get("refresh_s", show.get("refresh_s")))
         with self._lock:
             if epoch != self._epoch:
                 if session.cue_id == key:

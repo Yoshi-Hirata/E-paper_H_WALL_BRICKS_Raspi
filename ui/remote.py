@@ -88,6 +88,22 @@ class RemoteError(ValueError):
     """A request the unit cannot take; the agent answers 4xx with it."""
 
 
+def _seconds(value) -> "float | None":
+    """A non-negative number of seconds, or None for "not said". Junk
+    (a string, a dict, NaN, a negative) reads as not said rather than
+    raising: these are advisory - the guard STOP's timing, nothing the
+    picture depends on - and a cue must never be refused over one."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds != seconds or seconds < 0.0:     # NaN or negative
+        return None
+    return seconds
+
+
 class RemoteSession:
     def __init__(self, runner, clock=time.monotonic, busy=None):
         self.runner = runner
@@ -109,6 +125,14 @@ class RemoteSession:
         self.prepare_s: float | None = None
         self.slot = DEFAULT_SLOT
         self.dev_type = DEV_NUMBER_BRAND
+        # How long the loaded cue takes to finish on the glass: its
+        # refresh, plus the seconds its sweep spreads the scales over.
+        # None means "this caller did not say" - an older conductor's
+        # /prepare body, or a show file from before cues carried a span
+        # - and the runner then falls back to its flat guard delay (see
+        # ui/runner.py's _guard_for()).
+        self.span_s: float | None = None
+        self.refresh_s: float | None = None
         self._job: dict | None = None
 
         # A show's own burn (see the module docstring): None means
@@ -139,12 +163,19 @@ class RemoteSession:
     def prepare(self, cue_id: str, boards: "dict[int, bytes]",
                 dev_type: int = DEV_NUMBER_BRAND, label: str = "",
                 delays: "dict[int, bytes] | None" = None,
-                slot: int = DEFAULT_SLOT) -> None:
+                slot: int = DEFAULT_SLOT,
+                span_s: "float | None" = None,
+                refresh_s: "float | None" = None) -> None:
         """`delays`: per board, the 128-byte table (64 sockets x uint16,
         big-endian, 10 ms frames) of per-socket start delays that makes
         the change sweep the garment (written before the colours; a
         board without one gets its slot's sweep cleared, once - see
         ui/runner.py's _save_one()).
+
+        `span_s` / `refresh_s`: how long this cue needs to finish once
+        it fires - the sweep's span and the refresh the panels take.
+        Only the guard STOP uses them (ui/runner.py's _guard_for()), and
+        a body that leaves them out keeps the old flat guard.
 
         Writing here (rather than through a burn) makes the slot's
         content unknown to the burn cache - see ui/runner.py's
@@ -166,6 +197,7 @@ class RemoteSession:
                                   f"{TABLE_LEN} bytes (64 sockets x uint16), "
                                   f"got {len(table)}")
         cue_id, slot = str(cue_id), int(slot)
+        span_s, refresh_s = _seconds(span_s), _seconds(refresh_s)
         with self._lock:
             self._refuse_if_imminent_locked(cue_id)
             self.active = True
@@ -175,21 +207,28 @@ class RemoteSession:
             self.saved, self.failed = [], []
             self.fire_at = self.fired_at = self.prepare_s = None
             self.slot, self.dev_type = slot, dev_type
+            self.span_s, self.refresh_s = span_s, refresh_s
             self._job = {"cue_id": cue_id, "boards": dict(boards),
-                         "dev_type": dev_type, "delays": delays, "slot": slot}
+                         "dev_type": dev_type, "delays": delays, "slot": slot,
+                         "span_s": span_s}
         if not self.runner.remote and self.runner.start_remote(self) is False:
             self.failed_with("bus busy: the previous worker has not finished")
         self._wake.set()
 
     def arm(self, cue_id: str, slot: int, dev_type: int = DEV_NUMBER_BRAND,
-            label: str = "") -> None:
+            label: str = "", span_s: "float | None" = None,
+            refresh_s: "float | None" = None) -> None:
         """A cue already burned into `slot`: nothing to write, just a
         fire time to keep - used by ui/showplay.py while RUNNING. Skips
         PREPARING outright (there is no board write for the worker to
-        do or report on)."""
+        do or report on).
+
+        `span_s` / `refresh_s` are the cue's own, from the show file, and
+        only the guard STOP reads them (see prepare())."""
         if self.busy():
             raise RemoteError("unit is busy (firmware update, scan or reboot)")
         cue_id, slot = str(cue_id), int(slot)
+        span_s, refresh_s = _seconds(span_s), _seconds(refresh_s)
         with self._lock:
             self._refuse_if_imminent_locked(cue_id)
             self.active = True
@@ -199,6 +238,7 @@ class RemoteSession:
             self.saved, self.failed = [], []
             self.fire_at = self.fired_at = self.prepare_s = None
             self.slot, self.dev_type = slot, dev_type
+            self.span_s, self.refresh_s = span_s, refresh_s
             self._job = None
         if not self.runner.remote and self.runner.start_remote(self) is False:
             self.failed_with("bus busy: the previous worker has not finished")
@@ -245,6 +285,7 @@ class RemoteSession:
             self.phase = STANDBY
             self.cue_id, self.label, self.error = None, "", None
             self.fire_at = self.fired_at = None
+            self.span_s = self.refresh_s = None
             self._job = None
         self.runner.standby()
 
@@ -256,6 +297,7 @@ class RemoteSession:
             self.active = False
             self.phase = LOCAL
             self.fire_at = None
+            self.span_s = self.refresh_s = None
             self._job = None
         self.runner.stop()
 
