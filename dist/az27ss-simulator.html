@@ -2156,7 +2156,11 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
     return list;
   }
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : i.item;
+  // No LOOK number -> the model number, and only then the raw item code
+  // (designer-app.js's own itemName() does the same): the shipped starter
+  // data's three bags carry no LOOK, and production names them by model
+  // ("AZ271SG1035 (Bag 01)"), not by the file-name stem.
+  const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : (i.model || i.item);
 
   // index.html:1180-1204. ctx: {cuesOf, palette}
   function renderThumbs(view, t, ctx) {
@@ -2705,31 +2709,43 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   "labels": {
    "AZ271SB2303": {
     "look": "26",
-    "model": ""
+    "model": "AZ271SB2303 (Skirt)"
    },
    "AZ271SC6302": {
     "look": "26",
-    "model": ""
+    "model": "AZ271SC6302 (Tops)"
    },
    "AZ271SD1301": {
     "look": "25",
-    "model": ""
+    "model": "AZ271SD1301"
    },
    "AZ271SD1305": {
     "look": "23",
-    "model": ""
+    "model": "AZ271SD1305"
    },
    "AZ271SD1305_B": {
     "look": "24",
-    "model": ""
+    "model": "AZ271SD1305"
    },
    "AZ271SD1306": {
     "look": "27",
-    "model": ""
+    "model": "AZ271SD1306"
    },
    "AZ271SD1307": {
     "look": "28",
-    "model": ""
+    "model": "AZ271SD1307"
+   },
+   "AZ271SG1035": {
+    "look": "",
+    "model": "AZ271SG1035 (Bag 01)"
+   },
+   "AZ271SG1036": {
+    "look": "",
+    "model": "AZ271SG1036 (Bag 02)"
+   },
+   "AZ271SG3037": {
+    "look": "",
+    "model": "AZ271SG3037 (Bag 03)"
    }
   },
   "music": null,
@@ -3011,7 +3027,9 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     const m = /^\((.+)\)$/.exec(key);
     if (!m) return key;
     const it = state.items.find(i => i.item.toLowerCase() === m[1].toLowerCase());
-    return (it && lookDisplay(it)) || m[1];
+    // itemName(), not lookDisplay(): a garment with no LOOK number (the bags)
+    // is named by its model number, never by the raw item code.
+    return (it && itemName(it)) || m[1];
   }
   function labelize(msg) {
     // Any standalone "(known item)", not only one preceded by " on "
@@ -3024,7 +3042,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     // eat an unrelated parenthetical aside.
     return String(msg).replace(/\(([^()]+)\)/g, (m, name) => {
       const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
-      return it ? ((it && lookDisplay(it)) || name) : m;
+      return it ? itemName(it) : m;
     });
   }
   // model.js's pre-burn cue-limit message, hand-rewritten rather than left
@@ -3040,7 +3058,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     if (!m) return null;
     const [, name, carries, holds] = m;
     const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
-    const label = (it && lookDisplay(it)) || name;
+    const label = (it && itemName(it)) || name;
     return `${label} has ${carries} pictures but an item can hold ${holds} in one show - merge or remove cues`;
   }
   // look.py's malformed-row message, hand-rendered rather than left to
@@ -3163,8 +3181,17 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   // this early (this listener would otherwise fire before boot()'s own,
   // registered further down the file, ever runs).
   globalThis.__displaycheck = displayCheck;
-  const itemName = i => !i ? "" : lookDisplay(i) || i.item;
+  // The model number, not the raw item code, is the fallback for a garment
+  // with no LOOK number (the three bags in the shipped starter data are
+  // exactly this - they are not part of the numbered line-up, so production
+  // names them "AZ271SG1035 (Bag 01)"). The item code is the file-name stem
+  // and the last resort: a designer has no reason to read it.
+  const itemName = i => !i ? "" : lookDisplay(i) || i.model || i.item;
   const itemFull = i => !i ? "" : [lookDisplay(i), i.model].filter(Boolean).join(" · ") || i.item;
+  // The second line under a track's name: the model number, unless the name
+  // line already IS the model number (a garment with no LOOK), which would
+  // otherwise print it twice.
+  const itemSub = i => (i && i.model && itemName(i) !== i.model) ? i.model : "";
   const designLabel = d => d.label || d.name;
   const designState = d => !d.problems.length ? "ok" : !d.partial_problems.length ? "partial" : "bad";
 
@@ -3412,7 +3439,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
           <div class="cue-hold ${bad ? "bad" : ""} ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${esc(cue.id)}" data-drag="${cue.at <= 0 ? "0" : "1"}"
             style="left:${holdX};width:${holdW}" title="${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}">${cue.at <= 0 ? "PRESET · " : ""}${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}</div>`;
       }).join("");
-      return `<div class="tl-row"><div class="tl-name">${esc(itemName(item))}<small>${esc(item.model || "")}</small></div>
+      return `<div class="tl-row"><div class="tl-name" title="${esc(itemFull(item))}">${esc(itemName(item))}<small>${esc(itemSub(item))}</small></div>
         <div class="tl-track" data-track="${esc(item.item)}">${bands}</div></div>`;
     }).join("");
     return `<div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div class="tl-wrap">${rows || `<div class="empty">No items yet.</div>`}
@@ -3458,7 +3485,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
         const status = (c.problems || []).length ? `<span style="color:var(--err)">${c.problems.length} problem${c.problems.length === 1 ? "" : "s"}</span>` : '<span class="okline">OK</span>';
         return `<tr class="pick ${sameId(c.id, ui.cue) ? "hl" : ""}" data-cue="${esc(c.id)}">
           <td>${clockShort(c.at)}</td><td>${clockShort(c.complete)}</td><td>${clockShort(c.end)}</td>
-          <td>${esc(itemName(item))}</td><td>${esc(designLabel(item?.designs.find(d => d.name === c.design) || { name: c.design }))}${c.partial ? " (partial)" : ""}</td>
+          <td>${esc(itemFull(item) || c.item)}</td><td>${esc(designLabel(item?.designs.find(d => d.name === c.design) || { name: c.design }))}${c.partial ? " (partial)" : ""}</td>
           <td>${esc(tr)}</td><td>${status}</td></tr>`;
       }).join("")}</tbody></table>`;
   }

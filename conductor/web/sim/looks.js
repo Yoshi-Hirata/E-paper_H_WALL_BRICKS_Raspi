@@ -62,7 +62,11 @@
     return list;
   }
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : i.item;
+  // No LOOK number -> the model number, and only then the raw item code
+  // (designer-app.js's own itemName() does the same): the shipped starter
+  // data's three bags carry no LOOK, and production names them by model
+  // ("AZ271SG1035 (Bag 01)"), not by the file-name stem.
+  const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : (i.model || i.item);
 
   // index.html:1180-1204. ctx: {cuesOf, palette}
   function renderThumbs(view, t, ctx) {

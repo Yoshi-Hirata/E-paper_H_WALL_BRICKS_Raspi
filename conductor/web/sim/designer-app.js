@@ -270,7 +270,9 @@
     const m = /^\((.+)\)$/.exec(key);
     if (!m) return key;
     const it = state.items.find(i => i.item.toLowerCase() === m[1].toLowerCase());
-    return (it && lookDisplay(it)) || m[1];
+    // itemName(), not lookDisplay(): a garment with no LOOK number (the bags)
+    // is named by its model number, never by the raw item code.
+    return (it && itemName(it)) || m[1];
   }
   function labelize(msg) {
     // Any standalone "(known item)", not only one preceded by " on "
@@ -283,7 +285,7 @@
     // eat an unrelated parenthetical aside.
     return String(msg).replace(/\(([^()]+)\)/g, (m, name) => {
       const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
-      return it ? ((it && lookDisplay(it)) || name) : m;
+      return it ? itemName(it) : m;
     });
   }
   // model.js's pre-burn cue-limit message, hand-rewritten rather than left
@@ -299,7 +301,7 @@
     if (!m) return null;
     const [, name, carries, holds] = m;
     const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
-    const label = (it && lookDisplay(it)) || name;
+    const label = (it && itemName(it)) || name;
     return `${label} has ${carries} pictures but an item can hold ${holds} in one show - merge or remove cues`;
   }
   // look.py's malformed-row message, hand-rendered rather than left to
@@ -422,8 +424,17 @@
   // this early (this listener would otherwise fire before boot()'s own,
   // registered further down the file, ever runs).
   globalThis.__displaycheck = displayCheck;
-  const itemName = i => !i ? "" : lookDisplay(i) || i.item;
+  // The model number, not the raw item code, is the fallback for a garment
+  // with no LOOK number (the three bags in the shipped starter data are
+  // exactly this - they are not part of the numbered line-up, so production
+  // names them "AZ271SG1035 (Bag 01)"). The item code is the file-name stem
+  // and the last resort: a designer has no reason to read it.
+  const itemName = i => !i ? "" : lookDisplay(i) || i.model || i.item;
   const itemFull = i => !i ? "" : [lookDisplay(i), i.model].filter(Boolean).join(" · ") || i.item;
+  // The second line under a track's name: the model number, unless the name
+  // line already IS the model number (a garment with no LOOK), which would
+  // otherwise print it twice.
+  const itemSub = i => (i && i.model && itemName(i) !== i.model) ? i.model : "";
   const designLabel = d => d.label || d.name;
   const designState = d => !d.problems.length ? "ok" : !d.partial_problems.length ? "partial" : "bad";
 
@@ -671,7 +682,7 @@
           <div class="cue-hold ${bad ? "bad" : ""} ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${esc(cue.id)}" data-drag="${cue.at <= 0 ? "0" : "1"}"
             style="left:${holdX};width:${holdW}" title="${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}">${cue.at <= 0 ? "PRESET · " : ""}${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}</div>`;
       }).join("");
-      return `<div class="tl-row"><div class="tl-name">${esc(itemName(item))}<small>${esc(item.model || "")}</small></div>
+      return `<div class="tl-row"><div class="tl-name" title="${esc(itemFull(item))}">${esc(itemName(item))}<small>${esc(itemSub(item))}</small></div>
         <div class="tl-track" data-track="${esc(item.item)}">${bands}</div></div>`;
     }).join("");
     return `<div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div class="tl-wrap">${rows || `<div class="empty">No items yet.</div>`}
@@ -717,7 +728,7 @@
         const status = (c.problems || []).length ? `<span style="color:var(--err)">${c.problems.length} problem${c.problems.length === 1 ? "" : "s"}</span>` : '<span class="okline">OK</span>';
         return `<tr class="pick ${sameId(c.id, ui.cue) ? "hl" : ""}" data-cue="${esc(c.id)}">
           <td>${clockShort(c.at)}</td><td>${clockShort(c.complete)}</td><td>${clockShort(c.end)}</td>
-          <td>${esc(itemName(item))}</td><td>${esc(designLabel(item?.designs.find(d => d.name === c.design) || { name: c.design }))}${c.partial ? " (partial)" : ""}</td>
+          <td>${esc(itemFull(item) || c.item)}</td><td>${esc(designLabel(item?.designs.find(d => d.name === c.design) || { name: c.design }))}${c.partial ? " (partial)" : ""}</td>
           <td>${esc(tr)}</td><td>${status}</td></tr>`;
       }).join("")}</tbody></table>`;
   }

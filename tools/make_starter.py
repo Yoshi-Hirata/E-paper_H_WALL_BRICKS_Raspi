@@ -24,19 +24,34 @@ REPO = Path(__file__).resolve().parent.parent
 STARTER_DIR = REPO / "conductor" / "web" / "starter"
 STARTER_JS = REPO / "conductor" / "web" / "sim" / "starter.js"
 
-# The show line-up's LOOK numbers (plan_designer_sim.md / the "az27ss-looks"
-# memory note, 2026-09-24): items the memory does not assign a LOOK to yet
-# (the bags fetched since) are left with no label - the designer's own LOOK
-# field is blank ("-") for those until someone types a number.
-STARTER_LOOKS = {
-    "AZ271SD1301": "25",
-    "AZ271SC6302": "26",
-    "AZ271SB2303": "26",       # the skirt shares LOOK 26 with the top (one Radxa)
-    "AZ271SD1306": "27",
-    "AZ271SD1307": "28",
-    "AZ271SD1305": "23",
-    "AZ271SD1305_B": "24",
+# The show line-up's own labels, copied from the production show.json (the
+# operator page's `labels` map) so a designer opening the simulator reads the
+# same "LOOK 23 · AZ271SD1305" the operator does - the starter used to write
+# {"look": n, "model": ""}, which showed every garment as "LOOK 23" with an
+# empty "model no." box next to it.
+#
+# item -> (LOOK number, model number). An empty LOOK is deliberate and matches
+# production: the three bags are not part of the numbered line-up, so they are
+# named by their model alone and the designer's own LOOK field stays blank
+# ("-") until someone types a number. Two garments CAN share a LOOK (the skirt
+# and the top of LOOK 26 ride one Radxa), which is why the model number is
+# what tells them apart.
+STARTER_LABELS = {
+    "AZ271SD1305":   ("23", "AZ271SD1305"),
+    "AZ271SD1305_B": ("24", "AZ271SD1305"),
+    "AZ271SD1301":   ("25", "AZ271SD1301"),
+    "AZ271SB2303":   ("26", "AZ271SB2303 (Skirt)"),
+    "AZ271SC6302":   ("26", "AZ271SC6302 (Tops)"),
+    "AZ271SD1306":   ("27", "AZ271SD1306"),
+    "AZ271SD1307":   ("28", "AZ271SD1307"),
+    "AZ271SG1035":   ("",   "AZ271SG1035 (Bag 01)"),
+    "AZ271SG1036":   ("",   "AZ271SG1036 (Bag 02)"),
+    "AZ271SG3037":   ("",   "AZ271SG3037 (Bag 03)"),
 }
+
+# Derived, never a second hand-maintained list (the two used to drift): the
+# items that DO carry a LOOK number, which is what orders the line-up.
+STARTER_LOOKS = {item: look for item, (look, _model) in STARTER_LABELS.items() if look}
 
 DEFAULT_DURATION_S = 600.0
 DEFAULT_REFRESH_S = 7.0
@@ -108,8 +123,8 @@ def build_show(files: "dict[str, str]") -> dict:
                          "sequence": "natural", "span_s": 0})
             cue_id += 1
 
-    labels = {item: {"look": STARTER_LOOKS[item], "model": ""}
-              for item in ordered if item in STARTER_LOOKS}
+    labels = {item: {"look": STARTER_LABELS[item][0], "model": STARTER_LABELS[item][1]}
+              for item in ordered if item in STARTER_LABELS}
 
     return {"duration": DEFAULT_DURATION_S, "refresh_s": DEFAULT_REFRESH_S,
             "cues": cues, "transitions": {}, "labels": labels, "boards": {}, "music": None}

@@ -23,9 +23,11 @@ DESIGNER_HTML = REPO / "conductor" / "web" / "designer.html"
 DIST = REPO / "dist" / "az27ss-simulator.html"
 BUILD_SCRIPT = REPO / "tools" / "build_designer.py"
 STARTER_SCRIPT = REPO / "tools" / "make_starter.py"
+STARTER_JS = REPO / "conductor" / "web" / "sim" / "starter.js"
 
 sys.path.insert(0, str(REPO))
 import tools.build_designer as build_designer  # noqa: E402
+import tools.make_starter as make_starter  # noqa: E402
 
 
 def run(*args):
@@ -547,3 +549,60 @@ def test_banned_vocabulary_never_reaches_rendered_ui(tmp_path):
     assert not hit, (
         f"banned vocabulary reached the rendered Timeline tab's DOM: {hit.group(0)!r} "
         f"near {haystack[max(0, hit.start() - 60):hit.start() + 60]!r}")
+
+
+# ============================================================
+# The starter data's labels (user, 2026-09-25)
+# ============================================================
+# The show's own LOOK and model numbers, as the production show.json holds
+# them. The starter used to write {"look": n, "model": ""}, so a designer
+# opening the simulator saw "LOOK 23" with an empty "model no." box where the
+# operator sees "LOOK 23 · AZ271SD1305" - and the three bags, which carry no
+# LOOK number at all, showed only their file-name stem. This table is the
+# contract; tools/make_starter.py's STARTER_LABELS is where it is written
+# down, and conductor/web/sim/starter.js is the generated copy the page
+# actually reads.
+SHOW_LABELS = {
+    "AZ271SD1305":   {"look": "23", "model": "AZ271SD1305"},
+    "AZ271SD1305_B": {"look": "24", "model": "AZ271SD1305"},
+    "AZ271SD1301":   {"look": "25", "model": "AZ271SD1301"},
+    "AZ271SB2303":   {"look": "26", "model": "AZ271SB2303 (Skirt)"},
+    "AZ271SC6302":   {"look": "26", "model": "AZ271SC6302 (Tops)"},
+    "AZ271SD1306":   {"look": "27", "model": "AZ271SD1306"},
+    "AZ271SD1307":   {"look": "28", "model": "AZ271SD1307"},
+    "AZ271SG1035":   {"look": "",   "model": "AZ271SG1035 (Bag 01)"},
+    "AZ271SG1036":   {"look": "",   "model": "AZ271SG1036 (Bag 02)"},
+    "AZ271SG3037":   {"look": "",   "model": "AZ271SG3037 (Bag 03)"},
+}
+
+
+def _starter_payload() -> dict:
+    """SIM.STARTER out of the committed starter.js - the generated artefact
+    the page loads, not make_starter.py's constants (those are checked
+    separately below): a table that is right in the script but stale in the
+    committed file is exactly the drift worth catching."""
+    text = STARTER_JS.read_text(encoding="utf-8")
+    head = "{ STARTER: "
+    return json.loads(text[text.index(head) + len(head):text.rindex(" });")])
+
+
+def test_starter_labels_are_the_shows_own_look_and_model_numbers():
+    labels = _starter_payload()["show"]["labels"]
+    assert labels == SHOW_LABELS
+    assert {item: {"look": look, "model": model}
+            for item, (look, model) in make_starter.STARTER_LABELS.items()} == SHOW_LABELS
+    # STARTER_LOOKS (which orders the line-up) is derived from the same table
+    # and must stay in step with it - the two used to be hand-maintained.
+    assert make_starter.STARTER_LOOKS == {
+        item: label["look"] for item, label in SHOW_LABELS.items() if label["look"]}
+
+
+def test_every_garment_in_the_starter_data_is_labelled():
+    # A garment the table forgets renders as its bare file-name stem, which
+    # is the state this table replaced - so "the table is right" is only
+    # half the check; it also has to be complete.
+    payload = _starter_payload()
+    items = sorted({make_starter.map_item(name) for name in payload["files"]
+                    if make_starter.kind(name) == "map"})
+    assert items == sorted(SHOW_LABELS), \
+        "conductor/web/starter/ holds a garment tools/make_starter.py has no label for"
