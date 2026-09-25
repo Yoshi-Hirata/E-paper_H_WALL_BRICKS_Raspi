@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -606,3 +607,156 @@ def test_every_garment_in_the_starter_data_is_labelled():
                     if make_starter.kind(name) == "map"})
     assert items == sorted(SHOW_LABELS), \
         "conductor/web/starter/ holds a garment tools/make_starter.py has no label for"
+
+
+# ============================================================
+# The Designs tab's per-item "Add CSV" (user, 2026-09-25)
+# ============================================================
+# Appended to a COPY of the built page, like _MUSIC_PROBE above: drives the
+# real page as a designer would (clicking each item in the sidebar, then the
+# per-item file input's own change event) and writes what it found into an
+# element, because --dump-dom returns the DOM and nothing else.
+#
+# It waits for the page to have booted rather than guessing at a delay - the
+# starter data is ~350 KB of CSV to parse before the ITEMS sidebar exists.
+_ITEM_CSV_PROBE = """
+<script>
+(function () {
+  var out = { error: null, items: [], global: false, toast: "", seam: {} };
+  function ready() {
+    try {
+      var st = globalThis.SIM && SIM.app && SIM.app.getState();
+      return !!(st && st.items && st.items.length && document.querySelector('#items .item[data-item]'));
+    } catch (e) { return false; }
+  }
+  function publish() {
+    var pre = document.createElement("pre");
+    pre.id = "itemcsv-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }
+  function pickerFor(key) {
+    return document.querySelector('#content label.filebtn[data-pick-item="' + key + '"]');
+  }
+  function run() {
+    var keys = [].slice.call(document.querySelectorAll('#items .item[data-item]'))
+                 .map(function (c) { return c.dataset.item; });
+    out.global = !!document.querySelector('#pick');
+    keys.forEach(function (key) {
+      document.querySelector('#items .item[data-item="' + key + '"]').click();
+      var btn = pickerFor(key);
+      var input = btn && btn.querySelector('input[type="file"]');
+      out.items.push({
+        item: key,
+        label: btn ? btn.textContent.trim() : null,
+        tabindex: btn ? btn.getAttribute("tabindex") : null,
+        multiple: !!(input && input.multiple),
+        accept: input ? input.getAttribute("accept") : null,
+        inCard: !!(btn && btn.closest(".card") &&
+                   /DESIGNS OF THIS ITEM/.test(btn.closest(".card").querySelector("h2").textContent))
+      });
+    });
+    // The seam, called directly: a name that cannot belong to any item is
+    // refused, a design CSV named after ANOTHER garment is renamed onto
+    // this one (index.html's uploadOwn() does the same), and an item that
+    // does not exist takes nothing at all.
+    var key = keys.filter(function (k) { return k !== "AZ271SB2303"; })[0];
+    out.seam.item = key;
+    document.querySelector('#items .item[data-item="' + key + '"]').click();
+    var foreign = "AZ271SB2303_color_probeA_grid.csv";
+    out.seam.refused = SIM.app.addFilesToItem(key, [{ name: "notes.txt", text: "x" }]).refused;
+    var r = SIM.app.addFilesToItem(key, [{ name: foreign, text: SIM.STARTER.files["AZ271SB2303_color_sampleA_grid.csv"] }]);
+    out.seam.renamed = r.renamed;
+    out.seam.saved = r.saved;
+    out.seam.unknown = SIM.app.addFilesToItem("NO_SUCH_ITEM", [{ name: foreign, text: "x" }]);
+    out.seam.designsAfter = SIM.app.getState().items
+      .filter(function (i) { return i.item === key; })[0].designs
+      .map(function (d) { return d.name; });
+    // ...and the button itself, through its own change event, which is the
+    // path a designer's file picker actually takes.
+    document.querySelector('#items .item[data-item="' + key + '"]').click();
+    var input = pickerFor(key).querySelector('input[type="file"]');
+    var dt = new DataTransfer();
+    dt.items.add(new File(["not,a,grid\\n"], "notes.txt", { type: "text/csv" }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    setTimeout(function () {
+      var t = document.querySelector("#toast");
+      out.toast = t ? t.textContent : "";
+      out.filesAfter = Object.keys(SIM.app.getProject().files).filter(
+        function (n) { return /notes/.test(n); });
+      publish();
+    }, 300);
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    if (!ready() && ++tries < 200) return;
+    clearInterval(timer);
+    try { run(); } catch (e) { out.error = String((e && e.stack) || e); publish(); }
+  }, 50);
+})();
+</script>
+"""
+
+
+@pytest.fixture(scope="module")
+def item_csv_probe(tmp_path_factory):
+    """One headless run of the real built page, shared by the tests below -
+    booting it costs a few seconds and parsing the starter CSVs costs more,
+    and both tests ask about the same page."""
+    tmp = tmp_path_factory.mktemp("itemcsv")
+    _require_browser(tmp)
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    page = tmp / "per-item-add-csv.html"
+    page.write_text(DIST.read_text(encoding="utf-8")
+                    .replace("</body>", _ITEM_CSV_PROBE + "</body>", 1), encoding="utf-8")
+    url = "file:///" + str(page.resolve()).replace("\\", "/")
+    dom = _dump_dom(url, tmp)
+    match = re.search(r'<pre id="itemcsv-out">(.*?)</pre>', dom or "", re.S)
+    assert match, f"no #itemcsv-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    data = json.loads(unescape(match.group(1)))
+    assert data["error"] is None, data["error"]
+    return data
+
+
+def test_every_item_offers_its_own_add_csv_button(item_csv_probe):
+    data = item_csv_probe
+    assert len(data["items"]) == len(SHOW_LABELS), \
+        f"expected one card per starter garment, got {len(data['items'])}"
+    for entry in data["items"]:
+        assert entry["label"] == "Add CSV", f"{entry['item']}: {entry!r}"
+        assert entry["inCard"], f"{entry['item']}: the button is not in its DESIGNS OF THIS ITEM card"
+        assert entry["multiple"], f"{entry['item']}: the picker takes only one file"
+        assert entry["accept"] == ".csv", f"{entry['item']}: {entry['accept']!r}"
+        # Keyboard: the <label> is the button (its input is display:none), so
+        # it has to be in the tab order - designer-app.js gives it Enter and
+        # Space to match.
+        assert entry["tabindex"] == "0", f"{entry['item']}: the button cannot be tabbed to"
+    assert data["global"], 'the header\'s own "Add CSV" is gone'
+
+
+def test_a_csv_that_cannot_belong_to_the_item_is_refused(item_csv_probe):
+    data = item_csv_probe
+    seam = data["seam"]
+    assert [r["name"] for r in seam["refused"]] == ["notes.txt"]
+    assert "_map.csv" in seam["refused"][0]["error"] and "_grid.csv" in seam["refused"][0]["error"]
+    # Nothing was saved under that name, by either route.
+    assert data["filesAfter"] == []
+    # ...and the designer is told, naming the file.
+    assert "refused" in data["toast"] and "notes.txt" in data["toast"], data["toast"]
+
+    # A design CSV named after a DIFFERENT garment is not refused - it is
+    # renamed onto this item, exactly as the Conductor's own per-item upload
+    # does (index.html's uploadOwn()) - and the toast names both names.
+    key = seam["item"]
+    assert key != "AZ271SB2303", "the probe picked the garment the file is already named after"
+    assert seam["renamed"] == [{"from": "AZ271SB2303_color_probeA_grid.csv",
+                                "to": key + "_color_probeA_grid.csv"}]
+    assert seam["saved"] == [key + "_color_probeA_grid.csv"]
+    assert key + "_color_probeA_grid.csv" in seam["designsAfter"]
+    assert not [n for n in seam["designsAfter"] if n.startswith("AZ271SB2303")], \
+        "the file landed on the garment it was named after, not the one it was added to"
+
+    # An item that is not in the project takes nothing.
+    assert seam["unknown"]["saved"] == [] and seam["unknown"]["renamed"] == []
+    assert len(seam["unknown"]["refused"]) == 1

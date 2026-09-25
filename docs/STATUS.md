@@ -18,6 +18,25 @@
 
 ## 2. 直近で完成したもの
 
+**シミュレーター: 1 着ごとの「Add CSV」と、本番と同じ LOOK・型番の初期データ
+(2026-09-25、依頼者の要望から)**
+
+- **Designs タブの「DESIGNS OF THIS ITEM」に「Add CSV」**。本番の Conductor
+  (`conductor/web/index.html` の `uploadOwn()`)と同じ動き ― 選んだ CSV は、別の型番の
+  名前が付いていてもその 1 着の名前で保存され(トーストが旧名と新名を両方出す)、
+  その 1 着だけのものになる。`*_map.csv` でも `*_color_名前_grid.csv` でもない名前は、
+  ファイル名を挙げて拒否する。ヘッダーの「Add CSV」とフォルダのドロップはそのまま。
+  `.filebtn`(中の `input` が `display:none` の `<label>`)は `tabindex`/`role="button"` を
+  持ち、Enter と Space で開く(Timeline の Space=再生より先に捕まえる)
+- **初期データのラベルが本番 `show.json` と一致**。`tools/make_starter.py` の
+  `STARTER_LABELS` に LOOK 番号と型番を明記(`AZ271SD1305` → `LOOK 23 · AZ271SD1305`、
+  LOOK 26 は Tops と Skirt の 2 着、バッグ 3 種は LOOK 番号を持たず型番だけで出る)。
+  今までは `model` が空で「LOOK 23」としか出ていなかった。トラック名・キュー表・
+  looks 行・EDIT CUE・`SHORTEST INTERVAL PER ITEM` が型番まで出すようになり、LOOK を
+  持たない衣装は型番で名乗る(ファイル名の型番コードは出さない)
+- テスト: `tests/test_designer_build.py` に 4 件追加(ヘッドレスで 1 着ごとのボタン、
+  拒否とリネーム、初期ラベル表の一致、ラベル漏れなし)。全 755 件通過
+
 **「Write to units…」に **WHICH LOOKs** - 書き込むルックを選ぶ(2026-09-25、依頼者の要望から)**
 
 依頼者の要望:「WRITE TO UNITS のポップアップウィンドウ内で、書き込むルックを選択できる

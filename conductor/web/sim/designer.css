@@ -37,6 +37,10 @@ button:disabled { opacity: .4; cursor: default; border-color: var(--line); }
 #tp-stop { background: var(--err); border-color: var(--err); color: var(--bg); font-weight: 600; }
 #tp-play:hover, #tp-stop:hover { filter: brightness(1.12); color: var(--bg); }
 .filebtn input { display: none; }
+/* The input inside is display:none, so the <label> itself carries tabindex
+   and has to show a focus ring of its own - without this the keyboard user
+   has no idea where they are. */
+.filebtn:focus-visible { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 1px; }
 .tabs { display: flex; gap: 0; }
 .tabs button { border-radius: 0; margin-left: -1px; padding: 5px 16px; }
 .tabs button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
