@@ -277,6 +277,12 @@ def test_the_guard_stop_is_sized_from_the_cues_own_refresh_and_span():
     assert runner._guard_for(cue) == 42.0
     cue.span_s, cue.refresh_s = 0.0, 1.0            # never EARLIER than before
     assert runner._guard_for(cue) == 12.0
+    # ...and never so late that the guard is effectively off: nothing
+    # real gets near GUARD_MAX_S (120 s span over a 60 s refresh is the
+    # honest worst case), but a wild number must not silently hand the
+    # wall back to the factory autoplay.
+    cue.span_s, cue.refresh_s = 5000.0, 60.0
+    assert runner._guard_for(cue) == 200.0
 
 
 def test_a_swept_cue_holds_the_guard_stop_off_until_the_sweep_is_over():
@@ -310,10 +316,12 @@ def test_junk_span_and_refresh_are_read_as_not_said():
     """Advisory numbers: a cue is never refused over one, and the guard
     falls back to the flat delay rather than to something nonsensical."""
     session, runner, bus = make_session()
-    session.prepare("c1", {1: array(1)}, span_s="soon", refresh_s=-4)
-    assert wait_until(lambda: session.phase == READY)
-    assert session.span_s is None and session.refresh_s is None
-    assert runner._guard_for(session) == runner.guard_delay
+    for span, refresh in (("soon", -4), (float("nan"), {}),
+                          (float("inf"), float("inf"))):
+        session.prepare("c1", {1: array(1)}, span_s=span, refresh_s=refresh)
+        assert wait_until(lambda: session.phase == READY)
+        assert session.span_s is None and session.refresh_s is None
+        assert runner._guard_for(session) == runner.guard_delay
     runner.stop()
 
 

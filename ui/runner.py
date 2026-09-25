@@ -108,6 +108,12 @@ OLD_WORKER_PATIENCE_S = 12.0
 # over the picture's completion is kept at whatever guard_delay has over
 # this refresh, so a test that compresses guard_delay compresses it too.
 GUARD_REFRESH_S = 7.0
+# ...and a ceiling on what a cue can talk the guard into. The honest
+# worst case is sequence.SPAN_HARD_MAX_S (120 s) over a 60 s refresh
+# (timeline.REFRESH_RANGE_S), so nothing real reaches this; it is here
+# so a show file or a /prepare body with a wild number cannot switch the
+# guard off altogether and hand the wall back to the factory autoplay.
+GUARD_MAX_S = 200.0
 
 
 def device_token(port: str):
@@ -1113,7 +1119,8 @@ class DemoRunner:
             refresh_s = GUARD_REFRESH_S
         margin = max(0.0, self.guard_delay - GUARD_REFRESH_S)
         return max(self.guard_delay,
-                   float(refresh_s) + float(span_s) + margin)
+                   min(GUARD_MAX_S,
+                       float(refresh_s) + float(span_s) + margin))
 
     def _fire_at(self, bus, groups: int, session, cue_id: str, at: float,
                  slot: int, dev_type: int) -> bool:

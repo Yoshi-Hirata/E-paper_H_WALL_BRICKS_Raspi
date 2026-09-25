@@ -49,6 +49,7 @@ step - timesyncd is active on the units whenever they see the internet
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 
@@ -89,17 +90,20 @@ class RemoteError(ValueError):
 
 
 def _seconds(value) -> "float | None":
-    """A non-negative number of seconds, or None for "not said". Junk
-    (a string, a dict, NaN, a negative) reads as not said rather than
-    raising: these are advisory - the guard STOP's timing, nothing the
-    picture depends on - and a cue must never be refused over one."""
+    """A finite, non-negative number of seconds, or None for "not said".
+    Junk (a string, a dict, NaN, an infinity, a negative) reads as not
+    said rather than raising: these are advisory - the guard STOP's
+    timing, nothing the picture depends on - and a cue must never be
+    refused over one. Infinity is not merely junk here: a guard that is
+    never owed is the factory autoplay back on the wall, so it has to
+    fall back to the flat delay like anything else unusable."""
     if value is None:
         return None
     try:
         seconds = float(value)
     except (TypeError, ValueError):
         return None
-    if seconds != seconds or seconds < 0.0:     # NaN or negative
+    if not math.isfinite(seconds) or seconds < 0.0:
         return None
     return seconds
 
