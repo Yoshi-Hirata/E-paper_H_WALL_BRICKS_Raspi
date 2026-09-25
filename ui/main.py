@@ -369,9 +369,15 @@ def main() -> int:
         else:
             # A unit that restarted in the middle of a show rejoins it.
             player.restore()
-            if player.running:
-                args.no_standby = True      # not white: the show's picture
-                print("show restored after restart", flush=True)
+            if player.running or player.restored_running:
+                # Not white. The garment is holding a picture of this
+                # show, and the standby paint would flash it white for
+                # the length of a probing sweep (16 s with six absent
+                # boards, radxa-01 2026-09-25) in the middle of the
+                # show. `restored_running` covers the case where the T0
+                # still needs the PC: the picture stays either way.
+                args.no_standby = True
+                print("show restored after restart, no standby", flush=True)
 
     display_kwargs = {"directory": args.frames} if args.display in ("png", "auto") else {}
     with make_display(args.display, **display_kwargs) as display, \

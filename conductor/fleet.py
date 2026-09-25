@@ -63,6 +63,44 @@ DEMO_SAVE_TIMEOUT_S = TIMEOUT_S * 4    # /demo/save includes an eMMC write
 # too and resolves well under a microsecond everywhere.
 pc_clock = time.perf_counter
 
+# "This unit's status has no `burn` key at all" - an agent older than the
+# pre-burn design - as opposed to a `burn` of None, which a current agent
+# uses to say "nothing is written" (see Fleet._burn_problems).
+_NO_BURN_KEY = object()
+# How many board numbers a "not written" message names before it rounds
+# the rest up as "+k more" (the page uses the same three).
+_NAME_BOARDS = 3
+
+
+def pictures_not_written(burn: dict) -> str:
+    """"10 of 12 pictures not written on boards 1, 2, 3" for a burn that
+    failed on live boards.
+
+    The unit counts PAIRS - one picture per (board, slot) - and a wall
+    of 12 boards x 18 cues loses 18 pictures when one board refuses, not
+    "1 board". Saying "3 board(s) not written" made a whole garment's
+    worth of missing pictures sound like a footnote (review round 2,
+    2026-09-25).
+
+    A whole garment that never answered is the unit's own sentence
+    instead ("none of its 16 boards answered"): a feed switched off is
+    an ordinary thing on a show day, and listing sixteen boards would
+    bury it."""
+    if burn.get("reason"):
+        return str(burn["reason"])
+    failed = [pair for pair in (burn.get("failed") or [])
+              if isinstance(pair, (list, tuple)) and pair]
+    boards = sorted({pair[0] for pair in failed})
+    total = burn.get("total")
+    count = len(failed) or len(boards)
+    named = ", ".join(str(b) for b in boards[:_NAME_BOARDS])
+    if len(boards) > _NAME_BOARDS:
+        named += f" +{len(boards) - _NAME_BOARDS} more"
+    return (f"{count} of {total if isinstance(total, int) else '?'} "
+            f"pictures not written"
+            + (f" on board{'' if len(boards) == 1 else 's'} {named}"
+               if boards else ""))
+
 
 def default_units() -> "dict[str, str]":
     """radxa-NN -> 192.168.51.(100+NN), the addresses firstboot.sh gives."""
@@ -274,6 +312,9 @@ class Fleet:
         # moment it is not running/holding any more), never every poll.
         self._demo_told: "set[str]" = set()
         self._corrected: "dict[str, float]" = {}
+        # Per unit, the last supervision command it refused and why -
+        # so a standing refusal is written down once, not every retry.
+        self._refused: "dict[str, tuple[str, str]]" = {}
         self.corrections: "list[str]" = []
 
     # ---- polling ----
@@ -314,13 +355,17 @@ class Fleet:
         duration = self.show_duration()
         # The summary line is purely informational (unlike the strict,
         # id-matched `_burn()` that gates START below): any unit currently
-        # reporting a burn dict at all counts towards `total`, whichever
-        # show it is about - so a unit still catching up to a brand new
-        # upload is not silently left out of the denominator.
+        # saying anything about a burn at all counts towards `total`,
+        # whichever show it is about - so a unit still catching up to a
+        # brand new upload is not silently left out of the denominator,
+        # and neither is one whose pictures are NOT written (burn null,
+        # "cancelled", "none"): those count against `burned`.
         reporting = [self._raw_burn(name) for name in self.shows]
-        reporting = [b for b in reporting if b is not None]
-        burned = sum(1 for b in reporting if b.get("state") == "burned")
-        return {"units": [link.snapshot() for link in self.links.values()],
+        reporting = [b for b in reporting if b is not _NO_BURN_KEY]
+        burned = sum(1 for b in reporting
+                     if isinstance(b, dict) and b.get("state") == "burned")
+        return {"units": [self._unit_snapshot(link)
+                          for link in self.links.values()],
                 "last_fire": self.last_fire, "run": run,
                 "shows": {unit: {"id": show["id"], "cues": len(show["cues"])}
                           for unit, show in self.shows.items()},
@@ -329,20 +374,31 @@ class Fleet:
                 "show_duration": duration if self.shows else None,
                 "burn": {"burned": burned, "total": len(reporting)}}
 
-    def _raw_burn(self, name: str) -> "dict | None":
+    def _unit_snapshot(self, link) -> dict:
+        """The unit's tile, plus the last thing it refused this
+        conductor's supervision ("run refused: still writing 12/48").
+        The corrections log scrolls and is shared by ten units; the tile
+        is where the operator looks when THAT unit is the one holding
+        the show up (review round 2, 2026-09-25)."""
+        refused = self._refused.get(link.name)
+        return dict(link.snapshot(),
+                    refused=None if refused is None
+                    else f"{refused[0]} refused: {refused[1]}")
+
+    def _raw_burn(self, name: str):
         """Whatever this unit currently reports as `status.show.burn`,
         regardless of which show it is about - for the informational
         summary in snapshot() only; START gating uses the stricter,
-        id-matched `_burn()` below."""
+        id-matched `_burn()` below. `_NO_BURN_KEY` when the unit says
+        nothing about burning at all (an older agent, or no show)."""
         link = self.links.get(name)
         if link is None:
-            return None
+            return _NO_BURN_KEY
         show = (link.status or {}).get("show")
         show = show if isinstance(show, dict) else {}
-        burn = show.get("burn")
-        return burn if isinstance(burn, dict) else None
+        return show.get("burn") if "burn" in show else _NO_BURN_KEY
 
-    def _burn(self, name: str) -> "tuple[dict, dict] | None":
+    def _burn(self, name: str) -> "tuple[dict, object] | None":
         """(the unit's own `status.show`, its `.burn`) for a unit that is
         online AND currently holds the show THIS conductor uploaded under
         `name` - `None` for anything else (offline, never polled, or
@@ -350,9 +406,13 @@ class Fleet:
         report is never mistaken for this show's own (found in review:
         an offline unit's last-known "burned", or a unit still showing a
         PREVIOUS upload's "burned", must never wave START through).
-        `.burn` itself may then still be `None` - an older agent that
-        says nothing about burning at all, which start_show() must not
-        hold up either."""
+
+        `.burn` is then one of three things `_burn_problems` tells apart:
+        `_NO_BURN_KEY` (the unit's status has no "burn" key at all - an
+        older agent that says nothing about burning, which start_show()
+        must not hold up), a dict with a "state", or `None`/junk (a NEW
+        agent that DOES report burns saying "nothing is written" - a
+        blocker, see the review's F1)."""
         link = self.links.get(name)
         if link is None or not link.online:
             return None
@@ -361,14 +421,23 @@ class Fleet:
         expected = (self.shows.get(name) or {}).get("id")
         if expected is None or show.get("id") != expected:
             return None
-        return show, show.get("burn")
+        return show, (show.get("burn") if "burn" in show else _NO_BURN_KEY)
 
     def _burn_problems(self, names, force: bool = False) -> "list[str]":
-        """One message per unit (of `names`) START must wait on: offline
-        or not yet holding this show (always blocking), still burning or
-        playing its own demo while burning (always blocking), or failed
-        to burn some boards (blocking unless `force` - the operator may
-        choose to start anyway, missing boards and all)."""
+        """One message per unit (of `names`) START/PRESET must wait on:
+        offline or not yet holding this show (always blocking), still
+        burning or playing its own demo while burning (always blocking),
+        pictures not written at all - a burn cancelled by STOP, lost to a
+        unit restart, never started, or a state this conductor does not
+        know (always blocking: Upload again), or failed to burn some
+        boards (blocking unless `force` - the operator may choose to go
+        on anyway, missing boards and all; the unit itself still refuses
+        a `force` over a LIVE board that would not take the write).
+
+        Unit-side contract (ui/showplay.py, 2026-09-25): a new agent
+        always sends a "burn" dict for a loaded show, state one of
+        "burning" | "burned" | "failed" | "cancelled" | "none"; an old
+        agent has no "burn" key at all."""
         problems = []
         for name in names:
             found = self._burn(name)
@@ -380,8 +449,11 @@ class Fleet:
                     problems.append(f"{name}: has not taken this show yet")
                 continue
             show, burn = found
-            if not isinstance(burn, dict):
+            if burn is _NO_BURN_KEY:
                 continue                    # older agent: not held up
+            if not isinstance(burn, dict):
+                problems.append(f"{name}: pictures not written - Upload again")
+                continue
             state = burn.get("state")
             done, total = burn.get("done", 0), burn.get("total", "?")
             if state == "burning":
@@ -390,14 +462,24 @@ class Fleet:
                                     f"({done}/{total}) - wait or STOP it")
                 else:
                     problems.append(f"{name}: still writing {done}/{total}")
-            elif state == "failed" and not force:
-                failed = burn.get("failed") or []
-                boards = sorted({pair[0] for pair in failed
-                                if isinstance(pair, (list, tuple)) and pair})
+            elif state == "failed":
+                if force:
+                    continue
+                problems.append(f"{name}: {pictures_not_written(burn)}")
+            elif state == "cancelled":
+                # The unit says WHY it gave up (no boards answering, the
+                # port taken, the bus busy); a plain STOP needs no reason.
+                why = burn.get("reason")
                 problems.append(
-                    f"{name}: {len(boards) or len(failed)} board(s) not "
-                    f"written" + (f" ({', '.join(map(str, boards))})"
-                                 if boards else ""))
+                    f"{name}: pictures not written "
+                    f"(cancelled{': ' + str(why) if why else ''})"
+                    " - Upload again")
+            elif state == "none":
+                problems.append(f"{name}: pictures not written since it "
+                                "restarted - Upload again")
+            elif state != "burned":
+                problems.append(f"{name}: pictures not written ({state}) "
+                                "- Upload again")
         return problems
 
     def show_duration(self) -> float:
@@ -408,10 +490,12 @@ class Fleet:
 
     # ---- the show ----
 
-    def upload(self, shows: "dict[str, dict]") -> "dict[str, dict]":
+    def upload(self, shows: "dict[str, dict]",
+               force: bool = False) -> "dict[str, dict]":
         def action(link):
-            if self._playing_demo(link):
-                raise RuntimeError("playing a demo - press STOP first")
+            excuse = self._demo_excuse(link)
+            if excuse:
+                raise RuntimeError(excuse)
             status = link.post("/show/load", shows[link.name])
             return {"show": (status.get("show") or {}).get("id")}
         results = self._each(list(shows), action)
@@ -420,6 +504,14 @@ class Fleet:
         # the old one may no longer even be inside it (found in review).
         with self._run_lock:
             self.start_at = 0.0
+            if force and self.run is not None:
+                # The operator has just asked, under a running show, for
+                # the pictures to be written again (the page's confirm) -
+                # to rescue a unit that lost them. If that unit's re-burn
+                # then fails on a live board, supervision must still put
+                # it BACK INTO the show rather than refuse it and leave
+                # it dark for the rest of the night (R4, review round 3).
+                self.run["force"] = True
         return results
 
     # ---- the standalone demo: a named copy of the show, in a unit's own
@@ -470,13 +562,41 @@ class Fleet:
         return self._each(list(self.links), action)
 
     @staticmethod
-    def _playing_demo(link: "UnitLink") -> bool:
+    def _burning_demo(unit: dict) -> bool:
+        """A unit still writing the pictures of its own standalone demo
+        (KEY1 on a demo row burns first, then runs - state "loaded" with
+        `demo` set while the burn is in flight)."""
+        burn = unit.get("burn")
+        return (bool(unit.get("demo")) and unit.get("state") == "loaded"
+                and isinstance(burn, dict) and burn.get("state") == "burning")
+
+    @classmethod
+    def _playing_demo(cls, link: "UnitLink") -> bool:
         """True only while this unit is actually running or holding its
-        own standalone demo - not merely one it once played and has
-        since stopped, ended, or gone back to its menu."""
+        own standalone demo - or still writing that demo's pictures, the
+        step right before it runs (found in review: a /show/load landing
+        then would cancel the burn under the operator's feet) - not
+        merely one it once played and has since stopped, ended, or gone
+        back to its menu."""
         unit = (link.status or {}).get("show") or {}
-        return bool(unit.get("demo")) and unit.get("state") in ("running",
-                                                                 "holding")
+        if not unit.get("demo"):
+            return False
+        return (unit.get("state") in ("running", "holding")
+                or cls._burning_demo(unit))
+
+    @classmethod
+    def _demo_excuse(cls, link: "UnitLink") -> "str | None":
+        """Why a command must leave this unit alone right now, in the
+        operator's words - or None when the unit is not busy with its
+        own demo."""
+        if not cls._playing_demo(link):
+            return None
+        unit = (link.status or {}).get("show") or {}
+        if cls._burning_demo(unit):
+            burn = unit["burn"]
+            return (f"writing its demo pictures ({burn.get('done', 0)}/"
+                    f"{burn.get('total', '?')}) - wait or STOP it")
+        return "playing a demo - press STOP first"
 
     def _send_run(self, names) -> "dict[str, dict]":
         with self._run_lock:
@@ -488,23 +608,29 @@ class Fleet:
             if not self.run or self.run["state"] != "running":
                 return {}
             t0 = self.run["t0"]
+            # START's `force` belongs to the whole run: the unit's own
+            # gate must wave the same failed boards through for every
+            # SEEK/RESUME/NEXT of this run too, not just the first /show/run.
+            force = bool(self.run.get("force"))
         # The polls already in flight still show the old T0; give this
         # one time to land before the supervision second-guesses it.
         for name in names:
             self._corrected[name] = self._clock()
 
         def action(link):
-            if self._playing_demo(link):
+            excuse = self._demo_excuse(link)
+            if excuse:
                 # The unit itself would refuse /show/run while its own
                 # demo runs - said here too, so START/SEEK/RESUME/NEXT
                 # never even try, and the operator sees exactly why.
-                raise RuntimeError("playing a demo - press STOP first")
+                raise RuntimeError(excuse)
             offset = link.offset
             if offset is None:
                 raise RuntimeError("clock not measured yet")
             show = self.shows.get(link.name)
             link.post("/show/run", {"t0": t0 + offset,
-                                    "show": show["id"] if show else None})
+                                    "show": show["id"] if show else None,
+                                    "force": force})
             return {}
         return self._each(list(names), action)
 
@@ -526,18 +652,23 @@ class Fleet:
             value = low
         return value
 
-    def preset(self) -> "dict[str, dict]":
+    def preset(self, force: bool = False) -> "dict[str, dict]":
         """Show the 0:00 look on every unit (`/show/preset`). Like START
         this waits for the burn: a unit still writing its pictures would
         refuse the preset anyway ("still writing the pictures: n/N"), so
         the operator gets the same per-unit list here instead of one
-        error per tile - and a unit that failed to burn is refused too
-        (PRESET has no `force`: fix or START anyway)."""
+        error per tile. `force` is START's: it waves through a unit that
+        FAILED to burn some boards (a board that is simply absent is the
+        common case - the unit tolerates that too) and is posted to the
+        unit as {"force": true}; never a unit still burning, offline, on
+        another show, or with nothing written (cancelled/none)."""
         targets = self._targets()
-        burning = self._burn_problems(targets)
-        if burning:
-            raise ValueError("; ".join(burning))
-        return self.simple(targets, "/show/preset")
+        problems = self._burn_problems(targets, force=force)
+        if problems:
+            raise ValueError("; ".join(problems))
+        body = {"force": bool(force)}
+        return self._each(targets, lambda link: {
+            "phase": link.post("/show/preset", body).get("phase")})
 
     def start_show(self, lead_s: float = DEFAULT_LEAD_S,
                    at: float = 0.0, force: bool = False) -> "dict[str, dict]":
@@ -552,8 +683,12 @@ class Fleet:
 
         `force` (also what re-starts an already-running show, see
         server.py) additionally waves through a unit that failed to burn
-        some boards - never one still burning, offline, or holding some
-        other show: see `_burn_problems`."""
+        some boards - never one still burning, offline, holding some
+        other show, or with nothing written: see `_burn_problems`. It is
+        kept on the run (`run["force"]`) and posted with every /show/run
+        of this run (_send_run, _supervise), so the unit's own gate waves
+        the same boards through; the unit still refuses a force over a
+        live board that would not take the write."""
         duration = self.show_duration()
         at = self._clamped(at, 0.0, duration)
         if not 0 <= at <= duration:
@@ -569,7 +704,7 @@ class Fleet:
         with self._run_lock:
             self._may_adopt, self._stopped = False, False
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",
-                        "held_at": None}
+                        "held_at": None, "force": bool(force)}
             self.start_at = 0.0
             self._run_gen += 1
         return self._send_run(self._targets())
@@ -704,16 +839,20 @@ class Fleet:
             # one is announced too.
             if link.name not in self._demo_told:
                 self._demo_told.add(link.name)
+                doing = ("writing its demo pictures"
+                         if self._burning_demo(unit) else "playing a demo")
                 self.corrections.append(
                     f"{time.strftime('%H:%M:%S')} {link.name}: "
-                    "playing a demo, left alone")
+                    f"{doing}, left alone")
                 del self.corrections[:-20]
             return
         self._demo_told.discard(link.name)
         why = None
         if unit.get("id") != show["id"]:
             why = "show reloaded"
-            link.post("/show/load", show)
+            if not self._post_or_refused(link, now, "/show/load", show,
+                                         "reload"):
+                return
         elif (run["state"] != "holding"
               and (unit.get("burn") or {}).get("state") == "burning"):
             # Still writing its pictures after a reload (pre-burn): a
@@ -755,7 +894,11 @@ class Fleet:
                 with self._run_lock:
                     if self._run_gen != gen:
                         return              # stale: an operator beat us to it
-                link.post("/show/run", {"t0": expected, "show": show["id"]})
+                if not self._post_or_refused(
+                        link, now, "/show/run",
+                        {"t0": expected, "show": show["id"],
+                         "force": bool(run.get("force"))}, "run"):
+                    return
                 why = why or ("started late" if unit.get("t0") is None
                               else "T0 confirmed after its restart"
                               if abs(unit["t0"] - expected) <= T0_TOLERANCE_S
@@ -765,6 +908,30 @@ class Fleet:
             self.corrections.append(
                 f"{time.strftime('%H:%M:%S')} {link.name}: {why}")
             del self.corrections[:-20]
+
+    def _post_or_refused(self, link: UnitLink, now: float, path: str,
+                         body: dict, what: str) -> bool:
+        """A supervision command to one unit. The unit is marked
+        corrected BEFORE the post, so a refusal (409 - "board 7 did not
+        take the burn", "unit is busy") is not retried on the very next
+        poll but after SUPERVISE_EVERY_S like any other correction
+        (found in review: a failed-burn unit was hammered every poll).
+        A refusal is written to the corrections once per reason - not
+        once per retry - as "<unit>: <what> refused: <reason>"; the
+        entry is forgotten when a post to that unit lands."""
+        self._corrected[link.name] = now
+        try:
+            link.post(path, body)
+        except Exception as exc:            # noqa: BLE001 - said, not raised
+            reason = str(exc) or exc.__class__.__name__
+            if self._refused.get(link.name) != (what, reason):
+                self._refused[link.name] = (what, reason)
+                self.corrections.append(f"{time.strftime('%H:%M:%S')} "
+                                        f"{link.name}: {what} refused: {reason}")
+                del self.corrections[:-20]
+            return False
+        self._refused.pop(link.name, None)
+        return True
 
     def _adopt(self) -> None:
         """A conductor restarted mid-show finds the run on the units."""
@@ -786,8 +953,15 @@ class Fleet:
             if found:
                 found.sort()
                 self._may_adopt = False
+                # "force": the show on the units is ALREADY running, so
+                # it passed the burn gate when it was started - by this
+                # conductor before it restarted, or by another PC. A
+                # supervision /show/run posting force=False into that
+                # would be refused by a unit whose burn merely failed on
+                # a board, and the unit would sit out the show it is
+                # already in (review round 2, 2026-09-25).
                 self.run = {"t0": found[len(found) // 2], "state": "running",
-                            "held_at": None, "adopted": True}
+                            "held_at": None, "adopted": True, "force": True}
                 # Whatever a SEEK remembered before this conductor came
                 # up (or restarted) is not where THIS run began - the
                 # units, not the page, decided that (found in review).

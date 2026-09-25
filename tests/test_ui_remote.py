@@ -802,9 +802,150 @@ def test_a_manual_prepare_invalidates_the_burn_cache_for_its_slot():
 def test_cancel_burn_stops_a_burn_in_progress():
     session, runner, bus = make_session()
     cues = [{"slot": n, "boards": {1: array(1)}, "delays": {}}
-            for n in range(1, 20)]
+            for n in range(1, 19)]
     session.burn(cues, dev_type=3)
     session.cancel_burn()
     time.sleep(0.2)
-    assert session.burn_status() is None or session.burn_status()["state"] != "burning"
+    # "cancelled", never back to None (review F1: None read as "nothing
+    # to worry about" to ShowPlayer's gate). The operator's own STOP
+    # needs no reason, so the key is simply absent.
+    assert session.burn_status()["state"] == "cancelled"
+    assert "reason" not in session.burn_status()
+    assert session.status()["burn"]["state"] == "cancelled"
     runner.stop()
+
+
+def test_cancel_burn_leaves_a_finished_burn_alone():
+    session, runner, bus = make_session()
+    session.burn([{"slot": 1, "boards": {1: array(1)}, "delays": {}}], dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+    session.cancel_burn()                # STOP on a running show
+    assert session.burn_status()["state"] == "burned"
+    runner.stop()
+
+
+def test_a_burn_probes_the_boards_it_has_never_heard_from_once(tmp_path):
+    # Real unit, 2026-09-25: a board that is not there costs about 1.5 s
+    # of serial timeout, and 14 of them (a 16-board garment on a wall
+    # with two boards powered) used to be paid INSIDE the first slot's
+    # writes - 22 s of "writing 0/64" followed by 0.3 s a slot. Paid
+    # once before slot 1 now, with the absent boards named in the log.
+    session, runner, bus = make_session(PickyBus({3, 4}))
+    runner.boards = [1, 2, 3, 4]
+    runner.live, runner.absent = [1, 2], set()          # 3, 4 unheard of
+    cues = [{"slot": 1, "boards": {b: array(1) for b in (1, 2, 3, 4)},
+             "delays": {}},
+            {"slot": 2, "boards": {b: array(2) for b in (1, 2, 3, 4)},
+             "delays": {}}]
+    runner._probe_burn_boards(bus, 4, {"cues": cues, "dev_type": 3,
+                                       "epoch": 1})
+    assert runner.absent == {3, 4} and runner.live == [1, 2]
+    probes = [f.dest for f in bus.requested if f.dest in (3, 4)]
+    assert probes == [3, 4]                  # one short probe each, once
+    assert any("2 boards absent (3-4) - skipped" in line
+               for line in runner.recent(10))
+    runner.stop()
+
+
+def test_a_finished_burn_logs_its_timing_and_how_many_boards_answered():
+    session, runner, bus = make_session(PickyBus({2}))
+    session.burn([{"slot": 1, "boards": {1: array(1), 2: array(1)},
+                   "delays": {}}], dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "failed")
+    log = runner.recent(20)
+    assert any("1 board absent (2) - skipped" in line for line in log)
+    assert any("burn done: 1/2 in " in line
+               and "(probe " in line
+               and "1 live boards, 1 absent: 2)" in line for line in log)
+    runner.stop()
+
+
+class SlowProbeBus(PickyBus):
+    """A board that is not there costs a serial timeout before it is
+    given up on (about 1.5 s on the real bus; a fraction of that here)."""
+
+    def __init__(self, silent, delay: float = 0.3):
+        super().__init__(silent)
+        self._delay = delay
+
+    def request(self, frame, retries=3):
+        if frame.dest in self.silent:
+            time.sleep(self._delay)
+        return super().request(frame, retries)
+
+
+@pytest.mark.parametrize("sweeps, ahead", [(1, 0.5), (3, 2.0)])
+def test_a_cue_due_during_the_probing_sweep_still_fires_on_time(sweeps, ahead):
+    # radxa-01, 2026-09-25: a unit that restarted mid-show came back,
+    # fired the cue it owed at once - and then the start-up probe of six
+    # absent boards (15 s) sat on the NEXT cue, which went out 4 s late.
+    # A broadcast trigger needs no board probed, so the sweep waits it
+    # out and sends it first.
+    # sweeps=3 puts the cue in the GAP between two sweeps, which used to
+    # be a flat sleep (R2, review round 3).
+    session, runner, bus = make_session(SlowProbeBus(set(range(3, 9))),
+                                        boards=list(range(1, 9)),
+                                        probe_sweeps=sweeps,
+                                        probe_sweep_delay=0.6)
+    at = time.monotonic() + ahead         # due in the middle of the probing
+    session.arm("c1", 2)                  # already burned into slot 2
+    session.fire("c1", at)
+    assert wait_until(lambda: session.phase == FIRED, timeout=12)
+    assert abs(session.fired_at - at) < 0.05
+    shows = [f for f in bus.sent if f.cmd == SHOW]
+    assert [f.data[0] for f in shows] == [2]
+    # ...and the probing finished afterwards, as it always would.
+    assert wait_until(lambda: runner.absent == set(range(3, 9)), timeout=12)
+    assert runner.live == [1, 2]
+    runner.stop()
+
+
+class _SlowBurnBus(FakeBus):
+    def request(self, frame, retries=3):
+        if frame.cmd == SAVE:
+            time.sleep(0.05)
+        return super().request(frame, retries)
+
+
+def test_a_worker_stopped_mid_burn_cancels_the_burn_with_its_reason():
+    # Review F4: the worker used to return on _stop with the state left
+    # at "burning" for ever. Review round 2: and then with "failed" over
+    # pairs nobody ever tried - the PC offered a force this unit refuses.
+    session, runner, bus = make_session(_SlowBurnBus())
+    cues = [{"slot": n, "boards": {1: array(n)}, "delays": {}}
+            for n in range(1, 19)]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("done", 0) > 0)
+    runner.stop()                        # KEY2, KEY1 on a pattern, shutdown
+    status, complete = session.burn_record()
+    assert status["state"] == "cancelled" and not complete
+    assert status["reason"] == "interrupted: the port was taken"
+    assert status["done"] < status["total"] == 18
+    assert any("burn interrupted" in line for line in runner.recent(20))
+
+
+def test_a_burn_queued_while_the_worker_is_stopping_is_cancelled_not_stuck():
+    # runner.stop() waits for the worker to leave the bus; a burn() that
+    # lands meanwhile still sees `runner.remote` set and only queues its
+    # job - for a worker that is on its way out and, before this fix,
+    # would never have said so.
+    import threading
+
+    session, runner, bus = make_session(_SlowBurnBus())
+    cues = [{"slot": n, "boards": {1: array(n)}, "delays": {}}
+            for n in range(1, 19)]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("done", 0) > 0)
+    stopper = threading.Thread(target=runner.stop)
+    stopper.start()                      # joins the worker mid-save
+    session.burn([{"slot": 2, "boards": {1: array(2)}, "delays": {}}], dev_type=3)
+    stopper.join(timeout=5)
+    assert wait_until(lambda: session.burn_status()["state"] != "burning")
+    status, complete = session.burn_record()
+    # Nothing of it was even tried, so it is cancelled with its reason -
+    # not a "failed" listing pairs no board refused (review round 2).
+    assert status["state"] == "cancelled" and not complete
+    assert status["reason"] == "the worker was stopped first"
+    assert any("burn never started" in line for line in runner.recent(20))

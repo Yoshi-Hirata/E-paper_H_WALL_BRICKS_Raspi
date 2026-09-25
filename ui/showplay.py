@@ -2,7 +2,7 @@
 
 The PC compiles the timeline into one file per unit (conductor/showfile.py)
 and loads it before the start. Pre-burn (docs/MERIS_REPLY_3SLOT.pdf,
-2026-09-24): every cue's picture already went into its own slot (1..19)
+2026-09-24): every cue's picture already went into its own slot (1..18)
 the moment the show was load()ed - see RemoteSession.burn() - so from
 then on the only thing that ever has to arrive is T0 - "second 0 of the
 show, in your monotonic clock". The player turns every cue into a single
@@ -38,6 +38,42 @@ before acting: the PC, which watches every unit's T0, will have sent the
 exact one by then if it can reach the unit at all. A restored T0 that
 lies in the future cannot be right - nothing starts a show more than a
 minute ahead - and is not run on.
+
+The burn is a property of the LOADED SHOW, not of the session (review
+finding F1, 2026-09-25): status()["burn"] is never None for a loaded
+show, and its "state" is one of
+
+    "burning"    the pictures are being written now (done/total)
+    "burned"     every picture is in its slot - run()/preset() go ahead
+    "failed"     the burn walked its whole list and some pairs are not
+                 written (failed = [[board, slot], ...]): a board absent
+                 at the time is a known gap and passes; a live board
+                 that refused is refused back ("did not take the burn")
+                 unless run() or preset() is given force=True. A garment
+                 with no power at all lands here too, every pair absent,
+                 with "reason": "none of its 16 boards answered" - so
+                 one dark unit never holds the other nine out of the
+                 show (2026-09-25)
+    "cancelled"  the burn never walked its whole list, so nothing says
+                 what is in which slot: STOP, the port taken by a local
+                 pattern, no serial port, a busy bus, a setup cut short.
+                 "reason" carries which of those (absent for the
+                 operator's own STOP) - Upload again, and force does
+                 NOT pass it
+    "none"       nothing burned for THIS show since the unit started (a
+                 restart after Upload, or a burn that never began) -
+                 Upload again
+
+Two more keys appear only when they apply: "reason" (above) and
+"record": "unsaved: <err>" - the burn finished but the disk would not
+take the record, so a restart will come back "none" (the PC's tile says
+so; the write is retried on the next load(), not on every poll).
+
+A finished burn is recorded on disk (BURN_FILE, beside show-run.json)
+and restore() reads it back only when it names the restored show; the
+record is removed by load() BEFORE the new show file is written, so a
+restart in the middle of a burn - even of the very same show - can
+never come back as "burned".
 """
 
 from __future__ import annotations
@@ -58,18 +94,19 @@ SHOW_SLOT_MIN, SHOW_SLOT_MAX = 1, DEFAULT_SLOT - 1
 # Pre-burn (docs/MERIS_REPLY_3SLOT.pdf, 2026-09-24): every cue's picture is
 # written into its own slot at /show/load time (RemoteSession.burn()), so
 # RUNNING a show is triggers only - a broadcast "show slot N", nothing to
-# write. SAVE_S_PER_BOARD/PREP_MARGIN_S/SETUP_S/SETUP_S_PER_BOARD stay as
-# constructor knobs (existing callers pass them) but no longer drive
-# _plan()'s timing, which needs no lead time for a trigger.
+# write. SAVE_S_PER_BOARD is what one board's 0x13 costs over the 9600 bps
+# relay and CLEAR_S_PER_BOARD what the 0x25 beside it costs on a FIRST
+# burn (review finding F5: every (board, slot) gets its pipeline cleared
+# or its table written once) - together the anchor of the burn estimate
+# the docs quote: 36 boards x 10 cues = 360 pictures ~ 112 s, x 18 cues
+# ~ 195 s, and the same show again ~ 0 s (nothing is written twice).
+# tests/test_showplay.py times a fake burn of exactly that size against
+# it; nothing here schedules by it any more.
 SAVE_S_PER_BOARD = 0.25    # a little over the measured 0.22 s
-PREP_MARGIN_S = 2.0
-# The first cue after the runner takes the port for remote work also
-# pays for its setup: the broadcast stop, its settle time and one probe
-# of every board. Normally the preset pays that long before START; a
-# unit rejoining mid-show pays it on its first cue.
-SETUP_S, SETUP_S_PER_BOARD = 1.0, 0.15
+CLEAR_S_PER_BOARD = 0.06   # the 0x25 / 0x1F beside it, first burn only
 RESTORE_GRACE_S = 6.0      # let the PC correct a restored T0 first
 RESTORE_AHEAD_S = 90.0     # a restored T0 further ahead than this is junk
+RESTORE_OVER_S = 60.0      # past its end by this much: that show is over
 CATCH_UP_LEAD_S = 0.3
 RETRY_AFTER_FAILED_S = 3.0
 END_SLACK_S = 30.0
@@ -77,6 +114,7 @@ END_SLACK_S = 30.0
 LOADED, RUNNING, HOLDING, STOPPED, ENDED = (
     "loaded", "running", "holding", "stopped", "ended")
 DELAY_UNIT_MS = 10        # conductor/showfile.py's DELAY_UNIT_MS (10 ms frames)
+BURN_FILE = "show-burn.json"   # {"burned": show id, "when", "state", "total", "failed"}
 
 
 def validate_show(show: dict) -> None:
@@ -128,18 +166,18 @@ def validate_show(show: dict) -> None:
 class ShowPlayer:
     def __init__(self, session, store: "Path | None" = STORE,
                  clock=time.monotonic, wall=time.time,
-                 save_s: float = SAVE_S_PER_BOARD,
-                 margin_s: float = PREP_MARGIN_S,
+                 save_s=None, margin_s=None,
                  grace_s: float = RESTORE_GRACE_S, tick_s: float = 0.2,
-                 setup_s: float = SETUP_S,
-                 setup_board_s: float = SETUP_S_PER_BOARD,
+                 setup_s=None, setup_board_s=None,
                  retry_s: float = RETRY_AFTER_FAILED_S):
+        # save_s / margin_s / setup_s / setup_board_s: the live-write
+        # design's lead-time knobs, still accepted so existing callers
+        # (ui/app.py, the tests) need not change, but nothing is timed
+        # by them any more - a trigger needs no lead (pre-burn).
         self.session = session
         self.store = Path(store) if store else None
         self._clock, self._wall = clock, wall
-        self.save_s, self.margin_s = save_s, margin_s
         self.grace_s, self.tick_s = grace_s, tick_s
-        self.setup_s, self.setup_board_s = setup_s, setup_board_s
         self.retry_s = retry_s
 
         self.show: "dict | None" = None
@@ -161,6 +199,25 @@ class ShowPlayer:
         # later is what makes `dirty` true (see _check_dirty()).
         self._ever_ok: "set[int]" = set()
         self._counted: "str | None" = None     # session key already tallied
+        # The burn belongs to a show (module docstring): the session's
+        # burn counts for the loaded show only while _burn_id names it;
+        # _burn_disk is a finished burn read back by restore() (paired by
+        # id there); _burn_saved is what is already recorded on disk.
+        self._burn_id: "str | None" = None
+        self._burn_disk: "dict | None" = None
+        self._burn_saved = None
+        # A burn record the disk would not take: carried in the burn
+        # dict ("record": "unsaved: <err>") rather than in `note`, which
+        # status() reads before the burn and run() clears, so the PC saw
+        # it a poll late or not at all (review round 2, 2026-09-25). Not
+        # retried on every poll - the next load() tries again.
+        self._burn_record_error: "str | None" = None
+        self._burn_none_why = "(the burn never started)"
+        # restore() found this unit in the middle of a show: ui/main.py
+        # must not paint the standby white over the picture the garment
+        # is still holding (real unit, 2026-09-25 - 16 s of probing and
+        # then WHITE, mid-show, before the show came back).
+        self.restored_running = False
         self._retry_at = 0.0
         self._not_before = 0.0
         # Bumped by every command. _send() runs without the lock (it may
@@ -179,6 +236,10 @@ class ShowPlayer:
 
     def load(self, show: dict, demo: bool = False, name: str = "") -> None:
         validate_show(show)
+        if self.session.busy():
+            # Refused before anything changes: the previous show (and its
+            # burn state) stays exactly as it was.
+            raise RemoteError("unit is busy (firmware update, scan or reboot)")
         with self._lock:
             self._epoch += 1
             # A fresh run_no here too, not just in run()'s own "start from
@@ -194,6 +255,17 @@ class ShowPlayer:
             # to back on a fast bus, 2026-09-24).
             self._run_no += 1
             self._disarm()
+            # The burn state follows the show: until burn() below has
+            # started one for THIS show, the session's burn (the previous
+            # show's "burned", say) must not read as this show's - so the
+            # pairing is broken first, and the record on disk goes BEFORE
+            # the new show file is written, so a restart in the middle of
+            # the burn (even of the same show id) comes back "none", never
+            # "burned" (review finding F1, 2026-09-25).
+            self._burn_id, self._burn_disk, self._burn_saved = None, None, None
+            self._burn_record_error = None       # one more try, this show
+            self._burn_none_why = "(the burn never started)"
+            self._forget_burn_record()
             self.show = show
             self.is_demo = bool(demo)
             # The name it was written under (ui/demos.py), not show["name"]
@@ -207,8 +279,13 @@ class ShowPlayer:
         # Burn every cue into its own slot now, ahead of the show itself -
         # RUNNING sends only a trigger per cue, never a write (see the
         # module docstring and ui/remote.py's RemoteSession.burn()). Runs
-        # on the runner's worker; status()["burn"] is the progress.
+        # on the runner's worker; status()["burn"] is the progress. If
+        # this raises (the unit went busy just now) the new show stays
+        # loaded with burn "none" - never paired with an older burn.
         self.session.burn(self._burn_items(show), int(show.get("dev_type", 3)))
+        with self._lock:
+            if self.show is show:
+                self._burn_id = show["id"]
         self._wake.set()
 
     @staticmethod
@@ -224,7 +301,12 @@ class ShowPlayer:
                           for a, h in (cue.get("delays") or {}).items()}}
                for cue in show["cues"]]
 
-    def run(self, t0: float, show_id: "str | None" = None) -> None:
+    def run(self, t0: float, show_id: "str | None" = None,
+            force: bool = False) -> None:
+        """`force`: the operator's "START anyway" - passes a burn that
+        FAILED on a live board (the picture is missing there and they
+        know it); never a burn still in progress, cancelled, or one
+        this unit has no record of (see _burn_gate())."""
         with self._lock:
             if self.show is None:
                 raise RemoteError("no show loaded")
@@ -234,7 +316,7 @@ class ShowPlayer:
             if self.session.busy():
                 raise RemoteError("unit is busy (firmware update, scan "
                                   "or reboot)")
-            self._burn_gate()
+            self._burn_gate(force)
             self._epoch += 1
             self.t0, self.synced = float(t0), True
             self.state, self.note = RUNNING, ""
@@ -269,11 +351,12 @@ class ShowPlayer:
             self._persist()
         self._wake.set()
 
-    def preset(self) -> None:
+    def preset(self, force: bool = False) -> None:
         """Put the first cue's picture up now, before the start.
 
         Through the player rather than as a loose cue, so that it knows
         the preset is on the garment and START does not repaint it.
+        `force` as in run().
         """
         with self._lock:
             if self.show is None:
@@ -283,7 +366,7 @@ class ShowPlayer:
             if self.session.busy():
                 raise RemoteError("unit is busy (firmware update, scan "
                                   "or reboot)")
-            self._burn_gate()
+            self._burn_gate(force)
             self._epoch += 1
             self._run_no += 1
             show, first = self.show, self.show["cues"][0]
@@ -296,24 +379,89 @@ class ShowPlayer:
         self._send(show, first, fire_at, epoch)   # may take the port
         self._wake.set()
 
-    def _burn_gate(self) -> None:
-        """Refuse to run/preset while the show is not safely burned -
-        called with the lock held."""
-        burn = self.session.burn_status()
-        if burn is not None and burn["state"] == "burning":
+    def _burn_gate(self, force: bool = False) -> None:
+        """Refuse to run/preset unless the loaded show's pictures are in
+        their slots - called with the lock held. Only "burned" passes
+        outright; "failed" passes when every board involved is absent
+        (a known gap - it never gets a picture anyway), or with `force`
+        when a LIVE board refused the write (the operator's "START
+        anyway"). `force` never passes "burning", "cancelled", "none",
+        or a burn the bus gave up on part way (nothing says what was
+        never reached)."""
+        burn, complete = self._burn_record_locked()
+        state = burn["state"]
+        if state == "burned":
+            return
+        if state == "burning":
             raise RemoteError(f"still writing the pictures: "
                               f"{burn['done']}/{burn['total']}")
-        if burn is not None and burn["state"] == "failed":
-            # A board that was simply absent (dropped) never gets a
-            # picture anyway - accepted as a known gap. One that is live
-            # but still refused the write is a real problem the operator
-            # has to fix (reload) before the show can start.
-            absent = set(self.session.runner.absent)
-            stuck = sorted({b for b, s in burn["failed"] if b not in absent})
-            if stuck:
-                names = ",".join(str(b) for b in stuck)
-                raise RemoteError(f"board {names} did not take the burn - "
-                                  f"reload the show")
+        if state == "cancelled":
+            why = burn.get("reason")
+            raise RemoteError("the pictures were not written "
+                              f"(cancelled{': ' + why if why else ''}) - "
+                              "Upload again")
+        if state == "none":
+            raise RemoteError(f"pictures not written {self._burn_none_why} - "
+                              f"Upload again")
+        if state != "failed":
+            raise RemoteError(f"the pictures are not written ({state}) - "
+                              f"Upload again")
+        if not complete:
+            why = self.session.error or self.session.runner.error or "bus error"
+            raise RemoteError(f"the burn did not finish ({why}) - Upload again")
+        absent = self.session.runner.absent_snapshot()
+        stuck = sorted({b for b, s in burn["failed"] if b not in absent})
+        if stuck and not force:
+            names = ",".join(str(b) for b in stuck)
+            raise RemoteError(f"board {names} did not take the burn - "
+                              f"Upload again")
+
+    def _burn_total(self, show: dict) -> int:
+        return sum(len(cue["state"]) for cue in show["cues"])
+
+    def _burn_record_locked(self) -> "tuple[dict | None, bool]":
+        """(status()["burn"], whether that burn ran to its end) for the
+        loaded show - None only with no show loaded. A finished burn is
+        recorded on disk here, the first time it is seen (restore()
+        reads it back)."""
+        show = self.show
+        if show is None:
+            return None, False
+        live, complete = self.session.burn_record()
+        if live is not None and self._burn_id == show["id"]:
+            if complete:
+                self._persist_burn(show["id"], live)
+            live = self._fresh_reason(live)
+            if self._burn_record_error:
+                live = dict(live, record=self._burn_record_error)
+            return live, complete
+        disk = self._burn_disk
+        if disk is not None and disk["show"] == show["id"]:
+            back = {"done": disk["total"], "total": disk["total"],
+                    "failed": [list(pair) for pair in disk["failed"]],
+                    "state": disk["state"]}
+            if disk.get("reason"):
+                back["reason"] = disk["reason"]
+            return self._fresh_reason(back), True
+        return ({"done": 0, "total": self._burn_total(show), "failed": [],
+                 "state": "none"}, False)
+
+    def _fresh_reason(self, burn: dict) -> dict:
+        """"none of its 16 boards answered" stops being true the moment
+        those boards answer - the feed was switched on, they are back,
+        and they hold whatever was written before. The pairs are still
+        not written (nothing has re-burned them), but the sentence must
+        go, or the PC keeps offering "that garment keeps whatever it
+        shows" about a garment that is now awake (R5, review round 3).
+        """
+        if burn.get("state") != "failed" or not burn.get("reason"):
+            return burn
+        absent = self.session.runner.absent_snapshot()
+        if all(pair[0] in absent for pair in burn["failed"]):
+            return burn
+        burn = dict(burn)
+        burn.pop("reason")
+        return burn
 
     def hold(self) -> None:
         with self._lock:
@@ -355,6 +503,61 @@ class ShowPlayer:
         scratch.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(scratch, target)
 
+    def _persist_burn(self, show_id: str, burn: dict) -> None:
+        """Record a finished burn ("burned", or "failed" with its pairs)
+        of `show_id`, once - what restore() pairs with the show file."""
+        if self.store is None:
+            return
+        key = (show_id, burn["state"], burn.get("reason"),
+               tuple(tuple(pair) for pair in burn["failed"]))
+        if key == self._burn_saved:
+            return
+        try:
+            self.store.mkdir(parents=True, exist_ok=True)
+            self._write(BURN_FILE, {
+                "burned": show_id, "when": self._wall(),
+                "state": burn["state"], "total": burn["total"],
+                "reason": burn.get("reason"),
+                "failed": [list(pair) for pair in burn["failed"]]})
+            self._burn_saved = key
+            self._burn_record_error = None
+        except OSError as exc:
+            # Said in the burn dict, which the PC's tile shows, and not
+            # tried again until the next load(): _burn_record_locked()
+            # runs on every poll, and a full disk would have it fail
+            # (slowly) every second (review round 2, 2026-09-25).
+            self._burn_saved = key
+            self._burn_record_error = f"unsaved: {exc}"
+
+    def _forget_burn_record(self) -> None:
+        if self.store is None:
+            return
+        try:
+            (self.store / BURN_FILE).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            self.note = f"cannot clear the burn record: {exc}"
+
+    def _read_burn_record(self, show: dict) -> "dict | None":
+        """The finished burn on disk, if it names this show."""
+        try:
+            record = json.loads((self.store / BURN_FILE)
+                                .read_text(encoding="utf-8"))
+            if record.get("burned") != show["id"]:
+                return None
+            state = record.get("state", "burned")
+            if state not in ("burned", "failed"):
+                return None
+            failed = [(int(b), int(slot)) for b, slot in record.get("failed", [])]
+            if state == "failed" and not failed:
+                return None
+            return {"show": show["id"], "state": state,
+                    "total": int(record.get("total", self._burn_total(show))),
+                    "reason": record.get("reason"), "failed": failed}
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
     def _persist(self, with_show: bool = False) -> None:
         if self.store is None:
             return
@@ -390,6 +593,12 @@ class ShowPlayer:
             self.state = LOADED
             self.is_demo = bool(run.get("demo"))
             self.demo_name = run.get("demo_name", "") if self.is_demo else ""
+            # The burn state comes back only from the record that names
+            # this very show; anything else is "none" and run() refuses
+            # until the PC uploads again (restore() never re-burns).
+            self._burn_id, self._burn_saved = None, None
+            self._burn_disk = self._read_burn_record(show)
+            self._burn_none_why = "since this unit restarted"
             if run.get("show") != show.get("id"):
                 return
             if self.is_demo:
@@ -405,11 +614,36 @@ class ShowPlayer:
                 self._persist()
                 return
             t0_wall = run.get("t0_wall")
+            t0 = (None if t0_wall is None
+                  else self._clock() + (t0_wall - self._wall()))
+            # "Still on" is the same test for RUNNING and for HOLDING,
+            # and it decides whether ui/main.py skips its start-up
+            # standby: a run whose end is long past - last night's show,
+            # the Pi power-cycled this morning - is NOT mid-show, and
+            # the white standby is exactly what should happen then. This
+            # used to be set before the staleness tests, which left the
+            # wall on the finale for ever (R1, review round 3).
+            still_on = (t0 is not None and self._burn_disk is not None
+                        and self._clock() - t0 <= duration + RESTORE_OVER_S)
+            if run.get("state") == HOLDING and still_on:
+                # Held, not running: nothing is going to move that
+                # picture, and it is a picture of this show.
+                self.restored_running = True
             if run.get("state") != RUNNING or t0_wall is None:
                 return
-            t0 = self._clock() + (t0_wall - self._wall())
-            if self._clock() - t0 > duration + 60:
+            if self._burn_disk is None:
+                # RUNNING on disk but no finished burn recorded for this
+                # show (run() records one before it ever runs, so this is
+                # a crash in that window, or a disk that would not take
+                # the record): not resumed on pictures nobody vouches for.
+                self.note = ("restarted with no record of its pictures - "
+                             "waiting for the PC")
+                return
+            if not still_on:
                 return                  # that show is long over
+            # Genuinely mid-show: keep the garment as it is, even if the
+            # T0 below turns out to need the PC's help.
+            self.restored_running = True
             if t0 - self._clock() > RESTORE_AHEAD_S:
                 # No RTC: the wall clock came up behind. Running on this T0
                 # would sit out the show waiting for a start that is past.
@@ -420,6 +654,12 @@ class ShowPlayer:
             self._forget_garment()      # unknown after a restart: send state
             self.note = "restored after restart"
             self._not_before = self._clock() + self.grace_s
+            behind = [c for c in show["cues"] if c["sent"] <= self._clock() - t0]
+            cue = (behind[-1] if behind else show["cues"][0])["id"]
+            # On the unit's own log and the PC's tile: this is the line
+            # that says the white standby was skipped on purpose.
+            self.session.runner.emit(f"resumed the show after a restart: "
+                                     f"cue {cue}, no standby")
         self._wake.set()
 
     # ---- the one rule ----
@@ -435,12 +675,10 @@ class ShowPlayer:
         _loop_demo_show() add this to their own margin before their own
         run()): the pre-burn redesign needs no per-cue write-time
         estimate here any more, since nothing is written while RUNNING -
-        this is just arm()'s own small margin (see preset()). NOTE: a
-        freshly load()ed show still needs its burn to finish before
-        run() succeeds (RemoteError "still writing the pictures") -
-        ui/app.py's KEY1 flow does not yet wait for that (2026-09-24
-        pre-burn redesign left as a follow-up); this margin alone is not
-        enough for anything but a trivially small demo."""
+        this is just arm()'s own small margin (see preset()). A freshly
+        load()ed show still needs its burn to finish before run()
+        succeeds ("still writing the pictures") - ui/app.py's
+        _await_demo_burn() waits for that before it calls run()."""
         return CATCH_UP_LEAD_S
 
     def _disarm(self) -> None:
@@ -546,12 +784,22 @@ class ShowPlayer:
         flash (see the heal branch in _plan())."""
         if self.applied is None:
             return
-        joined = set(self.session.runner.live) - self._ever_ok
+        joined = sorted(set(self.session.runner.live) - self._ever_ok)
         if joined:
-            self._ever_ok |= joined
+            first_look = not self._ever_ok
+            self._ever_ok |= set(joined)
             self.dirty = True
-            self.note = (f"board {','.join(str(b) for b in sorted(joined))} "
-                        f"joined late: re-arming {self.applied}")
+            if first_look:
+                # Nothing was known about the garment yet (a restart, or
+                # a run starting from the top): every board there "joined
+                # late", which is not news and read as a fault on the
+                # tile - the re-arm still happens (R9, review round 3).
+                return
+            named = ",".join(str(b) for b in joined[:3])
+            if len(joined) > 3:
+                named += f" +{len(joined) - 3} more"
+            self.note = (f"board {named} joined late: "
+                         f"re-arming {self.applied}")
 
     def _plan(self) -> "tuple[float, tuple | None]":
         """(seconds until it is worth looking again, what to send now)."""
@@ -716,7 +964,8 @@ class ShowPlayer:
                    "demo": self.is_demo, "demo_name": self.demo_name,
                    # "writing pictures n/N" (ui/remote.py's burn()) - what
                    # the PC gates START on and the LCD/Units tile show.
-                   "burn": self.session.burn_status()}
+                   # Never None for a loaded show (module docstring).
+                   "burn": self._burn_record_locked()[0]}
             if self.t0 is not None and self.state in (RUNNING, ENDED):
                 now = self._clock() - self.t0
                 out["now"] = round(now, 2)

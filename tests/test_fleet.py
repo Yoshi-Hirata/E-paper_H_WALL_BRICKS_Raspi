@@ -341,7 +341,8 @@ def test_a_restored_unit_is_told_its_t0_even_when_it_is_close_enough():
     fleet.shows = {"radxa-02": {"id": "showA", "cues": [], "duration": 600}}
     fleet.run = {"t0": 1000.0, "state": "running", "held_at": None}
     fleet._supervise(link)
-    assert link.posted == [("/show/run", {"t0": 1005.0, "show": "showA"})]
+    assert link.posted == [("/show/run", {"t0": 1005.0, "show": "showA",
+                                          "force": False})]
     assert "confirmed" in fleet.corrections[-1]
     link.status["show"]["synced"] = True
     link.posted.clear(); fleet._corrected.clear()
@@ -370,7 +371,10 @@ def test_start_refuses_while_a_unit_failed_to_burn():
                                    "failed": [[3, 5], [7, 5]], "state": "failed"}
     fleet.links = {"radxa-05": link}
     fleet.shows = {"radxa-05": {"id": "showA", "cues": [], "duration": 600}}
-    with pytest.raises(ValueError, match=r"radxa-05: 2 board\(s\) not written \(3, 7\)"):
+    # Pairs, not boards: one board of a 12-board garment losing every
+    # cue is 18 pictures, not "1 board" (review round 2).
+    with pytest.raises(ValueError, match=r"radxa-05: 2 of 48 pictures not "
+                                         r"written on boards 3, 7"):
         fleet.start_show(lead_s=1.0)
     # `force` waves through the failed boards - but never a unit still
     # burning, offline, or holding some other show (see the tests below).
@@ -476,12 +480,368 @@ def test_preset_waits_for_the_burn_like_start_does():
     assert not any(path == "/show/preset" for path, _ in link.posted)
     link.status["show"]["burn"]["state"] = "failed"
     link.status["show"]["burn"]["failed"] = [[3, 1]]
-    with pytest.raises(ValueError, match="radxa-04: 1 board\(s\) not written"):
+    with pytest.raises(ValueError, match="radxa-04: 1 of 48 pictures not "
+                                         "written on board 3"):
         fleet.preset()
     link.status["show"]["burn"] = {"done": 48, "total": 48, "failed": [],
                                    "state": "burned"}
     fleet.preset()
     assert any(path == "/show/preset" for path, _ in link.posted)
+
+
+def test_preset_force_waves_through_a_failed_burn_and_reaches_the_unit():
+    # One absent board is the common case: its burn "failed", and the
+    # operator, asked by the page, shows the 0:00 look anyway. The unit's
+    # own gate needs to hear the same `force` (review F3).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-04", "stopped")
+    link.status["show"]["burn"] = {"done": 46, "total": 48,
+                                   "failed": [[3, 1], [3, 2]], "state": "failed"}
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="radxa-04: 2 of 48 pictures not "
+                                         "written on board 3"):
+        fleet.preset()
+    assert link.posted == []
+    results = fleet.preset(force=True)
+    assert results["radxa-04"]["ok"]
+    assert link.posted == [("/show/preset", {"force": True})]
+    # Without force the unit is told so, explicitly.
+    link.posted.clear()
+    link.status["show"]["burn"] = {"done": 48, "total": 48, "failed": [],
+                                   "state": "burned"}
+    fleet.preset()
+    assert link.posted == [("/show/preset", {"force": False})]
+
+
+def test_preset_force_never_waves_through_burning_cancelled_or_none():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-04", "stopped")
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    for burn, words in [
+            ({"done": 1, "total": 9, "failed": [], "state": "burning"},
+             "still writing 1/9"),
+            ({"done": 4, "total": 9, "failed": [], "state": "cancelled"},
+             r"pictures not written \(cancelled\) - Upload again"),
+            ({"done": 4, "total": 9, "failed": [], "state": "cancelled",
+              "reason": "no boards answering"},
+             r"pictures not written \(cancelled: no boards answering\) "
+             r"- Upload again"),
+            ({"done": 0, "total": 0, "failed": [], "state": "none"},
+             "pictures not written since it restarted - Upload again"),
+            (None, "pictures not written - Upload again")]:
+        link.status["show"]["burn"] = burn
+        with pytest.raises(ValueError, match=f"radxa-04: {words}"):
+            fleet.preset(force=True)
+        with pytest.raises(ValueError, match=f"radxa-04: {words}"):
+            fleet.start_show(lead_s=1.0, force=True)
+    assert link.posted == [] and fleet.run is None
+
+
+# ---- review F1: a burn that is not "burned" is not "no opinion" ----
+
+def test_a_new_agent_saying_burn_null_blocks_start_an_old_agent_without_the_key_does_not():
+    # `burn: null` from an agent that DOES report burns means "nothing is
+    # written" (a load that could not start its burn) - the opposite of
+    # an old agent that has no "burn" key at all, which START must not
+    # hold up. The two used to be indistinguishable (review F1).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-04", "stopped")
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    link.status["show"]["burn"] = None
+    with pytest.raises(ValueError, match="radxa-04: pictures not written - Upload again"):
+        fleet.start_show(lead_s=1.0, force=True)
+    assert fleet.run is None
+    del link.status["show"]["burn"]
+    fleet.start_show(lead_s=1.0)
+    assert fleet.run is not None
+
+
+def test_a_cancelled_or_lost_burn_blocks_start_with_its_own_words():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-04", "stopped")
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    # STOP during the burn: the slots hold the previous show's pictures.
+    link.status["show"]["burn"] = {"done": 12, "total": 48, "failed": [],
+                                   "state": "cancelled"}
+    with pytest.raises(ValueError, match=r"radxa-04: pictures not written "
+                                         r"\(cancelled\) - Upload again"):
+        fleet.start_show(lead_s=1.0, force=True)
+    # The unit restarted after the Upload: nothing says the burn finished.
+    link.status["show"]["burn"] = {"done": 0, "total": 0, "failed": [],
+                                   "state": "none"}
+    with pytest.raises(ValueError, match="radxa-04: pictures not written "
+                                         "since it restarted - Upload again"):
+        fleet.start_show(lead_s=1.0, force=True)
+    # A state this conductor does not know is not waved through either.
+    link.status["show"]["burn"] = {"state": "verifying"}
+    with pytest.raises(ValueError, match=r"pictures not written \(verifying\)"):
+        fleet.start_show(lead_s=1.0, force=True)
+    assert fleet.run is None and link.posted == []
+
+
+def test_the_snapshot_counts_a_null_cancelled_or_lost_burn_as_not_written():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    links = {}
+    for name, burn in [("radxa-01", {"done": 2, "total": 2, "failed": [],
+                                     "state": "burned"}),
+                       ("radxa-02", None),
+                       ("radxa-03", {"done": 1, "total": 2, "failed": [],
+                                     "state": "cancelled"}),
+                       ("radxa-04", {"done": 0, "total": 0, "failed": [],
+                                     "state": "none"})]:
+        links[name] = StubLink(name, "stopped")
+        links[name].status["show"]["burn"] = burn
+    old = StubLink("radxa-05", "stopped")           # no "burn" key: says nothing
+    assert "burn" not in old.status["show"]
+    links["radxa-05"] = old
+    fleet.links = links
+    fleet.shows = {n: {"id": "showA", "cues": [], "duration": 600} for n in links}
+    assert fleet.snapshot()["burn"] == {"burned": 1, "total": 4}
+
+
+def test_a_partly_failed_burn_is_counted_in_pictures_and_names_three_boards():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-04", "stopped")
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    link.status["show"]["burn"] = {
+        "done": 12, "total": 12, "state": "failed",
+        "failed": [[b, slot] for b in (1, 2, 3) for slot in (1, 2, 3)]
+        + [[9, 1]]}
+    with pytest.raises(ValueError, match="radxa-04: 10 of 12 pictures not "
+                                         r"written on boards 1, 2, 3 \+1 more"):
+        fleet.start_show(lead_s=1.0)
+    fleet.start_show(lead_s=1.0, force=True)        # the genuine "anyway"
+    assert fleet.run is not None
+
+
+def test_a_garment_that_answered_on_no_board_is_named_that_way_and_forceable():
+    # A feed switched off must not hold the other nine units out of the
+    # show: the unit reports a fully walked burn whose every pair is
+    # absent, and START says so in the unit's own words and goes ahead
+    # once the operator has answered the page's question (2026-09-25).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-07", "stopped")
+    fleet.links = {"radxa-07": link}
+    fleet.shows = {"radxa-07": {"id": "showA", "cues": [], "duration": 600}}
+    link.status["show"]["burn"] = {
+        "done": 48, "total": 48, "state": "failed",
+        "reason": "none of its 16 boards answered",
+        "failed": [[b, s] for b in range(1, 17) for s in range(1, 4)]}
+    with pytest.raises(ValueError,
+                       match="radxa-07: none of its 16 boards answered"):
+        fleet.start_show(lead_s=1.0)
+    fleet.start_show(lead_s=1.0, force=True)
+    assert fleet.run is not None and link.posted[-1][1]["force"] is True
+
+
+def test_a_forced_upload_under_a_running_show_leaves_force_on_the_run():
+    # R4 (review round 3): the rescue Upload is pointless if supervision
+    # then posts force false and the rescued unit - whose re-burn failed
+    # on a live board - is refused and never rejoins.
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-01", "stopped")
+    fleet.links = {"radxa-01": link}
+    shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.shows = dict(shows)
+    fleet.start_show(lead_s=1.0)                    # no force needed then
+    assert fleet.run["force"] is False
+    fleet.upload(shows)                             # (not under a run: no-op)
+    assert fleet.run["force"] is False
+    fleet.upload(shows, force=True)                 # the page's confirm
+    assert fleet.run["force"] is True
+
+
+def test_an_adopted_run_carries_force_so_supervision_is_not_refused():
+    # A conductor restarted mid-show builds the run from what the units
+    # are already playing: that show passed the burn gate when it was
+    # started, so its /show/run must not go back out with force false
+    # and be refused by a unit whose burn failed on a board (round 2).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-01", "running")
+    link.status["show"].update({"state": "running", "synced": True,
+                                "t0": 1000.0})
+    link.offset = 0.0
+    fleet.links = {"radxa-01": link}
+    fleet.snapshot()                                # _adopt() runs here
+    assert fleet.run and fleet.run["adopted"] and fleet.run["force"] is True
+
+
+def test_the_tile_carries_the_last_refusal_this_unit_gave_supervision():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-01", "stopped")
+    fleet.links = {"radxa-01": link}
+    tile = next(u for u in fleet.snapshot()["units"] if u["name"] == "radxa-01")
+    assert tile["refused"] is None
+    fleet._refused["radxa-01"] = ("run", "still writing 12/48")
+    tile = next(u for u in fleet.snapshot()["units"] if u["name"] == "radxa-01")
+    assert tile["refused"] == "run refused: still writing 12/48"
+
+
+# ---- review F2: START's force reaches the units, for the whole run ----
+
+def test_start_force_is_posted_to_the_unit_and_kept_for_the_run():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-05", "stopped")
+    link.status["show"]["burn"] = {"done": 40, "total": 48,
+                                   "failed": [[3, 5]], "state": "failed"}
+    fleet.links = {"radxa-05": link}
+    fleet.shows = {"radxa-05": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.start_show(lead_s=1.0, force=True)
+    assert fleet.run["force"] is True
+    assert link.posted == [("/show/run", {"t0": 1101.0 + link.offset,
+                                          "show": "showA", "force": True})]
+    # SEEK/RESUME/NEXT of this run: the unit's gate hears the same force.
+    link.posted.clear()
+    fleet.seek(30.0, lead_s=1.0)
+    assert link.posted[-1][1]["force"] is True
+    # ...and so does the supervision's own /show/run.
+    link.posted.clear()
+    fleet._corrected.clear()
+    link.status["show"].update(state="running", t0=None, synced=True)
+    fleet._supervise(link)
+    assert link.posted == [("/show/run", {"t0": fleet.run["t0"] + link.offset,
+                                          "show": "showA", "force": True})]
+
+
+def test_start_without_force_posts_force_false():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-06", "stopped")
+    link.status["show"]["burn"] = {"done": 48, "total": 48, "failed": [],
+                                   "state": "burned"}
+    fleet.links = {"radxa-06": link}
+    fleet.shows = {"radxa-06": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.start_show(lead_s=1.0)
+    assert fleet.run["force"] is False
+    assert link.posted[0][1]["force"] is False
+
+
+def test_force_never_waves_through_burning_even_at_the_unit():
+    # The fleet-level gate stops a burning unit before anything is
+    # posted: no /show/run with force ever reaches it (review F2).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = StubLink("radxa-15", "stopped")
+    link.status["show"]["burn"] = {"done": 1, "total": 10, "failed": [],
+                                   "state": "burning"}
+    fleet.links = {"radxa-15": link}
+    fleet.shows = {"radxa-15": {"id": "showA", "cues": [], "duration": 600}}
+    with pytest.raises(ValueError, match="still writing"):
+        fleet.start_show(lead_s=1.0, force=True)
+    assert link.posted == [] and fleet.run is None
+
+
+# ---- review F6: a refused supervision command is not hammered ----
+
+class RefusingRunLink(StubLink):
+    """A unit whose /show/run is refused (409 - a live board did not
+    take the burn), every time."""
+
+    def post(self, path, body, learn=True, timeout=None):
+        super().post(path, body, learn, timeout)
+        if path == "/show/run":
+            raise RuntimeError("board 7 did not take the burn - reload the show")
+        return {}
+
+
+def test_supervise_records_a_refused_run_once_and_waits_before_retrying():
+    now = [1100.0]
+    fleet = Fleet({}, clock=lambda: now[0])
+    link = RefusingRunLink("radxa-04", "stopped")
+    link.status["show"]["t0"] = None
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 1000.0, "state": "running", "held_at": None}
+    fleet._supervise(link)                          # refused - no exception out
+    assert [p for p, _ in link.posted] == ["/show/run"]
+    assert fleet.corrections[-1].endswith(
+        "radxa-04: run refused: board 7 did not take the burn - reload the show")
+    # The next polls, within SUPERVISE_EVERY_S: nothing is posted again.
+    now[0] += 0.5
+    fleet._supervise(link)
+    now[0] += 0.5
+    fleet._supervise(link)
+    assert [p for p, _ in link.posted] == ["/show/run"]
+    # After the pause it tries once more - and the standing refusal is
+    # not written down a second time.
+    said = len(fleet.corrections)
+    now[0] += SUPERVISE_EVERY_S
+    fleet._supervise(link)
+    assert [p for p, _ in link.posted] == ["/show/run", "/show/run"]
+    assert len(fleet.corrections) == said
+
+
+def test_supervise_forgets_a_refusal_once_the_unit_takes_the_command():
+    now = [1100.0]
+    fleet = Fleet({}, clock=lambda: now[0])
+    link = RefusingRunLink("radxa-04", "stopped")
+    link.status["show"]["t0"] = None
+    fleet.links = {"radxa-04": link}
+    fleet.shows = {"radxa-04": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 1000.0, "state": "running", "held_at": None}
+    fleet._supervise(link)
+    assert "run refused" in fleet.corrections[-1]
+    # The operator reloaded the show; the unit now takes /show/run.
+    link.post = lambda path, body, learn=True, timeout=None: (
+        link.posted.append((path, body)) or {})
+    now[0] += SUPERVISE_EVERY_S
+    fleet._supervise(link)
+    assert fleet.corrections[-1].endswith("radxa-04: started late")
+    assert "radxa-04" not in fleet._refused
+    # Refused again later: said again, because it is news again.
+    link.post = RefusingRunLink.post.__get__(link)
+    now[0] += SUPERVISE_EVERY_S
+    link.status["show"]["t0"] = None
+    fleet._supervise(link)
+    assert "run refused" in fleet.corrections[-1]
+
+
+# ---- review F7: a unit burning its own demo is left alone ----
+
+def burning_demo_link(name="radxa-16"):
+    link = StubLink(name, "loaded")
+    link.status["show"].update(demo=True, demo_name="PARIS", t0=None)
+    link.status["show"]["burn"] = {"done": 3, "total": 10, "failed": [],
+                                   "state": "burning"}
+    return link
+
+
+def test_a_unit_burning_its_demo_counts_as_playing_it():
+    link = burning_demo_link()
+    assert Fleet._playing_demo(link)
+    link.status["show"]["burn"]["state"] = "burned"      # burned, not started
+    assert not Fleet._playing_demo(link)
+    link.status["show"]["demo"] = False                  # the fleet's own show
+    link.status["show"]["burn"]["state"] = "burning"
+    assert not Fleet._playing_demo(link)
+
+
+def test_upload_leaves_a_unit_burning_its_demo_alone_and_says_why():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    busy, idle = burning_demo_link("radxa-16"), StubLink("radxa-17", "stopped")
+    fleet.links = {"radxa-16": busy, "radxa-17": idle}
+    shows = {n: {"id": "showB", "cues": [], "duration": 60} for n in fleet.links}
+    results = fleet.upload(shows)
+    assert results["radxa-16"] == {
+        "ok": False, "error": "writing its demo pictures (3/10) - wait or STOP it"}
+    assert results["radxa-17"]["ok"]
+    assert busy.posted == [] and idle.posted[0][0] == "/show/load"
+
+
+def test_supervise_leaves_a_unit_burning_its_demo_alone():
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    link = burning_demo_link()
+    link.status["show"]["id"] = "someOtherShow"     # would otherwise be reloaded
+    fleet.links = {"radxa-16": link}
+    fleet.shows = {"radxa-16": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.run = {"t0": 700.0, "state": "running", "held_at": None}
+    fleet._supervise(link)
+    assert link.posted == []
+    assert fleet.corrections[-1].endswith(
+        "radxa-16: writing its demo pictures, left alone")
 
 
 def test_the_snapshot_counts_how_many_units_have_burned():
@@ -516,7 +876,7 @@ def test_seek_while_running_moves_t0_for_every_unit_alike():
     for link in fleet.links.values():
         assert link.posted == [("/show/run",
                                 {"t0": fleet.run["t0"] + link.offset,
-                                 "show": "showA"})]
+                                 "show": "showA", "force": False})]
 
 
 def test_seeking_backwards_lands_the_units_inside_the_show():
@@ -560,7 +920,7 @@ def test_seek_while_holding_moves_the_position_and_stays_on_hold():
     assert results["radxa-01"]["ok"]
     assert fleet.run["t0"] == 1100.0                  # continues from where SEEK left it
     assert link.posted == [("/show/run", {"t0": 1100.0 + link.offset,
-                                          "show": "showA"})]
+                                          "show": "showA", "force": False})]
 
 
 def test_seek_without_a_run_only_says_where_start_begins():

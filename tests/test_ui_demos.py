@@ -184,6 +184,40 @@ def test_show_load_is_refused_while_a_demo_plays_not_while_a_pc_show_runs(rig):
     player.stop()
 
 
+def test_show_load_and_run_are_refused_while_a_demo_is_still_burning(tmp_path):
+    # Review F7: a demo LOADED and still writing its pictures after KEY1
+    # was not "playing" to the agent, so the PC's Upload could /show/load
+    # over it and its START could retime it.
+    session, runner, bus = make_session(_SlowSaveBus())
+    player = ShowPlayer(session, store=tmp_path / "player", tick_s=0.02)
+    demos = DemoStore(tmp_path / "demos")
+    agent = Agent(session, port=0, host="127.0.0.1", commit="abc1234",
+                  name="radxa-03", player=player, demos=demos)
+    agent.start()
+    try:
+        demo = make_show(sents=tuple(n * 0.01 for n in range(18)), duration=1)
+        player.load(demo, demo=True, name="DEMO PARIS")    # what KEY1 does
+        assert player.state == LOADED
+        assert player.status()["burn"]["state"] == "burning"
+        code, body = call(agent, "/show/load", make_show())
+        assert code == 409 and "stop it first" in body["error"]
+        code, body = call(agent, "/show/run", {"t0": time.monotonic() + 1,
+                                               "show": demo["id"]})
+        assert code == 409 and "stop it first" in body["error"]
+        code, body = call(agent, "/show/preset", {})
+        assert code == 409 and "stop it first" in body["error"]
+        assert player.is_demo and player.show["id"] == demo["id"]
+        # /show/stop is how the PC takes the unit back - then it loads.
+        code, status = call(agent, "/show/stop", {})
+        assert code == 200 and status["show"]["burn"]["state"] == "cancelled"
+        code, status = call(agent, "/show/load", make_show())
+        assert code == 200 and status["show"]["demo"] is False
+    finally:
+        agent.stop()
+        player.close()
+        runner.stop()
+
+
 def test_show_preset_and_run_are_also_refused_while_a_demo_plays(rig):
     # The demo's show id is exactly what a PC "START" would post to
     # /show/run - without this, the PC could quietly retime the demo
@@ -516,10 +550,11 @@ def test_the_demo_screen_shows_the_burn_progress(tmp_path):
         app.select(f"demo:{slug}")
         app.handle("key1")
         assert app.screen is Screen.DEMO
-        # Caught mid-burn at least once - "writing pictures n/N", not the
-        # ordinary running hint, and never yet actually running.
-        assert _pump(app, lambda: "writing pictures" in app._demo_hint(
-            app._remote_status()))
+        # Caught mid-burn at least once - "writing n/N  KEY2 cancel", not
+        # the ordinary running hint, and never yet actually running.
+        hint = lambda: app._demo_hint(app._remote_status())
+        assert _pump(app, lambda: hint().startswith("writing "))
+        assert len(hint()) <= 32               # the LCD's hint strip
         assert player.t0 is None
         assert _pump(app, lambda: player.t0 is not None)
     finally:
@@ -543,9 +578,8 @@ def test_key2_during_the_burn_cancels_it_and_returns_to_the_menu(tmp_path):
         app.handle("key2")
         assert app.screen is Screen.MENU
         assert not session.active            # release() let go of the unit
-        time.sleep(0.2)
-        status = session.burn_status()
-        assert status is None or status["state"] != "burning"
+        assert wait_until(lambda: session.burn_status()["state"]
+                          in ("cancelled", "burned"))
         assert player.t0 is None              # run() was never reached
     finally:
         player.close()

@@ -109,9 +109,37 @@ python -m conductor serve --open
 
 1. PC を専用ルータにつなぐ → `Start Conductor.bat`
 2. Units タブで 10 台が online、時計精度(±ms)が出ていることを確認
-3. **Upload**(ショーを全機体へ配布)→ **Show preset**(開始前の絵を出す)
-4. 本番:**START**。途中は HOLD / RESUME / NEXT / STOP
+3. **① Upload**(ショーを全機体へ配布 = 各キューの絵を基板のスロットへ焼き込む)→ Units タブの
+   「THE SHOW」カードが **Pictures written on n / n units** になるまで待つ(**36 基板 × 10 キューで
+   約 112 秒、18 キューなら約 195 秒 = 3 分半**。各機体タイルの **Pictures** 行に `writing n / N` の
+   進み具合が出る)→ **② Show preset**(開始前の絵を出す)→ **③ START**
+   - 中身の変わっていないショーをもう一度 Upload しても **1 枚も書かない**(約 0.02 秒で
+     `written` に戻る)。時間がかかるのは初回と、キューの挿入・削除で slot 番号がずれたとき
+   - 絵の無い(応答しない)基板は 1 枚あたり約 1.5 秒の待ちを 1 回だけ払う。機体の
+     ログに `14 boards absent (3-16) - skipped` と出る
+4. 本番中は HOLD / RESUME / NEXT / STOP
+   - **Pictures 行の読み方**(この行が `written` でない機体があると ② ③ は機体名つきで断る):
+
+     | Pictures 行 | 意味 | 操作 |
+     |---|---|---|
+     | `writing 12/48 (8 s)` | 焼き込み中 | 待つ。force では越えられない |
+     | `written` | 全部の絵がスロットに入っている | そのまま ② ③ へ |
+     | `✗ not written (cancelled: 理由) — Upload again` | 焼き込みが最後まで行かなかった(焼き込み中の STOP、機体がポートを取られた、ポートが無い) | **① Upload をやり直す**。force では越えられない |
+     | `✗ not written since it restarted — Upload again` | Upload のあとに機体が再起動した | **① Upload をやり直す**。force では越えられない |
+     | `✗ 10 of 12 pictures not written on boards 1, 2, 3` | 生きている基板が書き込みを拒否した(または不在) | その基板抜きで進めるなら ② ③ の確認ダイアログで「anyway」(`force`)。直すなら ① Upload |
+     | `✗ none of its 16 boards answered` | その衣装の基板が 1 枚も答えない(電源が入っていない・ケーブルが抜けている) | 直すなら電源・ケーブル。**その 1 台を置いて他の 9 台で始められる**: ② ③ のダイアログで「anyway」(`force`)- その衣装はいま映っているものを映したまま |
+
+   - **焼き込み中の STOP、焼き込み中の機体再起動 → ① Upload をやり直し、全タイルが written に
+     なるまで待つ**
+   - ショーが動いている最中でも ① Upload は押せる(確認ダイアログが出る)。1 台だけ絵を失った
+     ときの復帰手段で、すでに同じショーを持っている機体は 1 枚も書かない。押した機体は
+     いったんショーから外れ、次の監視ポーリング(数秒)で自動的に戻る
+   - 機体が「run refused: …」で断ったときは、その理由が **その機体のタイルにも**出る
+     (Corrected automatically の行だけでなく)
 5. 終わったら黒いウィンドウを閉じる。機体は本体のメニューに戻る(Units タブの Release)
+6. **PC と機体のコードは必ず一緒に更新する**。古いページは機体の `cancelled` / `none` を
+   `written` のように見せてしまう(焼き込みの状態は 2026-09-25 に増えた)。`git pull` は
+   ショー PC と 10 台すべてに
 
 ## 7. スタンドアローンでデモを流す
 
