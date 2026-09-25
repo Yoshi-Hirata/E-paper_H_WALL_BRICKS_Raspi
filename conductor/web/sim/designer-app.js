@@ -741,8 +741,14 @@
       return `<div class="tl-row"><div class="tl-name" title="${esc(itemFull(item))}">${esc(itemName(item))}<small>${esc(itemSub(item))}</small></div>
         <div class="tl-track" data-track="${esc(item.item)}">${bands}</div></div>`;
     }).join("");
-    return `<div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div class="tl-wrap">${rows || `<div class="empty">No items yet.</div>`}
-      <div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div>`;
+    // Same geometry as index.html: the ruler sits in a track row behind an
+    // empty 150 px name column, and the playhead lives in a wrapper that
+    // starts where the bands start - otherwise the ticks and the red line
+    // are 150 px (about 1.5 min on a 10 min show) left of every cue.
+    return `<div class="tl-wrap">
+      <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${rulerTicks(D)}</div></div>
+      ${rows || `<div class="empty">No items yet.</div>`}
+      <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div></div>`;
   }
   function rulerTicks(D) {
     // The existing tiers, but never finer than D/200 (adversarial review
