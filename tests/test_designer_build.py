@@ -285,6 +285,15 @@ def test_a_music_build_never_lands_on_the_committed_lean_page(tmp_path):
     src = tmp_path / "clip.wav"
     src.write_bytes(audio)
     before = DIST.read_bytes()
+    # The operator's real with-music page may be sitting at MUSIC_OUT (it is
+    # the file handed to the director's team, and it is NOT committed, so
+    # deleting it here lost it once). Move it aside for the test and put it
+    # back afterwards - never leave dist/ poorer than it was found.
+    kept = build_designer.MUSIC_OUT.with_name("az27ss-simulator-with-music.kept")
+    kept.unlink(missing_ok=True)
+    had_real = build_designer.MUSIC_OUT.exists()
+    if had_real:
+        build_designer.MUSIC_OUT.rename(kept)
     try:
         result = run(str(BUILD_SCRIPT), "--music", str(src))
         assert result.returncode == 0, result.stdout + result.stderr
@@ -300,6 +309,8 @@ def test_a_music_build_never_lands_on_the_committed_lean_page(tmp_path):
             f"{build_designer.MUSIC_OUT} is not gitignored"
     finally:
         build_designer.MUSIC_OUT.unlink(missing_ok=True)
+        if had_real:
+            kept.rename(build_designer.MUSIC_OUT)
 
 
 def test_the_timeline_toolbar_offers_the_simulator_download():
