@@ -134,13 +134,48 @@
     try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, item: ui.item, design: ui.design, view: ui.view, simView: ui.simView })); } catch {}
   }
 
+  // The autosave wins over the shipped starter data, which is right - it is
+  // the designer's own work - but it also meant that every designer who had
+  // ever opened this page kept the old starter labels forever, with no route
+  // back to the corrected ones short of "Start a new (empty) project" (which
+  // throws the timeline away). Adversarial review F2: fill in a model number
+  // the stored project does not have from the starter's own table, and never
+  // touch one that is already there. An empty model is the absence of a
+  // label, not a typed one - nothing in this page writes "" over a model
+  // number except a designer clearing the box, and a cleared box comes back
+  // filled rather than staying blank, which is the one cost of this.
+  function backfillStarterLabels(p) {
+    const starter = ((globalThis.SIM.STARTER || {}).show || {}).labels;
+    if (!starter || !p || !p.show) return p;
+    const labels = p.show.labels = p.show.labels || {};
+    for (const item of Object.keys(starter)) {
+      const stored = labels[item];
+      const known = starter[item] || {};
+      if (typeof stored !== "object" || stored === null || Array.isArray(stored)) {
+        labels[item] = { look: String(known.look || ""), model: String(known.model || "") };
+        continue;
+      }
+      // Only the model, and only when it is missing. The LOOK number is
+      // left exactly as stored even when it is blank: the old starter DID
+      // write every garment's LOOK, so a blank one now is a designer who
+      // cleared the box on purpose, and putting it back would undo that.
+      if (!stored.model) stored.model = String(known.model || "");
+    }
+    return p;
+  }
   function loadProject() {
     try {
       const raw = localStorage.getItem(PROJECT_KEY);
-      if (raw) { const p = JSON.parse(raw); if (p && p.files && p.show) return p; }
+      if (raw) { const p = JSON.parse(raw); if (p && p.files && p.show) return backfillStarterLabels(p); }
     } catch {}
     return cloneStarter();          // first ever open (empty localStorage), or a corrupt value
   }
+  // Exposed for tests only, like __displaycheck below: the back-fill's whole
+  // point is what happens to a project that was stored BEFORE the labels
+  // were corrected, and a headless page cannot be handed one of those
+  // without either seeding localStorage and reloading (which the page test
+  // does) or calling this directly (which a unit-style check does).
+  globalThis.__labelBackfill = backfillStarterLabels;
   function scheduleAutosave() {
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
@@ -260,7 +295,12 @@
   }
   function lookDisplay(item) {
     if (!item || !item.look) return null;
-    return "LOOK " + item.look + (sharesLook(item) ? " · " + item.item : "");
+    // The model number is what a designer knows the two garments of a shared
+    // LOOK by ("AZ271SB2303 (Skirt)" / "AZ271SC6302 (Tops)"); the item code
+    // is the file-name stem and only the last resort, for a garment nobody
+    // has typed a model number for yet (adversarial review F4 - SHORTEST
+    // INTERVAL PER ITEM and the track rows used to disambiguate by code).
+    return "LOOK " + item.look + (sharesLook(item) ? " · " + (item.model || item.item) : "");
   }
   // ---- display-only rewrite of the model's bus fallback name (plan §1.3/§3.6):
   // the model always calls an unassigned item's bus "(<item>)"; the UI shows
@@ -270,7 +310,9 @@
     const m = /^\((.+)\)$/.exec(key);
     if (!m) return key;
     const it = state.items.find(i => i.item.toLowerCase() === m[1].toLowerCase());
-    return (it && lookDisplay(it)) || m[1];
+    // itemName(), not lookDisplay(): a garment with no LOOK number (the bags)
+    // is named by its model number, never by the raw item code.
+    return (it && itemName(it)) || m[1];
   }
   function labelize(msg) {
     // Any standalone "(known item)", not only one preceded by " on "
@@ -283,7 +325,7 @@
     // eat an unrelated parenthetical aside.
     return String(msg).replace(/\(([^()]+)\)/g, (m, name) => {
       const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
-      return it ? ((it && lookDisplay(it)) || name) : m;
+      return it ? itemName(it) : m;
     });
   }
   // model.js's pre-burn cue-limit message, hand-rewritten rather than left
@@ -299,7 +341,7 @@
     if (!m) return null;
     const [, name, carries, holds] = m;
     const it = state.items.find(i => i.item.toLowerCase() === name.toLowerCase());
-    const label = (it && lookDisplay(it)) || name;
+    const label = (it && itemName(it)) || name;
     return `${label} has ${carries} pictures but an item can hold ${holds} in one show - merge or remove cues`;
   }
   // look.py's malformed-row message, hand-rendered rather than left to
@@ -422,8 +464,30 @@
   // this early (this listener would otherwise fire before boot()'s own,
   // registered further down the file, ever runs).
   globalThis.__displaycheck = displayCheck;
-  const itemName = i => !i ? "" : lookDisplay(i) || i.item;
-  const itemFull = i => !i ? "" : [lookDisplay(i), i.model].filter(Boolean).join(" · ") || i.item;
+  // The model number, not the raw item code, is the fallback for a garment
+  // with no LOOK number (the three bags in the shipped starter data are
+  // exactly this - they are not part of the numbered line-up, so production
+  // names them "AZ271SG1035 (Bag 01)"). The item code is the file-name stem
+  // and the last resort: a designer has no reason to read it.
+  const itemName = i => !i ? "" : lookDisplay(i) || i.model || i.item;
+  // The long form: "LOOK 23 · AZ271SD1305". Not a blind join of the two
+  // (adversarial review F4, second look): lookDisplay() appends the model
+  // number itself when a LOOK is shared, so joining unconditionally read
+  // "LOOK 26 · AZ271SB2303 (Skirt) · AZ271SB2303 (Skirt)" in the cue table,
+  // the EDIT CUE heading and every track row's tooltip.
+  const itemFull = i => {
+    if (!i) return "";
+    const name = lookDisplay(i);
+    if (!name) return i.model || i.item;
+    return i.model && !name.includes(i.model) ? name + " · " + i.model : name;
+  };
+  // The second line under a track's name: the model number, unless the name
+  // line already carries it - either because it IS the model number (a
+  // garment with no LOOK) or because lookDisplay() appended it to
+  // disambiguate a shared LOOK, which used to print
+  // "LOOK 26 · AZ271SB2303 (Skirt)" over "AZ271SB2303 (Skirt)"
+  // (adversarial review F4).
+  const itemSub = i => (i && i.model && !itemName(i).includes(i.model)) ? i.model : "";
   const designLabel = d => d.label || d.name;
   const designState = d => !d.problems.length ? "ok" : !d.partial_problems.length ? "partial" : "bad";
 
@@ -572,6 +636,9 @@
                   <div class="dsg-file" title="${esc(d.name)}">${esc(d.name)}</div></div>
                 <div class="dsg-tr">${transitionControl(d.name, tr)}<button data-del="${esc(d.name)}" title="Remove from the workspace">×</button></div>
               </div>`; }).join("") || `<div class="meta">Add design CSV files (*_color_NAME_grid.csv)</div>`}</div>
+            <div class="meta" style="margin-top:8px">
+              <label class="filebtn" tabindex="0" role="button" data-pick-item="${esc(item.item)}">Add CSV<input type="file" accept=".csv" multiple></label>
+              <span style="margin-left:6px">whatever name the files arrive under, they are saved as ${esc(item.item)}_… and belong to this item alone</span></div>
           </div>
           ${design ? `<div class="card"><h2>COLOURS USED</h2><table><tbody>
             ${Object.keys(usage).sort((a, b) => a - b).map(c => `<tr><td><span class="sw" style="background:rgb(${state.palette[c].rgb.join(",")})"></span>${esc(state.palette[c].name)}</td><td>${usage[c]}</td></tr>`).join("")}
@@ -671,7 +738,7 @@
           <div class="cue-hold ${bad ? "bad" : ""} ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${esc(cue.id)}" data-drag="${cue.at <= 0 ? "0" : "1"}"
             style="left:${holdX};width:${holdW}" title="${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}">${cue.at <= 0 ? "PRESET · " : ""}${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}</div>`;
       }).join("");
-      return `<div class="tl-row"><div class="tl-name">${esc(itemName(item))}<small>${esc(item.model || "")}</small></div>
+      return `<div class="tl-row"><div class="tl-name" title="${esc(itemFull(item))}">${esc(itemName(item))}<small>${esc(itemSub(item))}</small></div>
         <div class="tl-track" data-track="${esc(item.item)}">${bands}</div></div>`;
     }).join("");
     return `<div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div class="tl-wrap">${rows || `<div class="empty">No items yet.</div>`}
@@ -717,7 +784,7 @@
         const status = (c.problems || []).length ? `<span style="color:var(--err)">${c.problems.length} problem${c.problems.length === 1 ? "" : "s"}</span>` : '<span class="okline">OK</span>';
         return `<tr class="pick ${sameId(c.id, ui.cue) ? "hl" : ""}" data-cue="${esc(c.id)}">
           <td>${clockShort(c.at)}</td><td>${clockShort(c.complete)}</td><td>${clockShort(c.end)}</td>
-          <td>${esc(itemName(item))}</td><td>${esc(designLabel(item?.designs.find(d => d.name === c.design) || { name: c.design }))}${c.partial ? " (partial)" : ""}</td>
+          <td>${esc(itemFull(item) || c.item)}</td><td>${esc(designLabel(item?.designs.find(d => d.name === c.design) || { name: c.design }))}${c.partial ? " (partial)" : ""}</td>
           <td>${esc(tr)}</td><td>${status}</td></tr>`;
       }).join("")}</tbody></table>`;
   }
@@ -729,7 +796,7 @@
     // {name, url}).
     const embedded = builtInMusicName();     // null unless it really plays
     const onBuiltIn = !!embedded && !musicUrl;
-    const pick = `<label class="filebtn">${embedded ? "Pick another file…" : "Pick file…"}<input id="music-pick" type="file" accept="audio/*"></label>`;
+    const pick = `<label class="filebtn" tabindex="0" role="button">${embedded ? "Pick another file…" : "Pick file…"}<input id="music-pick" type="file" accept="audio/*"></label>`;
     if (onBuiltIn) {
       // The built-in track is what will play. Either it is also what the
       // project names (the ordinary case - say so plainly and offer the
@@ -764,7 +831,7 @@
     root.innerHTML = `<div class="toolbar">
         <div class="group"><span>Show length</span>${mmssField("show-duration", state.show.duration)}</div>
         <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}"> s</div>
-        <div class="group"><button id="save-project">Save project…</button><label class="filebtn">Open project…<input id="open-project" type="file" accept=".json"></label></div>
+        <div class="group"><button id="save-project">Save project…</button><label class="filebtn" tabindex="0" role="button">Open project…<input id="open-project" type="file" accept=".json"></label></div>
         ${musicControl()}
       </div>
       ${items.length ? `<div id="tl-editing">
@@ -985,6 +1052,22 @@
       if (ui.tab === "timeline" && state) { globalThis.SIM.looks.layoutLooks(THUMB_VIEW); syncDockHeight(); }
     });
   });
+  // A "filebtn" is a <label> wrapping a display:none file input - it looks
+  // and reads like a button, so it is given tabindex="0"/role="button" and
+  // has to answer to Enter and Space like one (a <label> does not on its
+  // own, and a hidden input cannot be focused at all). Capture phase, so
+  // this runs before the Space-is-play handler below and can stop it: the
+  // Timeline's own "Pick another file…" is a filebtn too, and a Space on it
+  // must open the picker, not start the show.
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Enter" && e.key !== " " && e.code !== "Space") return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const label = e.target.closest && e.target.closest("label.filebtn");
+    const input = label && label.querySelector('input[type="file"]');
+    if (!input) return;
+    e.preventDefault(); e.stopPropagation();
+    input.click();
+  }, true);
   document.addEventListener("keydown", e => {
     if ((e.key === " " || e.code === "Space") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -1028,14 +1111,14 @@
   function renderHelp() {
     $("#content").innerHTML = `<div class="help">
       <h2>Quick start (English)</h2>
-      <p>Double-click <code>az27ss-simulator.html</code> (or <code>designer.html</code> during development) - no install, no server. Drop the garments' map and design CSV files anywhere on this page to begin (a folder works too). Open the <b>Timeline</b> tab and click anywhere on an item's track to add a cue there, using that item's next design; click an existing cue to edit it, or drag it to move it (hold Shift for 5 s steps instead of 1 s).</p>
+      <p>Double-click <code>az27ss-simulator.html</code> (or <code>designer.html</code> during development) - no install, no server. Drop the garments' map and design CSV files anywhere on this page to begin (a folder works too), or use <b>Add CSV</b> in the header. The <b>Designs</b> tab has an <b>Add CSV</b> of its own under DESIGNS OF THIS ITEM, which adds the files you pick to that one garment: whatever they are named, they are saved under that garment's name and belong to it alone. A <code>*_map.csv</code> that belongs to another garment already in the project is refused there - a garment's wiring is not interchangeable the way its patterns are - so use the header's <b>Add CSV</b> for that one. Open the <b>Timeline</b> tab and click anywhere on an item's track to add a cue there, using that item's next design; click an existing cue to edit it, or drag it to move it (hold Shift for 5 s steps instead of 1 s).</p>
       <p><b>Red</b> always means "this needs fixing before it is right": a red-outlined mm.ss field could not be read as minutes.seconds; a red left border on a cue means the model found a problem with it (open it to see why); a dot next to an item in the sidebar is red when that item has one or more problems. Clicking a track for an item that has no design CSV yet is refused with a toast, rather than creating a cue with nothing to show.</p>
       <p>When the timeline is ready, <b>Save project…</b> writes everything (every CSV plus the whole timeline) into one <code>.json</code> file - hand that file to whoever runs the show; on the operator's own page, "Load bundle…" reads it in and keeps everything already in place exactly as it was, replacing only the CSVs and the timeline.</p>
       <p><b>Music.</b> The show's music is built into the file the operator gave you, so it plays as soon as you press Play - nothing to pick, nothing to install. If the show's music changes you receive a new file; the Timeline toolbar tells you which track is built in. You can still choose a different audio file with <b>Pick another file…</b>, which lasts for this session only - <b>Back to the built-in track</b> returns to the one that came with the file.</p>
       <p>Clock positions (Start, End, Show length, the dock's go-to box) are typed as mm.ss - minutes and seconds, not a decimal fraction of a minute: <code>3.05</code> is 3 minutes 05 seconds; a single-digit second still counts as seconds, so <code>3.5</code> is also 3 minutes 05 seconds; <code>3.60</code> is not valid (there is no 60th second) and turns the field red. The badge and the live "3 min 05 s" readout next to every one of these fields are there so this never has to be memorised.</p>
       <p>Supported browsers: Safari 14.1 or later, or a recent Chrome or Edge. A private/incognito window may refuse to keep the autosaved copy at all (see the warning banner in the header when that happens) - use <b>Save project…</b> there instead of relying on autosave.</p>
       <h2>開き方</h2><p>このファイル（<code>az27ss-simulator.html</code> または <code>designer.html</code>）をダブルクリックするだけで開きます。インストールもサーバーも不要です。Windows は Edge か Chrome、macOS は Safari か Chrome を推奨します。</p>
-      <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。同じ名前のファイルは上書きされます。</p>
+      <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。<b>Designs</b> タブの「DESIGNS OF THIS ITEM」にある「Add CSV」を使うと、選んだファイルはその1着だけに追加されます（別の型番の名前でも、その1着の名前で保存されます）。ただし<b>他の衣装のマップCSV（<code>*_map.csv</code>）は受け付けません</b>（配線図は柄と違って入れ替えられるものではないため）。その場合はヘッダーの「Add CSV」を使ってください。同じ名前のファイルは上書きされます。</p>
       <h2>mm.ss の読み方</h2><p>開始・終了・ショー全体の長さなど「時刻」は分.秒（mm.ss）で入力します。例：<code>3.05</code> → 3分05秒。<code>3.5</code> のように秒が1桁でも「3分05秒」として読みます。<code>3.60</code> のように60秒以上は無効（赤色）になります。入力欄の横に読み方がそのまま表示されます（例：「3 min 05 s」）。</p>
       <h2>音楽</h2><p>ショーの音源は、オペレーターから渡されたこのファイルの中に埋め込まれています。再生ボタンを押せばそのまま鳴ります（選び直す操作は不要です）。音源が差し替わったときは、新しいファイルが届きます ―― Timeline のツールバーに、いま埋め込まれている曲名が出ます。別の音源で確認したいときは「Pick another file…」で選べます（そのセッションの間だけ。「Back to the built-in track」で元の埋め込み音源に戻ります）。</p>
       <h2>遷移（トランジション）6種</h2><p>各デザインの塗り替え方向を選べます：既定（配線どおり、変更なし）、Top to bottom（上から下）、Bottom to top（下から上）、Left to right (audience)（観客席から見て左から右）、Right to left (audience)（観客席から見て右から左）、Centre outward（中心から外へ）。「秒」は最初の一列が変わってから最後の一列が変わるまでの時間です。</p>
@@ -1117,13 +1200,57 @@
   // ==================================================================
   function readFileAsText(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsText(file); }); }
   async function addFilesFromBlobs(files) {
-    const list = [];
-    for (const f of files) { if (/\.csv$/i.test(f.name)) { try { list.push({ name: f.name, text: await readFileAsText(f) }); } catch {} } }
-    if (!list.length) return;
-    const result = globalThis.SIM.app.addFiles(list);
+    // Non-CSV names are refused BY NAME, like the per-item path, instead of
+    // dropped in silence (adversarial review F6): dropping a folder whose
+    // CSVs sit one level further down used to look exactly like dropping a
+    // folder of CSVs that the page rejected - nothing happened either way.
+    // Still filtered on the name before reading, never after: a dropped
+    // folder can hold a video, and reading one as text to learn it is not a
+    // CSV is the one mistake this must not make.
+    const list = [], refused = [];
+    for (const f of files) {
+      if (!/\.csv$/i.test(f.name)) { refused.push({ name: String(f.name), error: refuseReason(f.name) }); continue; }
+      try { list.push({ name: f.name, text: await readFileAsText(f) }); }
+      catch { refused.push({ name: String(f.name), error: "could not be read" }); }
+    }
+    const result = list.length ? globalThis.SIM.app.addFiles(list) : { saved: [], refused: [] };
+    const all = refused.concat(result.refused);
     const parts = [];
     if (result.saved.length) parts.push(`${result.saved.length} file(s) added`);
-    if (result.refused.length) parts.push(`${result.refused.length} refused: ` + result.refused.map(r => `${r.name} (${r.error})`).join("; "));
+    if (all.length) parts.push(`${all.length} refused: ` + briefly(all, r => `${r.name} (${r.error})`));
+    toast(parts.join(" · ") || "No CSV files found");
+    ui.cue = null; render();
+  }
+  // ---- Add CSV to ONE item (the Designs tab's own button) ----
+  // index.html's uploadOwn(), same rule: a design CSV belongs to the item
+  // its name begins with, so two garments of the same shape come back from
+  // the designer under the same file names. Picked here, a file is renamed
+  // ONTO this item - Look22_color_pattern01_grid.csv is saved as
+  // <item>_color_pattern01_grid.csv - rather than refused for having the
+  // wrong prefix; a name that is neither a *_map.csv nor a
+  // *_color_NAME_grid.csv is refused, because there is nothing to rename it
+  // to. Returns null for "cannot belong to any item".
+  function renameOntoItem(itemKey, name) {
+    const raw = String(name);
+    const m = raw.match(/(_map|_color_.+grid).*\.csv$/i);
+    return m ? itemKey + raw.slice(m.index) : null;
+  }
+  async function addFilesToItemFromBlobs(itemKey, files) {
+    const list = [], refused = [];
+    for (const f of files) {
+      if (renameOntoItem(itemKey, f.name) === null) { refused.push({ name: String(f.name), error: refuseReason(f.name) }); continue; }
+      try { list.push({ name: f.name, text: await readFileAsText(f) }); }
+      catch { refused.push({ name: String(f.name), error: "could not be read" }); }
+    }
+    const result = list.length ? globalThis.SIM.app.addFilesToItem(itemKey, list)
+                               : { saved: [], renamed: [], refused: [] };
+    const all = refused.concat(result.refused);
+    const item = state.items.find(i => i.item === itemKey);
+    const parts = [];
+    if (result.saved.length) parts.push(`${result.saved.length} file(s) added to ${itemName(item) || itemKey}`);
+    // Both names, so nobody has to guess what happened to a file they picked.
+    if (result.renamed.length) parts.push("saved as " + briefly(result.renamed, r => `${r.from} → ${r.to}`));
+    if (all.length) parts.push(`${all.length} refused: ` + briefly(all, r => `${r.name} (${r.error})`));
     toast(parts.join(" · ") || "No CSV files found");
     ui.cue = null; render();
   }
@@ -1212,6 +1339,16 @@
       const vb = e.target.closest("[data-view]"); if (vb) { ui.view = vb.dataset.view; persist(); render(); }
     });
     document.body.addEventListener("change", e => {
+      // The Designs tab's per-item "Add CSV". The item key travels on the
+      // button itself rather than being read back off ui.item, so the files
+      // can only ever land on the item whose card was actually clicked.
+      const picker = e.target.closest("[data-pick-item]");
+      if (picker && e.target.type === "file") {
+        const files = [...e.target.files];
+        e.target.value = "";
+        addFilesToItemFromBlobs(picker.dataset.pickItem, files);
+        return;
+      }
       const lab = e.target.closest("[data-label]");
       if (lab) {
         const card = lab.closest(".item"); const item = card.dataset.item;
@@ -1250,7 +1387,19 @@
   // ==================================================================
   // SIM.app — the frozen seam (plan §2.3)
   // ==================================================================
-  function refuseReason(name) { return `not a *_map.csv or *_color_NAME_grid.csv`; }
+  // Says what is wrong with THIS name (adversarial review F6: it used to
+  // take the name and ignore it, so a dropped .xlsx and a mis-named CSV got
+  // the same sentence, and the .xlsx one did not describe the problem).
+  function refuseReason(name) {
+    return /\.csv$/i.test(String(name)) ? "not a *_map.csv or *_color_NAME_grid.csv"
+                                        : "not a .csv file";
+  }
+  // A refusal/rename list, short enough to read in a toast: a dropped folder
+  // can hold a hundred files nobody wants named one by one.
+  function briefly(entries, format, limit) {
+    const shown = entries.slice(0, limit || 3).map(format).join("; ");
+    return entries.length > (limit || 3) ? `${shown} +${entries.length - (limit || 3)} more` : shown;
+  }
   // The one place that touches `musicUrl` and `project.show.music` together
   // (pickMusic/clearMusic/newProject/openBundle all go through it): a File
   // (or null to clear) revokes whatever object URL was live first, then
@@ -1321,6 +1470,59 @@
       }
       rebuild(); persist();
       return { saved, refused };
+    },
+    // Not on plan_designer_sim.md §2.3's frozen list, but the same kind of
+    // natural companion as setProject(): addFiles() for ONE item, with each
+    // file renamed onto it first (see renameOntoItem() above). Everything
+    // that actually touches project.files still goes through addFiles(), so
+    // the path-segment guard and the *_map/_color_…_grid check apply to the
+    // RENAMED name too - a caller cannot smuggle a bad name past them by
+    // coming in this way.
+    addFilesToItem(itemKey, list) {
+      const items = [...list];
+      if (!state.items.some(i => i.item === itemKey)) {
+        return { saved: [], renamed: [],
+                 refused: items.map(f => ({ name: String(f.name), error: "no item of that name in this project" })) };
+      }
+      const renamed = [], out = [], refused = [];
+      const takenBy = new Map();          // target name -> the picked file already going there
+      for (const { name, text } of items) {
+        const raw = String(name);
+        const to = renameOntoItem(itemKey, raw);
+        if (to === null) { refused.push({ name: raw, error: refuseReason(raw) }); continue; }
+        // A garment's MAP is not interchangeable the way its designs are
+        // (adversarial review F1): renaming AZ271SD1301_map.csv onto this
+        // item replaced this garment's wiring with another garment's, threw
+        // away the original text, and reported it as a success - the
+        // hundreds of problems that followed were the only hint. A design
+        // grid renamed across garments is the ordinary case and still is;
+        // a map that belongs to a garment this project already has is not.
+        const ownerOfMap = globalThis.SIM.look.kind(raw) === "map" ? globalThis.SIM.look.mapItem(raw) : null;
+        if (ownerOfMap && ownerOfMap.toLowerCase() !== itemKey.toLowerCase()
+            && state.items.some(i => i.item.toLowerCase() === ownerOfMap.toLowerCase())) {
+          refused.push({ name: raw, error: "another garment's map - use the header's Add CSV for it" });
+          continue;
+        }
+        // Two picked files that would land on the same name (F3): the first
+        // wins and the second is refused, naming both. Letting them through
+        // meant addFiles() silently kept whichever came last, with the toast
+        // counting them both as saved.
+        if (takenBy.has(to)) {
+          refused.push({ name: raw, error: `would overwrite ${takenBy.get(to)} from this same pick` });
+          continue;
+        }
+        takenBy.set(to, raw);
+        if (to !== raw) renamed.push({ from: raw, to });
+        out.push({ name: to, text });
+      }
+      // No rebuild()/persist() for a pick that saved nothing.
+      if (!out.length) return { saved: [], renamed, refused };
+      const result = app.addFiles(out);
+      // A file that addFiles() itself refused was never renamed onto
+      // anything, so it must not be reported as one that was.
+      const stillRefused = new Set(result.refused.map(r => r.name));
+      return { saved: result.saved, renamed: renamed.filter(r => !stillRefused.has(r.to)),
+               refused: refused.concat(result.refused) };
     },
     removeFile(name) { delete project.files[name]; rebuild(); persist(); },
     setShow(patch) { Object.assign(project.show, patch); rebuild(); persist(); },

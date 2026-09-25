@@ -266,31 +266,43 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   "labels": {
    "AZ271SB2303": {
     "look": "26",
-    "model": ""
+    "model": "AZ271SB2303 (Skirt)"
    },
    "AZ271SC6302": {
     "look": "26",
-    "model": ""
+    "model": "AZ271SC6302 (Tops)"
    },
    "AZ271SD1301": {
     "look": "25",
-    "model": ""
+    "model": "AZ271SD1301"
    },
    "AZ271SD1305": {
     "look": "23",
-    "model": ""
+    "model": "AZ271SD1305"
    },
    "AZ271SD1305_B": {
     "look": "24",
-    "model": ""
+    "model": "AZ271SD1305"
    },
    "AZ271SD1306": {
     "look": "27",
-    "model": ""
+    "model": "AZ271SD1306"
    },
    "AZ271SD1307": {
     "look": "28",
-    "model": ""
+    "model": "AZ271SD1307"
+   },
+   "AZ271SG1035": {
+    "look": "",
+    "model": "AZ271SG1035 (Bag 01)"
+   },
+   "AZ271SG1036": {
+    "look": "",
+    "model": "AZ271SG1036 (Bag 02)"
+   },
+   "AZ271SG3037": {
+    "look": "",
+    "model": "AZ271SG3037 (Bag 03)"
    }
   },
   "music": null,

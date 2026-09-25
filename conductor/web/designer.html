@@ -32,7 +32,9 @@
     <button data-tab="designs">Designs</button><button data-tab="timeline">Timeline</button><button data-tab="help">Help / ヘルプ</button>
   </div>
   <button id="new-project" title="Start a new, empty project (your current one stays saved until you drop new CSV files or open another)">Start a new (empty) project</button>
-  <label class="filebtn">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
+  <!-- tabindex/role: the input inside is display:none, so the <label> is the
+       button - see designer-app.js's capture-phase Enter/Space handler. -->
+  <label class="filebtn" tabindex="0" role="button">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
   <span class="meta">or drop CSV files (or a folder of them) anywhere on the page</span>
   <!-- Hidden by default; designer-app.js's boot() shows it the moment
        localStorage genuinely is not usable (Safari private browsing, or any

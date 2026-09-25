@@ -50,6 +50,16 @@
       groups.get(key).items.push(item);
     }
     const list = [...groups.values()];
+    // Which garment of a shared LOOK is worn above the other. There is no
+    // structural hint to key this on (adversarial review F5 asked for one):
+    // SIM.buildState gives an item its file-name stem, its LOOK number, its
+    // model number, its map and its designs - nothing about the garment as a
+    // whole, and a map row describes one scale, not a top or a skirt. So the
+    // model number's own wording is all there is, and this stays character
+    // for character what index.html:1258 does, because the two pages must
+    // stack a LOOK the same way. The show's labels write the hint
+    // ("AZ271SC6302 (Tops)" / "AZ271SB2303 (Skirt)"); a garment whose model
+    // number says neither sits between the two.
     const stackRank = i => /top/i.test(i.model || "") ? 0 : /skirt|bottom/i.test(i.model || "") ? 2 : 1;
     for (const g of list) g.items.sort((a, b) => stackRank(a) - stackRank(b) || (a.item < b.item ? -1 : a.item > b.item ? 1 : 0));
     list.sort((a, b) => {
@@ -62,7 +72,11 @@
     return list;
   }
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : i.item;
+  // No LOOK number -> the model number, and only then the raw item code
+  // (designer-app.js's own itemName() does the same): the shipped starter
+  // data's three bags carry no LOOK, and production names them by model
+  // ("AZ271SG1035 (Bag 01)"), not by the file-name stem.
+  const itemName = i => !i ? "" : i.look ? "LOOK " + i.look : (i.model || i.item);
 
   // index.html:1180-1204. ctx: {cuesOf, palette}
   function renderThumbs(view, t, ctx) {

@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -23,9 +24,11 @@ DESIGNER_HTML = REPO / "conductor" / "web" / "designer.html"
 DIST = REPO / "dist" / "az27ss-simulator.html"
 BUILD_SCRIPT = REPO / "tools" / "build_designer.py"
 STARTER_SCRIPT = REPO / "tools" / "make_starter.py"
+STARTER_JS = REPO / "conductor" / "web" / "sim" / "starter.js"
 
 sys.path.insert(0, str(REPO))
 import tools.build_designer as build_designer  # noqa: E402
+import tools.make_starter as make_starter  # noqa: E402
 
 
 def run(*args):
@@ -547,3 +550,470 @@ def test_banned_vocabulary_never_reaches_rendered_ui(tmp_path):
     assert not hit, (
         f"banned vocabulary reached the rendered Timeline tab's DOM: {hit.group(0)!r} "
         f"near {haystack[max(0, hit.start() - 60):hit.start() + 60]!r}")
+
+
+# ============================================================
+# The starter data's labels (user, 2026-09-25)
+# ============================================================
+# The show's own LOOK and model numbers, as the production show.json holds
+# them. The starter used to write {"look": n, "model": ""}, so a designer
+# opening the simulator saw "LOOK 23" with an empty "model no." box where the
+# operator sees "LOOK 23 · AZ271SD1305" - and the three bags, which carry no
+# LOOK number at all, showed only their file-name stem. This table is the
+# contract; tools/make_starter.py's STARTER_LABELS is where it is written
+# down, and conductor/web/sim/starter.js is the generated copy the page
+# actually reads.
+SHOW_LABELS = {
+    "AZ271SD1305":   {"look": "23", "model": "AZ271SD1305"},
+    "AZ271SD1305_B": {"look": "24", "model": "AZ271SD1305"},
+    "AZ271SD1301":   {"look": "25", "model": "AZ271SD1301"},
+    "AZ271SB2303":   {"look": "26", "model": "AZ271SB2303 (Skirt)"},
+    "AZ271SC6302":   {"look": "26", "model": "AZ271SC6302 (Tops)"},
+    "AZ271SD1306":   {"look": "27", "model": "AZ271SD1306"},
+    "AZ271SD1307":   {"look": "28", "model": "AZ271SD1307"},
+    "AZ271SG1035":   {"look": "",   "model": "AZ271SG1035 (Bag 01)"},
+    "AZ271SG1036":   {"look": "",   "model": "AZ271SG1036 (Bag 02)"},
+    "AZ271SG3037":   {"look": "",   "model": "AZ271SG3037 (Bag 03)"},
+}
+
+
+def _starter_payload() -> dict:
+    """SIM.STARTER out of the committed starter.js - the generated artefact
+    the page loads, not make_starter.py's constants (those are checked
+    separately below): a table that is right in the script but stale in the
+    committed file is exactly the drift worth catching."""
+    text = STARTER_JS.read_text(encoding="utf-8")
+    head = "{ STARTER: "
+    return json.loads(text[text.index(head) + len(head):text.rindex(" });")])
+
+
+def test_starter_labels_are_the_shows_own_look_and_model_numbers():
+    labels = _starter_payload()["show"]["labels"]
+    assert labels == SHOW_LABELS
+    assert {item: {"look": look, "model": model}
+            for item, (look, model) in make_starter.STARTER_LABELS.items()} == SHOW_LABELS
+    # STARTER_LOOKS (which orders the line-up) is derived from the same table
+    # and must stay in step with it - the two used to be hand-maintained.
+    assert make_starter.STARTER_LOOKS == {
+        item: label["look"] for item, label in SHOW_LABELS.items() if label["look"]}
+
+
+def test_starter_labels_match_the_production_workspace():
+    """The table above is a copy of the operator's own show.json. On the show
+    PC (and on any machine that has the workspace) check the copy against the
+    original, so the two cannot drift apart unnoticed; elsewhere that
+    directory is gitignored and absent, and the table alone is all there is
+    to check."""
+    show_json = REPO / "showdata" / "show.json"
+    if not show_json.exists():
+        pytest.skip("the show workspace is gitignored and not present on this machine")
+    labels = json.loads(show_json.read_text(encoding="utf-8")).get("labels") or {}
+    assert labels, "the show workspace carries no labels to compare against"
+    assert {k: {"look": str(v.get("look", "")), "model": str(v.get("model", ""))}
+            for k, v in labels.items()} == SHOW_LABELS
+
+
+def test_every_garment_in_the_starter_data_is_labelled():
+    # A garment the table forgets renders as its bare file-name stem, which
+    # is the state this table replaced - so "the table is right" is only
+    # half the check; it also has to be complete.
+    payload = _starter_payload()
+    items = sorted({make_starter.map_item(name) for name in payload["files"]
+                    if make_starter.kind(name) == "map"})
+    assert items == sorted(SHOW_LABELS), \
+        "conductor/web/starter/ holds a garment tools/make_starter.py has no label for"
+
+
+# ============================================================
+# The Designs tab's per-item "Add CSV" (user, 2026-09-25)
+# ============================================================
+# Appended to a COPY of the built page, like _MUSIC_PROBE above: drives the
+# real page as a designer would (clicking each item in the sidebar, then the
+# per-item file input's own change event) and writes what it found into an
+# element, because --dump-dom returns the DOM and nothing else.
+#
+# It waits for the page to have booted rather than guessing at a delay - the
+# starter data is ~350 KB of CSV to parse before the ITEMS sidebar exists.
+_ITEM_CSV_PROBE = """
+<script>
+(function () {
+  var out = { error: null, items: [], global: false, toast: "", seam: {}, render: {}, backfill: {} };
+  function ready() {
+    try {
+      var st = globalThis.SIM && SIM.app && SIM.app.getState();
+      return !!(st && st.items && st.items.length && document.querySelector('#items .item[data-item]'));
+    } catch (e) { return false; }
+  }
+  function publish() {
+    var pre = document.createElement("pre");
+    pre.id = "itemcsv-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }
+  function pickerFor(key) {
+    return document.querySelector('#content label.filebtn[data-pick-item="' + key + '"]');
+  }
+  function itemNamed(key) {
+    return SIM.app.getState().items.filter(function (i) { return i.item === key; })[0];
+  }
+  function nameOf(el) {
+    if (!el) return null;
+    var small = el.querySelector("small");
+    var sub = small ? small.textContent : "";
+    // "".replace("", x) inserts at position 0, so only strip a sub that
+    // actually has text.
+    return { name: sub ? el.textContent.replace(sub, "") : el.textContent,
+             sub: sub, title: el.getAttribute("title") };
+  }
+  function run() {
+    var keys = [].slice.call(document.querySelectorAll('#items .item[data-item]'))
+                 .map(function (c) { return c.dataset.item; });
+    out.global = !!document.querySelector('#pick');
+    keys.forEach(function (key) {
+      document.querySelector('#items .item[data-item="' + key + '"]').click();
+      var btn = pickerFor(key);
+      var input = btn && btn.querySelector('input[type="file"]');
+      out.items.push({
+        item: key,
+        label: btn ? btn.textContent.trim() : null,
+        tabindex: btn ? btn.getAttribute("tabindex") : null,
+        multiple: !!(input && input.multiple),
+        accept: input ? input.getAttribute("accept") : null,
+        inCard: !!(btn && btn.closest(".card") &&
+                   /DESIGNS OF THIS ITEM/.test(btn.closest(".card").querySelector("h2").textContent))
+      });
+    });
+
+    // ---- what the page NAMES things, against the shipped labels ----
+    // A garment with no LOOK number (the bags) must name itself by its model
+    // number, and a shared LOOK must not print the model twice.
+    document.querySelector('[data-tab="timeline"]').click();
+    var rows = [].slice.call(document.querySelectorAll('.tl-name'));
+    out.render.bagTrack = nameOf(rows.filter(function (e) { return /Bag 03/.test(e.textContent); })[0]);
+    out.render.sharedTrack = nameOf(rows.filter(function (e) { return /Skirt/.test(e.textContent); })[0]);
+    out.render.plainTrack = nameOf(rows.filter(function (e) { return /^LOOK 23/.test(e.textContent); })[0]);
+    out.render.lookHeads = [].slice.call(document.querySelectorAll('.lk-head')).map(
+      function (e) { var s = e.querySelector(".sub"); var st = s ? s.textContent : "";
+        return (st ? e.textContent.replace(st, "") : e.textContent).replace(/refreshing…/, "").trim(); });
+    out.render.cueItems = [].slice.call(document.querySelectorAll('table tbody tr td:nth-child(4)')).map(
+      function (e) { return e.textContent; });
+    var sharedRow = [].slice.call(document.querySelectorAll('table tbody tr')).filter(
+      function (r) { return /Skirt/.test(r.textContent); })[0];
+    if (sharedRow) sharedRow.click();
+    var head = document.querySelector('#cue-editor-body .cue-head b');
+    out.render.cueEditorHead = head ? head.textContent : null;
+    out.render.minInterval = [].slice.call(document.querySelectorAll('.card')).filter(function (c) {
+      var h = c.querySelector("h2"); return h && /SHORTEST INTERVAL/.test(h.textContent); }).map(
+      function (c) { return [].slice.call(c.querySelectorAll("tbody tr td:first-child")).map(function (e) { return e.textContent; }); })[0] || [];
+    // Which garment of a shared LOOK is drawn on top: lookGroups() sorts a
+    // group's items by stackRank, and the looks row draws them in that order.
+    out.render.look26 = (SIM.looks.lookGroups(SIM.app.getState().items).filter(
+      function (g) { return String(g.look) === "26"; })[0] || { items: [] }).items.map(
+      function (i) { return i.model; });
+
+    // ---- the seam, called directly ----
+    var key = keys.filter(function (k) { return k !== "AZ271SB2303"; })[0];
+    out.seam.item = key;
+    document.querySelector('#items .item[data-item="' + key + '"]').click();
+    var foreign = "AZ271SB2303_color_probeA_grid.csv";
+    out.seam.refused = SIM.app.addFilesToItem(key, [{ name: "notes.txt", text: "x" },
+                                                    { name: "notes.csv", text: "x" }]).refused;
+    var r = SIM.app.addFilesToItem(key, [{ name: foreign, text: SIM.STARTER.files["AZ271SB2303_color_sampleA_grid.csv"] }]);
+    out.seam.renamed = r.renamed;
+    out.seam.saved = r.saved;
+    out.seam.unknown = SIM.app.addFilesToItem("NO_SUCH_ITEM", [{ name: foreign, text: "x" }]);
+    out.seam.designsAfter = itemNamed(key).designs.map(function (d) { return d.name; });
+
+    // A garment's MAP is not interchangeable: picking another garment's map
+    // here must change nothing at all (it used to overwrite this one's).
+    var mapBefore = { name: itemNamed(key).map.name, scales: itemNamed(key).map.scales.length,
+                      text: SIM.app.getProject().files[key + "_map.csv"] };
+    var otherKey = keys.filter(function (k) { return k !== key; })[0];
+    var otherMap = otherKey + "_map.csv";
+    out.seam.otherMap = otherMap;
+    out.seam.mapRefused = SIM.app.addFilesToItem(key, [{ name: otherMap, text: SIM.STARTER.files[otherMap] }]);
+    out.seam.mapAfter = { name: itemNamed(key).map.name, scales: itemNamed(key).map.scales.length,
+                          unchanged: SIM.app.getProject().files[key + "_map.csv"] === mapBefore.text,
+                          sameScales: itemNamed(key).map.scales.length === mapBefore.scales };
+    // ...but the garment's OWN map, re-picked, still replaces itself.
+    out.seam.ownMap = SIM.app.addFilesToItem(key, [{ name: key + "_map.csv", text: mapBefore.text }]);
+
+    // Two picked files that would land on the same name: the first wins.
+    out.seam.clash = SIM.app.addFilesToItem(key, [
+      { name: "AZ271SB2303_color_clash_grid.csv", text: SIM.STARTER.files["AZ271SB2303_color_sampleA_grid.csv"] },
+      { name: "AZ271SC6302_color_clash_grid.csv", text: SIM.STARTER.files["AZ271SC6302_color_sampleA_grid.csv"] }]);
+
+    // ---- the label back-fill, on a project stored before the fix ----
+    var old = { files: {}, show: { labels: {
+      "AZ271SD1305": { look: "23", model: "" },
+      "AZ271SD1301": { look: "25", model: "" },
+      "AZ271SD1307": { look: "28", model: "TYPED BY HAND" } } } };
+    out.backfill.after = globalThis.__labelBackfill(old).show.labels;
+
+    // ---- and the buttons themselves, through their own change events ----
+    document.querySelector('[data-tab="designs"]').click();
+    var gdt = new DataTransfer();
+    gdt.items.add(new File(["x"], "cover.png", { type: "image/png" }));
+    var global = document.querySelector('#pick');
+    global.files = gdt.files;
+    global.dispatchEvent(new Event("change", { bubbles: true }));
+    setTimeout(function () {
+      var t0 = document.querySelector("#toast");
+      out.globalToast = t0 ? t0.textContent : "";
+      document.querySelector('#items .item[data-item="' + key + '"]').click();
+      var input = pickerFor(key).querySelector('input[type="file"]');
+      var dt = new DataTransfer();
+      dt.items.add(new File(["not,a,grid\\n"], "notes.txt", { type: "text/csv" }));
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      setTimeout(function () {
+        var t = document.querySelector("#toast");
+        out.toast = t ? t.textContent : "";
+        out.filesAfter = Object.keys(SIM.app.getProject().files).filter(
+          function (n) { return /notes|cover/.test(n); });
+        publish();
+      }, 300);
+    }, 300);
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    if (!ready() && ++tries < 200) return;
+    clearInterval(timer);
+    try { run(); } catch (e) { out.error = String((e && e.stack) || e); publish(); }
+  }, 50);
+})();
+</script>
+"""
+
+
+def _probe_page(tmp, probe: str, out_id: str) -> dict:
+    page = tmp / (out_id + ".html")
+    page.write_text(DIST.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1),
+                    encoding="utf-8")
+    url = "file:///" + str(page.resolve()).replace("\\", "/")
+    dom = _dump_dom(url, tmp)
+    match = re.search(r'<pre id="%s">(.*?)</pre>' % out_id, dom or "", re.S)
+    assert match, f"no #{out_id} in the dumped DOM:\n{(dom or '')[:3000]}"
+    data = json.loads(unescape(match.group(1)))
+    assert data.get("error") is None, data["error"]
+    return data
+
+
+@pytest.fixture(scope="module")
+def item_csv_probe(tmp_path_factory):
+    """One headless run of the real built page, shared by the tests below -
+    booting it costs a few seconds and parsing the starter CSVs costs more,
+    and every test here asks about the same page."""
+    tmp = tmp_path_factory.mktemp("itemcsv")
+    _require_browser(tmp)
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    return _probe_page(tmp, _ITEM_CSV_PROBE, "itemcsv-out")
+
+
+def test_every_item_offers_its_own_add_csv_button(item_csv_probe):
+    data = item_csv_probe
+    assert len(data["items"]) == len(SHOW_LABELS), \
+        f"expected one card per starter garment, got {len(data['items'])}"
+    for entry in data["items"]:
+        assert entry["label"] == "Add CSV", f"{entry['item']}: {entry!r}"
+        assert entry["inCard"], f"{entry['item']}: the button is not in its DESIGNS OF THIS ITEM card"
+        assert entry["multiple"], f"{entry['item']}: the picker takes only one file"
+        assert entry["accept"] == ".csv", f"{entry['item']}: {entry['accept']!r}"
+        # Keyboard: the <label> is the button (its input is display:none), so
+        # it has to be in the tab order - designer-app.js gives it Enter and
+        # Space to match.
+        assert entry["tabindex"] == "0", f"{entry['item']}: the button cannot be tabbed to"
+    assert data["global"], 'the header\'s own "Add CSV" is gone'
+
+
+def test_a_csv_that_cannot_belong_to_the_item_is_refused(item_csv_probe):
+    data = item_csv_probe
+    seam = data["seam"]
+    # Each refusal says what is wrong with THAT name (adversarial review F6).
+    assert [r["name"] for r in seam["refused"]] == ["notes.txt", "notes.csv"]
+    assert seam["refused"][0]["error"] == "not a .csv file"
+    assert "_map.csv" in seam["refused"][1]["error"] and "_grid.csv" in seam["refused"][1]["error"]
+    # Nothing was saved under that name, by either route.
+    assert data["filesAfter"] == []
+    # ...and the designer is told, naming the file.
+    assert "refused" in data["toast"] and "notes.txt" in data["toast"], data["toast"]
+    # The header's own Add CSV says so too, instead of doing nothing visible
+    # (adversarial review F6).
+    assert "cover.png" in data["globalToast"] and "not a .csv file" in data["globalToast"], \
+        data["globalToast"]
+
+    # A design CSV named after a DIFFERENT garment is not refused - it is
+    # renamed onto this item, exactly as the Conductor's own per-item upload
+    # does (index.html's uploadOwn()) - and the toast names both names.
+    key = seam["item"]
+    assert key != "AZ271SB2303", "the probe picked the garment the file is already named after"
+    assert seam["renamed"] == [{"from": "AZ271SB2303_color_probeA_grid.csv",
+                                "to": key + "_color_probeA_grid.csv"}]
+    assert seam["saved"] == [key + "_color_probeA_grid.csv"]
+    assert key + "_color_probeA_grid.csv" in seam["designsAfter"]
+    assert not [n for n in seam["designsAfter"] if n.startswith("AZ271SB2303")], \
+        "the file landed on the garment it was named after, not the one it was added to"
+
+    # An item that is not in the project takes nothing.
+    assert seam["unknown"]["saved"] == [] and seam["unknown"]["renamed"] == []
+    assert len(seam["unknown"]["refused"]) == 1
+
+
+def test_another_garments_map_is_never_renamed_onto_this_one(item_csv_probe):
+    # Adversarial review F1: a per-item pick of another garment's *_map.csv
+    # used to be renamed like a design grid, so it REPLACED this garment's
+    # wiring - the original text gone, the toast reading like a success, and
+    # several hundred CHECK problems the only hint.
+    seam = item_csv_probe["seam"]
+    refused = seam["mapRefused"]["refused"]
+    assert [r["name"] for r in refused] == [seam["otherMap"]], seam["mapRefused"]
+    assert "another garment's map" in refused[0]["error"]
+    assert "Add CSV" in refused[0]["error"], "the refusal does not say what to do instead"
+    assert seam["mapRefused"]["saved"] == [] and seam["mapRefused"]["renamed"] == []
+    assert seam["mapAfter"]["name"] == seam["item"] + "_map.csv"
+    assert seam["mapAfter"]["unchanged"], "this garment's map text was overwritten"
+    assert seam["mapAfter"]["sameScales"]
+    # The garment's own map, re-picked, still replaces itself - the rule is
+    # "another garment's map", not "no map at all".
+    assert seam["ownMap"]["saved"] == [seam["item"] + "_map.csv"], seam["ownMap"]
+    assert seam["ownMap"]["refused"] == []
+
+
+def test_two_picked_files_cannot_land_on_the_same_name(item_csv_probe):
+    # Adversarial review F3: both renamed to <item>_color_clash_grid.csv, so
+    # addFiles() silently kept the last one while the toast counted two saved.
+    clash = item_csv_probe["seam"]["clash"]
+    key = item_csv_probe["seam"]["item"]
+    assert clash["saved"] == [key + "_color_clash_grid.csv"], clash
+    assert [r["name"] for r in clash["refused"]] == ["AZ271SC6302_color_clash_grid.csv"], clash
+    # Naming both, so it is clear which of the two was kept.
+    assert "AZ271SB2303_color_clash_grid.csv" in clash["refused"][0]["error"], clash
+
+
+def test_a_garment_with_no_look_names_itself_by_its_model_number(item_csv_probe):
+    # Adversarial review F4/F5, on the rendered page rather than on the
+    # helpers: a bag has no LOOK number, so the model number is the name -
+    # the raw item code (a file-name stem) must appear nowhere.
+    render = item_csv_probe["render"]
+    bag = render["bagTrack"]
+    assert bag is not None, "no bag track row found"
+    assert bag["name"] == "AZ271SG3037 (Bag 03)", bag
+    assert not bag["sub"], f"the model number is printed twice: {bag!r}"
+    assert "AZ271SG3037 (Bag 03)" in render["lookHeads"], render["lookHeads"]
+    assert [h for h in render["lookHeads"] if h == "AZ271SG3037"] == [], \
+        "the looks row still names a bag by its item code"
+    assert "AZ271SG3037 (Bag 03)" in render["cueItems"], render["cueItems"]
+
+    # A shared LOOK is disambiguated by the model number, not the item code,
+    # and the model is not then repeated underneath.
+    shared = render["sharedTrack"]
+    assert shared["name"] == "LOOK 26 · AZ271SB2303 (Skirt)", shared
+    assert not shared["sub"], f"the model number is printed twice: {shared!r}"
+    # The long form (the row's own tooltip, the cue table, the EDIT CUE
+    # heading) is not a blind join of the two either.
+    assert shared["title"] == "LOOK 26 · AZ271SB2303 (Skirt)", shared
+    assert "LOOK 26 · AZ271SB2303 (Skirt)" in render["cueItems"], render["cueItems"]
+    assert [c for c in render["cueItems"] if c.count("(Skirt)") > 1] == [], render["cueItems"]
+    assert render["cueEditorHead"] == "LOOK 26 · AZ271SB2303 (Skirt)", render["cueEditorHead"]
+    assert render["minInterval"], "SHORTEST INTERVAL PER ITEM rendered no rows to check"
+    assert [k for k in render["minInterval"] if "AZ271SB2303 (Skirt)" in k], render["minInterval"]
+    assert [k for k in render["minInterval"] if k in ("AZ271SB2303", "LOOK 26 · AZ271SB2303")] == [], \
+        "SHORTEST INTERVAL still disambiguates by item code"
+
+    # An unshared LOOK keeps the model number on its own second line.
+    plain = render["plainTrack"]
+    assert plain["name"] == "LOOK 23" and plain["sub"] == "AZ271SD1305", plain
+    assert plain["title"] == "LOOK 23 · AZ271SD1305", plain
+    assert "LOOK 23 · AZ271SD1305" in render["cueItems"], render["cueItems"]
+
+
+def test_a_shared_looks_top_is_drawn_above_its_skirt(item_csv_probe):
+    # lookGroups() sorts a LOOK's garments by stackRank, which can only read
+    # the model number's own wording (an item carries no structural side
+    # hint) - so this is only true once the labels carry "(Tops)"/"(Skirt)".
+    assert item_csv_probe["render"]["look26"] == ["AZ271SC6302 (Tops)", "AZ271SB2303 (Skirt)"], \
+        item_csv_probe["render"]["look26"]
+
+
+def test_a_project_stored_before_the_labels_were_fixed_gets_the_model_numbers(item_csv_probe):
+    # Adversarial review F2, on the back-fill itself; the end-to-end route
+    # (seed localStorage, reload, read the rendered page) is the test below.
+    after = item_csv_probe["backfill"]["after"]
+    assert after["AZ271SD1305"] == {"look": "23", "model": "AZ271SD1305"}
+    assert after["AZ271SD1301"] == {"look": "25", "model": "AZ271SD1301"}
+    # Never over something a designer typed.
+    assert after["AZ271SD1307"] == {"look": "28", "model": "TYPED BY HAND"}
+    # An item the old starter had no label for at all (the bags) gets the
+    # whole label, LOOK included - which for a bag is deliberately blank.
+    assert after["AZ271SG1035"] == {"look": "", "model": "AZ271SG1035 (Bag 01)"}
+    assert set(after) == set(SHOW_LABELS)
+
+
+# The end-to-end half of F2: the autosave beats the starter data, so the fix
+# only means anything if it survives a real boot from a real stored project.
+# Two passes in one page - seed localStorage, reload, report - because the app
+# has already read localStorage by the time any appended script can run.
+_BACKFILL_PROBE = """
+<script>
+(function () {
+  var KEY = "az27ss.project.v1", FLAG = "az27ss.test.seeded";
+  function publish(out) {
+    var pre = document.createElement("pre");
+    pre.id = "backfill-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }
+  function ready() {
+    try {
+      var st = globalThis.SIM && SIM.app && SIM.app.getState();
+      return !!(st && st.items && st.items.length);
+    } catch (e) { return false; }
+  }
+  function go() {
+    var seeded = null;
+    try { seeded = sessionStorage.getItem(FLAG); }
+    catch (e) { publish({ error: null, storage: false }); return; }
+    if (!seeded) {
+      var old = { files: {}, show: {} };
+      Object.keys(SIM.STARTER.files).forEach(function (n) { old.files[n] = SIM.STARTER.files[n]; });
+      old.show = JSON.parse(JSON.stringify(SIM.STARTER.show));
+      // The labels the starter USED to write: a LOOK number, an empty model,
+      // and no entry at all for the three bags.
+      var oldLabels = {};
+      Object.keys(SIM.STARTER.show.labels).forEach(function (k) {
+        var look = SIM.STARTER.show.labels[k].look;
+        if (look) oldLabels[k] = { look: look, model: "" };
+      });
+      old.show.labels = oldLabels;
+      try {
+        localStorage.setItem(KEY, JSON.stringify(old));
+        sessionStorage.setItem(FLAG, "1");
+      } catch (e) { publish({ error: null, storage: false }); return; }
+      location.reload();
+      return;
+    }
+    var labels = {};
+    SIM.app.getState().items.forEach(function (i) { labels[i.item] = { look: i.look, model: i.model }; });
+    publish({ error: null, storage: true, labels: labels, stored: Object.keys(JSON.parse(localStorage.getItem(KEY)).show.labels).length });
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    if (!ready() && ++tries < 200) return;
+    clearInterval(timer);
+    try { go(); } catch (e) { publish({ error: String((e && e.stack) || e) }); }
+  }, 50);
+})();
+</script>
+"""
+
+
+def test_a_stored_project_shows_the_new_labels_after_a_real_boot(tmp_path):
+    _require_browser(tmp_path)
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    data = _probe_page(tmp_path, _BACKFILL_PROBE, "backfill-out")
+    if not data.get("storage"):
+        pytest.skip("localStorage is not usable in this headless profile")
+    labels = data["labels"]
+    assert labels["AZ271SD1305"] == {"look": "23", "model": "AZ271SD1305"}, labels
+    assert labels["AZ271SG1035"] == {"look": "", "model": "AZ271SG1035 (Bag 01)"}, labels
+    assert labels["AZ271SB2303"] == {"look": "26", "model": "AZ271SB2303 (Skirt)"}, labels
