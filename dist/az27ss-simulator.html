@@ -3411,7 +3411,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
         <div class="tl-track" data-track="${esc(item.item)}">${bands}</div></div>`;
     }).join("");
     return `<div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div class="tl-wrap">${rows || `<div class="empty">No items yet.</div>`}
-      <div id="playhead"></div><div id="ph-head"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div>`;
+      <div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div>`;
   }
   function rulerTicks(D) {
     // The existing tiers, but never finer than D/200 (adversarial review
