@@ -2935,22 +2935,26 @@ document.addEventListener("click", async e => {
     // the others - the operator is asked, and the preset goes out with
     // `force`. Never a unit still burning or with nothing written: the
     // server refuses those whatever the answer here.
-    let force = false;
+    const answers = { force: false, split_ok: false };
     const msg = burnFailedQuestion("Show the preset anyway?");
-    if (msg) { if (!confirm(msg)) return; force = true; }
-    const result = await fleetCommand("preset", { force }, "② Show preset", "show");
-    // The tiles can lag the units by a poll: a refusal that `force` would
-    // get past (failed boards only) that arrived after the check above gets
-    // the same question, and one retry - not a loop. Any other refusal
-    // (still burning, nothing written) stands as the log shows it.
-    if (result && !force && onlyFailedBoards(result.error)
-        && confirm(`${result.error} — Show the preset anyway?`))
-      await fleetCommand("preset", { force: true }, "② Show preset", "show");
-    else if (result && !force && splitUpload(result.error)
-        && confirm(`${result.error}.\n\nShow the preset anyway? The units are `
-                   + `not all on the same upload, so the 0:00 look will be `
-                   + `two different timelines side by side.`))
-      await fleetCommand("preset", { force: true }, "② Show preset", "show");
+    if (msg) { if (!confirm(msg)) return; answers.force = true; }
+    let result = await fleetCommand("preset", { ...answers }, "② Show preset", "show");
+    // The tiles can lag the units by a poll, and the two gates are
+    // independent: each refusal gets its own question and one retry, not
+    // a loop, and each retry carries every answer given so far. Any other
+    // refusal (still burning, nothing written) stands as the log shows it.
+    for (let round = 0; round < 2 && result; round++) {
+      if (!answers.force && onlyFailedBoards(result.error)) {
+        if (!confirm(`${result.error} — Show the preset anyway?`)) break;
+        answers.force = true;
+      } else if (!answers.split_ok && splitUpload(result.error)) {
+        if (!confirm(`${result.error}.\n\nShow the preset anyway? The units are `
+                     + `not all on the same upload, so the 0:00 look will be `
+                     + `two different timelines side by side.`)) break;
+        answers.split_ok = true;
+      } else break;
+      result = await fleetCommand("preset", { ...answers }, "② Show preset", "show");
+    }
     return;
   }
   if (e.target.id === "show-start") {
@@ -2961,27 +2965,32 @@ document.addEventListener("click", async e => {
     // is restarted (burnFailedQuestion; the server refuses this same case
     // without `force` too).
     const failedMsg = burnFailedQuestion("start anyway?");
-    let msg = null, force = again;
+    let msg = null;
+    const answers = { force: again, split_ok: false };
     if (again) msg = `The show is running. Start it again from ${clock(startAt)}?`;
-    else if (failedMsg) { msg = failedMsg; force = true; }
+    else if (failedMsg) { msg = failedMsg; answers.force = true; }
     else if (startAt > 0) msg = `Start the show at ${clock(startAt)} (not from the beginning)?`;
     if (msg && !confirm(msg)) return;
-    let result = await fleetCommand("start", { lead_s: ui.lead, force }, `③ START (in ${ui.lead} s)`, "show");
-    // The tiles can lag the units by a poll, so a refusal `force` would
-    // get past (failed boards only) can arrive after the question above
-    // was skipped: ask it once more and retry, exactly as ② does.
-    if (result && !force && onlyFailedBoards(result.error)
-        && confirm(`${result.error} — start anyway?`))
-      result = await fleetCommand("start", { lead_s: ui.lead, force: true },
-                                  `③ START (in ${ui.lead} s)`, "show");
-    // The fleet is split over two uploads (a one-LOOK Upload, or an edit
-    // nobody uploaded): the show would run on two timelines at once.
-    // Worth doing on purpose in a rehearsal, never by accident.
-    else if (result && !force && splitUpload(result.error)
-        && confirm(`${result.error}.\n\nStart anyway? The units would run `
-                   + `two different timelines at the same time.`))
-      result = await fleetCommand("start", { lead_s: ui.lead, force: true },
-                                  `③ START (in ${ui.lead} s)`, "show");
+    const startBody = () => ({ lead_s: ui.lead, ...answers });
+    let result = await fleetCommand("start", startBody(), `③ START (in ${ui.lead} s)`, "show");
+    // Two gates, each with its own question and its own answer: the
+    // boards that did not take their pictures (`force`), and a fleet
+    // split over two uploads - a one-LOOK Upload, or an edit nobody
+    // uploaded - which would run two timelines at once (`split_ok`).
+    // Both can be refused on one START, in either order, so each answer
+    // is asked for once and every retry carries all of them. Waving one
+    // through must never wave the other through unasked (review N1).
+    for (let round = 0; round < 2 && result; round++) {
+      if (!answers.force && onlyFailedBoards(result.error)) {
+        if (!confirm(`${result.error} — start anyway?`)) break;
+        answers.force = true;
+      } else if (!answers.split_ok && splitUpload(result.error)) {
+        if (!confirm(`${result.error}.\n\nStart anyway? The units would run `
+                     + `two different timelines at the same time.`)) break;
+        answers.split_ok = true;
+      } else break;
+      result = await fleetCommand("start", startBody(), `③ START (in ${ui.lead} s)`, "show");
+    }
     // A 200 with a "nothing uploaded"/"already running" note also has
     // result.error unset, so !result.error alone is not "it actually started" -
     // a real start always carries from_s and at least tried to send somewhere

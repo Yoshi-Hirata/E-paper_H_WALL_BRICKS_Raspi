@@ -2116,12 +2116,22 @@ def test_start_refuses_a_fleet_split_over_two_uploads(tmp_path):
             assert status == 400, command
             assert payload["error"] == ("radxa-02 is not on this upload - "
                                         "Upload for All LOOKs before the show")
-        # The same explicit force the page already asks for gets past it:
-        # the mid-show rescue must never be locked out. (It then meets the
-        # ordinary burn gate, which is a different sentence.)
+        # This gate has an answer of its own. The burn gate's `force` -
+        # which the page may already have asked for, about failed boards -
+        # does NOT get past it: one "yes" must never answer two questions
+        # the operator was only asked one of (review N1).
+        for command in ("start", "preset"):
+            status, payload = _post(port, f"/api/fleet/{command}",
+                                    {"lead_s": 3, "force": True})
+            assert status == 400 and _refused_upload(payload), command
+        # `split_ok` is that answer. (It then meets the ordinary burn
+        # gate, which is a different question with a different sentence.)
         status, payload = _post(port, "/api/fleet/start",
-                                {"lead_s": 3, "force": True})
+                                {"lead_s": 3, "split_ok": True})
         assert not _refused_upload(payload)
+        # ... and does not answer the burn gate either: these units hold
+        # no pictures at all, which split_ok has nothing to say about.
+        assert "has not taken this show yet" in (payload.get("error") or "")
     finally:
         server.shutdown()
         server.server_close()
@@ -2172,6 +2182,36 @@ def test_start_refuses_a_fleet_that_is_a_whole_timeline_behind(tmp_path):
         assert payload["error"] == ("every unit holds an older upload than "
                                     "the timeline on screen - Upload again "
                                     "before the show")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_gate_does_not_say_upload_again_about_a_timeline_that_cannot_be_uploaded(tmp_path):
+    # "Upload again" is no use when an Upload could not happen - the
+    # operator would press it, watch it refuse, and be none the wiser
+    # (review N2). Read off the last compile, so START pays nothing.
+    ws = _two_unit_workspace(tmp_path)
+    server, _ = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        assert _post(port, "/api/fleet/upload", {})[0] == 200
+        # A cue pointing at a design that is not in the workspace: the
+        # same problem the Timeline tab shows, and compile_show() builds
+        # nothing at all while it is there.
+        ws.set_timeline(600, [_cue("a", 0), _skirt_cue("b", 0),
+                              {"id": "c", "item": "Look22", "at": 45,
+                               "design": "Look22_color_pattern09_grid.csv"}])
+        status, payload = _post(port, "/api/fleet/upload", {})
+        assert status == 200 and payload["problems"] and not payload["shows"]
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert status == 400
+        assert payload["error"] == ("the timeline has problems - fix them "
+                                    "on the Timeline tab, then Upload")
+        # Fixed: the ordinary sentence is back.
+        ws.set_timeline(600, [_cue("a", 45), _skirt_cue("b", 0)])
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert status == 400 and "Upload again before the show" in payload["error"]
     finally:
         server.shutdown()
         server.server_close()
@@ -2548,6 +2588,11 @@ def test_the_page_dialog_can_write_one_looks_units(page):
     # on purpose (conductor/server.py's _one_timeline).
     assert "const splitUpload = error =>" in page
     assert "two different timelines at the same time." in page
+    # Each gate has its own question and its own answer: the burn gate's
+    # `force` never answers the split one (review N1).
+    assert "const answers = { force: again, split_ok: false };" in page
+    assert "answers.split_ok = true;" in page
+    assert "{ lead_s: ui.lead, ...answers }" in page
 
 
 def test_the_page_chips_say_what_the_units_hold(page):

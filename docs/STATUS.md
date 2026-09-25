@@ -88,6 +88,15 @@
     「START refuses a fleet split over two uploads: Upload again with All LOOKs」と出る
   - **F7**: 機体ごとの印は増える一方だった ― タイムラインから消えた機体の印は
     `mark_written()` で落とし、`delete_demo` はその名前の印を忘れる
+  - **N1**: この関門の解除は **`split_ok` 専用フィールド**にした。焼き込み失敗の
+    `force` が両方の関門を一度に開けていたので、「基板が書けていないが start するか」に
+    はいと答えただけで、**分裂したまま START できてしまっていた**。ページは該当する
+    ぶんだけ質問し(焼き込み → `force`、分裂 → `split_ok`)、答えた分だけを送る
+  - **N2**: そもそもコンパイルが通らないときは「Upload again」ではなく
+    **「the timeline has problems - fix them on the Timeline tab, then Upload」**。
+    直前の `compile_show()` の結果(版・problems・units)を `Workspace.compiled` に
+    覚えておき、画面と同じ版のときだけ使う(START でコンパイルはしない)
+  - **N3**: 救済 Upload の `run["forced"]` に入るのは**書き込みが成功した機体だけ**
   - **F8**: 行の所要時間は「on the slowest of them」、選択中も**書かない機体を
     `older upload` の印つきで表示**(それが F1 の警告そのもの)、結果の見出しは
     部分失敗でも LOOK 名を出す、1 台に複数ルックが載るときは

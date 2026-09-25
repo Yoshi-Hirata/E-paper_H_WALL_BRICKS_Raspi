@@ -661,6 +661,21 @@ def test_a_forced_upload_under_a_running_show_leaves_force_on_the_run():
     assert link.posted[-1][1]["force"] is True
 
 
+def test_a_rescue_that_did_not_land_does_not_force_that_unit():
+    # The rescue is the write: a unit whose re-write never arrived was
+    # not rescued, and must keep its own gate (review N3).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    one, two = StubLink("radxa-01", "stopped"), FailingLink("radxa-02", "stopped")
+    fleet.links = {"radxa-01": one, "radxa-02": two}
+    shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600},
+             "radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.shows = dict(shows)
+    fleet.start_show(lead_s=1.0)
+    results = fleet.upload(shows, force=True)
+    assert results["radxa-02"]["ok"] is False
+    assert fleet.run["forced"] == ["radxa-01"]
+
+
 def test_a_rescue_upload_forces_only_the_unit_it_rescued():
     # The mid-show rescue of ONE unit must not wave every other unit's
     # failed boards through for the rest of the night (review F5).

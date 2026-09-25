@@ -247,6 +247,12 @@ class Workspace:
         # still on an older timeline - the fleet-wide mark above cannot
         # say that, so it is simply absent after a partial write.
         self.unit_marks: "dict[str, dict[str, str]]" = {}
+        # What the last compile_show() made of the timeline, and of which
+        # revision: {"revision", "problems", "units"}. START's gate reads
+        # it to tell "you edited and forgot to upload" (Upload again)
+        # from "this timeline does not build at all" (fix it first) -
+        # without paying for a compile of its own.
+        self.compiled: "dict | None" = None
 
     # ---- show.json ----
 
@@ -1092,6 +1098,15 @@ class Workspace:
 
     def compile_show(self) -> "tuple[dict[str, dict], list[str]]":
         """The whole timeline -> ({unit: show file}, problems)."""
+        # Taken before the work, so what is remembered below is the state
+        # this compile was OF, not one an edit landed on meanwhile.
+        rev = self.revision()
+        shows, problems = self._compile_show()
+        self.compiled = {"revision": rev, "problems": list(problems),
+                         "units": sorted(shows)}
+        return shows, problems
+
+    def _compile_show(self) -> "tuple[dict[str, dict], list[str]]":
         with self._lock:
             paths = sorted(self.files.glob("*.csv"))
             show = self._migrate_align(self._load_show())
@@ -1772,9 +1787,13 @@ class Handler(BaseHTTPRequestHandler):
 
         Only the per-unit marks of THIS conductor are evidence: a
         conductor restarted mid-show knows nothing about who holds what
-        and must not refuse on a guess. `force` - the same explicit force
-        the page already asks for before it starts over failed boards -
-        goes through, so the mid-show rescue is never locked out.
+        and must not refuse on a guess.
+
+        Its override is `split_ok`, its own field and nobody else's: the
+        burn gate's `force` used to wave this one through too, so a page
+        that had already asked "some boards did not take it - start
+        anyway?" started a fleet running two timelines without ever
+        asking about THAT (N1). Two gates, two questions, two answers.
 
         It lives here rather than in Fleet because only the workspace
         knows what revision the timeline on screen is."""
@@ -1794,6 +1813,14 @@ class Handler(BaseHTTPRequestHandler):
         behind = sorted(unit for unit, mark in known.items() if mark != rev)
         if not missing and not behind:
             return
+        # "Upload again" is no use when an Upload could not happen: the
+        # timeline itself does not build (N2). Read off the last compile,
+        # and only while it is still a compile of what is on screen.
+        compiled = self.workspace.compiled
+        if (compiled and compiled["revision"] == rev
+                and (compiled["problems"] or not compiled["units"])):
+            raise ValueError("the timeline has problems - fix them on the "
+                             "Timeline tab, then Upload")
         if not missing and len(set(known.values())) == 1:
             # They agree with each other, and all disagree with the
             # timeline on screen: the ordinary "edited and forgot to
@@ -1896,10 +1923,10 @@ class Handler(BaseHTTPRequestHandler):
             # The same `force` as START's: waves through a unit that
             # failed to burn some boards (the page asks first), never
             # one still burning or with nothing written (fleet.py) - and
-            # the same force that waves through a fleet split over two
-            # uploads, which the preset would otherwise show as two
-            # different 0:00 looks side by side.
-            if not body.get("force"):
+            # The split fleet - which the preset would otherwise show as
+            # two different 0:00 looks side by side - is a gate of its
+            # own, with its own answer (`split_ok`).
+            if not body.get("split_ok"):
                 self._one_timeline(fleet)
             return self._json({"units": fleet.preset(
                 force=bool(body.get("force")))})
@@ -1953,8 +1980,9 @@ class Handler(BaseHTTPRequestHandler):
                 # Every unit of the timeline has to hold the SAME upload,
                 # which is the sentence the "Which LOOKs" dialog prints
                 # under a one-look Upload. Refused before start_show(),
-                # because after it the fleet is already running.
-                if not body.get("force"):
+                # because after it the fleet is already running - and on
+                # its own answer, never on the burn gate's `force`.
+                if not body.get("split_ok"):
                     self._one_timeline(fleet)
                 from_s = body.get("from_s")
                 if from_s is None:

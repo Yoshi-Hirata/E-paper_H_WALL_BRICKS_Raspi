@@ -652,9 +652,11 @@ class Fleet:
                 # Only for the units actually rescued, though: a one-unit
                 # Upload during a run must not quietly wave every other
                 # unit's failed boards through for the rest of the night
-                # (review F5).
+                # (review F5) - and a unit whose re-write never landed was
+                # not rescued at all, so it keeps its own gate (N3).
                 forced = set(self.run.get("forced") or ())
-                forced.update(targets)
+                forced.update(name for name in targets
+                              if results.get(name, {}).get("ok"))
                 self.run["forced"] = sorted(forced)
         return results
 
