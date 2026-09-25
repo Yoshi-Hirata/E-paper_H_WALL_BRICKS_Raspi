@@ -215,6 +215,37 @@ def test_a_hostile_music_file_name_cannot_end_the_script_element():
     assert "</script" not in html[start:start + html[start:].index("</script>")]
 
 
+def test_a_hostile_mime_cannot_break_out_of_the_data_url(tmp_path):
+    # The MIME is the one value in the generated script that cannot be
+    # escaped: it sits in the data: URL as raw text, because the
+    # ";base64," after it is URL syntax, not a string. show.json is
+    # hand-editable, so `audio/mpeg";x="` in its `type` used to close the
+    # dataUrl literal and let whatever followed run as code.
+    hostile = 'audio/mpeg";globalThis.PWNED=1;x="'
+    html = build_designer.build_page(DESIGNER_HTML, music=b"x",
+                                     music_name="clip.mp3", music_type=hostile)
+    assert "PWNED" not in html
+    embedded = _embedded(html)
+    assert embedded["type"] == "audio/mpeg"          # fell back to the extension
+    assert 'dataUrl: "data:audio/mpeg;base64,' in html
+
+    # ...and the same through --music auto, which is where a real one comes
+    # from: show.json's `type`, read by workspace_music().
+    ws = tmp_path / "showdata"
+    (ws / "music").mkdir(parents=True)
+    (ws / "music" / "Track.wav").write_bytes(_silent_wav(64))
+    (ws / "show.json").write_text(json.dumps(
+        {"music": {"name": "Track.wav", "type": hostile}}), encoding="utf-8")
+    _data, name, mime = build_designer.workspace_music(ws)
+    assert build_designer.safe_mime(mime, name) == "audio/wav"
+
+    for bad in ["", "audio", "audio/", "/wav", "audio/wav; charset=x",
+                "audio/wav\nx", 'a"b/c', "audio/mpeg;base64,x"]:
+        assert build_designer.safe_mime(bad, "clip.mp3") == "audio/mpeg", bad
+    for good in ["audio/mpeg", "audio/x-wav", "application/octet-stream"]:
+        assert build_designer.safe_mime(good, "clip.mp3") == good
+
+
 def test_music_auto_reads_the_workspaces_show_json(tmp_path):
     audio = _silent_wav(64)
     ws = tmp_path / "showdata"
@@ -279,6 +310,16 @@ def test_the_timeline_toolbar_offers_the_simulator_download():
     assert 'href="/api/simulator?music=1"' in tag
     assert "download" in tag
     assert "hand this file to the director's team" in tag
+    # The click is handled in JS and the anchor's own download suppressed:
+    # with `download` set, a failed build came back as a 500 whose JSON
+    # body the browser saved AS the simulator - a file that looks right,
+    # opens blank and explains nothing.
+    assert re.search(r'id === "tl-simulator".*?preventDefault\(\).*?downloadSimulator\(\)',
+                     index_text), "the simulator link still downloads without checking"
+    handler = index_text[index_text.index("async function downloadSimulator"):]
+    handler = handler[:handler.index("\nasync function ")]
+    assert "response.ok" in handler and "Could not build the simulator" in handler
+    assert "revokeObjectURL" in handler, "the 23 MB blob is never released"
 
 
 def test_build_designer_excludes_any_data_stub_script(tmp_path):

@@ -1500,6 +1500,51 @@ async function loadShowFile(file) {
   } catch (err) { toast("Import failed: " + err.message); }
   await refresh();
 }
+// "Simulator for designers…": fetch the page, THEN save it.
+//
+// Not the anchor's own download (adversarial review - F7): with `download`
+// set, a failed build came back as a 500 whose JSON body the browser
+// cheerfully saved as az27ss-simulator-…html - a file that looks like the
+// simulator, opens blank, and says nothing about what went wrong. Fetching
+// first means a failure is a toast and nothing lands in Downloads. The
+// href stays on the element so the link can still be copied, and so a
+// middle-click does something sensible.
+let simulatorBusy = false;
+async function downloadSimulator() {
+  if (simulatorBusy) return;                 // one build at a time
+  simulatorBusy = true;
+  const named = state?.music?.name;
+  toast(named
+    ? `Building the simulator with ${named} - a large file, this takes a moment`
+    : "No music is loaded, so this will be the simulator without a built-in track");
+  let url = null;
+  try {
+    const response = await fetch("/api/simulator?music=1");
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try { detail = (await response.json()).error || detail; } catch {}
+      toast("Could not build the simulator: " + detail);
+      return;
+    }
+    const named_as = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "");
+    const name = named_as ? named_as[1] : "az27ss-simulator.html";
+    url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url; link.download = name;
+    document.body.appendChild(link); link.click(); link.remove();
+    toast(named ? `Downloaded ${name}`
+                : `Downloaded ${name} - it has no music in it; upload the show's music and download it again`);
+  } catch (err) {
+    toast("Could not build the simulator: " + (err?.message || err));
+  } finally {
+    simulatorBusy = false;
+    // Revoked on a timer, not straight away: the download has to have
+    // started reading the blob first, and ~23 MB held for half a minute
+    // is cheaper than a download that dies on click.
+    if (url) setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+}
+
 async function loadBundleFile(file) {
   if (!file) return;
   let data;
@@ -2581,17 +2626,7 @@ document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
-  if (e.target.id === "tl-simulator") {
-    // No preventDefault: the anchor's own download still runs. This only
-    // says what is about to arrive, because the answer differs and the
-    // file name alone does not explain itself - with the show's music
-    // it is ~23 MB and takes a moment to build, and without any music
-    // loaded it is the silent page, which is a thing the operator should
-    // learn now rather than from the director's team tomorrow.
-    if (state?.music) toast(`Building the simulator with ${state.music.name} - a large file, the download starts in a moment`);
-    else toast("No music is loaded, so this is the simulator without a built-in track - upload the music and download it again");
-    return;
-  }
+  if (e.target.id === "tl-simulator") { e.preventDefault(); downloadSimulator(); return; }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
   if (e.target.id === "tl-dock-toggle") { ui.dock = ui.dock === "collapsed" ? "compact" : "collapsed"; saveDockPref(); renderTimeline(); return; }
   if (e.target.closest("#tl-editor-toggle")) { ui.editorOpen = !ui.editorOpen; renderTimeline(); return; }

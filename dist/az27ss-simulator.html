@@ -2812,10 +2812,19 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   let builtInUrl = null;
   let builtInDecoded = false;
   function builtInMusic() { return globalThis.SIM.embeddedMusic || null; }
-  function builtInMusicName() { const m = builtInMusic(); return (m && m.name) || null; }
+  // The built-in track's name - and null unless there is decodable audio
+  // behind it (adversarial review - F4). A 0-byte or corrupt embed used to
+  // leave the name in place, so the music line read "NAME · built in" over
+  // silence and Play simply did nothing; treating it as no embed at all
+  // falls through to the honest "(re-pick the file…)" bar instead. Every
+  // caller asking "is there a built-in track" asks through this.
+  function builtInMusicName() {
+    const m = builtInMusic();
+    return (m && m.name && builtInMusicUrl()) ? m.name : null;
+  }
   function builtInMusicUrl() {
     const m = builtInMusic();
-    if (!m) return null;
+    if (!m || !m.size) return null;          // an empty embed is not a track
     if (builtInDecoded) return builtInUrl;
     builtInDecoded = true;
     try {
@@ -2823,6 +2832,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       const binary = atob(url.slice(url.indexOf(",") + 1));
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      if (!bytes.length) { builtInUrl = null; return null; }
       builtInUrl = URL.createObjectURL(new Blob([bytes], { type: m.type || "audio/mpeg" }));
       m.dataUrl = null;        // the big string has done its job - let it go
     } catch (err) {
@@ -3453,12 +3463,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     // project, so it is read off the module rather than out of state.music
     // (see boot()'s buildState wrapper for why that object stays exactly
     // {name, url}).
-    // builtInMusicUrl(), not just the name: a truncated or corrupt embed
-    // leaves the name behind but no audio, and a line reading "· built in"
-    // over silence is worse than no line at all. With no usable URL this
-    // falls through to the ordinary "(re-pick the file…)" bar, which is
-    // then the truth.
-    const embedded = builtInMusicUrl() ? builtInMusicName() : null;
+    const embedded = builtInMusicName();     // null unless it really plays
     const onBuiltIn = !!embedded && !musicUrl;
     const pick = `<label class="filebtn">${embedded ? "Pick another file…" : "Pick file…"}<input id="music-pick" type="file" accept="audio/*"></label>`;
     if (onBuiltIn) {
@@ -4182,7 +4187,18 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
           if (oldName !== newName) {
             setMusicFile(null);
             project.show.music = newMusic;
-            if (newName) toast(`Music: ${newName} - pick the file again to hear it (project files never include the audio itself).`);
+            // A bundle naming no music at all still leaves the built-in
+            // track playing, so the project should say so - the same
+            // thing newProject() does, and for the same reason.
+            adoptBuiltInName(project);
+            const embedded = builtInMusicName();
+            // "Pick the file again to hear it" is only true when there is
+            // nothing else to hear (adversarial review - F3): with a
+            // built-in track it flatly contradicted the music line right
+            // above it, which was already saying what would play.
+            if (!newName) { /* nothing was named - nothing to warn about */ }
+            else if (!embedded) toast(`Music: ${newName} - pick the file again to hear it (project files never include the audio itself).`);
+            else if (newName !== embedded) toast(`Music: ${newName} - this file plays the built-in track ${embedded} instead.`);
           }
         }
       }
@@ -4239,8 +4255,6 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       if (warn) warn.style.display = "inline";
     }
     globalThis.SIM.app = app;
-    // Wrap buildState so state.music always reflects this session's live object
-    // URL (SIM.buildState itself is pure and knows nothing about object URLs).
     // Wrap buildState so state.music always reflects this session's live object
     // URL (SIM.buildState itself is pure and knows nothing about object URLs):
     // `url` is whatever pressing Play will actually produce - the picked file

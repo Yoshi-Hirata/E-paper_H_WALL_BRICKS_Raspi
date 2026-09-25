@@ -118,6 +118,28 @@ MUSIC_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
 def music_type(name: str) -> str:
     return MUSIC_TYPES.get(Path(name).suffix.lower(), "application/octet-stream")
 
+
+# RFC 9110's `token` characters on both sides of the slash, and nothing
+# else. The MIME goes into a data: URL as raw text - it cannot be quoted or
+# escaped there, because the ";base64," that follows is URL syntax, not a
+# string - so it is the one value in the generated script that has to be
+# refused rather than escaped. It arrives from show.json, which is a file a
+# person can hand-edit, and `audio/mpeg";x="` in it would otherwise close
+# the dataUrl literal and let the rest run as code.
+_MIME_RE = re.compile(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")
+
+
+def safe_mime(mime: str, name: str) -> str:
+    """`mime` if it is a plain type/subtype, otherwise the one the file
+    name implies. Silently falling back beats failing the build: a broken
+    `type` in show.json is the operator's typo, not a reason they cannot
+    hand the director's team a file, and the extension is the better guess
+    anyway."""
+    mime = (mime or "").strip()
+    if _MIME_RE.fullmatch(mime):
+        return mime
+    return music_type(name)
+
 LINK_RE = re.compile(r'<link\b([^>]*?)href="([^"]+)"([^>]*?)/?>', re.IGNORECASE)
 # src accepts a quoted (single or double) or bare (no space, no ">") value -
 # `\bsrc="..."` alone missed e.g. <script src=sim/foo.js> (technically legal
@@ -196,17 +218,28 @@ def music_script(data: bytes, name: str, mime: str) -> str:
     what the page shows and what a test can compare against the file on
     disk; getting that wrong by 4/3 would be a quiet, plausible-looking
     lie."""
-    mime = mime or music_type(name)
+    mime = safe_mime(mime, name)
     encoded = base64.b64encode(data).decode("ascii")
-    return ("<script>/* the show's music, embedded by "
-            "tools/build_designer.py --music */\n"
-            "globalThis.SIM = Object.assign(globalThis.SIM || {}, "
-            "{ embeddedMusic: {\n"
-            f"  name: {_js_string(name)},\n"
-            f"  type: {_js_string(mime)},\n"
-            f"  size: {len(data)},\n"
-            f'  dataUrl: "data:{mime};base64,{encoded}"\n'
-            "} });\n</script>")
+    # The base64 body is concatenated in AFTER the escaping below, not run
+    # through it: its alphabet (A-Za-z0-9+/=) provably contains no "<" and
+    # no control character, so there is nothing in it for the escaping to
+    # find - and three regex passes over 23 MB to prove that again on every
+    # build is a second of nothing. Everything with a person's text in it
+    # (the name, the type) IS escaped, exactly as an inlined module is.
+    opening = ("/* the show's music, embedded by "
+               "tools/build_designer.py --music */\n"
+               "globalThis.SIM = Object.assign(globalThis.SIM || {}, "
+               "{ embeddedMusic: {\n"
+               f"  name: {_js_string(name)},\n"
+               f"  type: {_js_string(mime)},\n"
+               f"  size: {len(data)},\n"
+               f'  dataUrl: "data:{mime};base64,')
+    closing = '"\n} });\n'
+    # The <script> tags themselves stay outside the escaping, or it would
+    # turn the closing tag into text and the element would never end.
+    opening = _escape_script_hazards(opening)
+    _refuse_control_chars(opening, "the embedded music's name/type")
+    return "<script>" + opening + encoded + _escape_script_hazards(closing) + "</script>"
 
 
 def build(source: Path, no_starter: bool, with_goldens: bool = False,

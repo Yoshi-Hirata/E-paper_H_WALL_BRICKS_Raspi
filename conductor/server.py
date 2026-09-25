@@ -543,6 +543,15 @@ class Workspace:
                     handle.write(chunk)
                     written += len(chunk)
                     remaining -= len(chunk)
+            # Also here, not only in the handler's Content-Length check:
+            # save_music() is called directly (the tests, and anything
+            # else that grows a caller later), and an empty file must
+            # never become the show's music - a name in show.json with no
+            # audio under it is exactly what makes the designers'
+            # simulator claim a built-in track and then play nothing.
+            if written == 0:
+                raise ValueError("that music file is empty (0 bytes) - "
+                                 "nothing was uploaded")
             info = {"name": safe, "size": written, "type": music_type(safe)}
             with self._lock:
                 before = self._load_show()
@@ -1229,28 +1238,53 @@ def designer_builder():
     return _designer_builder
 
 
-# Keyed on what actually decides the bytes: the music's name, size and
-# mtime (and None for the lean page). Building the real show's page means
-# base64-encoding 17.5 MB and assembling a 23 MB string - about a second -
-# and an operator who clicks the button twice, or whose browser retries the
-# download, should not pay it twice. One entry per key, and at most a
-# couple of keys ever exist in a session; the lean page is a few hundred KB
-# and each music page is bounded by MAX_MUSIC, so this cannot grow without
-# limit in any way that matters. Bounded to the two most recent keys
-# anyway, so a session that replaces the music ten times does not keep ten
-# 23 MB pages alive.
+# Building the real show's page means base64-encoding 17.5 MB and
+# assembling a 23 MB string - about two seconds - and an operator who
+# clicks the button twice, or whose browser retries the download, should
+# not pay it twice. Bounded to the two most recent keys, so a session that
+# replaces the music ten times does not keep ten 23 MB pages alive.
 _simulator_cache: "dict" = {}
 _simulator_cache_lock = threading.Lock()
 _SIMULATOR_CACHE_MAX = 2
 
 
-def build_simulator(music: "tuple | None") -> bytes:
-    """The simulator page as bytes, cached per (name, size, mtime).
+def _music_key(path: Path, name: str, size: int) -> tuple:
+    """What decides the bytes of a with-music page.
 
-    `music` is (path, name, type, size, mtime) or None for the lean page.
-    The lock is held across the build, not just the lookup: two clicks in
+    NOT int(st_mtime): replacing the music with a different file of the
+    same name and the same size within the same second - which is one drag
+    and drop of a re-exported mix, not a contrived case - left the key
+    unchanged and served the OLD track, silently, with the new name on it.
+    st_mtime_ns is the fix; the digest of the first and last 64 KB is the
+    cheap insurance for a filesystem whose nanoseconds are coarse or a
+    copy that preserves timestamps. Not the whole file: hashing 17.5 MB on
+    every click to save a build that only happens when the key changes is
+    the wrong trade, and the ends of an audio file are where a different
+    take differs."""
+    try:
+        stat = path.stat()
+        mtime_ns, real_size = stat.st_mtime_ns, stat.st_size
+    except OSError:
+        mtime_ns, real_size = 0, size
+    edges = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            edges.update(handle.read(65536))
+            if real_size > 65536:
+                handle.seek(max(65536, real_size - 65536))
+                edges.update(handle.read(65536))
+    except OSError:
+        pass
+    return (name, real_size, mtime_ns, edges.hexdigest())
+
+
+def build_simulator(music: "tuple | None") -> bytes:
+    """The simulator page as bytes, cached per _music_key().
+
+    `music` is (path, name, type, size) or None for the lean page. The
+    lock is held across the build, not just the lookup: two clicks in
     quick succession should queue behind one build, not run two."""
-    key = None if music is None else (music[1], music[3], music[4])
+    key = None if music is None else _music_key(music[0], music[1], music[3])
     with _simulator_cache_lock:
         hit = _simulator_cache.get(key)
         if hit is not None:
@@ -1259,7 +1293,7 @@ def build_simulator(music: "tuple | None") -> bytes:
         if music is None:
             page = builder.build_page(DESIGNER_SOURCE)
         else:
-            path, name, mime, _size, _mtime = music
+            path, name, mime, _size = music
             page = builder.build_page(DESIGNER_SOURCE, music=path.read_bytes(),
                                       music_name=name, music_type=mime)
         body = page.encode("utf-8")
@@ -1303,10 +1337,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._music_file(head=False)
         if path == "/api/show/export":
             return self._export_show()
-        if path == "/api/simulator":
-            query = urllib.parse.parse_qs(self.path.partition("?")[2])
-            return self._simulator(query.get("music", ["0"])[0] == "1")
         try:
+            if path == "/api/simulator":
+                # Inside the try, so anything unexpected on the way to the
+                # build (a show.json that will not parse, say) comes back
+                # as the JSON error the page knows how to show, not as a
+                # traceback and a dead socket.
+                query = urllib.parse.parse_qs(self.path.partition("?")[2])
+                return self._simulator(query.get("music", ["0"])[0] == "1")
             if path == "/api/state":
                 return self._json(self.workspace.state())
             if path == "/api/fleet":
@@ -1410,19 +1448,19 @@ class Handler(BaseHTTPRequestHandler):
             info = self.workspace.music_info()
             if info is not None:
                 path = self.workspace.music / Path(info["name"]).name
-                try:
-                    mtime = int(path.stat().st_mtime)
-                except OSError:
-                    mtime = 0
-                music = (path, info["name"], info["type"], info["size"], mtime)
+                music = (path, info["name"], info["type"], info["size"])
         stamp = time.strftime("%Y%m%d")
         suffix = "-with-music" if music is not None else ""
         filename = f"az27ss-simulator-{stamp}{suffix}.html"
         try:
             body = build_simulator(music)
         except Exception as exc:        # noqa: BLE001 - a download must say why
-            return self._json({"error": f"could not build the simulator: "
-                                        f"{exc.__class__.__name__}: {exc}"},
+            # The cause only, in the same shape as every other endpoint's
+            # error: the page supplies the "Could not build the
+            # simulator:" lead-in, and repeating it here read as
+            # "Could not build the simulator: could not build the
+            # simulator: OSError: ...".
+            return self._json({"error": f"{exc.__class__.__name__}: {exc}"},
                               status=500)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1515,6 +1553,13 @@ class Handler(BaseHTTPRequestHandler):
             length = -1
         if length < 0:
             return self._json({"error": "Content-Length required"}, status=400)
+        # An empty file is not music. It used to be accepted, which put a
+        # name into show.json with no audio under it - and once that is
+        # embedded in the designers' simulator, the music line says the
+        # track is built in and Play does nothing.
+        if length == 0:
+            return self._json({"error": "that music file is empty (0 bytes) - "
+                                        "nothing was uploaded"}, status=400)
         if length > MAX_MUSIC:
             # Refused before a single byte is read off the wire.
             self.close_connection = True

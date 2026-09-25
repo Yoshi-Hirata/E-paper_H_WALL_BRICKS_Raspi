@@ -41,12 +41,13 @@
   従来の黄色い帯に加えて「Playing the built-in track 曲名 instead」も出す
   (記録されている名前と、実際に鳴るものの両方を言う)。Run self-test や New project で
   埋め込み音源を失わないことも確認済み
-- **コミットされるのは今までどおり音源なしの `dist/az27ss-simulator.html`**(564,009 バイト、
+- **コミットされるのは今までどおり音源なしの `dist/az27ss-simulator.html`**(565,274 バイト、
   2 MB の上限も `--check` もこちらだけ)。音源入り
   (`dist/az27ss-simulator-with-music.html`)は .gitignore 済み
-- 実測(本番音源 AZ 27SS.DEMO.mp3 = 17,542,144 バイト):ページ 23,953,805 バイト、
-  ヘッドレス Edge で `domInteractive` 475 ms / `domComplete` 1,003 ms(音源なしは
-  64 ms / 357 ms)。サーバ側の初回ビルド約 2 秒、2 回目はキャッシュ
+- 実測(本番音源 AZ 27SS.DEMO.mp3 = 17,542,144 バイト):ページ 23,955,070 バイト、
+  ヘッドレス Edge で `domInteractive` 348 ms / `domComplete` 747 ms(音源なしは
+  34 ms / 211 ms)。サーバ側の初回ビルド約 1.8 秒(その間だけオペレーターの画面が
+  固まる ―― Python の CPU 処理が GIL を握るため)、2 回目はキャッシュで 0.05 秒
 
 **「Write to units…」- 機体への書き込みを 1 つの入口に(2026-09-25、依頼者の指摘から)**
 
