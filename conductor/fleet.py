@@ -613,9 +613,17 @@ class Fleet:
         unit holds) is MERGED rather than replaced: replacing it would
         have the conductor forget the earlier upload the other units are
         still running on, and the page's "uploaded n/n" would count them
-        as holding a show nobody sent them."""
+        as holding a show nobody sent them.
+
+        Merged, but only over the units this timeline still has: a unit
+        whose look was taken out of the show is dropped from `self.shows`
+        by a partial upload exactly as a full one drops it, or _targets()
+        would go on driving it and START would post /show/run to a unit
+        that is not in the show at all (review F3)."""
         targets = ([name for name in shows] if only is None
                    else [name for name in only if name in shows])
+        if only is not None:
+            self._refuse_mixed_duration(shows, targets)
 
         def action(link):
             excuse = self._demo_excuse(link)
@@ -627,7 +635,9 @@ class Fleet:
         if only is None:
             self.shows = dict(shows)
         else:
-            self.shows = {**self.shows, **{name: shows[name] for name in targets}}
+            kept = {name: show for name, show in self.shows.items()
+                    if name in shows}
+            self.shows = {**kept, **{name: shows[name] for name in targets}}
         # A new show file is a new duration: a remembered position from
         # the old one may no longer even be inside it (found in review).
         with self._run_lock:
@@ -639,8 +649,36 @@ class Fleet:
                 # then fails on a live board, supervision must still put
                 # it BACK INTO the show rather than refuse it and leave
                 # it dark for the rest of the night (R4, review round 3).
-                self.run["force"] = True
+                # Only for the units actually rescued, though: a one-unit
+                # Upload during a run must not quietly wave every other
+                # unit's failed boards through for the rest of the night
+                # (review F5).
+                forced = set(self.run.get("forced") or ())
+                forced.update(targets)
+                self.run["forced"] = sorted(forced)
         return results
+
+    def _refuse_mixed_duration(self, shows: "dict[str, dict]",
+                               targets: "list[str]") -> None:
+        """A one-LOOK upload whose show is a different LENGTH from the
+        one the untouched units still hold is refused outright.
+
+        Everything downstream reads the show's length as one number
+        (show_duration() takes the longest of them), so a fleet split
+        across two lengths would have SEEK and START accept a position
+        that is past a unit's own end - and the unit that cannot reach it
+        simply never fires again (review F2). A shorter/longer timeline
+        is not a one-look fix; it is a full Upload."""
+        mine = {round(float(shows[name].get("duration", 0.0)), 1)
+                for name in targets}
+        for name, show in self.shows.items():
+            if name in targets or name not in shows:
+                continue
+            held = round(float(show.get("duration", 0.0)), 1)
+            if mine and held not in mine:
+                raise ValueError(
+                    f"this timeline is {min(mine):g} s long but {name} still "
+                    f"holds a {held:g} s one - Upload for All LOOKs")
 
     # ---- the standalone demo: a named copy of the show, in a unit's own
     # menu, that plays without this PC. Independent of the run this
@@ -753,7 +791,10 @@ class Fleet:
             # START's `force` belongs to the whole run: the unit's own
             # gate must wave the same failed boards through for every
             # SEEK/RESUME/NEXT of this run too, not just the first /show/run.
+            # A mid-show rescue Upload adds only the units it rescued
+            # (`forced`), so the rest of the fleet keeps its own gate.
             force = bool(self.run.get("force"))
+            forced = set(self.run.get("forced") or ())
         # The polls already in flight still show the old T0; give this
         # one time to land before the supervision second-guesses it.
         for name in names:
@@ -772,7 +813,7 @@ class Fleet:
             show = self.shows.get(link.name)
             link.post("/show/run", {"t0": t0 + offset,
                                     "show": show["id"] if show else None,
-                                    "force": force})
+                                    "force": force or link.name in forced})
             return {}
         return self._each(list(names), action)
 
@@ -1039,7 +1080,9 @@ class Fleet:
                 if not self._post_or_refused(
                         link, now, "/show/run",
                         {"t0": expected, "show": show["id"],
-                         "force": bool(run.get("force"))}, "run"):
+                         "force": bool(run.get("force"))
+                                  or link.name in (run.get("forced") or ())},
+                        "run"):
                     return
                 why = why or ("started late" if unit.get("t0") is None
                               else "T0 confirmed after its restart"

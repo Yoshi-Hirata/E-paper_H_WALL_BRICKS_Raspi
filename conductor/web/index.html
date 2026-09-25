@@ -301,6 +301,10 @@ button.primarybtn:disabled { filter: none; }
 .dlg-units span.u.gone { color: var(--warn); }
 .dlg-units span.u .rev { color: var(--dim); }
 .dlg-units span.u .rev.old { color: var(--warn); }
+/* The units a one-LOOK write is NOT going to: they are why START will
+   refuse afterwards, so they stay on screen rather than disappearing. */
+.dlg-units.left { font-size: 11.5px; opacity: .9; }
+.dlg-units.left .lbl { color: var(--dim); }
 /* "Which LOOKs": the radio group above the two choices. One row per LOOK
    the timeline reaches, in LOOK order - the operator points at the look
    they are checking, not at a unit name they would have to look up. */
@@ -318,6 +322,7 @@ button.primarybtn:disabled { filter: none; }
 .dlg-result { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
 .dlg-result h3 { margin: 0 0 4px; font-size: 13px; }
 .dlg-result .fail { color: var(--err); }
+.dlg-result .warn { color: var(--warn); margin-top: 6px; }
 .dlg-result .lcd { margin-top: 8px; border: 1px solid var(--ok); border-radius: 8px;
   padding: 8px 10px; font-size: 13px; }
 #write-progress { margin-top: 6px; }
@@ -1750,20 +1755,34 @@ function unitPlaysADemo(u) {
 // it is part of the show, and saying so is worth more than hiding it.
 function writeRows() {
   const byUnit = new Map(writeTargets().map(t => [t.unit, t]));
-  return lookGroups().map(g => {
+  const groups = lookGroups();
+  return groups.map(g => {
     const units = [...new Set(g.items.map(i => i.unit).filter(Boolean))].sort();
+    // Only the units the compiled show actually has (writeTargets = a
+    // unit with cues). A garment given a unit but no cue yet is NOT a
+    // target: sending its name would come back 400 from the server's own
+    // check and write nothing at all (review F4).
     const targets = units.map(u => byUnit.get(u)).filter(Boolean);
+    const cued = targets.map(t => t.unit);
     return { key: g.look ? "L" + g.look : "I" + g.items[0].item,
              look: g.look || null,
              models: g.items.map(i => i.model || i.item).join(" + "),
              // What the sentences under the two choices call this row.
              title: g.look ? `LOOK ${g.look}` : (g.items[0].model || g.items[0].item),
-             units, targets,
+             units: cued, targets,
+             // Has a unit, but nothing to send it - said on the row, so
+             // "→ radxa-05" never disappears without a word.
+             uncued: units.filter(u => !cued.includes(u)),
              // A unit writes its whole show, not just this look's cues -
              // the pictures of both units of a shared look, and the
              // slower of the two for the wait.
              pictures: targets.reduce((n, t) => n + t.pictures, 0),
              seconds: Math.max(1, ...targets.map(t => t.seconds), 1),
+             // Another look on the same Radxa: writing this row writes
+             // that one's pictures too, and the operator should hear it
+             // from the dialog rather than from the unit.
+             shared: groups.some(o => o !== g && o.items.some(
+               i => i.unit && cued.includes(i.unit))),
              // Nothing this row could write: no unit, or a unit with no
              // cue of this item on it yet.
              why: !units.length ? "no unit" : !targets.length ? "no cue yet" : null };
@@ -1911,7 +1930,10 @@ function writeState() {
   // "Which LOOKs": everything below the radio group is about the chosen
   // row alone - who is written to, how long it takes, what is refused.
   const row = writeRowByKey(ui.writeOnly);
-  const only = row ? row.units.slice() : null;
+  // The units of the compiled show, never the ones merely assigned on
+  // the Designs tab: a name the server has no show for is a 400 that
+  // writes nothing (review F4).
+  const only = row ? row.targets.map(t => t.unit) : null;
   const targets = only ? every.filter(t => only.includes(t.unit)) : every;
   const busy = targets.filter(t => t.demoBusy).map(t => t.unit);
   const run = fleet?.run || null;
@@ -1948,6 +1970,7 @@ function writeState() {
     : null;
   return { cues, bad, targets, run, busy, name, note, offline,
            only, onlyTitle: row ? row.title : null,
+           onlyShared: !!row && row.shared,
            seconds: Math.max(1, ...targets.map(t => t.seconds), 1),
            pictures: Math.max(0, ...targets.map(t => t.pictures)),
            // Upload during a run is allowed on purpose (it is the way back
@@ -1994,7 +2017,8 @@ function writeOnlyRowsHtml() {
       + `<span>${r.look ? `<b>LOOK ${esc(r.look)}</b> · ` : ""}${esc(r.models)} `
       + (r.why ? `<span class="none">— ${esc(r.why)}</span>`
          : `<span class="who">→ ${esc(r.units.join(", "))} · ${r.pictures} picture${r.pictures === 1 ? "" : "s"}`
-           + ` ≈ ${r.seconds} s</span>`)
+           + ` ≈ ${r.seconds} s${r.units.length > 1 ? " on the slowest of them" : ""}</span>`
+           + (r.uncued.length ? ` <span class="none">(${esc(r.uncued.join(", "))}: no cue yet)</span>` : ""))
       + `</span></label>`).join("");
 }
 function writeOnlyHtml() {
@@ -2008,8 +2032,8 @@ function writeOnlyHtml() {
 // radios themselves already carry and which must not cost a rebuild.
 function writeOnlyKey() {
   return JSON.stringify([writeTargets().length,
-    writeRows().map(r => [r.key, r.look, r.models, r.units, r.pictures,
-                          r.seconds, r.why])]);
+    writeRows().map(r => [r.key, r.look, r.models, r.units, r.uncued,
+                          r.pictures, r.seconds, r.why])]);
 }
 let writeOnlyShown = "";
 // What a one-LOOK write means, said under the choice it changes: the
@@ -2017,8 +2041,10 @@ let writeOnlyShown = "";
 function uploadOnlyText(s) {
   if (!s.onlyTitle) return "";
   const many = s.only.length !== 1;
-  return `Only ${s.onlyTitle}'s unit${many ? "s are" : " is"} written.`
-    + " START needs every unit of the timeline to hold this upload"
+  return `Only ${s.onlyTitle}'s unit${many ? "s are" : " is"} written`
+    + (s.onlyShared ? ` (the unit's other looks ride along — a unit is`
+       + ` written its whole show, not one look of it)` : "")
+    + ". START needs every unit of the timeline to hold this upload"
     + " — use this for checking one look, then Upload for all before the show.";
 }
 function demoOnlyText(s) {
@@ -2026,6 +2052,18 @@ function demoOnlyText(s) {
   const many = s.only.length !== 1;
   return `Only ${s.onlyTitle}'s unit${many ? "s get" : " gets"} the demo;`
     + " the other units keep theirs.";
+}
+// The units this write is NOT going to, while one LOOK is selected: the
+// same list, with the same "older upload" marker, because THEY are the
+// reason START will refuse afterwards. Hiding them is how a fleet ends
+// up on two timelines with nobody having seen it happen.
+function writeLeftHtml(s, id) {
+  if (!s.only) return `<div class="dlg-units left" id="${id}"></div>`;
+  const left = writeTargets().filter(t => !s.only.includes(t.unit));
+  if (!left.length) return `<div class="dlg-units left" id="${id}"></div>`;
+  return `<div class="dlg-units left" id="${id}"><span class="lbl">Left as they are:</span>`
+    + left.map(t => `<span class="u">${esc(t.unit)}${unitRevHtml(t.unit)}</span>`).join("")
+    + `</div>`;
 }
 // The head's one line: how big this write is, after the radio group has
 // had its say about which part of the timeline it is.
@@ -2063,7 +2101,10 @@ function writeResultHtml() {
       + `</div>`).join("") : r.error ? "" : `<div class="fail">No unit to write to.</div>`}
     ${r.kind === "upload" ? `<div class="meta" style="margin-top:6px">Pictures, as the tiles show them:</div>
       <div id="write-progress">${writeProgressHtml()}</div>
-      <div class="meta">The show is driven from this PC: ② Show preset, then ③ START on the Units tab.</div>`
+      ${r.next ? `<div class="warn" id="write-next">One look is on its unit — the rest of the
+        fleet still holds what it held. <b>START refuses a fleet split over two uploads</b>:
+        Upload again with <b>All LOOKs</b> before the show. (The choice above is back on All LOOKs.)</div>`
+        : `<div class="meta">The show is driven from this PC: ② Show preset, then ③ START on the Units tab.</div>`}`
       : ""}
     ${r.kind === "demo" && r.ok ? `<div class="lcd">${LCD_STEPS(r.name, r.seconds)}</div>` : ""}
   </div>`;
@@ -2089,6 +2130,7 @@ function writeDialogHtml() {
           <b>This PC then runs the show</b> — START, HOLD, NEXT and STOP on the Units tab.</div>
         <div class="when" id="write-upload-when">${uploadWhenText(s)}</div>
         ${writeUnitsHtml(s.targets, "write-units-upload")}
+        ${writeLeftHtml(s, "write-left-upload")}
         <div class="note" id="write-upload-only">${esc(uploadOnlyText(s))}</div>
         <div class="note" id="write-upload-note">${esc(s.note || "")}</div>
         <div class="why" id="write-upload-why">${esc(s.uploadWhy || "")}</div>
@@ -2110,6 +2152,7 @@ function writeDialogHtml() {
         </div>
         <div class="meta">${esc(DEMO_NAME_HINT)}</div>
         ${writeUnitsHtml(s.targets, "write-units-demo")}
+        ${writeLeftHtml(s, "write-left-demo")}
         <div class="note" id="write-demo-only">${esc(demoOnlyText(s))}</div>
         <div class="note" id="write-demo-note">${esc(s.note || "")}</div>
         <div class="why ${s.demoWhy || s.nameWhy && ui.demoName.trim() ? "" : "soft"}" id="write-demo-why">${esc(s.demoWhy || s.nameWhy || "")}</div>
@@ -2197,6 +2240,11 @@ function paintWrite() {
     const box = $(id);
     if (box && box.innerHTML !== listed) box.innerHTML = listed;
   }
+  const left = writeLeftHtml(s, "").replace(/^<div[^>]*>|<\/div>$/g, "");
+  for (const id of ["#write-left-upload", "#write-left-demo"]) {
+    const box = $(id);
+    if (box && box.innerHTML !== left) box.innerHTML = left;
+  }
   const upload = $("#write-upload"), demo = $("#write-demo");
   if (upload) {
     upload.disabled = !!s.uploadWhy;
@@ -2254,13 +2302,23 @@ async function writeUpload() {
                                     s.only ? `① Upload (${s.onlyTitle})` : "① Upload", "show");
   if (!result) return;
   const out = writeOutcome(result);
-  const what = s.only ? `${s.onlyTitle} uploaded for the show` : "Uploaded for the show";
+  // The heading says which LOOK whatever happened to it - "Uploaded to 1
+  // of 2 units" over a one-look write would read like the whole show.
+  const partly = `to ${out.ok} of ${out.total} units — the rest did not take it`;
   ui.writeResult = { kind: "upload", ok: out.all, only: s.only,
-                     title: out.all ? what
-                       : out.some ? `Uploaded to ${out.ok} of ${out.total} units — the rest did not take it`
-                       : "Nothing was uploaded",
+                     title: out.all ? (s.only ? `${s.onlyTitle} uploaded for the show`
+                                              : "Uploaded for the show")
+                       : out.some ? (s.only ? `${s.onlyTitle}: uploaded ${partly}`
+                                            : `Uploaded ${partly}`)
+                       : (s.only ? `${s.onlyTitle}: nothing was uploaded`
+                                 : "Nothing was uploaded"),
                      at: new Date().toLocaleTimeString(), units: result.units,
-                     problems: result.problems, error: result.error };
+                     problems: result.problems, error: result.error,
+                     // What to do next after a look went out on its own -
+                     // and the radio goes back to All LOOKs, so the next
+                     // Upload is the whole show unless it is chosen again.
+                     next: s.only && out.some };
+  if (s.only) ui.writeOnly = null;
   renderWriteDialog();
 }
 async function writeDemo() {
@@ -2275,13 +2333,17 @@ async function writeDemo() {
                                       + (s.only ? ` (${s.onlyTitle})` : ""), "demo");
   if (!result) return;
   const out = writeOutcome(result);
+  const look = s.only ? `${s.onlyTitle}: ` : "";
   ui.writeResult = { kind: "demo", ok: out.some, only: s.only,
-                     title: out.all ? `Saved on the units as "${name}"`
-                       : out.some ? `Saved on ${out.ok} of ${out.total} units as "${name}" — the rest did not take it`
-                       : `"${name}" was not saved on any unit`,
+                     title: out.all ? (s.only ? `${s.onlyTitle} saved on its unit as "${name}"`
+                                              : `Saved on the units as "${name}"`)
+                       : out.some ? (s.only ? `${look}saved on ${out.ok} of ${out.total} units as "${name}" — the rest did not take it`
+                                            : `Saved on ${out.ok} of ${out.total} units as "${name}" — the rest did not take it`)
+                       : `${look}"${name}" was not saved on any unit`,
                      at: new Date().toLocaleTimeString(), units: result.units,
                      problems: result.problems, error: result.error,
                      name, seconds: s.seconds };
+  if (s.only) ui.writeOnly = null;
   renderWriteDialog();
   await refreshDemos();
 }
@@ -2672,6 +2734,14 @@ function burnFailedQuestion(question) {
 const onlyFailedBoards = error => !!error && error.split("; ").every(
   part => /\d+ of \d+ pictures not written|none of its \d+ boards answered/
     .test(part));
+// The other refusal `force` gets past, and the one this round added: the
+// units are not all on the same upload (conductor/server.py's
+// _one_timeline - "radxa-02 is not on this upload - Upload for All LOOKs
+// before the show", "every unit holds an older upload ... - Upload again
+// before the show"). Going ahead anyway is a real choice on a rehearsal
+// night, so it is asked rather than blocked - but never silently.
+const splitUpload = error =>
+  !!error && /Upload (for All LOOKs|again) before the show/.test(error);
 // The tile's "On unit" row: what this unit would play from its own menu
 // with no PC, as the poll's cached /demo/list says (conductor/fleet.py's
 // demos_of). Anything that is not a list is "not known" - an agent too old
@@ -2876,6 +2946,11 @@ document.addEventListener("click", async e => {
     if (result && !force && onlyFailedBoards(result.error)
         && confirm(`${result.error} — Show the preset anyway?`))
       await fleetCommand("preset", { force: true }, "② Show preset", "show");
+    else if (result && !force && splitUpload(result.error)
+        && confirm(`${result.error}.\n\nShow the preset anyway? The units are `
+                   + `not all on the same upload, so the 0:00 look will be `
+                   + `two different timelines side by side.`))
+      await fleetCommand("preset", { force: true }, "② Show preset", "show");
     return;
   }
   if (e.target.id === "show-start") {
@@ -2897,6 +2972,14 @@ document.addEventListener("click", async e => {
     // was skipped: ask it once more and retry, exactly as ② does.
     if (result && !force && onlyFailedBoards(result.error)
         && confirm(`${result.error} — start anyway?`))
+      result = await fleetCommand("start", { lead_s: ui.lead, force: true },
+                                  `③ START (in ${ui.lead} s)`, "show");
+    // The fleet is split over two uploads (a one-LOOK Upload, or an edit
+    // nobody uploaded): the show would run on two timelines at once.
+    // Worth doing on purpose in a rehearsal, never by accident.
+    else if (result && !force && splitUpload(result.error)
+        && confirm(`${result.error}.\n\nStart anyway? The units would run `
+                   + `two different timelines at the same time.`))
       result = await fleetCommand("start", { lead_s: ui.lead, force: true },
                                   `③ START (in ${ui.lead} s)`, "show");
     // A 200 with a "nothing uploaded"/"already running" note also has

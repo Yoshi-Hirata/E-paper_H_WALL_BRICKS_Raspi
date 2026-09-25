@@ -119,9 +119,12 @@ python -m conductor serve --open
 >   メニューに名前つきで保存し、機体が KEY1 で再生する
 >
 > どちらもダイアログ上部の **WHICH LOOKs** のラジオで「All LOOKs」(既定)か LOOK 1 つを
-> 選べる。1 つだけ選ぶとその LOOK の機体にしか書かないので、**START はタイムラインの
-> 全機体が同じ Upload を持っていることを要求する** - 1 ルックの Upload は確認用、
-> 本番前には必ず All LOOKs でもう一度 Upload すること。
+> 選べる。1 つだけ選ぶとその LOOK の機体にしか書かない。**START(と ② Show preset)は
+> タイムラインの全機体が同じ Upload を持っていることを要求し、揃っていなければ断る** -
+> `radxa-04 is not on this upload - Upload for All LOOKs before the show`。
+> 1 ルックの Upload は確認用、本番前には必ず All LOOKs でもう一度 Upload すること
+> (承知の上で進めるなら確認ダイアログで先へ行ける。そのときは機体ごとに違う
+> タイムラインが同時に走る)。
 >
 > いまタイムラインが機体に入っているかは、Timeline の「THE LOOKS AT」バーと
 > Units タブの「THE SHOW」見出しのチップ(`uploaded 10 / 10 · up to date` /

@@ -2085,6 +2085,156 @@ def test_one_looks_upload_after_a_full_one_takes_the_fleet_mark_away(tmp_path):
         server.server_close()
 
 
+def _refused_upload(payload):
+    """Did START / PRESET refuse because the fleet is not all on one
+    upload? (Any other refusal - a unit that never burned its pictures,
+    an offline one - is a different gate and not this test's business.)"""
+    return "before the show" in (payload.get("error") or "")
+
+
+def test_start_refuses_a_fleet_split_over_two_uploads(tmp_path):
+    # The rule the dialog prints under a one-LOOK Upload - "START needs
+    # every unit of the timeline to hold this upload" - is a rule only
+    # here. Nothing downstream can catch it: a unit's show id is the id
+    # THIS conductor gave it, so the burn gate's id check matches happily
+    # for a unit still holding last hour's show (review F1).
+    ws = _two_unit_workspace(tmp_path)
+    server, fleet = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        assert _post(port, "/api/fleet/upload", {})[0] == 200
+        # Everyone holds what is on screen: START is not this gate's
+        # business (it goes on to the units, which is where it fails
+        # here - the stubs hold no pictures).
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert not _refused_upload(payload)
+
+        ws.set_timeline(600, [_cue("a", 30), _skirt_cue("b", 0)])
+        assert _post(port, "/api/fleet/upload", {"units": ["radxa-01"]})[0] == 200
+        for command in ("start", "preset"):
+            status, payload = _post(port, f"/api/fleet/{command}", {"lead_s": 3})
+            assert status == 400, command
+            assert payload["error"] == ("radxa-02 is not on this upload - "
+                                        "Upload for All LOOKs before the show")
+        # The same explicit force the page already asks for gets past it:
+        # the mid-show rescue must never be locked out. (It then meets the
+        # ordinary burn gate, which is a different sentence.)
+        status, payload = _post(port, "/api/fleet/start",
+                                {"lead_s": 3, "force": True})
+        assert not _refused_upload(payload)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_refuses_when_a_unit_of_the_timeline_was_never_uploaded(tmp_path):
+    # The first thing that happens on a fresh conductor: one LOOK is
+    # uploaded to check it, and the other unit has nothing of this show
+    # at all. fleet.shows does not even mention it - it is the TIMELINE
+    # that says the show needs it (Workspace.timeline_units, read out of
+    # show.json without compiling anything).
+    _two_unit_workspace(tmp_path)
+    server, fleet = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        assert _post(port, "/api/fleet/upload", {"units": ["radxa-01"]})[0] == 200
+        assert list(fleet.shows) == ["radxa-01"]
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert status == 400
+        assert payload["error"] == ("radxa-02 is not on this upload - "
+                                    "Upload for All LOOKs before the show")
+        # Nothing was started - the one unit that does hold it included.
+        assert fleet.run is None
+        assert _post(port, "/api/fleet/upload", {})[0] == 200
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert not _refused_upload(payload)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_refuses_a_fleet_that_is_a_whole_timeline_behind(tmp_path):
+    # Everyone agrees with everyone, and all of them are older than what
+    # the operator is looking at: the ordinary "edited and forgot to
+    # upload". The revision ignores labels and music, so this is always
+    # a real change to the cues, the CSVs or the units.
+    ws = _two_unit_workspace(tmp_path)
+    server, _ = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        assert _post(port, "/api/fleet/upload", {})[0] == 200
+        ws.set_label("Look22", look="22", model="AZ271SD1305")
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert not _refused_upload(payload)  # a label
+        ws.set_timeline(600, [_cue("a", 45), _skirt_cue("b", 0)])
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert status == 400
+        assert payload["error"] == ("every unit holds an older upload than "
+                                    "the timeline on screen - Upload again "
+                                    "before the show")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_conductor_that_knows_nothing_does_not_refuse_start(tmp_path):
+    # Restarted mid-show: it has no marks of its own and must not refuse
+    # on a guess - the units are running and it has just adopted them.
+    _two_unit_workspace(tmp_path)
+    server, fleet = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600},
+                       "radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert not _refused_upload(payload)
+        status, payload = _post(port, "/api/fleet/preset", {})
+        assert not _refused_upload(payload)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_unit_taken_out_of_the_timeline_stops_holding_start_up(tmp_path):
+    # Its mark would otherwise sit in the workspace for ever and refuse
+    # START for a garment that left the show weeks ago (review F7).
+    ws = _two_unit_workspace(tmp_path)
+    server, _ = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    workspace = server.RequestHandlerClass.workspace
+    try:
+        assert _post(port, "/api/fleet/upload", {})[0] == 200
+        ws.set_timeline(600, [_cue("a", 0)])            # the skirt is out
+        assert _post(port, "/api/fleet/upload", {})[0] == 200
+        assert list(workspace.unit_marks["upload"]) == ["radxa-01"]
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert not _refused_upload(payload)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_deleting_a_demo_forgets_what_was_written_under_that_name(tmp_path):
+    # The name is free again: a mark left behind would have the next demo
+    # written under it inherit an "up to date" it never earned (F7).
+    _two_unit_workspace(tmp_path)
+    server, _ = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        assert _post(port, "/api/fleet/write_demo",
+                     {"name": "paris ss26", "loop": False})[0] == 200
+        timeline = _get(port, "/api/fleet")["timeline"]
+        assert list(timeline["demos"]) == ["PARIS SS26"]
+        assert list(timeline["demo_units"]) == ["PARIS SS26"]
+        assert _post(port, "/api/fleet/delete_demo",
+                     {"slug": "paris-ss26"})[0] == 200
+        timeline = _get(port, "/api/fleet")["timeline"]
+        assert timeline["demos"] == {} and timeline["demo_units"] == {}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_one_looks_demo_is_saved_on_that_unit_alone(tmp_path):
     _two_unit_workspace(tmp_path)
     server, fleet = _two_unit_server(tmp_path)
@@ -2356,7 +2506,7 @@ def test_the_page_dialog_can_write_one_looks_units(page):
                  'id="write-upload-only"', 'id="write-demo-only"'):
         assert part in page, part
     assert "Which LOOKs" in page and "All LOOKs — ${all} unit" in page
-    assert "function writeRows()" in page and "lookGroups().map" in page
+    assert "function writeRows()" in page and "const groups = lookGroups();" in page
     # A row names its LOOK, its garments, its units and its wait; one with
     # no unit is listed and disabled rather than hidden.
     for part in ("<b>LOOK ${esc(r.look)}</b>", "esc(r.units.join(\", \"))",
@@ -2380,6 +2530,24 @@ def test_the_page_dialog_can_write_one_looks_units(page):
     assert "function unitHoldsRevision(unit)" in page
     assert "mark.uploaded_units || {}" in page
     assert "· has this upload" in page and "· older upload" in page
+    # The units NOT being written stay on screen with that same marker -
+    # they are why START refuses afterwards (review F8).
+    assert '"write-left-upload"' in page and '"write-left-demo"' in page
+    assert "Left as they are:" in page and "function writeLeftHtml(s, id)" in page
+    # Only units the compiled show actually has are sent (review F4).
+    assert "row.targets.map(t => t.unit)" in page
+    assert "no cue yet" in page
+    # A unit is written its whole show, not one look of it.
+    assert "the unit's other looks ride along" in page
+    # After a one-LOOK write the choice goes back to All LOOKs, and the
+    # result says what is still to do (review F6).
+    assert "if (s.only) ui.writeOnly = null;" in page
+    assert 'id="write-next"' in page
+    assert "START refuses a fleet split over two uploads" in page
+    # ... which is a real refusal, and one the operator can still override
+    # on purpose (conductor/server.py's _one_timeline).
+    assert "const splitUpload = error =>" in page
+    assert "two different timelines at the same time." in page
 
 
 def test_the_page_chips_say_what_the_units_hold(page):

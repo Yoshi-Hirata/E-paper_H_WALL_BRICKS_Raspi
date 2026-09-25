@@ -59,6 +59,39 @@
   `2/2 · changed since` になり、黙り込まない。ダイアログの機体一覧とタイルの Show 行に
   `· has this upload` / `· older upload`(`(older timeline)`)が出る。
   自分の版を持つデモは、**その機体の Upload が古いというだけでは古いと言わない**
+- **敵対的レビューの指摘(F1-F8)を同ラウンドで修正**:
+  - **F1(BLOCKER): 「START は全機体が同じ Upload を持っていることを要求する」を実装した**。
+    書いただけでは嘘だった ― 機体の show id はこの PC が渡した id なので `_burn()` の
+    id 照合は古い Upload の機体でも通り、2 つのタイムラインが同時に走っていた。
+    `conductor/server.py` の `_one_timeline()` を **start と preset の直前**に置き、
+    (a) タイムラインが必要とする機体で**一度も書いていない**ものがある、
+    (b) 機体ごとの印が**食い違っている**、(c) 全機体が揃って**画面より古い**、のいずれでも
+    400 で断る(`radxa-04 is not on this upload - Upload for All LOOKs before the show` /
+    `every unit holds an older upload than the timeline on screen - Upload again before
+    the show`)。**印を 1 つも持たない conductor(再起動直後)は断らない** ― 知らないことを
+    理由に本番を止めない。**`force` は通す**(ページは焼き込み失敗と同じ作法で確認を出し、
+    「はい」で force 再送)。必要な機体は `Workspace.timeline_units()` が show.json だけから
+    出す(コンパイルは 10 機体 18 キューで秒単位、START の 3 秒リードには置けない)
+  - **F2**: `upload(only=)` は、書かない機体が持っているショーと**長さが違う**ときに断る
+    (`this timeline is 90 s long but radxa-02 still holds a 600 s one`)。長さは
+    fleet 全体で 1 つの数(`show_duration()` は最大値)なので、混在すると SEEK/START が
+    ある機体の終端より後ろを受け付けてしまう
+  - **F3**: 部分 Upload の `self.shows` マージが、**タイムラインから消えた機体**を残していた
+    (`_targets()` がそれを駆動し、START がショーに居ない機体へ /show/run を出す)。
+    `shows` に無い機体は落とすように修正
+  - **F4**: ページが送る機体名を「その LOOK に割り当てられた機体」から
+    「**コンパイル済みショーに実際にある機体**」へ(キューの無い機体名を送ると 400 で
+    1 台も書けなかった)。行には `(radxa-02: no cue yet)` と出す
+  - **F5**: ショー進行中の 1 台救済 Upload が `run["force"]` を**全機体**に立てていた。
+    救済した機体だけを `run["forced"]` に記録し、`/show/run` の force はその機体にだけ付く
+  - **F6**: 1 ルックを書いたあとはラジオが **All LOOKs に戻り**、結果欄に
+    「START refuses a fleet split over two uploads: Upload again with All LOOKs」と出る
+  - **F7**: 機体ごとの印は増える一方だった ― タイムラインから消えた機体の印は
+    `mark_written()` で落とし、`delete_demo` はその名前の印を忘れる
+  - **F8**: 行の所要時間は「on the slowest of them」、選択中も**書かない機体を
+    `older upload` の印つきで表示**(それが F1 の警告そのもの)、結果の見出しは
+    部分失敗でも LOOK 名を出す、1 台に複数ルックが載るときは
+    「the unit's other looks ride along」
 - **テスト: 723 件 + skip 1**(+8: server の units フィルタ 4 = 受理・400・部分 Upload が
   fleet の印を立てない・全体印が戻る、fleet の `only=` 3、ページの id と文言 1)。
   ブラウザ確認は偽機体 2 台(**127.0.0.1:19401/19402**)と 8786 の conductor で、
