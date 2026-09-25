@@ -1570,6 +1570,19 @@ class Handler(BaseHTTPRequestHandler):
         name = urllib.parse.unquote(self.headers.get("X-File-Name") or "music")
         if Path(name).suffix.lower() not in _MUSIC_TYPES:
             allowed = ", ".join(sorted(_MUSIC_TYPES))
+            # Answering before the request body is read makes Windows
+            # reset the connection under the client, which then sees
+            # ConnectionAborted instead of this 400 (a flaky test found
+            # it). Drain a small body first; a big one is closed instead.
+            if length <= 1024 * 1024:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            else:
+                self.close_connection = True
             return self._json({"error": f"music must be one of {allowed}"},
                               status=400)
         try:
