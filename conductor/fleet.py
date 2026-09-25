@@ -602,16 +602,32 @@ class Fleet:
 
     # ---- the show ----
 
-    def upload(self, shows: "dict[str, dict]",
-               force: bool = False) -> "dict[str, dict]":
+    def upload(self, shows: "dict[str, dict]", force: bool = False,
+               only: "list[str] | None" = None) -> "dict[str, dict]":
+        """Write `shows` (unit -> compiled show) to the units.
+
+        `only` writes to those units alone - the page's "Which LOOKs"
+        choice, for checking one look without touching the rest of the
+        fleet. The units left out are not posted to and keep the show
+        they hold, so `self.shows` (what this conductor believes each
+        unit holds) is MERGED rather than replaced: replacing it would
+        have the conductor forget the earlier upload the other units are
+        still running on, and the page's "uploaded n/n" would count them
+        as holding a show nobody sent them."""
+        targets = ([name for name in shows] if only is None
+                   else [name for name in only if name in shows])
+
         def action(link):
             excuse = self._demo_excuse(link)
             if excuse:
                 raise RuntimeError(excuse)
             status = link.post("/show/load", shows[link.name])
             return {"show": (status.get("show") or {}).get("id")}
-        results = self._each(list(shows), action)
-        self.shows = dict(shows)
+        results = self._each(targets, action)
+        if only is None:
+            self.shows = dict(shows)
+        else:
+            self.shows = {**self.shows, **{name: shows[name] for name in targets}}
         # A new show file is a new duration: a remembered position from
         # the old one may no longer even be inside it (found in review).
         with self._run_lock:
@@ -630,15 +646,22 @@ class Fleet:
     # menu, that plays without this PC. Independent of the run this
     # conductor is driving - it touches neither self.shows nor self.run.
 
-    def write_demo(self, name: str, loop: bool, shows: "dict[str, dict]"
-                   ) -> "dict[str, dict]":
+    def write_demo(self, name: str, loop: bool, shows: "dict[str, dict]",
+                   only: "list[str] | None" = None) -> "dict[str, dict]":
         """Post each unit its own compiled show (`shows`, the same dict
         upload() sends via /show/load) to /demo/save under `name`, so the
         unit can play it from its own menu, on its own clock, without
         this PC. Only the units named in `shows` are written to - exactly
-        upload()'s own targets. `learn=False`: a write includes an eMMC
-        save on the unit's side, and its own longer timeout - neither
-        belongs anywhere near the clock-offset model."""
+        upload()'s own targets - and `only` narrows that to one LOOK's
+        units, the same subset upload() takes. The units left out keep
+        the demo they already hold under that name (nothing is deleted:
+        the unit only ever replaces a name it is written). `learn=False`:
+        a write includes an eMMC save on the unit's side, and its own
+        longer timeout - neither belongs anywhere near the clock-offset
+        model."""
+        targets = ([name_ for name_ in shows] if only is None
+                   else [name_ for name_ in only if name_ in shows])
+
         def action(link):
             result = link.post("/demo/save", {"name": name, "loop": bool(loop),
                                                "show": shows[link.name]},
@@ -647,7 +670,7 @@ class Fleet:
             # before the next poll, without a second request.
             self.remember_demos(link.name, result.get("demos"))
             return {"slug": result.get("slug")}
-        return self._each(list(shows), action)
+        return self._each(targets, action)
 
     def list_demos(self) -> "dict[str, dict]":
         """Per unit: {"ok": True, "demos": [...]} from a GET /demo/list,

@@ -1004,6 +1004,55 @@ def test_start_show_with_no_position_begins_exactly_lead_seconds_from_now():
     assert fleet.run["t0"] == 1003.0
 
 
+def _two_unit_shows():
+    return {"radxa-01": {"id": "showA", "cues": [], "duration": 600},
+            "radxa-02": {"id": "showB", "cues": [], "duration": 600}}
+
+
+def test_upload_with_only_writes_to_those_units_alone():
+    # The dialog's "Which LOOKs": one look's units are written and the
+    # rest of the fleet is not touched at all.
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "stopped")}
+    shows = _two_unit_shows()
+    results = fleet.upload(shows, only=["radxa-01"])
+    assert list(results) == ["radxa-01"] and results["radxa-01"]["ok"]
+    assert [p for p, _ in fleet.links["radxa-01"].posted] == ["/show/load"]
+    assert fleet.links["radxa-02"].posted == []
+    # What this conductor believes is on the units: radxa-01's show, and
+    # nothing claimed about radxa-02, which was never sent one.
+    assert list(fleet.shows) == ["radxa-01"]
+
+
+def test_upload_with_only_keeps_what_the_other_units_already_hold():
+    # A full upload, then one LOOK re-written: the earlier upload is
+    # still what the other unit is running on, and the conductor must
+    # not forget it (START and SEEK are driven from fleet.shows).
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "stopped")}
+    fleet.upload(_two_unit_shows())
+    again = {"radxa-01": {"id": "showA2", "cues": [], "duration": 600},
+             "radxa-02": {"id": "showB2", "cues": [], "duration": 600}}
+    fleet.upload(again, only=["radxa-01"])
+    assert fleet.shows["radxa-01"]["id"] == "showA2"     # the new one
+    assert fleet.shows["radxa-02"]["id"] == "showB"      # what it holds
+    assert [p for p, _ in fleet.links["radxa-02"].posted] == ["/show/load"]
+
+
+def test_write_demo_with_only_saves_on_those_units_alone():
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "stopped")}
+    results = fleet.write_demo("PARIS", True, _two_unit_shows(),
+                               only=["radxa-02"])
+    assert list(results) == ["radxa-02"] and results["radxa-02"]["ok"]
+    assert fleet.links["radxa-01"].posted == []
+    path, body = fleet.links["radxa-02"].posted[0]
+    assert path == "/demo/save" and body["show"]["id"] == "showB"
+
+
 def test_uploading_a_new_show_forgets_a_remembered_start_position():
     fleet = Fleet({})
     fleet.start_at = 180.0

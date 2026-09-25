@@ -114,6 +114,31 @@ def _demo_slug(raw) -> str:
     return slug
 
 
+def _only_units(raw, shows: "dict[str, dict]") -> "list[str] | None":
+    """The `units` of an Upload / Save on the units: which units of the
+    compiled show this write is for ("Which LOOKs" in the page's dialog),
+    or None for all of them - absent means all, which is what every
+    client before this field sent and what the page sends for "All
+    LOOKs".
+
+    A name that is not a unit of THIS timeline is refused by name rather
+    than quietly dropped: the page builds the list from the timeline it
+    is showing, so a mismatch means the two disagree about what is where
+    (a stale page, another operator's edit) - exactly the moment to stop
+    rather than write a look to nothing and report success."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(isinstance(u, str) for u in raw):
+        raise ValueError("units must be a list of unit names")
+    names = list(dict.fromkeys(raw))
+    if not names:
+        raise ValueError("no unit chosen - pick a LOOK, or All LOOKs")
+    for name in names:
+        if name not in shows:
+            raise ValueError(f"{name} is not a unit of this timeline")
+    return names
+
+
 def _design_transition(entry) -> dict:
     """A design's own transition, as the page reads it - always present,
     natural/0 when nothing was set (conductor/sequence.py's tidying, so
@@ -205,6 +230,12 @@ class Workspace:
         # about an edit made after the write (an id comparison cannot: the
         # units hold exactly what they were sent, edits and all).
         self.marks: "dict[str, str]" = {}
+        # The same, per unit: {"upload": {unit: revision}, ...}. A write
+        # for one LOOK only reaches its own units, and the page has to be
+        # able to say which units hold what is on screen and which are
+        # still on an older timeline - the fleet-wide mark above cannot
+        # say that, so it is simply absent after a partial write.
+        self.unit_marks: "dict[str, dict[str, str]]" = {}
 
     # ---- show.json ----
 
@@ -967,29 +998,60 @@ class Workspace:
             parts.append(f"{path.name}:{info.st_size}:{info.st_mtime_ns}")
         return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
-    def mark_written(self, what: str, rev: "str | None" = None) -> None:
+    def mark_written(self, what: str, rev: "str | None" = None,
+                     units: "list[str] | None" = None,
+                     all_units: "list[str] | None" = None) -> None:
         """Remember `rev` (the revision the write actually carried, taken
-        before it started) under `what` ("upload", or "demo:<NAME>").
+        before it started) under `what` ("upload", or "demo:<NAME>"), for
+        the `units` it reached.
 
         Not the revision NOW: writing ten units takes seconds, and an
         edit that lands while it is in flight belongs to the next write,
         not this one - recording it here would have the chips say "up to
         date" about a timeline the units have never seen (found in
         review). `rev` is only omitted where there is nothing in between
-        to worry about."""
-        self.marks[what] = self.revision() if rev is None else rev
+        to worry about.
+
+        The fleet-wide mark (what the chips' "up to date" is read from)
+        is only set when every unit of `all_units` - the units of the
+        whole compiled timeline - now holds `rev`. One LOOK written on
+        its own leaves the rest of the fleet on whatever they held, so
+        claiming the timeline is on the units would be the chip lying
+        about the one thing it exists to answer; the fleet-wide mark is
+        dropped instead, and the per-unit ones say who does hold this
+        revision."""
+        rev = self.revision() if rev is None else rev
+        if units is None:
+            self.marks[what] = rev
+            return
+        per_unit = self.unit_marks.setdefault(what, {})
+        for unit in units:
+            per_unit[unit] = rev
+        targets = list(all_units if all_units is not None else units)
+        if targets and all(per_unit.get(unit) == rev for unit in targets):
+            self.marks[what] = rev
+        else:
+            self.marks.pop(what, None)
 
     def written_state(self) -> dict:
         """What /api/fleet tells the page about the timeline itself:
-        `revision` now, and the revision each write put on the units.
+        `revision` now, and the revision each write put on the units -
+        fleet-wide (`uploaded`, `demos`: set only when the write reached
+        every unit of the timeline) and per unit (`uploaded_units`,
+        `demo_units`, which is how the dialog and the tiles say WHICH
+        units hold what is on screen after a one-LOOK write).
         A name with no mark (written by an earlier conductor, or before
         this conductor came up) is simply absent - the page then says
         nothing about "up to date", rather than guessing."""
         return {"revision": self.revision(),
                 "uploaded": self.marks.get("upload"),
+                "uploaded_units": dict(self.unit_marks.get("upload", {})),
                 "demos": {key[len("demo:"):]: value
                           for key, value in self.marks.items()
-                          if key.startswith("demo:")}}
+                          if key.startswith("demo:")},
+                "demo_units": {key[len("demo:"):]: dict(value)
+                               for key, value in self.unit_marks.items()
+                               if key.startswith("demo:")}}
 
     def compile_show(self) -> "tuple[dict[str, dict], list[str]]":
         """The whole timeline -> ({unit: show file}, problems)."""
@@ -1694,13 +1756,19 @@ class Handler(BaseHTTPRequestHandler):
             # next upload, not to this one.
             rev = self.workspace.revision()
             shows, problems = self.workspace.compile_show()
-            results = (fleet.upload(shows, force=bool(body.get("force")))
+            only = _only_units(body.get("units"), shows)
+            results = (fleet.upload(shows, force=bool(body.get("force")),
+                                    only=only)
                        if shows else {})
-            # What went out is remembered, so an edit made after this
-            # reads as "changed since" however long the page has been
-            # open and whatever it was reloaded to.
-            if any(r["ok"] for r in results.values()):
-                self.workspace.mark_written("upload", rev)
+            # What went out is remembered, PER UNIT, so an edit made
+            # after this reads as "changed since" however long the page
+            # has been open and whatever it was reloaded to - and so a
+            # one-LOOK upload cannot claim the whole timeline is on the
+            # units (mark_written works out the fleet-wide mark itself).
+            written = sorted(u for u, r in results.items() if r["ok"])
+            if written:
+                self.workspace.mark_written("upload", rev, units=written,
+                                            all_units=sorted(shows))
             return self._json({"units": results, "problems": problems,
                                "shows": {u: s["id"] for u, s in shows.items()}})
         if command == "write_demo":
@@ -1723,9 +1791,13 @@ class Handler(BaseHTTPRequestHandler):
             # exactly the problems Upload itself would have refused on.
             rev = self.workspace.revision()      # see the upload above
             shows, problems = self.workspace.compile_show()
-            results = fleet.write_demo(name, loop, shows) if shows else {}
-            if any(r["ok"] for r in results.values()):
-                self.workspace.mark_written(f"demo:{name}", rev)
+            only = _only_units(body.get("units"), shows)
+            results = (fleet.write_demo(name, loop, shows, only=only)
+                       if shows else {})
+            written = sorted(u for u, r in results.items() if r["ok"])
+            if written:
+                self.workspace.mark_written(f"demo:{name}", rev, units=written,
+                                            all_units=sorted(shows))
             return self._json({"units": results, "problems": problems,
                                "name": name})
         if command == "delete_demo":
