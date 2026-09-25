@@ -904,8 +904,16 @@
       if (cueDrag) {
         const at = cueDragAt(e);
         document.querySelectorAll(".cue-hold.dragging").forEach(el => el.classList.remove("dragging"));
-        const id = cueDrag.id; cueDrag = null;
-        globalThis.SIM.app.updateCue(id, { at });
+        const { id, startAt, startX } = cueDrag; cueDrag = null;
+        // A press-and-release without movement is a CLICK: select the cue.
+        // It used to fall through to updateCue(), whose re-render replaced
+        // the band under the pointer, so the browser's click never reached
+        // the new band and the EDIT CUE panel stayed on the previous cue
+        // (a designer's screen recording, 2026-09-25). A real drag moves
+        // the cue AND selects it, so the panel shows what was just moved.
+        const moved = Math.abs(e.clientX - startX) > 3 && at !== startAt;
+        ui.cue = String(id);
+        if (moved) globalThis.SIM.app.updateCue(id, { at }); else render();
       }
       if (transport) transport.endDrag();
     });
