@@ -1465,11 +1465,20 @@
     const item = itemHint || hit;
     if (!item) return { error: "which garment? name it MODEL_…csv, or use that garment's own Add CSV" };
     if (kind === "map") return { name: `${item}_map.csv`, readAs: "map" };
-    let design = hit && stem.toLowerCase().startsWith(hit.toLowerCase() + "_") ? stem.slice(hit.length + 1) : (hit === stem ? "" : stem);
+    // Strip the prefix of the garment the file is going TO when it carries
+    // it ("AZ271SD1305_B.csv" picked on AZ271SD1305 is design "B", not the
+    // whole file of item AZ271SD1305_B); otherwise the longest known model.
+    const pre = [itemHint, hit].filter(Boolean).find(k => stem.toLowerCase().startsWith(k.toLowerCase() + "_"))
+      || (hit && hit.toLowerCase() === stem.toLowerCase() ? hit : null);
+    let design = pre ? stem.slice(pre.length).replace(/^_/, "") : stem;
     // Keep letters and digits of any script: "柄A" and "柄B" must stay two
     // names, not both become "-". Only separators the file system or the
     // CSV rule cannot carry are folded to "-".
     design = design.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[-_.]+|[-_.]+$/g, "") || "design";
+    // "_grid" / "_map" / "_color_" inside a design name would be read as the
+    // file-name grammar's own markers ("HW_grid_4" -> design "HW" for every
+    // file), so they are spelled with a dash inside the name.
+    design = design.replace(/_grid/gi, "-grid").replace(/_map(?=$|[_-])/gi, "-map").replace(/_color_/gi, "-color-");
     return { name: `${item}_color_${design}_grid.csv`, readAs: "design " + design };
   }
   // Several files of ONE pick that resolve to the same saved name (a
@@ -1536,7 +1545,15 @@
     return m ? itemKey + raw.slice(m.index) : null;
   }
   async function addFilesToItemFromBlobs(itemKey, files) {
-    const list = [], refused = [], became = [], takenNames = new Set();
+    const list = [], refused = [], became = [], skipped = [];
+    // Nothing added through a garment's own Add CSV ever overwrites what the
+    // garment already has (2026-09-26, "the 4th of 5 CSVs was overwritten"):
+    // the names already in the project are taken from the start, so a
+    // collision with an EXISTING design is numbered (-2, -3…) exactly like a
+    // collision inside one pick. The one exception is the same bytes under
+    // the same name - that is the same file picked twice, and is skipped.
+    const existing = globalThis.SIM.app.getProject().files;
+    const takenNames = new Set(Object.keys(existing));
     for (const f of files) {
       if (isMacMetadata(f.name)) continue;
       const name0 = macSafeName(f.name);
@@ -1547,6 +1564,8 @@
       if (c.error) { refused.push({ name: String(f.name), error: c.error }); continue; }
       const onto = renameOntoItem(itemKey, c.name);
       if (onto === null) { refused.push({ name: String(f.name), error: refuseReason(c.name) }); continue; }
+      if (Object.prototype.hasOwnProperty.call(existing, onto)
+          && existing[onto] === text.replace(/\r\n?/g, "\n")) { skipped.push(`${name0} (already there as ${onto})`); continue; }
       const saveAs = uniqueSaveName(onto, takenNames);
       if (saveAs === null) { refused.push({ name: String(f.name), error: `would overwrite ${onto} from this same pick (a garment has one map)` }); continue; }
       if (saveAs !== name0) became.push(`${name0} → ${saveAs}${c.readAs ? " (" + c.readAs + ")" : ""}`);
@@ -1561,6 +1580,7 @@
     // Both names, so nobody has to guess what happened to a file they picked.
     if (became.length) parts.push("saved as " + briefly(became, x => x));
     else if (result.renamed.length) parts.push("saved as " + briefly(result.renamed, r => `${r.from} → ${r.to}`));
+    if (skipped.length) parts.push(`${skipped.length} already there: ` + briefly(skipped, x => x));
     if (all.length) parts.push(`${all.length} refused: ` + briefly(all, r => `${r.name} (${r.error})`));
     toast(parts.join(" · ") || "No CSV files found");
     ui.cue = null; render();
