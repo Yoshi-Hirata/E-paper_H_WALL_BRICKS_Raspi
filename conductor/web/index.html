@@ -207,11 +207,12 @@ input[type=range] { width: 100%; }
 .showclock small { display: block; font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
 .showclock.running small { color: var(--ok); } .showclock.holding small { color: var(--warn); }
 .shownext { font-size: 13px; color: var(--dim); min-width: 220px; }
-#demo-name { text-transform: uppercase; width: 180px; }
 .shownext b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
 .go button.hold { background: var(--warn); border-color: var(--warn); color: #fff; }
 .go button.stop:hover { border-color: var(--err); color: var(--err); }
-body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-events: none; }
+body.busy .go button, body.busy #show-seek-wrap input,
+body.busy .dlg button, body.busy .dlg input { opacity: .45; pointer-events: none; }
+body.busy #write-back { pointer-events: none; }
 .card h2 + .sub { margin: -2px 0 8px; }
 .cue-hold, .cue-band { min-width: 7px; }
 .cue-hold { cursor: grab; } .cue-hold.dragging { cursor: grabbing; opacity: .8; z-index: 4; outline: 2px dashed var(--accent); }
@@ -252,6 +253,61 @@ body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-ev
    .thumbs{overflow:hidden} and clip it (fix round: LOOK row head pinned). */
 .thumbs.small .lk-head { height: 30px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .thumbs.small .lk-head .chg { float: none; margin-left: 6px; }
+
+/* ---- "Write to units…": the one place the timeline reaches the units
+   (plan_write_to_units.md, 2026-09-25). One dialog, two choices - Upload
+   for the show this PC drives, or Save on the units as a standalone demo -
+   plus the chips that say, on both tabs, what the units actually hold. */
+button.primarybtn { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primarybtn:hover { border-color: var(--accent); filter: brightness(1.08); }
+button.primarybtn:disabled { filter: none; }
+.unit-chips { display: inline-flex; flex-wrap: nowrap; gap: 4px 6px; vertical-align: middle;
+  min-width: 0; overflow: hidden; }
+.chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line);
+  border-radius: 10px; padding: 1px 9px; font-size: 11.5px; color: var(--dim);
+  white-space: nowrap; letter-spacing: 0; text-transform: none; font-weight: 400; }
+.chip b { color: var(--ink); font-weight: 600; }
+.chip { overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
+/* Below a wide desktop the verdict word goes: the colour still says it,
+   and the whole sentence is in the chip's own title. */
+@media (max-width: 1280px) { .chip .verdict { display: none; } }
+.chip.ok { border-color: var(--ok); color: var(--ok); } .chip.ok b { color: var(--ok); }
+.chip.warn { border-color: var(--warn); color: var(--warn); } .chip.warn b { color: var(--warn); }
+#write-back { position: fixed; inset: 0; z-index: 9; background: rgba(12, 14, 20, .5);
+  display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px; overflow-y: auto; }
+.dlg { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .3); width: min(900px, 100%); padding: 14px 18px 16px; }
+.dlg-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.dlg-head h2 { margin: 0; font-size: 13px; letter-spacing: .1em; color: var(--dim); }
+.dlg-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+@media (max-width: 820px) { .dlg-choices { grid-template-columns: 1fr; } }
+.choice { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px 14px; }
+.choice.off { background: var(--bg); }
+.choice.off h3, .choice.off .what { opacity: .6; }
+.choice h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.choice .what { font-size: 13.5px; }
+.choice .when { font-size: 12px; color: var(--dim); }
+.choice .why { font-size: 12.5px; color: var(--err); }
+.choice .note { font-size: 12.5px; color: var(--warn); }
+.choice .note:empty { display: none; }
+/* "Type a name first" is not a refusal, it is the next thing to do. */
+.choice .why.soft { color: var(--dim); }
+.choice .why:empty, .dlg-units:empty { display: none; }
+.choice .go { margin-top: 0; }
+.choice button.big { align-self: flex-start; margin-top: auto; }
+.dlg-units { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--dim); }
+.dlg-units span.u { display: inline-flex; align-items: center; gap: 5px; }
+.dlg-units span.u.gone { color: var(--warn); }
+.dlg-result { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
+.dlg-result h3 { margin: 0 0 4px; font-size: 13px; }
+.dlg-result .fail { color: var(--err); }
+.dlg-result .lcd { margin-top: 8px; border: 1px solid var(--ok); border-radius: 8px;
+  padding: 8px 10px; font-size: 13px; }
+#write-progress { margin-top: 6px; }
+#write-progress .row { display: flex; justify-content: space-between; gap: 10px; max-width: 420px; color: var(--dim); }
+#write-progress .row b { color: var(--ink); font-weight: 500; }
+#write-name { text-transform: uppercase; width: 170px; }
 
 /* ---- Timeline: EDIT CUE beside the tracks + a bottom dock for THE LOOKS AT
    (plan_timeline_layout.md, 2026-09-24) - so an open cue editor can never
@@ -330,6 +386,9 @@ body.busy .go button, body.busy #show-seek-wrap input { opacity: .45; pointer-ev
 </main>
 <div id="drop">Drop the CSV files here</div>
 <div id="toast"></div>
+<!-- "Write to units…" lives outside #content: it must survive the render of
+     whichever tab it was opened from (and be reachable from both). -->
+<div id="write-host"></div>
 
 <script>
 "use strict";
@@ -352,7 +411,10 @@ function saveDockCellsPref() {
 // The unit's LCD font cannot draw Japanese (conductor/server.py's own DEMO_NAME_MESSAGE) -
 // kept in one place so the hint text and the maxlength can never drift apart.
 const DEMO_NAME_MAX = 14;
-const DEMO_NAME_HINT = "A-Z, 0-9 and symbols, up to 14 characters (the unit's screen cannot show Japanese)";
+const DEMO_NAME_HINT = "A-Z, 0-9 and symbols only, up to 14 characters. The unit's LCD cannot display Japanese.";
+// The same rule conductor/server.py's _demo_name applies (printable ASCII),
+// so the dialog can say no before the write does.
+const DEMO_NAME_OK = /^[\x20-\x7e]+$/;
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
              playing: false, anchor: 0, startT: 0, simView: false,
@@ -360,10 +422,15 @@ const ui = { tab: "items", item: null, design: null, mode: "design", view: "outs
              // Manual show-position control (Units tab): client-side only, always off on
              // reload, off again after a successful START/STOP - see seekBlockHtml().
              manual: false, seekDrag: null, seekSent: null, seekTimer: null,
-             // STANDALONE DEMO (Units tab): the name field keeps its typed case (the
-             // display is upper-cased by CSS only) so retyping never fights the caret;
-             // it is upper-cased once, when sent.
-             demoName: "", demoLoop: false, demoLog: "" };
+             // The standalone demo's name, typed in the "Write to units…" dialog:
+             // the field keeps its typed case (the display is upper-cased by CSS
+             // only) so retyping never fights the caret; it is upper-cased once,
+             // when sent.
+             demoName: "", demoLoop: false, demoLog: "",
+             // "Write to units…" (Timeline toolbar, THE SHOW card ④, and the
+             // PLAY WITHOUT THIS PC card): open or not, which of the two choices
+             // the operator came in for, and the last action's per-unit answer.
+             writeOpen: false, writeFocus: "upload", writeResult: null };
 let fleet = null;
 let state = null;
 // The last GET /api/fleet/demos answer ({units: {unit: [demo,...]}, offline: [unit,...]}),
@@ -995,7 +1062,7 @@ function renderTimeline() {
   // to protect); otherwise it is the fixed bottom dock - always on screen, in
   // "compact" (transport + seek + looks row) or "collapsed" (transport only).
   const looksHtml = ui.simView ? `
-    <div class="card"><h2>THE LOOKS AT — <span id="ph-label"></span></h2>
+    <div class="card"><h2>THE LOOKS AT — <span id="ph-label"></span> <span class="unit-chips"></span></h2>
       <div class="editor" id="transport" style="margin-bottom:8px">
         ${playBtns}
         <button id="tl-simview" title="Return the tracks and cue list to the screen">Timeline view</button>
@@ -1010,6 +1077,7 @@ function renderTimeline() {
       <div class="tl-dock-head">
         <span class="tl-dock-title">THE LOOKS AT<b id="ph-label"></b></span>
         ${playBtns}
+        <span class="unit-chips"></span>
         ${ui.dock === "collapsed" ? "" : `
         <button id="tl-simview" title="Hide the tracks and cue list so the looks and transport fill the screen">Simulator view</button>
         <span class="meta" id="tl-dock-mode" style="font-size:11px">${ui.dockCells ? "manual · double-click the handle to reset" : "auto"}</span>
@@ -1026,6 +1094,9 @@ function renderTimeline() {
       <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
       <div class="group"><span>Default refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
         title="Seconds from the command to the finished image, used by every cue that does not set its own (about 7 s on the latest firmware, 16 s on older ones)"><span>s</span></div>
+      <div class="group">
+        <button class="primarybtn" id="tl-write" title="Put this timeline on the units: Upload it for a show this PC drives, or save it on the units as a demo they play from KEY1 without this PC. One dialog, both ways.">Write to units…</button>
+      </div>
       <div class="group">
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
         <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
@@ -1081,6 +1152,11 @@ function renderTimeline() {
     ${looksHtml}`;
   renderThumbs(THUMBS.timeline, ui.playhead);
   syncDockSpacing();
+  // The two chips in the LOOKS AT bar ("is what I am looking at on the
+  // units?"). The Timeline tab polls the fleet only every five seconds, so
+  // the first paint of a freshly loaded page asks once, here.
+  paintChips();
+  if (!fleet) fetchFleet().then(paintChips);
 }
 // The dock is `position: fixed`, so #content's own bottom padding must grow to
 // match it or the last card that scrolls (CUES) would end up hidden underneath
@@ -1461,14 +1537,9 @@ async function loadBundleFile(file) {
 
 // ---- tab 3: the units ----
 function assignedItems() { return trackItems().filter(i => i.unit && i.designs.length); }
-// ---- the standalone demo ----
-// Which units a write would actually reach: exactly compile_show()'s own
-// targets - the unit each cue's item is assigned to - so the confirm
-// dialog's count never disagrees with what the server is about to do.
-function demoTargetUnits() {
-  const unitOf = new Map(trackItems().map(i => [i.item, i.unit]));
-  return new Set(state.show.cues.map(c => unitOf.get(c.item)).filter(Boolean));
-}
+// ---- the standalone demo: the table of what is on the units ----
+// (Writing one is the second choice of "Write to units…" - see
+// writeTargets(), which names the same units this table lists.)
 // One row per (slug, name) pair, gathered across every unit's own list -
 // several units hold the same demo, so this folds them into one row with
 // the units that have it. A slug is only supposed to carry one name, but
@@ -1542,6 +1613,427 @@ async function refreshDemos() {
   finally { demoListLoading = false; demoListTried = true; }
   const box = $("#demo-table");
   if (box) box.innerHTML = demoTableHtml();
+}
+// ---- "Write to units…": the two ways the timeline reaches the units ----
+// (plan_write_to_units.md, 2026-09-25 - the operator could not find how to
+// put the timeline on the units at all: the only button lived at the bottom
+// of the Units tab in a card called "STANDALONE DEMO", and the other way was
+// the ① of THE SHOW, which reads like a step of a run rather than a way of
+// writing anything.)
+//
+//   UPLOAD ....... the pictures go into the boards now and the timeline goes
+//                  to the units; THIS PC then drives START / HOLD / STOP.
+//   SAVE ON UNITS  the same timeline is stored in each unit's own menu under
+//                  a name; KEY1 plays it there with no PC at all.
+//
+// One dialog says both, side by side, with the consequence of each, the time
+// it takes, and who it reaches. Everything it needs comes from /api/fleet and
+// the workspace timeline - it asks for nothing of its own.
+
+// The bus cost of one picture: 36 boards x 10 cues took about 112 s on the
+// measured relay (0.15 s a picture, plus one pipeline clear per board and
+// slot the first time a show is burned) - docs/STATUS.md 2026-09-25.
+const BURN_S_PER_PICTURE = 0.31;
+// One picture per board per moment: conductor/showfile.py builds a unit's
+// show from the DISTINCT send times of its own cues (two items changing at
+// the same second are one picture, as timeline.py counts them for the 18
+// slots), and every cue carries all of that unit's boards.
+function writeTargets() {
+  const boards = new Map(), moments = new Map();
+  for (const item of trackItems())
+    if (item.unit) boards.set(item.unit, (boards.get(item.unit) || 0) + item.boards.length);
+  for (const cue of state.show.cues) {
+    const unit = itemByKey(cue.item)?.unit;
+    if (!unit) continue;
+    if (!moments.has(unit)) moments.set(unit, new Set());
+    moments.get(unit).add(Math.round(cue.sent * 10));
+  }
+  const byName = Object.fromEntries((fleet?.units || []).map(u => [u.name, u]));
+  return [...moments.keys()].sort().map(unit => {
+    const cues = moments.get(unit).size, u = byName[unit] || null;
+    const pictures = (boards.get(unit) || 0) * cues;
+    return { unit, cues, boards: boards.get(unit) || 0, pictures, u,
+             seconds: Math.max(1, Math.round(pictures * BURN_S_PER_PICTURE)),
+             online: !!u && u.online, demoBusy: !!u && unitPlaysADemo(u) };
+  });
+}
+// Roughly how long the slowest unit needs to write this show - the number
+// both the dialog and ① Upload's "the show is running" question quote.
+function burnSeconds() {
+  return Math.max(1, ...writeTargets().map(t => t.seconds));
+}
+// A unit busy with its own standalone demo: the fleet leaves it alone and
+// refuses Upload for it (conductor/fleet.py's _playing_demo, including the
+// burn that KEY1 starts before the demo runs).
+function unitPlaysADemo(u) {
+  const show = u.show;
+  if (!show || !show.demo) return false;
+  return ["running", "holding"].includes(show.state)
+    || (show.state === "loaded" && show.burn && show.burn.state === "burning");
+}
+// What the units hold right now, as both chips and the dialog read it.
+// Two questions, and they are not the same one:
+//   "do the units hold what this conductor sent them?"  - the ids:
+//      units[].show.id against /api/fleet's shows[unit].id, and a demo's
+//      own show_id against that same id (the server's `current` flag).
+//   "is what it sent still what is on screen?" - the revisions: the
+//      workspace's own fingerprint now (/api/fleet's timeline.revision)
+//      against the one it had when it was written (timeline.uploaded,
+//      timeline.demos[NAME]). The ids alone cannot answer this - they are
+//      both sides of the same sending, so they always agree with
+//      themselves however much the timeline has moved on since.
+// Anything not known (no mark for that write - an earlier conductor, or
+// one restarted since) is said as nothing at all, never as "up to date".
+function heldOnUnits() {
+  const shows = fleet?.shows || {}, units = fleet?.units || [];
+  const targets = writeTargets();
+  const names = new Set(targets.map(t => t.unit));
+  const want = Object.keys(shows).length;
+  // Counted among the units this timeline is FOR, so a unit that a
+  // previous upload reached and this one does not cannot make it
+  // "uploaded 2 / 1" (found in review).
+  const mine = units.filter(u => shows[u.name] && (!names.size || names.has(u.name)));
+  const held = mine.filter(u => u.show && u.show.id === shows[u.name].id).length;
+  // The demo most units hold; ties go to the one that is the current show,
+  // then alphabetically, so the chip never flickers between two names.
+  // Counted over the same units as the fraction above - a unit this
+  // timeline no longer reaches still holds whatever was written to it
+  // once, and would otherwise read as "demo ROUND2 2 / 1".
+  const byName = new Map();
+  for (const u of units) {
+    if (names.size && !names.has(u.name)) continue;
+    for (const demo of (u.demos || [])) {
+      const row = byName.get(demo.name) || { name: demo.name, units: [], current: [] };
+      row.units.push(u.name);
+      row.current.push(demo.current === undefined ? null : demo.current);
+      byName.set(demo.name, row);
+    }
+  }
+  const demos = [...byName.values()].sort((a, b) =>
+    b.units.length - a.units.length
+    || (b.current.every(c => c === true) ? 1 : 0) - (a.current.every(c => c === true) ? 1 : 0)
+    || a.name.localeCompare(b.name));
+  return { want, held, targets, demos, top: demos[0] || null,
+           total: targets.length || Math.min(want, mine.length) || want,
+           mark: fleet?.timeline || {} };
+}
+const verdict = (fresh, stale) => fresh
+  ? ` <span class="verdict">· up to date</span>`
+  : stale ? ` <span class="verdict">· changed since</span>` : "";
+// The two chips, shown wherever the operator might wonder whether what they
+// see is on the units: THE SHOW's header, the Timeline's LOOKS AT bar and
+// the dialog's own head. Short on purpose - they sit in a one-row bar at
+// 1024 px, and the sentence behind them is in the title.
+function writeChipsHtml() {
+  if (!fleet || !state) return "";
+  const h = heldOnUnits();
+  const total = h.total, rev = h.mark.revision || null;
+  let upload;
+  if (!h.want) upload = `<span class="chip" title="Nothing has been uploaded from this conductor yet. Write to units… → Upload for the show.">not uploaded</span>`;
+  else {
+    const all = total > 0 && h.held >= total;
+    const known = !!rev && !!h.mark.uploaded;
+    const fresh = known && all && h.mark.uploaded === rev;
+    const stale = known && h.mark.uploaded !== rev;
+    upload = `<span class="chip ${fresh ? "ok" : "warn"}" title="${esc(
+      `${h.held} of ${total} unit(s) hold the show this conductor uploaded`
+      + (stale ? "; the timeline has been edited since - Upload again to put what you see on the units"
+         : fresh ? " - and it was made from the timeline as it is now" : ""))}">`
+      + `uploaded <b>${h.held}/${total}</b>${verdict(fresh, stale)}</span>`;
+  }
+  let demo;
+  if (!h.top) demo = `<span class="chip" title="No unit holds a demo it could play without this PC. Write to units… → Save on the units.">no demo</span>`;
+  else {
+    const all = h.top.units.length >= total;
+    const older = h.top.current.some(c => c === false);
+    const mark = (h.mark.demos || {})[h.top.name];
+    let fresh = false, stale = older;
+    if (rev && mark !== undefined) {
+      fresh = all && !older && mark === rev;
+      stale = older || mark !== rev;
+    } else if (rev && h.mark.uploaded) {
+      // No mark of its own (written before this conductor came up): the
+      // ids still say whether it matches the UPLOAD, which is worth
+      // something only while that upload is itself the timeline on screen.
+      const matches = h.top.current.every(c => c === true);
+      fresh = matches && all && h.mark.uploaded === rev;
+      stale = older || (matches && h.mark.uploaded !== rev);
+    }
+    demo = `<span class="chip ${fresh ? "ok" : stale ? "warn" : ""}" title="${esc(
+      `${h.top.units.length} of ${total} unit(s) can play "${h.top.name}" from their own menu with no PC`
+      + (stale ? "; it was written from an older timeline - Save on the units again"
+         : fresh ? " - written from the timeline as it is now" : ""))}">`
+      + `demo <b>${esc(h.top.name)}</b> ${h.top.units.length}/${total}`
+      + verdict(fresh, stale) + `</span>`;
+  }
+  return upload + demo;
+}
+function paintChips() {
+  const html = writeChipsHtml();
+  for (const box of document.querySelectorAll(".unit-chips")) box.innerHTML = html;
+}
+// Why a choice cannot be taken right now, in the operator's words - shown
+// inline under it, never as a button that simply does nothing.
+function writeState() {
+  const cues = state.show.cues.length;
+  const bad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
+  const targets = writeTargets();
+  const busy = targets.filter(t => t.demoBusy).map(t => t.unit);
+  const run = fleet?.run || null;
+  let both = null;
+  if (!cues) both = "The timeline has no cues yet — add them on the Timeline tab.";
+  else if (bad) both = `The timeline has ${bad} problem${bad === 1 ? "" : "s"} — fix them on the Timeline tab (nothing is written while one is left).`;
+  else if (!targets.length) both = "No cue is on a unit yet — give the items a unit in the list on the Designs tab.";
+  const demoPlaying = busy.length
+    ? `${busy.join(", ")} ${busy.length === 1 ? "is" : "are"} playing a demo — press STOP first.`
+    : null;
+  const name = ui.demoName.trim();
+  // The unit's LCD font has no Japanese glyphs and its menu row is 14
+  // characters wide - conductor/server.py's _demo_name refuses anything
+  // else, so the page says it while it is being typed instead of letting
+  // the write come back 400.
+  const nameWhy = !name ? "Type a name for the demo first."
+    : name.length > DEMO_NAME_MAX
+      ? `${name.length} characters — the unit's menu row fits ${DEMO_NAME_MAX}.`
+    : !DEMO_NAME_OK.test(name)
+      ? "A-Z, 0-9 and symbols only — the unit's LCD cannot display Japanese."
+    : null;
+  // Not a refusal: a unit that is not answering is simply reported as
+  // FAILED, and the operator may well be writing before switching them on.
+  const offline = targets.filter(t => !t.online).map(t => t.unit);
+  const note = !targets.length ? null
+    : offline.length === targets.length
+      ? `No unit is answering — nothing will be written until they are on the network.`
+    : offline.length
+      ? `${offline.join(", ")} not answering — ${offline.length === 1 ? "it" : "they"} will come back FAILED; write again once online.`
+    : null;
+  return { cues, bad, targets, run, busy, name, note, offline,
+           seconds: Math.max(1, ...targets.map(t => t.seconds), 1),
+           pictures: Math.max(0, ...targets.map(t => t.pictures)),
+           // Upload during a run is allowed on purpose (it is the way back
+           // for one unit that lost its pictures) - it asks first instead.
+           uploadWhy: both || demoPlaying,
+           demoWhy: both || (run ? "The show is running — press STOP first." : demoPlaying),
+           nameWhy };
+}
+function writeUnitsHtml(targets, id) {
+  if (!targets.length) return `<div class="dlg-units" id="${id}"></div>`;
+  return `<div class="dlg-units" id="${id}">${targets.map(t => `<span class="u ${t.online ? "" : "gone"}">`
+    + `<span class="dot ${t.online ? "ok" : "none"}"></span>${esc(t.unit)} · ${t.pictures} pictures`
+    + ` ≈ ${t.seconds} s${t.online ? "" : " · offline"}${t.demoBusy ? " · playing a demo" : ""}</span>`).join("")}</div>`;
+}
+// The per-unit burn, while the dialog stays open after an Upload: exactly
+// the text the tiles show (picturesText), from the same poll - the two can
+// never disagree about how far a unit has got.
+function writeProgressHtml() {
+  const byName = Object.fromEntries((fleet?.units || []).map(u => [u.name, u]));
+  return writeTargets().map(t => {
+    const u = byName[t.unit];
+    return `<div class="row"><span>${esc(t.unit)}</span><b>${u ? picturesText(u) : "—"}</b></div>`;
+  }).join("");
+}
+const LCD_STEPS = (name, seconds) => `On each unit: <b>KEY2</b> opens the menu → `
+  + `<b>${esc(name)}</b> (just below STANDBY) → <b>KEY1</b> plays it (it writes its own `
+  + `pictures first, about ${seconds} s) · <b>KEY2</b> stops it and goes back to the menu.`;
+function writeResultHtml() {
+  const r = ui.writeResult;
+  if (!r) return "";
+  const units = Object.entries(r.units || {}).sort();
+  return `<div class="dlg-result">
+    <h3 class="${r.ok ? "" : "fail"}">${esc(r.title)} · ${esc(r.at)}</h3>
+    ${(r.problems || []).map(p => `<div class="fail">${esc(p)}</div>`).join("")}
+    ${r.error ? `<div class="fail">${esc(r.error)}</div>` : ""}
+    ${units.length ? units.map(([unit, u]) => `<div>${esc(unit)}: `
+      + (u.ok ? "✓ written" : `<span class="fail">FAILED — ${esc(u.error)}</span>`)
+      + `</div>`).join("") : r.error ? "" : `<div class="fail">No unit to write to.</div>`}
+    ${r.kind === "upload" ? `<div class="meta" style="margin-top:6px">Pictures, as the tiles show them:</div>
+      <div id="write-progress">${writeProgressHtml()}</div>
+      <div class="meta">The show is driven from this PC: ② Show preset, then ③ START on the Units tab.</div>`
+      : ""}
+    ${r.kind === "demo" && r.ok ? `<div class="lcd">${LCD_STEPS(r.name, r.seconds)}</div>` : ""}
+  </div>`;
+}
+function writeDialogHtml() {
+  const s = writeState();
+  const running = !!s.run;
+  return `<div id="write-back"><div class="dlg" id="write-dialog" role="dialog" aria-modal="true"
+      aria-labelledby="write-title">
+    <div class="dlg-head">
+      <h2 id="write-title">WRITE TO UNITS</h2>
+      <span class="meta">${s.cues} cue${s.cues === 1 ? "" : "s"} · ${clock(state.show.duration)}
+        · ${s.targets.length} unit${s.targets.length === 1 ? "" : "s"}</span>
+      <span class="unit-chips"></span>
+      <span style="flex:1"></span>
+      <button id="write-close" title="Close (Esc)">Close ✕</button>
+    </div>
+    <div class="meta sub">The same timeline, two destinations. Pick the one that matches what today is.</div>
+    <div class="dlg-choices">
+      <div class="choice ${s.uploadWhy ? "off" : ""}" id="write-choice-upload">
+        <h3>Upload for the show</h3>
+        <div class="what">Writes every picture into the boards now and hands the timeline to the units.
+          <b>This PC then runs the show</b> — START, HOLD, NEXT and STOP on the Units tab.</div>
+        <div class="when" id="write-upload-when">${uploadWhenText(s)}</div>
+        ${writeUnitsHtml(s.targets, "write-units-upload")}
+        <div class="note" id="write-upload-note">${esc(s.note || "")}</div>
+        <div class="why" id="write-upload-why">${esc(s.uploadWhy || "")}</div>
+        <button class="big primarybtn" id="write-upload" ${s.uploadWhy ? "disabled" : ""}>${
+          running ? "Re-write the pictures now" : "Upload for the show"}</button>
+      </div>
+      <div class="choice ${s.demoWhy ? "off" : ""}" id="write-choice-demo">
+        <h3>Save on the units</h3>
+        <div class="what">Stores the same timeline in each unit's own menu under a name.
+          <b>The unit plays it from KEY1 with no PC at all</b> — showroom, rehearsal, a stand on its own.</div>
+        <div class="when">Nothing is written to the boards now: each unit writes its own pictures
+          (about ${s.seconds} s) when KEY1 starts the demo, then plays it on its own clock.</div>
+        <div class="go">
+          <input type="text" id="write-name" maxlength="${DEMO_NAME_MAX}" placeholder="DEMO NAME"
+            value="${esc(ui.demoName)}" title="${esc(DEMO_NAME_HINT)}" ${s.demoWhy ? "disabled" : ""}>
+          <span class="meta" id="write-name-count">${ui.demoName.trim().length}/${DEMO_NAME_MAX}</span>
+          <label class="meta"><input type="checkbox" id="write-loop" ${ui.demoLoop ? "checked" : ""}>
+            Loop (starts again 5 s after the end)</label>
+        </div>
+        <div class="meta">${esc(DEMO_NAME_HINT)}</div>
+        ${writeUnitsHtml(s.targets, "write-units-demo")}
+        <div class="note" id="write-demo-note">${esc(s.note || "")}</div>
+        <div class="why ${s.demoWhy || s.nameWhy && ui.demoName.trim() ? "" : "soft"}" id="write-demo-why">${esc(s.demoWhy || s.nameWhy || "")}</div>
+        <button class="big primarybtn" id="write-demo" ${s.demoWhy || s.nameWhy ? "disabled" : ""}>Save on the units</button>
+      </div>
+    </div>
+    ${writeResultHtml()}
+  </div></div>`;
+}
+function uploadWhenText(s) {
+  return `About ${s.seconds} s — ${s.pictures} picture${s.pictures === 1 ? "" : "s"} on the slowest unit,`
+    + ` ${BURN_S_PER_PICTURE} s each. A unit that already holds this show writes nothing.`
+    + (s.run ? " The show is running: it will ask before it writes." : "");
+}
+function renderWriteDialog() {
+  const host = $("#write-host");
+  if (!host) return;
+  host.innerHTML = ui.writeOpen && state ? writeDialogHtml() : "";
+  if (!ui.writeOpen) return;
+  paintChips();
+  // Straight into the name field when the operator came in for the demo -
+  // that is the only thing the second choice still needs typed.
+  const field = $("#write-name");
+  if (ui.writeFocus === "demo" && field && !field.disabled) { field.focus(); field.select(); }
+  else ($("#write-upload") || $("#write-close"))?.focus();
+}
+function openWriteDialog(focus) {
+  ui.writeFocus = focus === "demo" ? "demo" : "upload";
+  ui.writeOpen = true;
+  ui.writeResult = null;
+  renderWriteDialog();
+  if (!fleet) fetchFleet().then(() => { if (ui.writeOpen) renderWriteDialog(); });
+}
+function closeWriteDialog() {
+  if (!ui.writeOpen) return;
+  ui.writeOpen = false;
+  ui.writeResult = null;
+  renderWriteDialog();
+}
+// The live parts of an open dialog, on every poll: the reasons, the buttons
+// they disable, and the burn the tiles are showing at the same moment. The
+// markup itself is left alone - re-rendering it would fight the caret in the
+// name field (the same rule the demo name field has always had).
+function paintWrite() {
+  if (!ui.writeOpen || !state) return;
+  const s = writeState();
+  const when = $("#write-upload-when");
+  if (when) when.textContent = uploadWhenText(s);
+  const uploadWhy = $("#write-upload-why"), demoWhy = $("#write-demo-why");
+  if (uploadWhy) uploadWhy.textContent = s.uploadWhy || "";
+  if (demoWhy) {
+    demoWhy.textContent = s.demoWhy || s.nameWhy || "";
+    // Dim for "type a name" (the next thing to do), red for a refusal.
+    demoWhy.classList.toggle("soft", !(s.demoWhy || (s.nameWhy && s.name)));
+  }
+  for (const id of ["#write-upload-note", "#write-demo-note"]) {
+    const note = $(id);
+    if (note) note.textContent = s.note || "";
+  }
+  // A unit coming online, or one starting a demo, changes this list while
+  // the dialog is open - it is the answer to "who will this reach?".
+  const listed = writeUnitsHtml(s.targets, "").replace(/^<div[^>]*>|<\/div>$/g, "");
+  for (const id of ["#write-units-upload", "#write-units-demo"]) {
+    const box = $(id);
+    if (box && box.innerHTML !== listed) box.innerHTML = listed;
+  }
+  const upload = $("#write-upload"), demo = $("#write-demo");
+  if (upload) {
+    upload.disabled = !!s.uploadWhy;
+    upload.textContent = s.run ? "Re-write the pictures now" : "Upload for the show";
+  }
+  if (demo) demo.disabled = !!(s.demoWhy || s.nameWhy);
+  const name = $("#write-name");
+  if (name) name.disabled = !!s.demoWhy;
+  $("#write-choice-upload")?.classList.toggle("off", !!s.uploadWhy);
+  $("#write-choice-demo")?.classList.toggle("off", !!s.demoWhy);
+  const progress = $("#write-progress");
+  if (progress) progress.innerHTML = writeProgressHtml();
+  paintChips();
+}
+// The one question ① Upload and the dialog both ask while a show is
+// running - the same words, because it is the same thing they do.
+const uploadDuringRunQuestion = seconds =>
+  "The show is running. Re-write the pictures on every unit now?\n\n"
+  + "Every unit briefly leaves the show and rejoins by itself a few seconds "
+  + "later. Units already holding this show write nothing; a unit that lost "
+  + `its pictures writes them again (~${seconds} s) and rejoins after that.`;
+// How an answer read: all of it, some of it, or none of it. The result
+// heading says which - "Uploaded for the show" over a column of FAILED
+// would be the page lying about the one thing it was opened to settle.
+function writeOutcome(result) {
+  const units = Object.values(result.units || {});
+  const ok = units.filter(u => u.ok).length;
+  return { ok, total: units.length, some: ok > 0,
+           all: !!units.length && ok === units.length && !result.error
+                && !(result.problems || []).length };
+}
+async function writeUpload() {
+  // A second click while the first is still in flight would ask the
+  // question again, and fleetCommand drops the command anyway.
+  if (commandInFlight) return;
+  const s = writeState();
+  if (s.uploadWhy) { toast(s.uploadWhy); return; }
+  // Upload during a run is the way back for ONE unit that lost its pictures
+  // (a restart mid-show, a burn cancelled by its own STOP): the others write
+  // nothing. Asked first, and sent with `force` - the server refuses it
+  // otherwise ("stop the show first").
+  let body = {};
+  if (s.run) {
+    if (!confirm(uploadDuringRunQuestion(s.seconds))) return;
+    body = { force: true };
+  }
+  const result = await fleetCommand("upload", body, "① Upload", "show");
+  if (!result) return;
+  const out = writeOutcome(result);
+  ui.writeResult = { kind: "upload", ok: out.all,
+                     title: out.all ? "Uploaded for the show"
+                       : out.some ? `Uploaded to ${out.ok} of ${out.total} units — the rest did not take it`
+                       : "Nothing was uploaded",
+                     at: new Date().toLocaleTimeString(), units: result.units,
+                     problems: result.problems, error: result.error };
+  renderWriteDialog();
+}
+async function writeDemo() {
+  if (commandInFlight) return;
+  const s = writeState();
+  if (s.demoWhy || s.nameWhy) { toast(s.demoWhy || s.nameWhy); return; }
+  const name = s.name.toUpperCase();
+  const result = await fleetCommand("write_demo", { name, loop: ui.demoLoop },
+                                    `Save on the units as "${name}"`, "demo");
+  if (!result) return;
+  const out = writeOutcome(result);
+  ui.writeResult = { kind: "demo", ok: out.some,
+                     title: out.all ? `Saved on the units as "${name}"`
+                       : out.some ? `Saved on ${out.ok} of ${out.total} units as "${name}" — the rest did not take it`
+                       : `"${name}" was not saved on any unit`,
+                     at: new Date().toLocaleTimeString(), units: result.units,
+                     problems: result.problems, error: result.error,
+                     name, seconds: s.seconds };
+  renderWriteDialog();
+  await refreshDemos();
 }
 // `show_duration`/`start_at` are new fields (round 3 §2.1); fall back gracefully
 // so the page works unmodified against an older conductor server.
@@ -1695,23 +2187,6 @@ async function commitSeek(t) {
 // appending a cue, or editing one in place, only rewrites its own slot
 // (seconds) - but inserting or removing one earlier in the show shifts every
 // slot after it, and Upload then rewrites the whole show again on every unit.
-// The bus cost of one picture: 36 boards x 10 cues took about 112 s on
-// the measured relay (0.15 s a picture, plus one pipeline clear per board
-// and slot the first time a show is burned) - docs/STATUS.md 2026-09-25.
-const BURN_S_PER_PICTURE = 0.31;
-// Roughly how long the slowest unit would need to write this show again,
-// for the "the show is running" question on ① Upload.
-function burnSeconds() {
-  const carried = {};
-  for (const item of trackItems()) if (item.unit) (carried[item.unit] ||= []).push(item);
-  let worst = 0;
-  for (const u of (fleet?.units || [])) {
-    const boards = (carried[u.name] || []).reduce((n, i) => n + i.boards.length, 0);
-    const cues = (fleet.shows[u.name] || {}).cues || 0;
-    worst = Math.max(worst, boards * cues * BURN_S_PER_PICTURE);
-  }
-  return Math.max(1, Math.round(worst));
-}
 const UPLOAD_TITLE = "Writes every picture into the boards now (one per cue, "
   + "its own slot) - the show itself then only sends triggers. Appending a "
   + "cue, or editing one in place, only rewrites its own slot (seconds); "
@@ -1724,7 +2199,8 @@ function renderFleet() {
   const loose = trackItems().filter(i => !i.unit).map(i => i.item);
   const cueCount = state.show.cues.length, cueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
   $("#content").innerHTML = `
-    <div class="card"><h2>THE SHOW (${cueCount} CUES${cueBad ? ` · <span style="color:var(--err)">${cueBad} PROBLEMS — fix them on the Timeline tab</span>` : ""})</h2>
+    <div class="card"><h2>THE SHOW (${cueCount} CUES${cueBad ? ` · <span style="color:var(--err)">${cueBad} PROBLEMS — fix them on the Timeline tab</span>` : ""})
+      <span class="unit-chips"></span></h2>
       <div class="meta sub" id="show-sub">The timeline is uploaded to the units; after START each unit runs it on its own clock, with or without this PC.</div>
       <div class="showbar">
         <div class="showclock" id="show-clock"><small>—</small>0:00</div>
@@ -1736,6 +2212,7 @@ function renderFleet() {
         <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"} title="${esc(UPLOAD_TITLE)}">① Upload</button>
         <button class="big" id="show-preset">② Show preset (the 0:00 look)</button>
         <button class="big fire" id="show-start">③ START</button>
+        <button class="big" id="show-write" title="The other way to put this timeline on the units: stored in each unit's own menu, played from KEY1 with no PC at all. Opens the same &quot;Write to units…&quot; dialog as the Timeline tab.">④ Save on units (plays without this PC)</button>
         <label class="meta">START / NEXT / MOVE take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
         <span style="flex:1"></span>
         <button class="big hold" id="show-hold">HOLD</button>
@@ -1747,15 +2224,12 @@ function renderFleet() {
       <div class="meta" id="show-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.showLog || "")}</div>
       <div class="meta" id="show-fix"></div>
     </div>
-    <div class="card"><h2>STANDALONE DEMO</h2>
-      <div class="meta sub">Writes the current timeline into every unit's own menu; each unit can then play its part from its LCD without this PC. If a unit is already playing a demo, press STOP first (it ends the demo too).</div>
+    <div class="card"><h2>PLAY WITHOUT THIS PC (DEMO STORED ON THE UNITS)</h2>
+      <div class="meta sub">A demo is the same timeline, stored in a unit's own menu under a name: KEY2 opens the menu, KEY1 plays it on the unit's own clock, KEY2 stops it — no PC on the network at all. If a unit is already playing one, press STOP first (it ends the demo too).</div>
       <div class="go">
-        <input type="text" id="demo-name" maxlength="${DEMO_NAME_MAX}" placeholder="DEMO NAME" value="${esc(ui.demoName)}" title="${esc(DEMO_NAME_HINT)}">
-        <span class="meta" id="demo-count">${ui.demoName.trim().length}/${DEMO_NAME_MAX}</span>
-        <label class="meta"><input type="checkbox" id="demo-loop" ${ui.demoLoop ? "checked" : ""}> Loop (auto-restart 5 s after the end)</label>
-        <button class="big" id="demo-write" ${cueCount && !cueBad && ui.demoName.trim() && !fleet?.run ? "" : "disabled"}>Write demo to units</button>
+        <button class="big primarybtn" id="demo-open">Write to units…</button>
+        <span class="meta">the same dialog as the Timeline tab, on “Save on the units”</span>
       </div>
-      <div class="meta warn">${esc(DEMO_NAME_HINT)}${fleet?.run ? " · stop the show first" : ""}</div>
       <div class="meta" id="demo-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.demoLog || "")}</div>
       <div class="meta sub" style="margin-top:10px">Demos on the units</div>
       <div class="go" style="margin-top:4px">
@@ -1785,6 +2259,7 @@ function renderFleet() {
       <div class="meta sub">Every unit is polled every 2 s, and each round trip also measures its clock offset.</div><div class="tiles" id="tiles"></div></div>`;
   renderThumbs(THUMBS.fleet, fleetShowPos());
   renderTiles();
+  paintChips();
   if (!demoListTried) refreshDemos();        // first time the Units tab is opened
 }
 let lastFleetThumbPos = null, lastFleetRunState = undefined;
@@ -1836,7 +2311,11 @@ function showClockText() {
                  // `force` - see the click handler.
                  "show-upload": state.show.cues.length && !demoCueBad,
                  "fleet-prepare": !run && !unitsBusy && assignedItems().length > 0, "fleet-fire": !run && !unitsBusy,
-                 "demo-write": !run && state.show.cues.length && !demoCueBad && !!ui.demoName.trim() };
+                 // ④ and the demo card's button only OPEN the dialog, which
+                 // says inside it what can and cannot be done right now -
+                 // they are never disabled (a disabled button that explains
+                 // nothing is exactly what hid this feature before).
+                 "show-write": true, "demo-open": true };
   for (const [id, on] of Object.entries(able)) { const b = $("#" + id); if (b) b.disabled = !on; }
   // Upload while a run exists writes into boards the show may still be
   // reading from, so it asks first and goes out with `force` (the server
@@ -1943,6 +2422,21 @@ function burnFailedQuestion(question) {
 const onlyFailedBoards = error => !!error && error.split("; ").every(
   part => /\d+ of \d+ pictures not written|none of its \d+ boards answered/
     .test(part));
+// The tile's "On unit" row: what this unit would play from its own menu
+// with no PC, as the poll's cached /demo/list says (conductor/fleet.py's
+// demos_of). Anything that is not a list is "not known" - an agent too old
+// to list them, or one that has not answered yet - and must never read as
+// "no demo stored"; the count the unit itself reports (demo_count) is all
+// there is to say then. An EMPTY list is the opposite: asked, and the menu
+// really is empty (`[]` is truthy, which used to leave the row blank).
+function demosOnUnitHtml(u) {
+  if (!Array.isArray(u.demos))
+    return u.demo_count ? `${esc(u.demo_count)} stored (names not listed)` : "—";
+  if (!u.demos.length) return "no demo stored";
+  return u.demos.map(d => `${esc(d.name)} (${esc(d.cues ?? "?")} cue${d.cues === 1 ? "" : "s"}`
+    + ` · ${clock(d.duration || 0)}${d.loop ? " · loop" : ""})`
+    + (d.current === false ? ` <span class="warn">older</span>` : "")).join("<br>");
+}
 function renderTiles() {
   showClockText();
   const box = $("#tiles");
@@ -1965,7 +2459,7 @@ function renderTiles() {
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
       <div class="row"><span>Pictures</span><b>${picturesText(u)}</b></div>
-      <div class="row"><span>Demos</span><b>${u.demos ?? "—"}</b></div>
+      <div class="row"><span>On unit</span><b>${demosOnUnitHtml(u)}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
       ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}
       ${u.unit_error ? `<div class="e">${esc(u.unit_error)}</div>` : ""}
@@ -1974,10 +2468,24 @@ function renderTiles() {
       : `<div class="row"><span>${esc(u.address)}</span></div><div class="l">${esc(u.error || "no answer")}</div>`}
     </div>`; }).join("");
 }
+async function fetchFleet() {
+  try { fleet = await api("/api/fleet"); fleet.at = performance.now(); }
+  catch (err) { /* the server is restarting */ }
+}
+// Once a second on the Units tab (and while the dialog is open anywhere,
+// so its per-unit burn keeps up with the tiles); every fifth second on the
+// Timeline tab, which needs nothing live - only the two chips saying
+// whether what is on screen is what the units hold.
+let fleetTick = 0;
 async function pollFleet() {
-  if (ui.tab === "fleet" && !document.hidden) {
-    try { fleet = await api("/api/fleet"); fleet.at = performance.now(); renderTiles(); } catch (err) { /* the server is restarting */ }
+  const chipsOnly = ui.tab === "timeline" && fleetTick % 5 === 0;
+  if (!document.hidden && (ui.tab === "fleet" || ui.writeOpen || chipsOnly)) {
+    await fetchFleet();
+    renderTiles();
+    paintWrite();
+    paintChips();
   }
+  fleetTick++;
   setTimeout(pollFleet, 1000);
 }
 function unitReport(result) {
@@ -2028,6 +2536,37 @@ document.addEventListener("keydown", e => {
 });
 // Esc deselects the cue (closes EDIT CUE back to its hint) - not while typing
 // in one of its own fields, where Esc should stay ordinary browser behaviour.
+// While "Write to units…" is open it owns the keyboard: Esc closes it,
+// Tab cycles inside it, Enter in the name field is that choice's own
+// primary - and nothing at all reaches the page behind it (Ctrl+Z would
+// undo a timeline edit, the arrows and Home would move the playhead, all
+// invisible behind the modal). Capture phase, so this runs before every
+// handler below whatever the order they were registered in.
+document.addEventListener("keydown", e => {
+  if (!ui.writeOpen) return;
+  const dialog = $("#write-dialog");
+  if (!dialog) return;
+  e.stopPropagation();
+  if (e.key === "Escape") { e.preventDefault(); closeWriteDialog(); return; }
+  if (e.key === "Enter" && e.target.id === "write-name") {
+    e.preventDefault();
+    writeDemo();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const stops = [...dialog.querySelectorAll("button, input")]
+    .filter(el => !el.disabled && el.offsetParent !== null);
+  if (!stops.length) return;
+  const first = stops[0], last = stops[stops.length - 1];
+  const here = document.activeElement;
+  if (e.shiftKey && (here === first || !dialog.contains(here))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (here === last || !dialog.contains(here))) {
+    e.preventDefault();
+    first.focus();
+  }
+}, true);
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   const tag = (e.target.tagName || "").toLowerCase();
@@ -2059,11 +2598,7 @@ document.addEventListener("click", async e => {
     // write nothing - the unit skips what its cache knows is in place.
     let body = {};
     if (fleet?.run) {
-      if (!confirm("The show is running. Re-write the pictures on every unit now?\n\n"
-        + "Every unit briefly leaves the show and rejoins by itself a few seconds "
-        + "later. Units already holding this show write nothing; a unit that lost "
-        + `its pictures writes them again (~${burnSeconds()} s) and rejoins after `
-        + "that.")) return;
+      if (!confirm(uploadDuringRunQuestion(burnSeconds()))) return;
       body = { force: true };
     }
     await fleetCommand("upload", body, "① Upload", "show");
@@ -2162,18 +2697,16 @@ document.addEventListener("click", async e => {
     if (confirm("Hand every unit back to its own buttons? A running show stops on the units.")) await fleetCommand("release", {}, "Release to on-device control");
     return;
   }
-  if (e.target.id === "demo-write") {
-    const name = ui.demoName.trim().toUpperCase();
-    if (!name) { toast("Enter a name for the demo."); return; }
-    const cueCount = state.show.cues.length, units = demoTargetUnits().size;
-    const msg = `Write "${name}" (${cueCount} cue${cueCount === 1 ? "" : "s"}, ` +
-      `${clock(state.show.duration)}) into ${units} unit${units === 1 ? "" : "s"}' menus?`;
-    if (!confirm(msg)) return;
-    const result = await fleetCommand("write_demo", { name, loop: ui.demoLoop },
-      `Write demo "${name}"`, "demo");
-    if (result) await refreshDemos();
-    return;
-  }
+  // "Write to units…" - the same dialog from all three doors: the Timeline
+  // toolbar, THE SHOW's ④, and the demo card (which comes in on the second
+  // choice, since that is what its card is about).
+  if (e.target.id === "tl-write") { openWriteDialog("upload"); return; }
+  if (e.target.id === "show-write" || e.target.id === "demo-open") { openWriteDialog("demo"); return; }
+  if (e.target.id === "write-close") { closeWriteDialog(); return; }
+  // A click on the backdrop itself (never inside the card) closes it, like Esc.
+  if (e.target.id === "write-back") { closeWriteDialog(); return; }
+  if (e.target.id === "write-upload") { await writeUpload(); return; }
+  if (e.target.id === "write-demo") { await writeDemo(); return; }
   if (e.target.id === "demo-refresh") { await refreshDemos(); return; }
   const delDemo = e.target.closest("[data-demo-delete]");
   if (delDemo) {
@@ -2272,7 +2805,7 @@ document.addEventListener("change", async e => {
     if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
     return;
   }
-  if (id === "demo-loop") { ui.demoLoop = e.target.checked; return; }
+  if (id === "write-loop") { ui.demoLoop = e.target.checked; return; }
   if (id === "show-manual") {
     ui.manual = e.target.checked;
     // Unticking must not leave a debounced commit alive to fire 350 ms later
@@ -2477,17 +3010,19 @@ function releaseSeekIfIdle() {
 }
 document.addEventListener("input", e => {
   if (e.target.id === "show-seek") { previewSeek(Number(e.target.value)); return; }
-  if (e.target.id === "demo-name") {
+  if (e.target.id === "write-name") {
     // The field keeps whatever case was typed (CSS shows it upper-cased; the
     // value sent on Write is upper-cased then) - rewriting .value here on
     // every keystroke would fight the caret while typing in the middle.
     ui.demoName = e.target.value;
-    const counter = $("#demo-count");
+    const counter = $("#write-name-count");
     if (counter) counter.textContent = `${ui.demoName.trim().length}/${DEMO_NAME_MAX}`;
-    const btn = $("#demo-write");
-    if (btn) {
-      const cueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
-      btn.disabled = !(state.show.cues.length && !cueBad && ui.demoName.trim());
+    const s = writeState();
+    const btn = $("#write-demo"), why = $("#write-demo-why");
+    if (btn) btn.disabled = !!(s.demoWhy || s.nameWhy);
+    if (why) {
+      why.textContent = s.demoWhy || s.nameWhy || "";
+      why.classList.toggle("soft", !(s.demoWhy || (s.nameWhy && s.name)));
     }
     return;
   }

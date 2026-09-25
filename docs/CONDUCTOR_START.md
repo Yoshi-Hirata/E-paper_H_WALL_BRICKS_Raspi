@@ -107,6 +107,20 @@ python -m conductor serve --open
 
 ## 6. ショー当日の順番(要点)
 
+> **タイムラインを機体に書き込む道は 2 つある。** どちらも Timeline タブの
+> **Write to units…**(Units タブの **④ Save on units** ・「PLAY WITHOUT THIS PC」
+> カードのボタンでも同じ)から選ぶ:
+>
+> - **A = Upload for the show** … **ショー当日はこちら**。いま全部の絵を基板へ焼き込み、
+>   タイムラインを機体へ渡す。以後この PC が START / HOLD / NEXT / STOP を出す
+>   (= 下の ① Upload と同じ動作)
+> - **B = Save on the units** … **PC なしで流したいときはこちら**(§7)。各機体自身の
+>   メニューに名前つきで保存し、機体が KEY1 で再生する
+>
+> いまタイムラインが機体に入っているかは、Timeline の「THE LOOKS AT」バーと
+> Units タブの「THE SHOW」見出しのチップ(`uploaded 10 / 10 · up to date` /
+> `demo "PARIS SS26" 10 / 10 · changed since`)で分かる。
+
 1. PC を専用ルータにつなぐ → `Start Conductor.bat`
 2. Units タブで 10 台が online、時計精度(±ms)が出ていることを確認
 3. **① Upload**(ショーを全機体へ配布 = 各キューの絵を基板のスロットへ焼き込む)→ Units タブの
@@ -141,31 +155,35 @@ python -m conductor serve --open
    `written` のように見せてしまう(焼き込みの状態は 2026-09-25 に増えた)。`git pull` は
    ショー PC と 10 台すべてに
 
-## 7. スタンドアローンでデモを流す
+## 7. スタンドアローンでデモを流す(§6 の B)
 
 展示会のブースなど、この PC を毎回持って行かなくても機体単体でショーの一部を
-流したいとき。
+流したいとき。**ショー当日(A)は §6 の ① Upload の方**で、こちらではない。
 
-1. Units タブでタイムラインに問題が無いこと、ショーが進行中でないこと(① Upload が
-   押せる状態、かつ START していない)を確認 — 進行中は「Write demo to units」自体が
-   押せない
-2. 「STANDALONE DEMO」カードで名前を入力(**A〜Z・0〜9・記号、最大 14 文字**。
-   機体の画面は日本語を描けないので拒否される)。ループさせるなら「Loop」も
-3. **Write demo to units** → 確認ダイアログで OK。機体ごとに OK / FAILED が出る
-   (オフラインの機体は試みて FAILED と表示される。あとで online になってから
-   改めて書き込む)
-4. 機体のジョイスティックでメニューを開き、STANDBY のすぐ下にできた行を選ぶ →
-   **KEY1** で 0:00 から再生。**KEY2** で停止してメニューへ戻る。**KEY1 長押し**で
-   最初からやり直し
-5. 書き込んだデモは「Demos on the units」の表に並ぶ(機体・名前・キュー数・長さ・
-   ループの有無)。要らなくなったら表の **Delete** で機体から消す
+1. **Write to units…** を押す(Timeline タブのツールバー、Units タブの
+   **④ Save on units (plays without this PC)**、または「PLAY WITHOUT THIS PC
+   (DEMO STORED ON THE UNITS)」カードのボタン。どれも同じダイアログ)
+2. 右側の **Save on the units** に名前を入力(**A〜Z・0〜9・記号、最大 14 文字**。
+   機体の画面は日本語を描けないので拒否される)。ループさせるなら「Loop」も。
+   書けないときは理由がボタンの真上に出る(タイムラインの問題、**ショーが進行中**
+   → 先に STOP、デモ再生中の機体がある、名前が空)
+3. **Save on the units**(名前欄で Enter でも同じ)→ 機体ごとに ✓ written / FAILED が
+   ダイアログに出る(オフラインの機体は FAILED。あとで online になってから改めて書き込む)。
+   続けて機体側の手順も出る
+4. 機体のジョイスティックでメニューを開き(**KEY2**)、STANDBY のすぐ下にできた行を選ぶ →
+   **KEY1** で再生(**先に自分で絵を焼いてから**流れる。ダイアログに出ていた秒数ぶん待つ)。
+   **KEY2** で停止してメニューへ戻る。**KEY1 長押し**で最初からやり直し
+5. 書き込んだデモは各機体タイルの「**On unit**」行と「Demos on the units」の表に並ぶ
+   (機体・名前・キュー数・長さ・ループの有無)。要らなくなったら表の **Delete** で機体から消す
 6. デモの再生中はその機体だけ PC の Upload・START・SEEK・RESUME・NEXT の対象から
    外れ、「FAILED — playing a demo - press STOP first」と出る。Units タブの
    その機体の「Show」行に `demo: <名前>` と出ていたら、まず **STOP** を押す
    (機体のデモも一緒に終わる)。それから改めて Upload・START すればよい
 
 タイムラインを直したあとに再度 Write すると、同じ名前の場所へ上書きされる
-(「Demos on the units」の **Timeline** 列が `older` と出ていたら、その機体の
+(見出しのチップが `demo "PARIS SS26" 10 / 10 · changed since` と出ていたら、
+機体のデモはいまのタイムラインより前のもの。
+「Demos on the units」の **Timeline** 列が `older` と出ていたら、その機体の
 デモはいまのタイムラインより前のもの — 上書きするまで古い内容のまま流れる。
 比較する材料が無い場合(このセッションでまだ Upload しておらず、かつタイムラインに
 問題が残っている場合など)は `older` ではなく「—」と出る)。

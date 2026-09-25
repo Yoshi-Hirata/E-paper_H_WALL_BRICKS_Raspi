@@ -56,6 +56,12 @@ DEFAULT_LEAD_S = 3.0
 T0_TOLERANCE_S = 0.05      # a unit's T0 further off than this is corrected
 SUPERVISE_EVERY_S = 3.0    # at most one correction per unit in this time
 DEMO_SAVE_TIMEOUT_S = TIMEOUT_S * 4    # /demo/save includes an eMMC write
+# How often a unit is asked what demos it holds (GET /demo/list, from the
+# poll loop). The store only changes when someone writes or deletes one -
+# and those update the cache straight from the answer - so this is just
+# the safety net for a demo written by another PC, or a unit that came
+# back. Every tile shows the cached answer, so no tile costs a request.
+DEMO_LIST_EVERY_S = 10.0
 
 # The PC's reference clock. Not time.monotonic(): on Windows that ticks
 # every 15.6 ms (measured 2026-09-21: round trips of exactly 0, 15 or
@@ -268,7 +274,11 @@ class UnitLink:
                 "failed": status.get("failed", []),
                 "prepare_s": status.get("prepare_s"),
                 "late_ms": status.get("late_ms"),
-                "demos": status.get("demos"),
+                # How many demos the unit says it holds, in its own poll
+                # answer (None from an agent too old to count them). What
+                # those demos ARE is the fleet's cached /demo/list, added
+                # as `demos` by Fleet._unit_snapshot().
+                "demo_count": status.get("demos"),
                 "unit_error": status.get("error"),
                 "log": status.get("log", []),
                 "show": status.get("show"),
@@ -311,6 +321,14 @@ class Fleet:
         # said once per episode (added when the demo starts, dropped the
         # moment it is not running/holding any more), never every poll.
         self._demo_told: "set[str]" = set()
+        # What each unit holds in its own menu: the last GET /demo/list
+        # answer (a list), or None for "not known" (never asked yet, an
+        # agent with no /demo/list, a unit that did not answer). Refreshed
+        # from the poll loop every DEMO_LIST_EVERY_S and straight from the
+        # answer of a write or a delete, so a tile never costs a request.
+        self._demos: "dict[str, list | None]" = {}
+        self._demos_at: "dict[str, float]" = {}
+        self._demos_lock = threading.Lock()
         self._corrected: "dict[str, float]" = {}
         # Per unit, the last supervision command it refused and why -
         # so a standing refusal is written down once, not every retry.
@@ -325,6 +343,14 @@ class Fleet:
                                       daemon=True)
             thread.start()
             self._threads.append(thread)
+        # The demo listings have a thread of their own: a unit's /status
+        # poll is also its clock measurement and the supervision's
+        # heartbeat, and must not wait behind an eMMC listing (measured
+        # 2026-09-25: doing it inline stretched that unit's 2 s cadence to
+        # 3.5 s every time it came round).
+        demos = threading.Thread(target=self._demo_loop, daemon=True)
+        demos.start()
+        self._threads.append(demos)
 
     def stop(self) -> None:
         self._stop.set()
@@ -339,6 +365,89 @@ class Fleet:
                 except Exception as exc:    # noqa: BLE001 - next poll retries
                     link.error = f"supervise: {exc}"
             self._stop.wait(self.poll_s)
+
+    # ---- what each unit holds in its own menu ----
+
+    def _demo_loop(self) -> None:
+        """One thread for all of them: every unit that has answered a poll
+        is asked what it holds every DEMO_LIST_EVERY_S. A unit that is
+        slow to answer (or not answering at all) delays only the other
+        units' listings, never anyone's /status."""
+        while not self._stop.is_set():
+            for link in list(self.links.values()):
+                if self._stop.is_set():
+                    break
+                if not link.online:
+                    continue
+                try:
+                    self._poll_demos(link)
+                except Exception as exc:    # noqa: BLE001 - never ends this
+                    # One unit answering something unexpected must not
+                    # take the listings of the other nine with it (the
+                    # poll loop guards its supervision the same way).
+                    link.error = f"demo list: {exc}"
+            self._stop.wait(1.0)
+
+    def _poll_demos(self, link: UnitLink) -> None:
+        """Every DEMO_LIST_EVERY_S: what demos does this unit hold?
+        Timestamped BEFORE the request, and NOT reset by a failure, so a
+        unit that refuses /demo/list (an older agent: a 404 every time) or
+        times out is asked once every ten seconds - never on every pass
+        (found in review). A failure is "not known" (None), not "none
+        stored" - the page must not read an old agent's 404 as an empty
+        menu. Its own short timeout: this is a listing, not a command."""
+        now = self._clock()
+        with self._demos_lock:
+            if now - self._demos_at.get(link.name, -1e9) < DEMO_LIST_EVERY_S:
+                return
+            self._demos_at[link.name] = now
+        try:
+            demos = link.get("/demo/list", learn=False,
+                             timeout=TIMEOUT_S).get("demos")
+        except Exception:                   # noqa: BLE001 - offline is a state
+            demos = None
+        self.remember_demos(link.name, demos, retry_soon=False)
+
+    def remember_demos(self, name: str, demos, retry_soon: bool = True) -> None:
+        """The answer of a /demo/list, /demo/save or /demo/delete: what
+        this unit holds, as of now. `None` is "not known".
+
+        `retry_soon` (the write path) then asks again on the next pass
+        instead of in ten seconds - a /demo/save whose answer did not
+        carry the new menu leaves the tiles blank until it does. The poll
+        path passes False: a unit that cannot answer at all must not be
+        asked every second for the rest of the night."""
+        with self._demos_lock:
+            self._demos[name] = list(demos) if isinstance(demos, list) else None
+            if demos is None and retry_soon:
+                self._demos_at[name] = -1e9
+
+    def demos_of(self, name: str) -> "list[dict] | None":
+        """The unit's stored demos for the snapshot: one entry per demo,
+        each with the `current` flag the page's chips are built from -
+        True when the demo was written from the show THIS conductor last
+        uploaded to that unit, False when it is older, None when there is
+        nothing to compare against (nothing uploaded this session, or a
+        demo from an agent that does not record which show it came from).
+        Never "older" out of ignorance - see the same rule in server.py's
+        /api/fleet/demos."""
+        with self._demos_lock:
+            demos = self._demos.get(name)
+            demos = None if demos is None else list(demos)
+        if demos is None:
+            return None
+        expected = (self.shows.get(name) or {}).get("id")
+        out = []
+        for demo in demos:
+            if not isinstance(demo, dict):
+                continue
+            show_id = demo.get("show_id")
+            out.append({"slug": demo.get("slug"), "name": demo.get("name"),
+                        "cues": demo.get("cues"), "duration": demo.get("duration"),
+                        "loop": bool(demo.get("loop")), "show_id": show_id,
+                        "current": (None if expected is None or show_id is None
+                                    else show_id == expected)})
+        return out
 
     def snapshot(self) -> dict:
         self._adopt()
@@ -375,15 +484,18 @@ class Fleet:
                 "burn": {"burned": burned, "total": len(reporting)}}
 
     def _unit_snapshot(self, link) -> dict:
-        """The unit's tile, plus the last thing it refused this
-        conductor's supervision ("run refused: still writing 12/48").
+        """The unit's tile, the demos it holds (the cache the poll loop
+        keeps, so a tile costs no request - see demos_of()), plus the last
+        thing it refused this conductor's supervision ("run refused: still
+        writing 12/48").
         The corrections log scrolls and is shared by ten units; the tile
         is where the operator looks when THAT unit is the one holding
         the show up (review round 2, 2026-09-25)."""
         refused = self._refused.get(link.name)
         return dict(link.snapshot(),
                     refused=None if refused is None
-                    else f"{refused[0]} refused: {refused[1]}")
+                    else f"{refused[0]} refused: {refused[1]}",
+                    demos=self.demos_of(link.name))
 
     def _raw_burn(self, name: str):
         """Whatever this unit currently reports as `status.show.burn`,
@@ -531,6 +643,9 @@ class Fleet:
             result = link.post("/demo/save", {"name": name, "loop": bool(loop),
                                                "show": shows[link.name]},
                                learn=False, timeout=DEMO_SAVE_TIMEOUT_S)
+            # The unit answers with its whole menu: the tiles are right
+            # before the next poll, without a second request.
+            self.remember_demos(link.name, result.get("demos"))
             return {"slug": result.get("slug")}
         return self._each(list(shows), action)
 
@@ -546,7 +661,10 @@ class Fleet:
         def action(link):
             if not link.online:
                 raise RuntimeError("offline")
-            return {"demos": link.get("/demo/list").get("demos") or []}
+            demos = link.get("/demo/list", learn=False,
+                             timeout=TIMEOUT_S).get("demos") or []
+            self.remember_demos(link.name, demos, retry_soon=False)
+            return {"demos": demos}
         return self._each(list(self.links), action)
 
     def delete_demo(self, slug: str) -> "dict[str, dict]":
@@ -558,6 +676,7 @@ class Fleet:
             if not link.online:
                 raise RuntimeError("offline")
             result = link.post("/demo/delete", {"slug": slug}, learn=False)
+            self.remember_demos(link.name, result.get("demos"))
             return {"demos": result.get("demos")}
         return self._each(list(self.links), action)
 

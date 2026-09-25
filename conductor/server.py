@@ -27,6 +27,7 @@ the show and is not undone (the delete asks first).
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import shutil
@@ -66,6 +67,9 @@ DEMO_NAME_MESSAGE = (f"A-Z, 0-9 and symbols, up to {DEMO_NAME_MAX} characters "
                      "(the unit's screen cannot show Japanese)")
 _DEMO_NAME_OK = re.compile(r"^[\x20-\x7e]+$")     # printable ASCII only
 _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# Parts of show.json that never reach a unit: the operator's own notes
+# about the show (see Workspace.revision).
+_REVISION_IGNORES = {"music", "labels"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
 _IS_MAP = re.compile(r"_map$", re.IGNORECASE)
 _IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
@@ -190,6 +194,13 @@ class Workspace:
         self.files.mkdir(parents=True, exist_ok=True)
         self.music = self.root / "music"        # made on the first upload
         self._lock = threading.Lock()
+        # What the timeline looked like when it was last written to the
+        # units: {"upload": revision, "demo:<NAME>": revision} - see
+        # revision() and mark_written(). Lives as long as this conductor,
+        # like fleet.shows, and is what lets the page say "changed since"
+        # about an edit made after the write (an id comparison cannot: the
+        # units hold exactly what they were sent, edits and all).
+        self.marks: "dict[str, str]" = {}
 
     # ---- show.json ----
 
@@ -913,6 +924,60 @@ class Workspace:
                          for address, table in tables.items()})
         return payloads, problems
 
+    def revision(self) -> str:
+        """A fingerprint of everything compile_show() reads: the parts of
+        show.json that reach the units, and the name, size and mtime of
+        every CSV. Two revisions being equal means an Upload right now
+        would send the units exactly what they already hold.
+
+        Not the whole of show.json: the music and the LOOK / model labels
+        are the operator's own notes about the show and never leave this
+        PC, so loading a track or renaming a look would otherwise turn
+        every chip red for nothing (found in review).
+
+        Why not the compiled show ids themselves: compiling builds every
+        picture of every board (measured 2026-09-25: 364 ms for a two-unit
+        toy show of five cues, so seconds for ten units of eighteen), and
+        the page asks for this on every poll - once per second while the
+        Units tab is open. This costs one stat per CSV, about a
+        millisecond, and is wrong only in the harmless direction: an edit
+        that happens to compile to the same pictures reads as "changed
+        since" until the next Upload, never the other way round."""
+        show = {key: value for key, value in self._load_show().items()
+                if key not in _REVISION_IGNORES}
+        parts = [json.dumps(show, sort_keys=True, default=str)]
+        for path in sorted(self.files.glob("*.csv")):
+            try:
+                info = path.stat()
+            except OSError:                 # deleted between glob and stat
+                continue
+            parts.append(f"{path.name}:{info.st_size}:{info.st_mtime_ns}")
+        return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    def mark_written(self, what: str, rev: "str | None" = None) -> None:
+        """Remember `rev` (the revision the write actually carried, taken
+        before it started) under `what` ("upload", or "demo:<NAME>").
+
+        Not the revision NOW: writing ten units takes seconds, and an
+        edit that lands while it is in flight belongs to the next write,
+        not this one - recording it here would have the chips say "up to
+        date" about a timeline the units have never seen (found in
+        review). `rev` is only omitted where there is nothing in between
+        to worry about."""
+        self.marks[what] = self.revision() if rev is None else rev
+
+    def written_state(self) -> dict:
+        """What /api/fleet tells the page about the timeline itself:
+        `revision` now, and the revision each write put on the units.
+        A name with no mark (written by an earlier conductor, or before
+        this conductor came up) is simply absent - the page then says
+        nothing about "up to date", rather than guessing."""
+        return {"revision": self.revision(),
+                "uploaded": self.marks.get("upload"),
+                "demos": {key[len("demo:"):]: value
+                          for key, value in self.marks.items()
+                          if key.startswith("demo:")}}
+
     def compile_show(self) -> "tuple[dict[str, dict], list[str]]":
         """The whole timeline -> ({unit: show file}, problems)."""
         with self._lock:
@@ -1166,15 +1231,22 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/state":
                 return self._json(self.workspace.state())
             if path == "/api/fleet":
+                # `timeline` is about the workspace, not the units: what
+                # the timeline is now, and what it was when it was last
+                # written to them (Workspace.written_state) - the page's
+                # "up to date" / "changed since" needs both, and an id
+                # comparison alone cannot see an edit made since.
                 if self.fleet is None:
                     return self._json({"units": [], "last_fire": None,
                                        "run": None, "shows": {},
                                        "corrections": [], "prepared": {},
-                                       "start_at": 0.0, "show_duration": None})
+                                       "start_at": 0.0, "show_duration": None,
+                                       "timeline": self.workspace.written_state()})
                 with self.prepared_lock:
                     prepared = dict(self.prepared)
                 return self._json(dict(self.fleet.snapshot(),
-                                       prepared=prepared))
+                                       prepared=prepared,
+                                       timeline=self.workspace.written_state()))
             if path == "/api/fleet/demos":
                 # list_demos() skips an unreachable unit rather than wait
                 # out its timeout (its result carries the exact "offline"
@@ -1439,9 +1511,18 @@ class Handler(BaseHTTPRequestHandler):
             # from for its next trigger (found in review).
             if fleet.run is not None and not body.get("force"):
                 raise ValueError("stop the show first")
+            # Taken BEFORE the show is compiled: that and the writing
+            # take seconds, and an edit landing in between belongs to the
+            # next upload, not to this one.
+            rev = self.workspace.revision()
             shows, problems = self.workspace.compile_show()
             results = (fleet.upload(shows, force=bool(body.get("force")))
                        if shows else {})
+            # What went out is remembered, so an edit made after this
+            # reads as "changed since" however long the page has been
+            # open and whatever it was reloaded to.
+            if any(r["ok"] for r in results.values()):
+                self.workspace.mark_written("upload", rev)
             return self._json({"units": results, "problems": problems,
                                "shows": {u: s["id"] for u, s in shows.items()}})
         if command == "write_demo":
@@ -1449,11 +1530,24 @@ class Handler(BaseHTTPRequestHandler):
             loop = body.get("loop", False)
             if not isinstance(loop, bool):
                 raise ValueError("loop must be true or false")
+            # Saving a demo writes every picture on every unit, exactly as
+            # Upload does - during a run that would rewrite slots a unit
+            # is about to trigger. The unit itself refuses /demo/save
+            # while it plays anything ("a show is running - stop it
+            # first"), and the page's dialog says so before it offers the
+            # choice; this is the same rule where every client meets it.
+            # Unlike Upload there is no `force`: a demo is never the way
+            # back into a running show.
+            if fleet.run is not None:
+                raise ValueError("stop the show first")
             # The same "whole show or not at all" rule as Upload: a
             # timeline with a problem writes nothing, and the page shows
             # exactly the problems Upload itself would have refused on.
+            rev = self.workspace.revision()      # see the upload above
             shows, problems = self.workspace.compile_show()
             results = fleet.write_demo(name, loop, shows) if shows else {}
+            if any(r["ok"] for r in results.values()):
+                self.workspace.mark_written(f"demo:{name}", rev)
             return self._json({"units": results, "problems": problems,
                                "name": name})
         if command == "delete_demo":
