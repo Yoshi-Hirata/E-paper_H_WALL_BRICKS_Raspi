@@ -131,8 +131,50 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .mmss-echo.bad { color: var(--err); }
 
 /* ---- timeline ---- */
-.tl-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; min-height: 38px;
-  border-bottom: 1px solid var(--line); }
+/* Every row ends with a fixed-width column for its own "+" (append the next
+   design). It is a real column rather than something floating over the end
+   of the track so it can never sit on top of a cue - and because it is fixed
+   and shared, the ruler row's trailing spacer and the playhead wrapper's
+   `right` (both in renderTracks()) line up with the tracks by construction. */
+:root { --tl-add-w: 32px; }
+.tl-row { display: grid; grid-template-columns: 150px 1fr var(--tl-add-w); align-items: center;
+  min-height: 38px; border-bottom: 1px solid var(--line); }
+.tl-add { width: 26px; margin-left: 6px; padding: 0; line-height: 22px; font-size: 16px; font-weight: 600;
+  color: var(--dim); text-align: center; }
+.tl-add:hover { color: var(--accent); border-color: var(--accent); background: var(--select); }
+.tl-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The empty-track invitation, inside the track it is talking about. Never
+   clickable itself - the click has to land on the track underneath. */
+.tl-empty { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 8px;
+  color: var(--dim); font-size: 11.5px; pointer-events: none; }
+.tl-track.has-ghost .tl-empty { display: none; }
+/* The hover ghost: the cue a click right here would create. The translucency
+   is on a ::before, not on .cue-ghost itself - `opacity` applies to the whole
+   subtree, so a faded parent would drag the label down with it and no
+   `opacity:1` on the child could bring it back. */
+.cue-ghost { position: absolute; top: 3px; bottom: 3px; min-width: 2px;
+  pointer-events: none; z-index: 5; }
+.cue-ghost::before { content: ""; position: absolute; inset: 0; border-radius: 3px;
+  background: var(--accent); opacity: .32; }
+/* On its own panel-coloured chip: the label very often hangs over the cue
+   that follows the empty space, and two lines of 11px text on top of each
+   other are unreadable. */
+.cue-ghost-label { position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+  margin-left: 5px; white-space: nowrap; font-size: 11px; color: var(--accent);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+  padding: 0 5px; line-height: 1.5; }
+.cue-ghost-label.flip { left: auto; right: 100%; margin-left: 0; margin-right: 5px; }
+/* The hint above the tracks, and its full-size twin in an empty CUES card. */
+.tl-hint { color: var(--dim); font-size: 12px; margin-bottom: 6px; }
+.tl-firsthint { color: var(--dim); font-size: 14px; padding: 22px 2px; line-height: 1.9; }
+.tl-firsthint b { color: var(--accent); }
+/* EDIT CUE's "＋ Add next design after this cue": a link, not a third
+   button competing with Delete for the eye. */
+.cue-append { margin-top: -2px; }
+button.linkish { border: 0; background: none; padding: 0; font-size: 12.5px; color: var(--accent);
+  text-decoration: underline; text-underline-offset: 2px; }
+button.linkish:hover { filter: brightness(1.15); }
+button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 .tl-name { font-size: 13px; font-weight: 600; padding-right: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-name small { display: block; font-weight: 400; color: var(--dim); font-size: 11px; }
 .tl-track { position: relative; height: 30px; background: var(--bg); border-radius: 4px; cursor: copy; }
@@ -2804,6 +2846,16 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   const WARN_BUNDLE_BYTES = 6 * 1024 * 1024;
   const REFUSE_BUNDLE_BYTES = 8 * 1024 * 1024;
   const MAX_SHOW_DURATION_S = 99 * 60 + 59;   // the Show length field's own 99:59 ceiling
+  // The gap left between one design finishing being drawn and the next one
+  // starting, when a design is APPENDED rather than placed by hand (the "+"
+  // at the end of a track row, and EDIT CUE's "Add next design after this
+  // cue"). Read off the model rather than typed again here: it is the SAME
+  // number validate() requires between two sends (need = refresh + sweep +
+  // gap, i.e. the previous cue's complete + gap), so an append that used its
+  // own idea of "a reasonable gap" would quietly place cues the model then
+  // rejects.
+  const APPEND_GAP_S = (globalThis.SIM && globalThis.SIM.timeline
+                        && globalThis.SIM.timeline.GAP_AFTER_REFRESH_S) || 1.0;
 
   function freshProject() {
     return { files: {}, show: { duration: 600, refresh_s: 7.0, cues: [], transitions: {}, labels: {}, boards: {}, music: null } };
@@ -3434,9 +3486,93 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   }
   function clockShort(sec) { return globalThis.SIM.mmss.format(sec); }
 
+  // ---- Appending the next design (user, 2026-09-25) ------------------
+  // The director's team builds a show by adding one design after another
+  // from 0.00, so that move gets its own controls rather than only the
+  // click-an-empty-spot one: a "+" at the end of every track row and a link
+  // in EDIT CUE, both landing here.
+  //
+  // The rotation is the item's own design list: the design AFTER the one the
+  // cue being followed shows, wrapping round at the end - so pressing "+"
+  // repeatedly walks the whole list and starts over, which is what a show
+  // that cycles a garment's patterns actually wants. (The free click keeps
+  // nextUnusedDesign(): it is a first placement, not a continuation.)
+  function designAfter(item, afterName) {
+    const list = (item && item.designs) || [];
+    if (!list.length) return null;
+    const i = list.findIndex(d => d.name === afterName);
+    return i < 0 ? list[0] : list[(i + 1) % list.length];
+  }
+  function lastCueOf(item) { const cues = cuesOf(item); return cues[cues.length - 1] || null; }
+  // The earliest legal moment after `cue`: when its own picture has finished
+  // being drawn. That is cue.complete - start + its refresh + its sweep span,
+  // computed by the model (model.js's times(), the same number the CUES
+  // table's COMPLETE column and EDIT CUE's "Refresh completes at" print) -
+  // plus APPEND_GAP_S, snapped to a whole second like every other cue edit
+  // here.
+  //
+  // CEIL, not round (review F1): complete + gap is the model's own legal
+  // floor, not a target to land near, and rounding falls BELOW it for every
+  // refresh whose fraction is under .5 - a perfectly ordinary Default
+  // refresh time of 7.4 s gives complete + 1 = 8.4, which rounds to 8 and is
+  // then flagged "only 8.0 s after the previous send; at least 8.4 s is
+  // needed". The toFixed(3) first is for the same reason model.js rounds to
+  // 3 decimals everywhere: complete is a sum of floats, and a 8.400000000001
+  // must not ceil to 9.
+  function appendTimeAfter(cue) { return Math.ceil(+(cue.complete + APPEND_GAP_S).toFixed(3)); }
+  function appendDesignAfter(itemKey, cue) {
+    const item = state.items.find(i => i.item === itemKey);
+    if (!item) return;
+    const design = cue ? designAfter(item, cue.design) : nextUnusedDesign(item);
+    if (!design) {
+      // Same refusal as the free click: a garment can have a map and no
+      // design CSV yet, and a cue with design:null renders as a problem on
+      // every later redraw instead of showing anything.
+      toast("Load a design CSV for this item first.");
+      return;
+    }
+    const at = cue ? appendTimeAfter(cue) : 0;
+    if (at > MAX_SHOW_DURATION_S) {
+      toast(`The show cannot run past ${clockShort(MAX_SHOW_DURATION_S)}, so there is no room after ${clockShort(cue.complete)}.`);
+      return;
+    }
+    // A design placed at (or past) the end of the show would never be seen,
+    // so the show grows to fit it - said out loud, because Show length is a
+    // number the designer set on purpose and a silent change to it is the
+    // kind of thing nobody notices until the run-through.
+    if (at >= state.show.duration) {
+      const grown = Math.min(MAX_SHOW_DURATION_S, Math.round(at + Math.max(state.show.refresh_s, APPEND_GAP_S)));
+      globalThis.SIM.app.setShow({ duration: grown });
+      toast(`Show length extended to ${clockShort(grown)} to fit the new design.`);
+    }
+    // Appending from EDIT CUE can insert in the MIDDLE of a track (the cue
+    // it has open need not be the last one), and the cue that used to follow
+    // can be pushed into "starts before the previous picture is complete" by
+    // the new one landing in front of it. The editor then helpfully switches
+    // to the freshly-added cue, which is clean - so the problem would appear
+    // only as a red border further down the track and a number in the CUES
+    // table (review F3). Compare this item's other cues either side of the
+    // insertion and say so.
+    const mine = () => state.show.cues.filter(c => c.item === itemKey);
+    const hurtBefore = new Map(mine().map(c => [String(c.id), (c.problems || []).length]));
+    const id = globalThis.SIM.app.addCue({ item: item.item, at, design: design.name, partial: false });
+    ui.cue = id; render();
+    const hurt = mine().filter(c => !sameId(c.id, id)
+                              && (c.problems || []).length > (hurtBefore.get(String(c.id)) || 0))
+                       .sort((a, b) => a.at - b.at)[0];
+    if (hurt) {
+      // The model's own sentence, not a paraphrase, and through clean() like
+      // every other problem this page prints - some of them name a garment.
+      const said = (hurt.problems || [])[hurt.problems.length - 1];
+      toast(`Added at ${clockShort(at)} - but the design at ${clockShort(hurt.at)} on this item `
+            + `now has a problem${said ? ": " + clean(said) : ""}.`);
+    }
+    return id;
+  }
+
   function renderCueEditor(cue) {
     const card = $("#cue-editor-body");
-    if (!cue) { card.innerHTML = `<div class="meta">Select a cue, or click a track to add one.</div>`; return; }
+    if (!cue) { card.innerHTML = `<div class="meta">Select a cue - or click a track to place a design there, or press <b>+</b> at the end of a track row to add the next one.</div>`; return; }
     const item = state.items.find(i => i.item === cue.item);
     const isPreset = cue.at <= 0;
     const design = item?.designs.find(d => d.name === cue.design);
@@ -3472,6 +3608,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       <div class="cue-design"><label>Design <select id="cue-design">${(item?.designs || []).map(d =>
         `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))}</option>`).join("")}</select></label>
         <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label></div>
+      <div class="cue-append"><button type="button" id="cue-append" class="linkish"
+        title="Place this item's next design as soon as this one has finished, at ${esc(clockShort(appendTimeAfter(cue)))}">＋ Add next design after this cue</button></div>
       ${(cue.problems || []).length ? `<ul class="problems">${cue.problems.map(p => `<li>${esc(clean(p))}</li>`).join("")}</ul>` : ""}
     </div>`;
     wireMmss("cue-start", sec => globalThis.SIM.app.updateCue(cue.id, { at: sec }));
@@ -3485,6 +3623,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     $("#cue-seq").onchange = e => globalThis.SIM.app.updateCue(cue.id, { sequence: e.target.value });
     $("#cue-span").onchange = e => globalThis.SIM.app.updateCue(cue.id, { span_s: Number(e.target.value) || 0 });
     $("#cue-design").onchange = e => globalThis.SIM.app.updateCue(cue.id, { design: e.target.value });
+    $("#cue-append").onclick = () => appendDesignAfter(cue.item, cue);
     $("#cue-partial").onchange = e => globalThis.SIM.app.updateCue(cue.id, { partial: e.target.checked });
     card.querySelectorAll("[data-tr-seq]").forEach(sel => sel.onchange = e => {
       const name = e.target.dataset.trSeq, span = card.querySelector(`[data-tr-span="${CSS.escape(name)}"]`);
@@ -3500,27 +3639,52 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     const D = state.show.duration;
     const items = trackItems();
     const pct = t => (100 * Math.max(0, Math.min(D, t)) / D).toFixed(3) + "%";
+    // A width is clamped against what is LEFT of the track, not against the
+    // whole of it (review F4): a cue whose complete or end passes the end of
+    // the show clamped left and width independently, so left + width came to
+    // more than 100% and the band ran out under the "+" column.
+    const pctW = (t, from) => (100 * Math.max(0, Math.min(D - Math.max(0, Math.min(D, from)), t)) / D).toFixed(3) + "%";
     const rows = items.map(item => {
       const cues = cuesOf(item);
       const bands = cues.map(cue => {
-        const bandW = pct(Math.max(0, cue.complete - cue.at));
-        const holdX = pct(cue.complete), holdW = pct(Math.max(0, cue.end - cue.complete));
+        const bandW = pctW(Math.max(0, cue.complete - cue.at), cue.at);
+        const holdX = pct(cue.complete), holdW = pctW(Math.max(0, cue.end - cue.complete), cue.complete);
+        // A hold with no room left in the show is pinned to the right edge
+        // rather than placed at left:100% (review F4's other half): it still
+        // takes up its own 2 px border plus 5 px of padding whatever its
+        // width, so a zero-width one at 100% hangs 7 px out under the "+".
+        const nub = parseFloat(holdW) <= 0;
         const bad = (cue.problems || []).length > 0;
         return `<div class="cue-band ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${esc(cue.id)}" style="left:${pct(cue.at)};width:${bandW}"></div>
           <div class="cue-hold ${bad ? "bad" : ""} ${sameId(cue.id, ui.cue) ? "sel" : ""}" data-cue="${esc(cue.id)}" data-drag="${cue.at <= 0 ? "0" : "1"}"
-            style="left:${holdX};width:${holdW}" title="${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}">${cue.at <= 0 ? "PRESET · " : ""}${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}</div>`;
+            style="${nub ? "right:0" : `left:${holdX}`};width:${holdW}" title="${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}">${cue.at <= 0 ? "PRESET · " : ""}${esc(designLabel(item.designs.find(d => d.name === cue.design) || { name: cue.design }))}</div>`;
       }).join("");
+      // An item with nothing on it says so INSIDE its own track, where the
+      // click that would fix it has to happen - the one hint line above the
+      // tracks was easy to read past (user, 2026-09-25). pointer-events are
+      // off in the CSS, so the words never swallow that click.
+      const emptyHint = cues.length ? ""
+        : `<div class="tl-empty">click here to place the first design at ${esc(clockShort(0))}</div>`;
+      const last = cues[cues.length - 1];
+      const addTitle = last
+        ? `Add the next design after the last cue (at ${clockShort(appendTimeAfter(last))})`
+        : `Add the first design (at ${clockShort(0)})`;
       return `<div class="tl-row"><div class="tl-name" title="${esc(itemFull(item))}">${esc(itemName(item))}<small>${esc(itemSub(item))}</small></div>
-        <div class="tl-track" data-track="${esc(item.item)}">${bands}</div></div>`;
+        <div class="tl-track" data-track="${esc(item.item)}">${bands}${emptyHint}</div>
+        <button type="button" class="tl-add" data-add="${esc(item.item)}" title="${esc(addTitle)}"
+          aria-label="${esc(itemName(item))}: ${esc(addTitle)}">+</button></div>`;
     }).join("");
     // Same geometry as index.html: the ruler sits in a track row behind an
     // empty 150 px name column, and the playhead lives in a wrapper that
     // starts where the bands start - otherwise the ticks and the red line
-    // are 150 px (about 1.5 min on a 10 min show) left of every cue.
+    // are 150 px (about 1.5 min on a 10 min show) left of every cue. Every
+    // row now also ends with a --tl-add-w column (the "+" button), so the
+    // ruler row carries a matching empty cell and the playhead wrapper stops
+    // short of it by the same amount, or both would run 32 px past the tracks.
     return `<div class="tl-wrap">
-      <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${rulerTicks(D)}</div></div>
+      <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div></div></div>
       ${rows || `<div class="empty">No items yet.</div>`}
-      <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div></div>`;
+      <div style="position:absolute;left:150px;right:var(--tl-add-w);top:0;bottom:0;pointer-events:none"><div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div></div>`;
   }
   function rulerTicks(D) {
     // The existing tiers, but never finer than D/200 (adversarial review
@@ -3553,7 +3717,11 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   }
   function cueTable() {
     const rows = state.show.cues.slice().sort((a, b) => a.at - b.at);
-    if (!rows.length) return `<div class="meta">No cues yet - click a track above to add one.</div>`;
+    // A brand-new project's biggest question is "where do I start?", and the
+    // CUES card is the widest empty space on the screen to answer it in - so
+    // the same sentence the empty tracks carry is repeated here, full size.
+    if (!rows.length) return `<div class="tl-firsthint">Nothing placed yet - click the start of a track above to place the first design at ${esc(clockShort(0))},
+      or press <b>+</b> at the end of that track's row to place it for you.</div>`;
     return `<table><thead><tr><th>START</th><th>COMPLETE</th><th>END</th><th>ITEM</th><th>DESIGN</th><th>TRANSITION</th><th>STATUS</th></tr></thead><tbody>
       ${rows.map(c => {
         const item = state.items.find(i => i.item === c.item);
@@ -3614,7 +3782,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       </div>
       ${items.length ? `<div id="tl-editing">
         <div class="tl-left">
-          <div class="card">${renderTracks()}</div>
+          <div class="card"><div class="tl-hint">Click anywhere on a track to place a design at that moment, or press <b>+</b> at the end of a row to add that item's next design straight after its last one.</div>${renderTracks()}</div>
           ${warningsBlock()}
           <div class="card"><h2>CUES</h2>${cueTable()}</div>
           ${minIntervalTable()}
@@ -3694,13 +3862,71 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       if (transport) transport.cancelDrag();
     });
   }
+  // ---- the hover ghost (user, 2026-09-25) ---------------------------
+  // "Click an empty spot on a track" was true and invisible: nothing on the
+  // screen said a click would do anything until it already had. Moving the
+  // pointer over empty track space now draws the cue that click would
+  // create - at the same snapped moment, showing the same design name - so
+  // the gesture is discovered by hovering rather than by reading.
+  //
+  // One ghost exists at a time, it is pointer-events:none (so it can never
+  // become e.target and confuse the click/hover checks under it), and it
+  // lives inside the track's own innerHTML, which every render replaces
+  // wholesale - so no cleanup is owed on redraw, only on the three "not a
+  // placement any more" cases below.
+  function clearGhost() {
+    document.querySelectorAll(".cue-ghost").forEach(g => g.remove());
+    document.querySelectorAll(".tl-track.has-ghost").forEach(t => t.classList.remove("has-ghost"));
+  }
+  function trackTimeAt(track, clientX) {
+    const box = track.getBoundingClientRect();
+    const D = state.show.duration;
+    if (!box.width || !D) return 0;
+    return Math.round(Math.max(0, Math.min(D, (clientX - box.left) / box.width * D)));
+  }
+  function moveGhost(track, e) {
+    // Never while a cue is being dragged or the playhead is being scrubbed
+    // (both are pointer gestures that pass right over empty track space),
+    // and never on top of an existing cue, where a click selects rather
+    // than places.
+    if (cueDrag || (transport && transport.seeking)) { clearGhost(); return; }
+    if (e.target.closest(".cue-hold") || e.target.closest(".cue-band")) { clearGhost(); return; }
+    const item = state.items.find(i => i.item === track.dataset.track);
+    const design = item && nextUnusedDesign(item);      // exactly what the click would place
+    if (!design) { clearGhost(); return; }
+    const D = state.show.duration;
+    const t = trackTimeAt(track, e.clientX);
+    let ghost = track.querySelector(".cue-ghost");
+    if (!ghost) {
+      clearGhost();
+      ghost = document.createElement("div");
+      ghost.className = "cue-ghost";
+      ghost.appendChild(document.createElement("span")).className = "cue-ghost-label";
+      track.appendChild(ghost);
+      track.classList.add("has-ghost");
+    }
+    ghost.style.left = (100 * t / D).toFixed(3) + "%";
+    ghost.style.width = (100 * Math.min(Math.max(0, D - t), state.show.refresh_s) / D).toFixed(3) + "%";
+    ghost.dataset.at = String(t);
+    const label = ghost.firstChild;
+    label.textContent = `+ ${designLabel(design)} at ${clockShort(t)}`;
+    // The label hangs off the right of the band, and flips to its left when
+    // it would otherwise run past the end of the track. MEASURED, not
+    // guessed from t (review F2): a design name is anywhere from 6 to 40
+    // characters, so a fixed "past 80% of the show" threshold both flips too
+    // early for a short name and lets a long one run tens of pixels past the
+    // card before it. Text first, then measure, then decide.
+    label.classList.remove("flip");
+    if (label.getBoundingClientRect().right > track.getBoundingClientRect().right) label.classList.add("flip");
+  }
   function wireTrackEvents() {
     document.querySelectorAll(".tl-track").forEach(track => {
+      track.addEventListener("pointermove", e => moveGhost(track, e));
+      track.addEventListener("pointerleave", clearGhost);
+      track.addEventListener("pointerdown", clearGhost);
       track.addEventListener("click", e => {
         if (e.target.closest(".cue-hold") || e.target.closest(".cue-band")) return;
-        const box = track.getBoundingClientRect();
-        const D = state.show.duration;
-        const t = Math.round(Math.max(0, Math.min(D, (e.clientX - box.left) / box.width * D)));
+        const t = trackTimeAt(track, e.clientX);
         const item = state.items.find(i => i.item === track.dataset.track);
         const design = nextUnusedDesign(item);
         if (!design) {
@@ -3719,6 +3945,15 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
         ui.cue = id; render();
       });
     });
+    // The per-row "+" - a real <button>, so it is in the tab order and
+    // answers Enter and Space without any handler of its own (and the
+    // Space-is-play shortcut already steps aside for a focused button).
+    document.querySelectorAll("button.tl-add[data-add]").forEach(btn => btn.addEventListener("click", e => {
+      e.stopPropagation();
+      clearGhost();
+      const item = state.items.find(i => i.item === btn.dataset.add);
+      appendDesignAfter(btn.dataset.add, item && lastCueOf(item));
+    }));
     document.querySelectorAll(".cue-hold, .cue-band").forEach(el => el.addEventListener("click", e => {
       e.stopPropagation();
       ui.cue = el.dataset.cue; render();
@@ -3897,7 +4132,11 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   function renderHelp() {
     $("#content").innerHTML = `<div class="help">
       <h2>Quick start (English)</h2>
-      <p>Double-click <code>az27ss-simulator.html</code> (or <code>designer.html</code> during development) - no install, no server. Drop the garments' map and design CSV files anywhere on this page to begin (a folder works too), or use <b>Add CSV</b> in the header. The <b>Designs</b> tab has an <b>Add CSV</b> of its own under DESIGNS OF THIS ITEM, which adds the files you pick to that one garment: whatever they are named, they are saved under that garment's name and belong to it alone. A <code>*_map.csv</code> that belongs to another garment already in the project is refused there - a garment's wiring is not interchangeable the way its patterns are - so use the header's <b>Add CSV</b> for that one. Open the <b>Timeline</b> tab and click anywhere on an item's track to add a cue there, using that item's next design; click an existing cue to edit it, or drag it to move it (hold Shift for 5 s steps instead of 1 s).</p>
+      <p>Double-click <code>az27ss-simulator.html</code> (or <code>designer.html</code> during development) - no install, no server. Drop the garments' map and design CSV files anywhere on this page to begin (a folder works too), or use <b>Add CSV</b> in the header. The <b>Designs</b> tab has an <b>Add CSV</b> of its own under DESIGNS OF THIS ITEM, which adds the files you pick to that one garment: whatever they are named, they are saved under that garment's name and belong to it alone. A <code>*_map.csv</code> that belongs to another garment already in the project is refused there - a garment's wiring is not interchangeable the way its patterns are - so use the header's <b>Add CSV</b> for that one. Open the <b>Timeline</b> tab to place the designs (see below).</p>
+      <h2>Timeline: adding designs one after another</h2>
+      <p>A show is normally built from ${esc(clockShort(0))} outwards, one design after the next, and there are two ways to add one. <b>Click anywhere on an item's track</b> to place a design at that moment: as the pointer moves over empty track space, a faint band shows exactly where the design would land and which one it would be ("+ name at m.ss"), and the click places it. Or press the <b>+</b> at the right-hand end of a track row: it adds that item's <b>next design</b> - the one after the last cue's in that item's list, starting over at the top when it runs out - as soon as the previous one has finished being drawn (its complete time plus one second). Press it again and again to lay a whole rotation out along the track. If the new design would fall past the end of the show, <b>Show length</b> is extended to fit and you are told so. <b>EDIT CUE</b> carries the same thing as <b>＋ Add next design after this cue</b>, relative to the cue you have open, and the newly added cue is always the one that opens there.</p>
+      <p>Two things worth knowing about the <b>+</b>: on a track with nothing on it yet the first press places the design at ${esc(clockShort(0))}, which makes it that item's <b>preset</b> - what it shows before the show starts - so press it again for the first design of the show proper, one second later; and an item that has only one design keeps being given that same design, since the rotation has nowhere else to go.</p>
+      <p>Click an existing cue to edit it, or drag it to move it (hold Shift for 5 s steps instead of 1 s).</p>
       <p><b>Red</b> always means "this needs fixing before it is right": a red-outlined mm.ss field could not be read as minutes.seconds; a red left border on a cue means the model found a problem with it (open it to see why); a dot next to an item in the sidebar is red when that item has one or more problems. Clicking a track for an item that has no design CSV yet is refused with a toast, rather than creating a cue with nothing to show.</p>
       <p>When the timeline is ready, <b>Save project…</b> writes everything (every CSV plus the whole timeline) into one <code>.json</code> file - hand that file to whoever runs the show; on the operator's own page, "Load bundle…" reads it in and keeps everything already in place exactly as it was, replacing only the CSVs and the timeline.</p>
       <p><b>Music.</b> The show's music is built into the file the operator gave you, so it plays as soon as you press Play - nothing to pick, nothing to install. If the show's music changes you receive a new file; the Timeline toolbar tells you which track is built in. You can still choose a different audio file with <b>Pick another file…</b>, which lasts for this session only - <b>Back to the built-in track</b> returns to the one that came with the file.</p>
@@ -3905,6 +4144,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       <p>Supported browsers: Safari 14.1 or later, or a recent Chrome or Edge. A private/incognito window may refuse to keep the autosaved copy at all (see the warning banner in the header when that happens) - use <b>Save project…</b> there instead of relying on autosave.</p>
       <h2>開き方</h2><p>このファイル（<code>az27ss-simulator.html</code> または <code>designer.html</code>）をダブルクリックするだけで開きます。インストールもサーバーも不要です。Windows は Edge か Chrome、macOS は Safari か Chrome を推奨します。</p>
       <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。<b>Designs</b> タブの「DESIGNS OF THIS ITEM」にある「Add CSV」を使うと、選んだファイルはその1着だけに追加されます（別の型番の名前でも、その1着の名前で保存されます）。ただし<b>他の衣装のマップCSV（<code>*_map.csv</code>）は受け付けません</b>（配線図は柄と違って入れ替えられるものではないため）。その場合はヘッダーの「Add CSV」を使ってください。同じ名前のファイルは上書きされます。</p>
+      <h2>タイムライン（デザインを後ろに足していく）</h2><p>ショーは通常、${esc(clockShort(0))} から順に、次々と後ろへデザインを足していきます。方法は2つあります。①<b>トラックの好きな位置をクリック</b>すると、その時刻にデザインを置けます。空いている場所にポインタを重ねると、置かれる位置と「+ デザイン名 at m.ss」という薄い帯（プレビュー）が出るので、そのままクリックしてください。②トラック行の右端にある<b>「+」ボタン</b>を押すと、その衣装の<b>次のデザイン</b>（そのアイテムのデザイン一覧で、最後のキューの次にあるもの。最後まで行くと先頭に戻ります）を、直前のデザインの描画が終わった直後（complete の時刻＋1秒）に追加します。続けて押していけば、ローテーション全体をトラック上に並べられます。追加先がショーの終わりを超える場合は <b>Show length</b> が自動的に延長され、その旨が表示されます。<b>EDIT CUE</b> の<b>「＋ Add next design after this cue」</b>も同じ動作で、いま開いているキューの後ろに追加します。追加されたキューは必ず EDIT CUE に開かれます。</p>
+      <p><b>「+」の2つの注意点。</b>まだ何も置いていないトラックで「+」を押すと、最初の1つは ${esc(clockShort(0))} に置かれます ―― これはそのアイテムの<b>プリセット</b>（ショー開始前に表示しておく絵）になります。ショー本編の最初のデザインは、もう一度「+」を押してください（1秒後に入ります）。また、デザインが1つしかないアイテムでは、ローテーションの行き先がないため同じデザインが繰り返し追加されます。</p>
       <h2>mm.ss の読み方</h2><p>開始・終了・ショー全体の長さなど「時刻」は分.秒（mm.ss）で入力します。例：<code>3.05</code> → 3分05秒。<code>3.5</code> のように秒が1桁でも「3分05秒」として読みます。<code>3.60</code> のように60秒以上は無効（赤色）になります。入力欄の横に読み方がそのまま表示されます（例：「3 min 05 s」）。</p>
       <h2>音楽</h2><p>ショーの音源は、オペレーターから渡されたこのファイルの中に埋め込まれています。再生ボタンを押せばそのまま鳴ります（選び直す操作は不要です）。音源が差し替わったときは、新しいファイルが届きます ―― Timeline のツールバーに、いま埋め込まれている曲名が出ます。別の音源で確認したいときは「Pick another file…」で選べます（そのセッションの間だけ。「Back to the built-in track」で元の埋め込み音源に戻ります）。</p>
       <h2>遷移（トランジション）6種</h2><p>各デザインの塗り替え方向を選べます：既定（配線どおり、変更なし）、Top to bottom（上から下）、Bottom to top（下から上）、Left to right (audience)（観客席から見て左から右）、Right to left (audience)（観客席から見て右から左）、Centre outward（中心から外へ）。「秒」は最初の一列が変わってから最後の一列が変わるまでの時間です。</p>
