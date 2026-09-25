@@ -377,8 +377,15 @@ class Fleet:
             for link in list(self.links.values()):
                 if self._stop.is_set():
                     break
-                if link.online:
+                if not link.online:
+                    continue
+                try:
                     self._poll_demos(link)
+                except Exception as exc:    # noqa: BLE001 - never ends this
+                    # One unit answering something unexpected must not
+                    # take the listings of the other nine with it (the
+                    # poll loop guards its supervision the same way).
+                    link.error = f"demo list: {exc}"
             self._stop.wait(1.0)
 
     def _poll_demos(self, link: UnitLink) -> None:
@@ -654,7 +661,8 @@ class Fleet:
         def action(link):
             if not link.online:
                 raise RuntimeError("offline")
-            demos = link.get("/demo/list").get("demos") or []
+            demos = link.get("/demo/list", learn=False,
+                             timeout=TIMEOUT_S).get("demos") or []
             self.remember_demos(link.name, demos, retry_soon=False)
             return {"demos": demos}
         return self._each(list(self.links), action)

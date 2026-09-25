@@ -1681,6 +1681,59 @@ def test_the_snapshot_says_whether_the_timeline_moved_since_it_was_written(tmp_p
         server.server_close()
 
 
+def test_an_edit_during_the_write_belongs_to_the_next_one(tmp_path):
+    # Writing ten units takes seconds. A cue moved while that is in
+    # flight was never sent to anybody - recording the revision as of
+    # the END of the write would have the chips call the units up to
+    # date with a timeline they have never seen (found in review).
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    ws = _demo_workspace(tmp_path)
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped")}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    workspace = server.RequestHandlerClass.workspace
+    compile_show = workspace.compile_show
+
+    def edit_while_writing():
+        shows = compile_show()
+        ws.set_timeline(600, [_cue("a", 0), _cue("b", 45)])   # the operator
+        return shows
+
+    workspace.compile_show = edit_while_writing
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        before = _get(port, "/api/fleet")["timeline"]["revision"]
+        assert _post(port, "/api/fleet/upload", {})[0] == 200
+        timeline = _get(port, "/api/fleet")["timeline"]
+        # The upload carried the timeline as it was when it started.
+        assert timeline["uploaded"] == before
+        # And the one on screen has moved on since: changed, not current.
+        assert timeline["revision"] != before
+    finally:
+        workspace.compile_show = compile_show
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_revision_ignores_what_never_reaches_a_unit(tmp_path):
+    # Music and the LOOK / model labels are the operator's own notes
+    # about the show; loading a track or renaming a look must not turn
+    # every chip red (found in review).
+    ws = _demo_workspace(tmp_path)
+    quiet = ws.revision()
+    ws.save_music("track.mp3", io.BytesIO(b"ID3 and then some bytes"), 22)
+    assert ws.music_info()["name"] == "track.mp3"
+    assert ws.revision() == quiet
+    ws.set_label("Look22", look="22", model="AZ271SD1305")
+    assert ws.revision() == quiet
+    # A moved cue is the other kind of change entirely.
+    ws.set_timeline(600, [_cue("a", 0), _cue("b", 60)])
+    assert ws.revision() != quiet
+
+
 def test_a_write_that_reached_nobody_is_not_remembered_as_written(tmp_path):
     # Marking the timeline as "what the units hold" when not one of them
     # took it would have the chip say "up to date" about nothing.
@@ -1854,7 +1907,7 @@ def test_get_fleet_demos_separates_offline_from_a_unit_that_answered_with_an_err
     from tests.test_fleet import StubLink
 
     class OldAgentLink(StubLink):
-        def get(self, path):
+        def get(self, path, learn=True, timeout=None):
             raise RuntimeError("HTTP 404: not found")
 
     fleet = Fleet({})

@@ -1696,14 +1696,19 @@ function heldOnUnits() {
   const held = mine.filter(u => u.show && u.show.id === shows[u.name].id).length;
   // The demo most units hold; ties go to the one that is the current show,
   // then alphabetically, so the chip never flickers between two names.
+  // Counted over the same units as the fraction above - a unit this
+  // timeline no longer reaches still holds whatever was written to it
+  // once, and would otherwise read as "demo ROUND2 2 / 1".
   const byName = new Map();
-  for (const u of units)
+  for (const u of units) {
+    if (names.size && !names.has(u.name)) continue;
     for (const demo of (u.demos || [])) {
       const row = byName.get(demo.name) || { name: demo.name, units: [], current: [] };
       row.units.push(u.name);
       row.current.push(demo.current === undefined ? null : demo.current);
       byName.set(demo.name, row);
     }
+  }
   const demos = [...byName.values()].sort((a, b) =>
     b.units.length - a.units.length
     || (b.current.every(c => c === true) ? 1 : 0) - (a.current.every(c => c === true) ? 1 : 0)
