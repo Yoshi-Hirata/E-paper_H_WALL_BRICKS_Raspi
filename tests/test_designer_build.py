@@ -7,6 +7,7 @@ this file is safe to run before those land, and starts actually checking
 things the moment they do.
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -1017,3 +1018,393 @@ def test_a_stored_project_shows_the_new_labels_after_a_real_boot(tmp_path):
     assert labels["AZ271SD1305"] == {"look": "23", "model": "AZ271SD1305"}, labels
     assert labels["AZ271SG1035"] == {"look": "", "model": "AZ271SG1035 (Bag 01)"}, labels
     assert labels["AZ271SB2303"] == {"look": "26", "model": "AZ271SB2303 (Skirt)"}, labels
+
+
+# ============================================================
+# Appending designs along the timeline (user, 2026-09-25)
+# ============================================================
+# 「ショーの開始から次々に後ろに新しいデザインを足していきたい」 - the director's
+# team builds a show by appending one design after another from 0.00, and the
+# only way to do that used to be an undiscoverable click on empty track space.
+# This probe drives the two controls that replaced it, in the real built page:
+# the per-row "+", and the hover ghost that makes the click visible.
+_APPEND_PROBE = """
+<script>
+(function () {
+  var out = { error: null, rows: [], trackItems: [], hint: null, addButton: null,
+              ghostEmpty: null, ghostOverBand: null, ghostDuringDrag: null,
+              appended: null, editLink: null, fractional: null, empty: null };
+  function ready() {
+    try {
+      var st = globalThis.SIM && SIM.app && SIM.app.getState();
+      return !!(st && st.items && st.items.length && document.querySelector('#items .item[data-item]'));
+    } catch (e) { return false; }
+  }
+  function publish() {
+    var pre = document.createElement("pre");
+    pre.id = "append-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }
+  function cuesOf(key) {
+    return SIM.app.getState().show.cues.filter(function (c) { return c.item === key; })
+             .sort(function (a, b) { return a.sent - b.sent; });
+  }
+  function itemNamed(key) {
+    return SIM.app.getState().items.filter(function (i) { return i.item === key; })[0];
+  }
+  // Geometric, not elementFromPoint: the fixed dock covers the lower track
+  // rows in an 800x600 headless window, and what is painted on top of a
+  // track has nothing to do with which handler a dispatched event reaches.
+  function emptySpot(track) {
+    var box = track.getBoundingClientRect();
+    var y = box.top + box.height / 2;
+    var rects = [].slice.call(track.querySelectorAll('.cue-hold, .cue-band')).map(
+      function (e) { return e.getBoundingClientRect(); });
+    for (var f = 0.95; f > 0.02; f -= 0.005) {
+      var x = box.left + box.width * f;
+      var clear = rects.every(function (r) { return x < r.left - 3 || x > r.right + 3; });
+      if (clear) return { x: x, y: y };
+    }
+    return null;
+  }
+  function move(el, p) {
+    el.dispatchEvent(new PointerEvent("pointermove",
+      { bubbles: true, clientX: p.x, clientY: p.y, pointerId: 1 }));
+  }
+  function ghostInfo() {
+    var g = document.querySelector('.cue-ghost');
+    if (!g) return null;
+    var lab = g.querySelector('.cue-ghost-label');
+    var track = g.closest('.tl-track');
+    return { at: g.dataset.at, label: lab ? lab.textContent : null,
+             left: g.style.left, width: g.style.width,
+             track: track ? track.dataset.track : null,
+             html: g.outerHTML };
+  }
+  function snapped(track, x) {
+    var box = track.getBoundingClientRect();
+    var D = SIM.app.getState().show.duration;
+    return Math.round(Math.max(0, Math.min(D, (x - box.left) / box.width * D)));
+  }
+  function run() {
+    document.querySelector('[data-tab="timeline"]').click();
+    out.trackItems = SIM.app.getState().items.filter(
+      function (i) { return i.map && i.map.scales.length; }).map(function (i) { return i.item; });
+    out.hint = (document.querySelector('.tl-hint') || {}).textContent || null;
+
+    // ---- a "+" on every track row ----
+    [].slice.call(document.querySelectorAll('.tl-row')).forEach(function (row) {
+      var track = row.querySelector('.tl-track');
+      if (!track) return;
+      var btn = row.querySelector('button.tl-add');
+      if (btn) btn.focus();
+      out.rows.push({ item: track.dataset.track, has: !!btn,
+                      tag: btn ? btn.tagName : null,
+                      type: btn ? btn.getAttribute("type") : null,
+                      text: btn ? btn.textContent.trim() : null,
+                      forItem: btn ? btn.dataset.add : null,
+                      title: btn ? btn.getAttribute("title") : null,
+                      aria: btn ? btn.getAttribute("aria-label") : null,
+                      disabled: btn ? btn.disabled : null,
+                      focusable: btn ? document.activeElement === btn : null,
+                      lastInRow: btn ? row.lastElementChild === btn : null });
+    });
+    out.addButton = (document.querySelector('button.tl-add') || {}).outerHTML || null;
+
+    // ---- pressing "+" appends after the last cue ----
+    var key = out.trackItems.filter(function (k) { return cuesOf(k).length > 0; })[0];
+    var before = cuesOf(key);
+    var last = before[before.length - 1];
+    var designs = itemNamed(key).designs.map(function (d) { return d.name; });
+    var beforeIds = before.map(function (c) { return String(c.id); });
+    document.querySelector('button.tl-add[data-add="' + key + '"]').click();
+    var after = cuesOf(key);
+    var fresh = after.filter(function (c) { return beforeIds.indexOf(String(c.id)) < 0; });
+    var sel = document.querySelector('.cue-hold.sel');
+    out.appended = {
+      item: key, designs: designs, countBefore: before.length, countAfter: after.length,
+      lastBefore: { at: last.at, complete: last.complete, design: last.design },
+      fresh: fresh.map(function (c) { return { id: String(c.id), at: c.at, design: c.design, partial: c.partial }; }),
+      selectedBand: sel ? sel.dataset.cue : null,
+      editorStart: (document.querySelector('#cue-start') || {}).value || null,
+      editorDesign: (document.querySelector('#cue-design') || {}).value || null,
+      duration: SIM.app.getState().show.duration
+    };
+
+    // ---- EDIT CUE's own link, relative to the cue it has open ----
+    var link = document.querySelector('#cue-append');
+    var selId = out.appended.fresh.length ? out.appended.fresh[0].id : null;
+    var selCue = cuesOf(key).filter(function (c) { return String(c.id) === selId; })[0];
+    var idsBefore = cuesOf(key).map(function (c) { return String(c.id); });
+    out.editLink = { present: !!link, tag: link ? link.tagName : null,
+                     text: link ? link.textContent.trim() : null,
+                     html: link ? link.outerHTML : null,
+                     underDesignRow: !!(link && link.closest('.cue-append') &&
+                       link.closest('.cue-append').previousElementSibling &&
+                       link.closest('.cue-append').previousElementSibling.className === "cue-design"),
+                     from: selCue ? { complete: selCue.complete, design: selCue.design } : null };
+    if (link) {
+      link.click();
+      var grown = cuesOf(key).filter(function (c) { return idsBefore.indexOf(String(c.id)) < 0; });
+      out.editLink.fresh = grown.map(function (c) { return { at: c.at, design: c.design }; });
+    }
+
+    var saved = JSON.parse(JSON.stringify(SIM.app.getProject()));
+
+    // ---- the hover ghost, on a project rigged to HAVE empty track space ----
+    // In the starter show every track is covered end to end (a cue is held
+    // until the next one on that item, and the last one until the end of the
+    // show), which is exactly why "click an empty spot" was so hard to find.
+    // One cue, moved to 2.00, leaves 0.00-2.00 empty in front of it and a
+    // band behind it - both cases on the same track.
+    var rigged = JSON.parse(JSON.stringify(saved));
+    var firstKey = document.querySelector('.tl-track').dataset.track;
+    var keep = rigged.show.cues.filter(function (c) { return c.item === firstKey; })[0];
+    keep.at = 120;
+    rigged.show.cues = [keep];
+    rigged.show.duration = Math.max(rigged.show.duration, 300);
+    SIM.app.setProject(rigged);
+    var track = document.querySelector('.tl-track[data-track="' + firstKey + '"]');
+    var spot = emptySpot(track);
+    out.ghostEmpty = { spot: !!spot, item: firstKey };
+    if (spot) {
+      move(track, spot);
+      out.ghostEmpty.ghost = ghostInfo();
+      out.ghostEmpty.want = snapped(track, spot.x);
+      out.ghostEmpty.cursor = getComputedStyle(track).cursor;
+      out.ghostEmpty.design = (function () {
+        var used = {}; cuesOf(firstKey).forEach(function (c) { used[c.design] = 1; });
+        var ds = itemNamed(firstKey).designs;
+        var d = ds.filter(function (x) { return !used[x.name]; })[0] || ds[0];
+        return d ? (d.label || d.name) : null;
+      })();
+    }
+    // The label flips to the other side of the band when it would otherwise
+    // run past the end of the track - measured, not guessed from the time
+    // (review F2), so sweep the width and check it never hangs out.
+    out.ghostSweep = [0.05, 0.4, 0.75, 0.9, 0.97, 0.999].map(function (f) {
+      var tb = track.getBoundingClientRect();
+      move(track, { x: tb.left + tb.width * f, y: tb.top + tb.height / 2 });
+      var lab = document.querySelector('.cue-ghost-label');
+      var lb = lab.getBoundingClientRect();
+      return { at: f, flipped: lab.className.indexOf("flip") >= 0,
+               past: +(lb.right - tb.right).toFixed(1), before: +(tb.left - lb.left).toFixed(1) };
+    });
+
+    // ...never over an existing cue.
+    var hold = track.querySelector('.cue-hold');
+    var hb = hold.getBoundingClientRect();
+    move(hold, { x: hb.left + Math.min(4, hb.width / 2), y: hb.top + hb.height / 2 });
+    out.ghostOverBand = ghostInfo();
+    // ...and never while a cue is being dragged over that same empty space.
+    var drag = track.querySelector('.cue-hold[data-drag="1"]');
+    out.ghostDuringDrag = { dragged: !!(drag && spot) };
+    if (drag && spot) {
+      var db = drag.getBoundingClientRect();
+      var start = { x: db.left + 3, y: db.top + db.height / 2 };
+      drag.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true,
+                                                           clientX: start.x, clientY: start.y, pointerId: 1 }));
+      move(track, spot);
+      out.ghostDuringDrag.ghost = ghostInfo();
+      document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true,
+                                                             clientX: start.x, clientY: start.y, pointerId: 1 }));
+    }
+
+    // ---- a fractional refresh still appends a LEGAL cue ----
+    // 7.4 s is an ordinary Default refresh time, and it puts the model's own
+    // floor (validate()'s refresh + sweep + gap after the previous send, i.e.
+    // the previous cue's complete + 1.0) on a .4 second. Rounding to nearest
+    // would land 0.4 s early and the model would flag the cue the designer
+    // just asked for: "only 8.0 s after the previous send; at least 8.4 s is
+    // needed" (review F1).
+    var frac = JSON.parse(JSON.stringify(saved));
+    var fkey = firstKey;
+    var fkeep = frac.show.cues.filter(function (c) { return c.item === fkey; })[0];
+    fkeep.at = 60;
+    fkeep.refresh_s = null;                 // so it takes the show default below
+    frac.show.cues = [fkeep];
+    frac.show.refresh_s = 7.4;
+    frac.show.duration = Math.max(frac.show.duration, 300);
+    SIM.app.setProject(frac);
+    var fbefore = cuesOf(fkey);
+    var flast = fbefore[fbefore.length - 1];
+    var fids = fbefore.map(function (c) { return String(c.id); });
+    document.querySelector('button.tl-add[data-add="' + fkey + '"]').click();
+    var fnew = cuesOf(fkey).filter(function (c) { return fids.indexOf(String(c.id)) < 0; })[0];
+    out.fractional = {
+      refresh: SIM.app.getState().show.refresh_s,
+      lastAt: flast.at, lastComplete: flast.complete,
+      at: fnew ? fnew.at : null,
+      problems: fnew ? (fnew.problems || []).map(String) : null,
+      track: cuesOf(fkey).map(function (c) { return { at: c.at, problems: (c.problems || []).map(String) }; })
+    };
+
+    // ---- the empty states, on a copy of the project with no cues ----
+    var blank = JSON.parse(JSON.stringify(saved));
+    blank.show.cues = [];
+    SIM.app.setProject(blank);
+    out.empty = {
+      tracks: document.querySelectorAll('.tl-track').length,
+      inTrack: [].slice.call(document.querySelectorAll('.tl-track .tl-empty')).map(
+        function (e) { return e.textContent.trim(); }),
+      firstHint: (document.querySelector('.tl-firsthint') || {}).textContent || null,
+      firstHintHtml: (document.querySelector('.tl-firsthint') || {}).outerHTML || null
+    };
+    SIM.app.setProject(saved);
+    publish();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    if (!ready() && ++tries < 200) return;
+    clearInterval(timer);
+    try { run(); } catch (e) { out.error = String((e && e.stack) || e); publish(); }
+  }, 50);
+})();
+</script>
+"""
+
+
+@pytest.fixture(scope="module")
+def append_probe(tmp_path_factory):
+    """One headless run of the real built page for every test below - the
+    same trick as item_csv_probe: booting the page and parsing the starter
+    CSVs costs seconds, and these all ask about the same Timeline tab."""
+    tmp = tmp_path_factory.mktemp("append")
+    _require_browser(tmp)
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    return _probe_page(tmp, _APPEND_PROBE, "append-out")
+
+
+def test_every_track_row_offers_its_own_append_button(append_probe):
+    data = append_probe
+    assert data["trackItems"], "no tracks were drawn at all"
+    # Sets, not lists: the rows are ordered by LOOK (orderByLook), the state
+    # holds the garments in file order - what matters here is that no track
+    # is missing a "+" and no "+" belongs to a garment with no track.
+    assert sorted(r["item"] for r in data["rows"]) == sorted(data["trackItems"]), \
+        "the track rows and the items with a map do not line up"
+    for row in data["rows"]:
+        assert row["has"], f'{row["item"]}: no "+" at the end of its row'
+        # A real <button>: in the tab order and answering Enter/Space with no
+        # handler of its own (and type="button", so it can never submit).
+        assert row["tag"] == "BUTTON", f'{row["item"]}: {row["tag"]!r}'
+        assert row["type"] == "button", f'{row["item"]}: type={row["type"]!r}'
+        assert row["focusable"], f'{row["item"]}: the "+" cannot be focused'
+        assert not row["disabled"], f'{row["item"]}: the "+" is disabled'
+        assert row["text"] == "+", f'{row["item"]}: {row["text"]!r}'
+        assert row["forItem"] == row["item"], \
+            f'{row["item"]}: the button carries {row["forItem"]!r} instead'
+        assert row["lastInRow"], f'{row["item"]}: the "+" is not at the right-hand end'
+        # It says what it does, on hover and to a screen reader.
+        assert "next design" in row["title"], f'{row["item"]}: {row["title"]!r}'
+        assert row["aria"] and row["aria"].endswith(row["title"]), \
+            f'{row["item"]}: {row["aria"]!r}'
+
+
+def test_the_hint_above_the_tracks_names_both_ways_in(append_probe):
+    hint = append_probe["hint"]
+    assert hint, "the hint line above the tracks is gone"
+    assert "Click anywhere on a track" in hint
+    assert "+" in hint and "next design" in hint
+
+
+def test_pressing_append_adds_the_next_design_one_second_after_the_last(append_probe):
+    data = append_probe["appended"]
+    assert data["countAfter"] == data["countBefore"] + 1, data
+    assert len(data["fresh"]) == 1, data["fresh"]
+    fresh = data["fresh"][0]
+    # The earliest legal moment: the last cue's picture is finished at its
+    # complete time (start + its refresh + its sweep span), then a one-second
+    # gap, rounded UP to a whole second - complete + gap is the model's own
+    # floor (validate()'s refresh + sweep + gap), not a target to land near,
+    # so rounding to nearest would fall below it for any refresh whose
+    # fraction is under .5 (see the fractional-refresh test below).
+    assert fresh["at"] == math.ceil(data["lastBefore"]["complete"] + 1), \
+        f'{fresh["at"]} is not ceil({data["lastBefore"]["complete"]} + 1 s)'
+    assert fresh["at"] > data["lastBefore"]["complete"]
+    assert fresh["at"] == int(fresh["at"]), "the appended cue is not on a whole second"
+    assert not fresh["partial"]
+    # ...showing the NEXT design in the item's own rotation, wrapping round.
+    designs = data["designs"]
+    nxt = designs[(designs.index(data["lastBefore"]["design"]) + 1) % len(designs)]
+    assert fresh["design"] == nxt, \
+        f'appended {fresh["design"]!r}, the rotation after {data["lastBefore"]["design"]!r} is {nxt!r}'
+    # ...and it is what EDIT CUE now has open.
+    assert data["selectedBand"] == fresh["id"], \
+        f'the selected cue is {data["selectedBand"]!r}, not the one just added'
+    assert data["editorDesign"] == fresh["design"], data
+    minutes, seconds = divmod(int(fresh["at"]), 60)
+    assert data["editorStart"] == f"{minutes}.{seconds:02d}", \
+        f'EDIT CUE shows Start {data["editorStart"]!r} for a cue at {fresh["at"]} s'
+    # The show is long enough to hold what was just appended.
+    assert data["duration"] > fresh["at"], data
+
+
+def test_edit_cue_appends_the_next_design_after_the_cue_it_has_open(append_probe):
+    link = append_probe["editLink"]
+    assert link["present"], "EDIT CUE has no append link"
+    assert link["tag"] == "BUTTON", link["tag"]          # focusable, Enter/Space for free
+    assert link["text"] == "＋ Add next design after this cue", link["text"]
+    assert link["underDesignRow"], "the link is not directly under the Design row"
+    assert len(link["fresh"]) == 1, link["fresh"]
+    assert link["fresh"][0]["at"] == math.ceil(link["from"]["complete"] + 1), link
+
+
+def test_a_fractional_refresh_still_appends_a_cue_the_model_accepts(append_probe):
+    frac = append_probe["fractional"]
+    assert frac["refresh"] == 7.4, frac
+    assert frac["at"] == math.ceil(frac["lastComplete"] + 1), frac
+    # The case is only worth anything while it tells the two apart.
+    assert frac["at"] != round(frac["lastComplete"] + 1), \
+        "7.4 s no longer distinguishes rounding up from rounding to nearest"
+    # The point of the whole thing: what the "+" places is legal. Rounding to
+    # nearest put it 0.4 s inside the model's floor and validate() said so.
+    assert frac["problems"] == [], frac
+    assert all(c["problems"] == [] for c in frac["track"]), frac["track"]
+
+
+def test_the_hover_ghost_shows_what_a_click_would_place(append_probe):
+    empty = append_probe["ghostEmpty"]
+    assert empty["spot"], "the first track had no empty space to hover over"
+    ghost = empty["ghost"]
+    assert ghost, "no .cue-ghost after a pointermove over empty track space"
+    assert int(ghost["at"]) == empty["want"], \
+        f'the ghost sits at {ghost["at"]}, the snapped time is {empty["want"]}'
+    minutes, seconds = divmod(empty["want"], 60)
+    assert ghost["label"] == f'+ {empty["design"]} at {minutes}.{seconds:02d}', ghost["label"]
+    assert ghost["left"].endswith("%") and ghost["width"].endswith("%"), ghost
+    assert ghost["track"] == append_probe["rows"][0]["item"], ghost
+    # The pointer already says "this click puts something here".
+    assert empty["cursor"] == "copy", empty["cursor"]
+    # Wherever it is on the track, the label stays on the track: it hangs off
+    # the right of the band and flips to its left when it would not fit. The
+    # flip is measured, so a long design name flips earlier than a short one
+    # and neither runs past the card (review F2).
+    sweep = append_probe["ghostSweep"]
+    assert sweep and any(s["flipped"] for s in sweep) and any(not s["flipped"] for s in sweep), \
+        f"the label never flips, or always does: {sweep}"
+    for s in sweep:
+        assert s["past"] <= 0, f'the label hangs {s["past"]} px past the track at {s["at"]}: {sweep}'
+
+
+def test_the_ghost_stays_away_from_existing_cues_and_from_drags(append_probe):
+    assert append_probe["ghostOverBand"] is None, \
+        f'a ghost was drawn on top of an existing cue: {append_probe["ghostOverBand"]}'
+    drag = append_probe["ghostDuringDrag"]
+    assert drag["dragged"], "the drag case never ran"
+    assert drag.get("ghost") is None, \
+        f'a ghost was drawn during a cue drag: {drag["ghost"]}'
+
+
+def test_a_project_with_nothing_placed_says_where_to_start(append_probe):
+    empty = append_probe["empty"]
+    assert empty["tracks"] > 0
+    # Every empty track carries the invitation, inside the track itself.
+    assert len(empty["inTrack"]) == empty["tracks"], empty
+    for text in empty["inTrack"]:
+        assert text == "click here to place the first design at 0.00", repr(text)
+    # ...and the CUES card says the same thing, full size, instead of a table.
+    assert empty["firstHint"], "an empty project's CUES card says nothing"
+    assert "first design at 0.00" in " ".join(empty["firstHint"].split())
+    assert "+" in empty["firstHint"]

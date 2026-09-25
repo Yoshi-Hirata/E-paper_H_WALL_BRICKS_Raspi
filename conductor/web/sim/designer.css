@@ -121,8 +121,50 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .mmss-echo.bad { color: var(--err); }
 
 /* ---- timeline ---- */
-.tl-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; min-height: 38px;
-  border-bottom: 1px solid var(--line); }
+/* Every row ends with a fixed-width column for its own "+" (append the next
+   design). It is a real column rather than something floating over the end
+   of the track so it can never sit on top of a cue - and because it is fixed
+   and shared, the ruler row's trailing spacer and the playhead wrapper's
+   `right` (both in renderTracks()) line up with the tracks by construction. */
+:root { --tl-add-w: 32px; }
+.tl-row { display: grid; grid-template-columns: 150px 1fr var(--tl-add-w); align-items: center;
+  min-height: 38px; border-bottom: 1px solid var(--line); }
+.tl-add { width: 26px; margin-left: 6px; padding: 0; line-height: 22px; font-size: 16px; font-weight: 600;
+  color: var(--dim); text-align: center; }
+.tl-add:hover { color: var(--accent); border-color: var(--accent); background: var(--select); }
+.tl-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The empty-track invitation, inside the track it is talking about. Never
+   clickable itself - the click has to land on the track underneath. */
+.tl-empty { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 8px;
+  color: var(--dim); font-size: 11.5px; pointer-events: none; }
+.tl-track.has-ghost .tl-empty { display: none; }
+/* The hover ghost: the cue a click right here would create. The translucency
+   is on a ::before, not on .cue-ghost itself - `opacity` applies to the whole
+   subtree, so a faded parent would drag the label down with it and no
+   `opacity:1` on the child could bring it back. */
+.cue-ghost { position: absolute; top: 3px; bottom: 3px; min-width: 2px;
+  pointer-events: none; z-index: 5; }
+.cue-ghost::before { content: ""; position: absolute; inset: 0; border-radius: 3px;
+  background: var(--accent); opacity: .32; }
+/* On its own panel-coloured chip: the label very often hangs over the cue
+   that follows the empty space, and two lines of 11px text on top of each
+   other are unreadable. */
+.cue-ghost-label { position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+  margin-left: 5px; white-space: nowrap; font-size: 11px; color: var(--accent);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+  padding: 0 5px; line-height: 1.5; }
+.cue-ghost-label.flip { left: auto; right: 100%; margin-left: 0; margin-right: 5px; }
+/* The hint above the tracks, and its full-size twin in an empty CUES card. */
+.tl-hint { color: var(--dim); font-size: 12px; margin-bottom: 6px; }
+.tl-firsthint { color: var(--dim); font-size: 14px; padding: 22px 2px; line-height: 1.9; }
+.tl-firsthint b { color: var(--accent); }
+/* EDIT CUE's "＋ Add next design after this cue": a link, not a third
+   button competing with Delete for the eye. */
+.cue-append { margin-top: -2px; }
+button.linkish { border: 0; background: none; padding: 0; font-size: 12.5px; color: var(--accent);
+  text-decoration: underline; text-underline-offset: 2px; }
+button.linkish:hover { filter: brightness(1.15); }
+button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 .tl-name { font-size: 13px; font-weight: 600; padding-right: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-name small { display: block; font-weight: 400; color: var(--dim); font-size: 11px; }
 .tl-track { position: relative; height: 30px; background: var(--bg); border-radius: 4px; cursor: copy; }
