@@ -69,6 +69,35 @@ def test_centre_is_the_fronts_centroid_and_the_back_uses_the_same_point():
     assert r[("back", 1, 1)] == r[("front", 1, 1)]    # straight behind
 
 
+def test_centre_starts_at_rank_zero_even_when_no_scale_sits_on_the_centroid():
+    """F2, 2026-09-26 (radxa-01, 3 live boards): `center` ranks a scale
+    by its rounded distance from the front's centroid, and on a real map
+    that centroid falls BETWEEN scales - so the nearest ones were rank 1,
+    nothing was rank 0, and the whole garment started span/max_rank late
+    (+0.19 s of a 3 s span) while the sweep used only the rest of its
+    span. Rebasing gives the sweep all of it."""
+    strip = LookMap.parse(io.StringIO(
+        "side,row,col,board_no,socket,label\n"
+        "front,0,1,1,1,\nfront,1,1,1,2,\nfront,2,1,1,3,\nfront,3,1,1,4,\n"),
+        name="g.csv")
+    # Raw distances are 2, 1, 1, 2 (no scale sits on the centroid).
+    assert sorted(ranks(strip, "center").values()) == [0, 0, 1, 1]
+    frames = [v for v in unpack(compile_delays(strip, "center", 3.0)[1])
+              if v != NO_DELAY]
+    assert sorted(frames) == [0, 0, 300, 300]       # the whole span, from 0
+    # The row and column sequences already counted from 0 and are untouched.
+    for sequence in ("top_down", "bottom_up", "left_right", "right_left"):
+        assert min(ranks(look(), sequence).values()) == 0
+    # A garment whose scales are all the same distance from the centre has
+    # nothing to sweep: it used to give every scale the same non-zero rank,
+    # which is not a sweep but a flat delay of the whole picture.
+    tie = LookMap.parse(io.StringIO(
+        "side,row,col,board_no,socket,label\n"
+        "front,0,0,1,1,\nfront,4,3,1,2,\n"), name="t.csv")
+    assert set(ranks(tie, "center").values()) == {0}
+    assert span_s(tie, "center", 3.0) == 0.0
+
+
 def test_centre_uses_the_maps_own_shift():
     # Row 1 defaults to 0.5 (odd); a map whose own shift column pins it to 0
     # moves the centroid enough that at least one scale's rank changes (real

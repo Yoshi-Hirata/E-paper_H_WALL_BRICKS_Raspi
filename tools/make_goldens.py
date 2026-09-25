@@ -355,7 +355,13 @@ def check_cases() -> list:
 def ranks_cases() -> list:
     cases = []
     for map_fixture in ["Seq_map.csv", "OneBoard_map.csv", "SingleScale_map.csv",
-                        "CenterPlain_map.csv", "CenterShift_map.csv", "CenterTie_map.csv"]:
+                        "CenterPlain_map.csv", "CenterShift_map.csv",
+                        "CenterTie_map.csv",
+                        # A centroid that falls BETWEEN scales, so the raw
+                        # centre distances start at 1 and the rebasing in
+                        # ranks() is what makes the first scale rank 0
+                        # (F2, 2026-09-26).
+                        "CenterGap_map.csv"]:
         m, problems, used_item = parse_map_fixture(map_fixture)
         if m is None:
             continue

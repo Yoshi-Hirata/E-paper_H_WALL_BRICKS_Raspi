@@ -61,7 +61,28 @@ def clean_span(value) -> float:
 
 
 def ranks(look_map: LookMap, sequence: str) -> "dict[tuple, int]":
-    """position -> rank (0 first) for every scale of the map."""
+    """position -> rank (0 first) for every scale of the map.
+
+    Rebased, so the lowest rank of a garment is always 0 and the sweep
+    gets its whole span. The row and column sequences already count
+    from their own extreme scale, so this changes nothing for them;
+    `center` measures a distance from a centroid that on a real map
+    falls BETWEEN scales, so its lowest rank is normally 1, not 0
+    (radxa-01, 2026-09-26: the first scale of a centre-outward sweep
+    started at span/max_rank - +0.19 s of a 3 s span - instead of with
+    the broadcast, and the sweep only ever used the rest of its span).
+    """
+    return _rebased(_raw_ranks(look_map, sequence))
+
+
+def _rebased(result: "dict[tuple, int]") -> "dict[tuple, int]":
+    lowest = min(result.values(), default=0)
+    if lowest == 0:
+        return result
+    return {position: rank - lowest for position, rank in result.items()}
+
+
+def _raw_ranks(look_map: LookMap, sequence: str) -> "dict[tuple, int]":
     scales = look_map.scales
     if sequence == "natural" or not scales:
         return {s.position: 0 for s in scales}
