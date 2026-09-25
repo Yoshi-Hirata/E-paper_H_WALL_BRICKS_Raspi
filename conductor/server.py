@@ -103,6 +103,13 @@ def _demo_name(raw) -> str:
     return name.upper()
 
 
+def _slugify(name: str) -> str:
+    """A demo's id from its name, exactly as the unit makes one
+    (ui/demos.py slugify) - the conductor's own marks are kept by name,
+    and a delete only ever names the slug."""
+    return re.sub(r"[^a-z0-9]+", "-", str(name).strip().lower()).strip("-") or "demo"
+
+
 def _demo_slug(raw) -> str:
     """A demo's id, as the unit itself makes one (ui/demos.py: lower-case
     a-z0-9- from the name). Refused here too - a slug is about to become
@@ -112,6 +119,35 @@ def _demo_slug(raw) -> str:
     if not _DEMO_SLUG_OK.match(slug):
         raise ValueError("bad demo id")
     return slug
+
+
+def _only_units(raw, shows: "dict[str, dict]") -> "list[str] | None":
+    """The `units` of an Upload / Save on the units: which units of the
+    compiled show this write is for ("Which LOOKs" in the page's dialog),
+    or None for all of them - absent means all, which is what every
+    client before this field sent and what the page sends for "All
+    LOOKs".
+
+    A name that is not a unit of THIS timeline is refused by name rather
+    than quietly dropped: the page builds the list from the timeline it
+    is showing, so a mismatch means the two disagree about what is where
+    (a stale page, another operator's edit) - exactly the moment to stop
+    rather than write a look to nothing and report success."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(isinstance(u, str) for u in raw):
+        raise ValueError("units must be a list of unit names")
+    names = list(dict.fromkeys(raw))
+    if not names:
+        raise ValueError("no unit chosen - pick a LOOK, or All LOOKs")
+    # Nothing compiled at all (a timeline with a problem): the write is
+    # already going nowhere and the problems are the answer - saying
+    # "radxa-01 is not a unit of this timeline" on top of them would send
+    # the operator looking for the wrong thing.
+    for name in names if shows else ():
+        if name not in shows:
+            raise ValueError(f"{name} is not a unit of this timeline")
+    return names
 
 
 def _design_transition(entry) -> dict:
@@ -205,6 +241,18 @@ class Workspace:
         # about an edit made after the write (an id comparison cannot: the
         # units hold exactly what they were sent, edits and all).
         self.marks: "dict[str, str]" = {}
+        # The same, per unit: {"upload": {unit: revision}, ...}. A write
+        # for one LOOK only reaches its own units, and the page has to be
+        # able to say which units hold what is on screen and which are
+        # still on an older timeline - the fleet-wide mark above cannot
+        # say that, so it is simply absent after a partial write.
+        self.unit_marks: "dict[str, dict[str, str]]" = {}
+        # What the last compile_show() made of the timeline, and of which
+        # revision: {"revision", "problems", "units"}. START's gate reads
+        # it to tell "you edited and forgot to upload" (Upload again)
+        # from "this timeline does not build at all" (fix it first) -
+        # without paying for a compile of its own.
+        self.compiled: "dict | None" = None
 
     # ---- show.json ----
 
@@ -967,32 +1015,98 @@ class Workspace:
             parts.append(f"{path.name}:{info.st_size}:{info.st_mtime_ns}")
         return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
-    def mark_written(self, what: str, rev: "str | None" = None) -> None:
+    def mark_written(self, what: str, rev: "str | None" = None,
+                     units: "list[str] | None" = None,
+                     all_units: "list[str] | None" = None) -> None:
         """Remember `rev` (the revision the write actually carried, taken
-        before it started) under `what` ("upload", or "demo:<NAME>").
+        before it started) under `what` ("upload", or "demo:<NAME>"), for
+        the `units` it reached.
 
         Not the revision NOW: writing ten units takes seconds, and an
         edit that lands while it is in flight belongs to the next write,
         not this one - recording it here would have the chips say "up to
         date" about a timeline the units have never seen (found in
         review). `rev` is only omitted where there is nothing in between
-        to worry about."""
-        self.marks[what] = self.revision() if rev is None else rev
+        to worry about.
+
+        The fleet-wide mark (what the chips' "up to date" is read from)
+        is only set when every unit of `all_units` - the units of the
+        whole compiled timeline - now holds `rev`. One LOOK written on
+        its own leaves the rest of the fleet on whatever they held, so
+        claiming the timeline is on the units would be the chip lying
+        about the one thing it exists to answer; the fleet-wide mark is
+        dropped instead, and the per-unit ones say who does hold this
+        revision."""
+        rev = self.revision() if rev is None else rev
+        if units is None:
+            self.marks[what] = rev
+            return
+        per_unit = self.unit_marks.setdefault(what, {})
+        for unit in units:
+            per_unit[unit] = rev
+        targets = list(all_units if all_units is not None else units)
+        # A unit the timeline no longer reaches is not "behind" - it is
+        # not in the show at all, and leaving its mark here would have
+        # START refuse for a garment that was taken out weeks ago.
+        for unit in [u for u in per_unit if u not in targets]:
+            del per_unit[unit]
+        if targets and all(per_unit.get(unit) == rev for unit in targets):
+            self.marks[what] = rev
+        else:
+            self.marks.pop(what, None)
+
+    def timeline_units(self) -> "set[str]":
+        """The units this timeline needs - every unit an item with a cue
+        is assigned to. What compile_show() would target, read straight
+        out of show.json: no CSV is parsed and no picture is built, so
+        START can ask it without paying the seconds a compile costs."""
+        show = self._load_show()
+        assigned = show.get("units") or {}
+        return {assigned[cue["item"]] for cue in (show.get("cues") or [])
+                if isinstance(cue, dict) and assigned.get(cue.get("item"))}
+
+    def forget_demo(self, slug: str) -> None:
+        """Drop the marks of a demo just deleted from the units - the
+        name is free again, and a mark left behind would have the next
+        demo written under it inherit an "up to date" it never earned."""
+        for key in [k for k in self.marks
+                    if k.startswith("demo:") and _slugify(k[5:]) == slug]:
+            self.marks.pop(key, None)
+        for key in [k for k in self.unit_marks
+                    if k.startswith("demo:") and _slugify(k[5:]) == slug]:
+            self.unit_marks.pop(key, None)
 
     def written_state(self) -> dict:
         """What /api/fleet tells the page about the timeline itself:
-        `revision` now, and the revision each write put on the units.
+        `revision` now, and the revision each write put on the units -
+        fleet-wide (`uploaded`, `demos`: set only when the write reached
+        every unit of the timeline) and per unit (`uploaded_units`,
+        `demo_units`, which is how the dialog and the tiles say WHICH
+        units hold what is on screen after a one-LOOK write).
         A name with no mark (written by an earlier conductor, or before
         this conductor came up) is simply absent - the page then says
         nothing about "up to date", rather than guessing."""
         return {"revision": self.revision(),
                 "uploaded": self.marks.get("upload"),
+                "uploaded_units": dict(self.unit_marks.get("upload", {})),
                 "demos": {key[len("demo:"):]: value
                           for key, value in self.marks.items()
-                          if key.startswith("demo:")}}
+                          if key.startswith("demo:")},
+                "demo_units": {key[len("demo:"):]: dict(value)
+                               for key, value in self.unit_marks.items()
+                               if key.startswith("demo:")}}
 
     def compile_show(self) -> "tuple[dict[str, dict], list[str]]":
         """The whole timeline -> ({unit: show file}, problems)."""
+        # Taken before the work, so what is remembered below is the state
+        # this compile was OF, not one an edit landed on meanwhile.
+        rev = self.revision()
+        shows, problems = self._compile_show()
+        self.compiled = {"revision": rev, "problems": list(problems),
+                         "units": sorted(shows)}
+        return shows, problems
+
+    def _compile_show(self) -> "tuple[dict[str, dict], list[str]]":
         with self._lock:
             paths = sorted(self.files.glob("*.csv"))
             show = self._migrate_align(self._load_show())
@@ -1659,6 +1773,67 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
 
+    def _one_timeline(self, fleet) -> None:
+        """Refuse a START / PRESET that would run the fleet on two
+        different timelines, or on one it has moved past.
+
+        This is the other half of "Which LOOKs": the dialog says "START
+        needs every unit of the timeline to hold this upload", and this
+        is where that sentence is true. Nothing downstream can catch it -
+        a unit's show id is the id THIS conductor gave it, so
+        `_burn()`'s id check matches happily for a unit still holding
+        last hour's show, and show_duration() just takes the longest of
+        the two (review F1/F2).
+
+        Only the per-unit marks of THIS conductor are evidence: a
+        conductor restarted mid-show knows nothing about who holds what
+        and must not refuse on a guess.
+
+        Its override is `split_ok`, its own field and nobody else's: the
+        burn gate's `force` used to wave this one through too, so a page
+        that had already asked "some boards did not take it - start
+        anyway?" started a fleet running two timelines without ever
+        asking about THAT (N1). Two gates, two questions, two answers.
+
+        It lives here rather than in Fleet because only the workspace
+        knows what revision the timeline on screen is."""
+        marks = self.workspace.unit_marks.get("upload", {})
+        if not marks:
+            return
+        rev = self.workspace.revision()
+        # Both halves of "every unit of the timeline holds this upload":
+        # the units that hold an OLDER one, and the units this timeline
+        # needs that were never written at all - a one-LOOK upload from
+        # a fresh conductor leaves the others in the second group, where
+        # fleet.shows does not even mention them.
+        wanted = self.workspace.timeline_units()
+        missing = sorted(unit for unit in wanted if unit not in marks)
+        known = {unit: mark for unit, mark in marks.items()
+                 if unit in fleet.shows or unit in wanted}
+        behind = sorted(unit for unit, mark in known.items() if mark != rev)
+        if not missing and not behind:
+            return
+        # "Upload again" is no use when an Upload could not happen: the
+        # timeline itself does not build (N2). Read off the last compile,
+        # and only while it is still a compile of what is on screen.
+        compiled = self.workspace.compiled
+        if (compiled and compiled["revision"] == rev
+                and (compiled["problems"] or not compiled["units"])):
+            raise ValueError("the timeline has problems - fix them on the "
+                             "Timeline tab, then Upload")
+        if not missing and len(set(known.values())) == 1:
+            # They agree with each other, and all disagree with the
+            # timeline on screen: the ordinary "edited and forgot to
+            # upload". The revision ignores labels and music, so this is
+            # always a real change to the cues, the CSVs or the units.
+            raise ValueError(
+                "every unit holds an older upload than the timeline on "
+                "screen - Upload again before the show")
+        named = ", ".join(missing + behind)
+        raise ValueError(
+            f"{named} {'is' if len(missing) + len(behind) == 1 else 'are'} "
+            "not on this upload - Upload for All LOOKs before the show")
+
     def _fleet_command(self, command: str, body: dict) -> None:
         fleet = self.fleet
         if fleet is None:
@@ -1694,13 +1869,19 @@ class Handler(BaseHTTPRequestHandler):
             # next upload, not to this one.
             rev = self.workspace.revision()
             shows, problems = self.workspace.compile_show()
-            results = (fleet.upload(shows, force=bool(body.get("force")))
+            only = _only_units(body.get("units"), shows)
+            results = (fleet.upload(shows, force=bool(body.get("force")),
+                                    only=only)
                        if shows else {})
-            # What went out is remembered, so an edit made after this
-            # reads as "changed since" however long the page has been
-            # open and whatever it was reloaded to.
-            if any(r["ok"] for r in results.values()):
-                self.workspace.mark_written("upload", rev)
+            # What went out is remembered, PER UNIT, so an edit made
+            # after this reads as "changed since" however long the page
+            # has been open and whatever it was reloaded to - and so a
+            # one-LOOK upload cannot claim the whole timeline is on the
+            # units (mark_written works out the fleet-wide mark itself).
+            written = sorted(u for u, r in results.items() if r["ok"])
+            if written:
+                self.workspace.mark_written("upload", rev, units=written,
+                                            all_units=sorted(shows))
             return self._json({"units": results, "problems": problems,
                                "shows": {u: s["id"] for u, s in shows.items()}})
         if command == "write_demo":
@@ -1723,18 +1904,30 @@ class Handler(BaseHTTPRequestHandler):
             # exactly the problems Upload itself would have refused on.
             rev = self.workspace.revision()      # see the upload above
             shows, problems = self.workspace.compile_show()
-            results = fleet.write_demo(name, loop, shows) if shows else {}
-            if any(r["ok"] for r in results.values()):
-                self.workspace.mark_written(f"demo:{name}", rev)
+            only = _only_units(body.get("units"), shows)
+            results = (fleet.write_demo(name, loop, shows, only=only)
+                       if shows else {})
+            written = sorted(u for u, r in results.items() if r["ok"])
+            if written:
+                self.workspace.mark_written(f"demo:{name}", rev, units=written,
+                                            all_units=sorted(shows))
             return self._json({"units": results, "problems": problems,
                                "name": name})
         if command == "delete_demo":
             slug = _demo_slug(body.get("slug"))
-            return self._json({"units": fleet.delete_demo(slug)})
+            results = fleet.delete_demo(slug)
+            if any(r["ok"] for r in results.values()):
+                self.workspace.forget_demo(slug)
+            return self._json({"units": results})
         if command == "preset":
             # The same `force` as START's: waves through a unit that
             # failed to burn some boards (the page asks first), never
-            # one still burning or with nothing written (fleet.py).
+            # one still burning or with nothing written (fleet.py) - and
+            # The split fleet - which the preset would otherwise show as
+            # two different 0:00 looks side by side - is a gate of its
+            # own, with its own answer (`split_ok`).
+            if not body.get("split_ok"):
+                self._one_timeline(fleet)
             return self._json({"units": fleet.preset(
                 force=bool(body.get("force")))})
         if command == "seek":
@@ -1784,6 +1977,13 @@ class Handler(BaseHTTPRequestHandler):
                 if fleet.run is not None and not body.get("force"):
                     return self._json({"units": {}, "note":
                                        "The show is already running."})
+                # Every unit of the timeline has to hold the SAME upload,
+                # which is the sentence the "Which LOOKs" dialog prints
+                # under a one-look Upload. Refused before start_show(),
+                # because after it the fleet is already running - and on
+                # its own answer, never on the burn gate's `force`.
+                if not body.get("split_ok"):
+                    self._one_timeline(fleet)
                 from_s = body.get("from_s")
                 if from_s is None:
                     # No range check skipped here: fleet.start_show()

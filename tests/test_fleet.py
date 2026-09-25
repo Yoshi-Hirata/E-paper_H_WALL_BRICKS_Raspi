@@ -643,18 +643,57 @@ def test_a_garment_that_answered_on_no_board_is_named_that_way_and_forceable():
 def test_a_forced_upload_under_a_running_show_leaves_force_on_the_run():
     # R4 (review round 3): the rescue Upload is pointless if supervision
     # then posts force false and the rescued unit - whose re-burn failed
-    # on a live board - is refused and never rejoins.
+    # on a live board - is refused and never rejoins. Recorded per unit
+    # (review F5): the rescue is for the unit it was asked for.
     fleet = Fleet({}, clock=lambda: 1100.0)
     link = StubLink("radxa-01", "stopped")
     fleet.links = {"radxa-01": link}
     shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
     fleet.shows = dict(shows)
     fleet.start_show(lead_s=1.0)                    # no force needed then
-    assert fleet.run["force"] is False
+    assert fleet.run["force"] is False and not fleet.run.get("forced")
     fleet.upload(shows)                             # (not under a run: no-op)
-    assert fleet.run["force"] is False
+    assert not fleet.run.get("forced")
     fleet.upload(shows, force=True)                 # the page's confirm
-    assert fleet.run["force"] is True
+    assert fleet.run["forced"] == ["radxa-01"]
+    link.posted.clear()
+    fleet._send_run(["radxa-01"])
+    assert link.posted[-1][1]["force"] is True
+
+
+def test_a_rescue_that_did_not_land_does_not_force_that_unit():
+    # The rescue is the write: a unit whose re-write never arrived was
+    # not rescued, and must keep its own gate (review N3).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    one, two = StubLink("radxa-01", "stopped"), FailingLink("radxa-02", "stopped")
+    fleet.links = {"radxa-01": one, "radxa-02": two}
+    shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600},
+             "radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.shows = dict(shows)
+    fleet.start_show(lead_s=1.0)
+    results = fleet.upload(shows, force=True)
+    assert results["radxa-02"]["ok"] is False
+    assert fleet.run["forced"] == ["radxa-01"]
+
+
+def test_a_rescue_upload_forces_only_the_unit_it_rescued():
+    # The mid-show rescue of ONE unit must not wave every other unit's
+    # failed boards through for the rest of the night (review F5).
+    fleet = Fleet({}, clock=lambda: 1100.0)
+    one, two = StubLink("radxa-01", "stopped"), StubLink("radxa-02", "stopped")
+    fleet.links = {"radxa-01": one, "radxa-02": two}
+    # The same show on both (what a StubLink reports holding), so the
+    # burn gate lets START through and the run is about `force` alone.
+    shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600},
+             "radxa-02": {"id": "showA", "cues": [], "duration": 600}}
+    fleet.shows = dict(shows)
+    fleet.start_show(lead_s=1.0)
+    fleet.upload(shows, force=True, only=["radxa-01"])
+    assert fleet.run["forced"] == ["radxa-01"]
+    one.posted.clear(), two.posted.clear()
+    fleet._send_run(["radxa-01", "radxa-02"])
+    assert one.posted[-1][1]["force"] is True
+    assert two.posted[-1][1]["force"] is False
 
 
 def test_an_adopted_run_carries_force_so_supervision_is_not_refused():
@@ -1002,6 +1041,90 @@ def test_start_show_with_no_position_begins_exactly_lead_seconds_from_now():
     fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
     fleet.start_show(lead_s=3.0)
     assert fleet.run["t0"] == 1003.0
+
+
+def _two_unit_shows():
+    return {"radxa-01": {"id": "showA", "cues": [], "duration": 600},
+            "radxa-02": {"id": "showB", "cues": [], "duration": 600}}
+
+
+def test_upload_with_only_writes_to_those_units_alone():
+    # The dialog's "Which LOOKs": one look's units are written and the
+    # rest of the fleet is not touched at all.
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "stopped")}
+    shows = _two_unit_shows()
+    results = fleet.upload(shows, only=["radxa-01"])
+    assert list(results) == ["radxa-01"] and results["radxa-01"]["ok"]
+    assert [p for p, _ in fleet.links["radxa-01"].posted] == ["/show/load"]
+    assert fleet.links["radxa-02"].posted == []
+    # What this conductor believes is on the units: radxa-01's show, and
+    # nothing claimed about radxa-02, which was never sent one.
+    assert list(fleet.shows) == ["radxa-01"]
+
+
+def test_upload_with_only_keeps_what_the_other_units_already_hold():
+    # A full upload, then one LOOK re-written: the earlier upload is
+    # still what the other unit is running on, and the conductor must
+    # not forget it (START and SEEK are driven from fleet.shows).
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "stopped")}
+    fleet.upload(_two_unit_shows())
+    again = {"radxa-01": {"id": "showA2", "cues": [], "duration": 600},
+             "radxa-02": {"id": "showB2", "cues": [], "duration": 600}}
+    fleet.upload(again, only=["radxa-01"])
+    assert fleet.shows["radxa-01"]["id"] == "showA2"     # the new one
+    assert fleet.shows["radxa-02"]["id"] == "showB"      # what it holds
+    assert [p for p, _ in fleet.links["radxa-02"].posted] == ["/show/load"]
+
+
+def test_upload_with_only_drops_a_unit_the_timeline_no_longer_has():
+    # A garment taken out of the show: a partial upload must forget that
+    # unit exactly as a full one does, or _targets() goes on driving it
+    # and START posts /show/run to a unit that is not in the show at all
+    # (review F3).
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "stopped")}
+    fleet.upload(_two_unit_shows())
+    left = {"radxa-01": {"id": "showA2", "cues": [], "duration": 600}}
+    fleet.upload(left, only=["radxa-01"])
+    assert list(fleet.shows) == ["radxa-01"]
+    assert fleet._targets() == ["radxa-01"]
+
+
+def test_upload_with_only_refuses_a_show_of_a_different_length():
+    # Everything downstream reads one duration for the fleet, so a
+    # shorter timeline written to one unit while another holds the long
+    # one would have SEEK and START accept a position past that unit's
+    # own end (review F2). A new length is a full Upload.
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "stopped")}
+    fleet.upload(_two_unit_shows())
+    shorter = {"radxa-01": {"id": "showA2", "cues": [], "duration": 90},
+               "radxa-02": {"id": "showB2", "cues": [], "duration": 90}}
+    with pytest.raises(ValueError) as caught:
+        fleet.upload(shorter, only=["radxa-01"])
+    assert "radxa-02 still holds a 600 s one" in str(caught.value)
+    assert fleet.links["radxa-01"].posted[-1][1]["id"] == "showA"   # untouched
+    # The same length for everyone is fine, and so is the full upload.
+    fleet.upload(shorter)
+    assert fleet.show_duration() == 90
+
+
+def test_write_demo_with_only_saves_on_those_units_alone():
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped"),
+                   "radxa-02": StubLink("radxa-02", "stopped")}
+    results = fleet.write_demo("PARIS", True, _two_unit_shows(),
+                               only=["radxa-02"])
+    assert list(results) == ["radxa-02"] and results["radxa-02"]["ok"]
+    assert fleet.links["radxa-01"].posted == []
+    path, body = fleet.links["radxa-02"].posted[0]
+    assert path == "/demo/save" and body["show"]["id"] == "showB"
 
 
 def test_uploading_a_new_show_forgets_a_remembered_start_position():
