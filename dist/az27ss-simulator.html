@@ -3977,6 +3977,27 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   // CSV drops / Add CSV (plan §3.2)
   // ==================================================================
   function readFileAsText(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsText(file); }); }
+  // What a Mac does to file names on the way here (2026-09-25, a designer's
+  // Mac refused every CSV that a Windows PC accepted):
+  //  - a zip extracted by Finder carries "__MACOSX/._NAME.csv" AppleDouble
+  //    twins and ".DS_Store" - the "._" twins END in _map.csv and used to be
+  //    accepted as junk garments named "._AZ271…"; they are metadata, so
+  //    they are set aside by name with a reason that says so;
+  //  - Safari appends ".txt" to a text/plain download ("NAME.csv.txt"), and
+  //    Finder hides the extension so nobody sees it - the trailing .txt is
+  //    dropped when what is left is a .csv;
+  //  - HFS+/APFS hand names back in NFD; ASCII names do not care, but a
+  //    designer's own file name might - normalise to NFC first.
+  function macSafeName(name) {
+    let n = String(name);
+    try { n = n.normalize("NFC"); } catch {}
+    if (/\.csv\.txt$/i.test(n)) n = n.replace(/\.txt$/i, "");
+    return n;
+  }
+  function isMacMetadata(name) {
+    const n = String(name);
+    return /^\._/.test(n) || n === ".DS_Store" || /^__MACOSX$/i.test(n);
+  }
   async function addFilesFromBlobs(files) {
     // Non-CSV names are refused BY NAME, like the per-item path, instead of
     // dropped in silence (adversarial review F6): dropping a folder whose
@@ -3986,12 +4007,16 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     // folder can hold a video, and reading one as text to learn it is not a
     // CSV is the one mistake this must not make.
     const list = [], refused = [];
+    const skipped = [];
     for (const f of files) {
-      if (!/\.csv$/i.test(f.name)) { refused.push({ name: String(f.name), error: refuseReason(f.name) }); continue; }
-      try { list.push({ name: f.name, text: await readFileAsText(f) }); }
+      if (isMacMetadata(f.name)) { skipped.push(String(f.name)); continue; }
+      const name = macSafeName(f.name);
+      if (!/\.csv$/i.test(name)) { refused.push({ name: String(f.name), error: refuseReason(name) }); continue; }
+      try { list.push({ name, text: await readFileAsText(f) }); }
       catch { refused.push({ name: String(f.name), error: "could not be read" }); }
     }
     const result = list.length ? globalThis.SIM.app.addFiles(list) : { saved: [], refused: [] };
+    if (skipped.length) console.info("skipped macOS metadata files:", skipped);
     const all = refused.concat(result.refused);
     const parts = [];
     if (result.saved.length) parts.push(`${result.saved.length} file(s) added`);
@@ -4016,8 +4041,10 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   async function addFilesToItemFromBlobs(itemKey, files) {
     const list = [], refused = [];
     for (const f of files) {
-      if (renameOntoItem(itemKey, f.name) === null) { refused.push({ name: String(f.name), error: refuseReason(f.name) }); continue; }
-      try { list.push({ name: f.name, text: await readFileAsText(f) }); }
+      if (isMacMetadata(f.name)) continue;
+      const name = macSafeName(f.name);
+      if (renameOntoItem(itemKey, name) === null) { refused.push({ name: String(f.name), error: refuseReason(name) }); continue; }
+      try { list.push({ name, text: await readFileAsText(f) }); }
       catch { refused.push({ name: String(f.name), error: "could not be read" }); }
     }
     const result = list.length ? globalThis.SIM.app.addFilesToItem(itemKey, list)
