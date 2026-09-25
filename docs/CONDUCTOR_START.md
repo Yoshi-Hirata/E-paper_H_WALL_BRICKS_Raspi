@@ -63,7 +63,8 @@ python -m conductor serve --open
 
 - `showdata/files/` … 取り込んだ CSV(`LookNN_map.csv`、`LookNN_color_NAME_grid.csv`)
 - `showdata/show.json` … タイムライン、遷移の設定、機体の割り当て、LOOK 番号と型番、基板番号の書き換え、音楽ファイル名
-- `showdata/music/` … アップロードしたショーの音楽ファイル
+- `showdata/music/` … アップロードしたショーの音楽ファイル。
+  **音源を差し替えたら Timeline タブの Simulator for designers… で作り直して演出家に渡す**
 - `showdata/history.json` … Undo / Redo の履歴
 
 **別の PC でも同じショーを使うには `showdata/` ごとコピーする**(演出だけなら Timeline の Save show… / Load show… の JSON でも移せる。音楽は別途)。 バックアップもこのフォルダを

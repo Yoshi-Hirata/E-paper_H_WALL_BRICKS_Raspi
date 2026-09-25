@@ -308,6 +308,30 @@ Raspberry Pi Zero 2 W ──USB CDC── 基板 ID:1 ──4芯(TTL UART)──
 | `python tools/make_starter.py` | `conductor/web/sim/starter.js`(`conductor/web/starter/*.csv` を JS の定数に固めたもの。初回起動時の既定データ) | `conductor/web/starter/*.csv` を足す/変えたとき |
 | `python tools/build_designer.py` | `dist/az27ss-simulator.html`(`conductor/web/designer.html` と `conductor/web/sim/*.css/*.js` を 1 個の HTML に inline したもの。**フラグなしが出荷版**(`goldens.js`/`selftest.js` 抜き、550 KB 前後) - コミットされている `dist/` はこれ。`--with-goldens` を付けると自己テスト付きの開発版(1.1 MB 前後、Python 側との答え合わせ用)が作れる。`--no-starter` で初期データ抜きのビルドも作れる) | `conductor/web/designer.html`・`conductor/web/sim/*` のいずれかを変えたとき(上の 2 つを先に作り直してから) |
 
+#### ビルドの 2 系統(音源入り / 音源なし)
+
+`build_designer.py` の出力は 2 つあり、**コミットされるのは音源なしの
+`dist/az27ss-simulator.html` だけ**(2 MB の上限も `--check` もこちらだけの話)。
+
+| | 何が入るか | どう作るか | 置き場所 |
+|---|---|---|---|
+| **lean(コミット版)** | 音源なし。約 560 KB | `python tools/build_designer.py` | `dist/az27ss-simulator.html`(コミットする) |
+| **音源入り(配布版)** | ショーの音源を base64 で埋め込み。17.5 MB の MP3 で約 23 MB | 通常は **Conductor の Timeline タブの「Simulator for designers…」ボタン**(`GET /api/simulator?music=1`、サーバ内で `build_page()` を呼ぶ)。手元で作るなら `python tools/build_designer.py --music auto`(`./showdata` の `show.json` が指す音源。`--workspace` で変更可、`--music PATH` で直接指定も可) | `dist/az27ss-simulator-with-music.html`(**.gitignore 済み。絶対にコミットしない**) |
+
+- 埋め込みは `SIM.embeddedMusic = {name, type, size, dataUrl}` という `<script>` 1 個で、
+  他のモジュールより**前**に出る(dev ページの `defer` でも、ビルド版のインライン順でも、
+  `designer-app.js` の `boot()` が動く時点で必ず居るようにするため)。ページ側は起動時に
+  1 度だけ Blob 化して object URL を作り、base64 文字列は捨てる(designer-app.js の
+  `builtInMusicUrl()`)。**音源は再エンコードしない**(このマシンに ffmpeg は無いし、
+  ショーのマスターを勝手に作り直すのはこのスクリプトの仕事ではない)
+- `check_self_contained()` は `data:` URL を通し、`http(s)://`・プロトコル相対 `//`・
+  `@import`・`<link>` だけを弾く。base64 の文字種(`A-Za-z0-9+/=`)には制御文字も `<` も
+  無いので、生成した音源スクリプトだけは制御文字チェックと `</script>` エスケープを
+  通していない(23 MB に正規表現を 2 回かける意味が無いため)。ファイル名と MIME は
+  JSON + `<` でエスケープ済み
+- **音源が変わったときの手順は「ボタンをもう 1 回押す」だけ**。開発者を呼ぶ必要は無い
+  (2 回目以降のクリックは、音源の 名前/サイズ/mtime をキーにしたキャッシュから即座に返る)
+
 3 つとも `--check` モードで「コミットされているものと同じか」を確認できる
 (`tests/test_sim_goldens.py::test_goldens_are_current`、
 `tests/test_designer_build.py::test_build_is_current`)。**生成物を手で直接編集しない**

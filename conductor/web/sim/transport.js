@@ -17,8 +17,13 @@
  * file allowed to know about `SIM.app`) instantiates once and drives; the
  * maths and control flow inside each method are unchanged from index.html.
  *
- * Music is a File -> object URL (URL.createObjectURL), never uploaded anywhere -
- * plan_designer_sim.md §3.7.
+ * Music is an object URL (URL.createObjectURL), never uploaded anywhere -
+ * plan_designer_sim.md §3.7. setMusic() does not care where that URL came
+ * from, and there are now two sources: the file the designer picks for a
+ * session, and the show's own audio built into the page by
+ * tools/build_designer.py --music (designer-app.js's built-in track). The
+ * choice between them is designer-app.js's business; this module only ever
+ * sees the winner.
  */
 (function () {
   "use strict";

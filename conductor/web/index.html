@@ -1101,6 +1101,7 @@ function renderTimeline() {
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
         <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
         <label class="filebtn" title="Load a project sent by the designers: their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
+        <a class="filebtn" id="tl-simulator" href="/api/simulator?music=1" download title="Downloads the single-file simulator with the show's current music embedded - hand this file to the director's team; rebuild it here whenever the music changes">Simulator for designers…</a>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
         hatched = refreshing · solid = held until End · Esc deselects</div>
@@ -2580,6 +2581,17 @@ document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
+  if (e.target.id === "tl-simulator") {
+    // No preventDefault: the anchor's own download still runs. This only
+    // says what is about to arrive, because the answer differs and the
+    // file name alone does not explain itself - with the show's music
+    // it is ~23 MB and takes a moment to build, and without any music
+    // loaded it is the silent page, which is a thing the operator should
+    // learn now rather than from the director's team tomorrow.
+    if (state?.music) toast(`Building the simulator with ${state.music.name} - a large file, the download starts in a moment`);
+    else toast("No music is loaded, so this is the simulator without a built-in track - upload the music and download it again");
+    return;
+  }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
   if (e.target.id === "tl-dock-toggle") { ui.dock = ui.dock === "collapsed" ? "compact" : "collapsed"; saveDockPref(); renderTimeline(); return; }
   if (e.target.closest("#tl-editor-toggle")) { ui.editorOpen = !ui.editorOpen; renderTimeline(); return; }

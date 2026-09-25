@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -45,6 +46,9 @@ from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, default_shift, unit_board_ids)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+REPO_DIR = Path(__file__).resolve().parent.parent
+DESIGNER_SOURCE = WEB_DIR / "designer.html"
+BUILD_DESIGNER_PY = REPO_DIR / "tools" / "build_designer.py"
 UNITS = [f"radxa-{n:02d}" for n in range(1, 11)]
 MAX_UPLOAD = 8 * 1024 * 1024
 MAX_MUSIC = 64 * 1024 * 1024
@@ -1193,6 +1197,78 @@ class Workspace:
                 "workspace": str(self.root.resolve())}
 
 
+# ---- the designers' simulator, built on demand ----
+#
+# The single-file simulator the director's team double-clicks is silent
+# unless the show's audio is inside it, and the audio changes. Rather than
+# make that a developer's errand (checkout, Python, a command, a 23 MB file
+# to hand over), the Conductor builds it here, in-process, from whatever
+# music is loaded right now: the Timeline toolbar's "Simulator for
+# designers…" is one click, and the answer to "the music changed" is to
+# press it again.
+_designer_builder = None
+_designer_builder_lock = threading.Lock()
+
+
+def designer_builder():
+    """tools/build_designer.py, loaded by path.
+
+    By path, not `import tools.build_designer`: `tools/` is not a package
+    and putting the repo root on sys.path to make it one would let any
+    other `tools` on the path win instead. This is the same file the CLI
+    runs, so the page the operator downloads and the page a developer
+    builds cannot drift apart."""
+    global _designer_builder
+    with _designer_builder_lock:
+        if _designer_builder is None:
+            spec = importlib.util.spec_from_file_location(
+                "az27ss_build_designer", BUILD_DESIGNER_PY)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _designer_builder = module
+    return _designer_builder
+
+
+# Keyed on what actually decides the bytes: the music's name, size and
+# mtime (and None for the lean page). Building the real show's page means
+# base64-encoding 17.5 MB and assembling a 23 MB string - about a second -
+# and an operator who clicks the button twice, or whose browser retries the
+# download, should not pay it twice. One entry per key, and at most a
+# couple of keys ever exist in a session; the lean page is a few hundred KB
+# and each music page is bounded by MAX_MUSIC, so this cannot grow without
+# limit in any way that matters. Bounded to the two most recent keys
+# anyway, so a session that replaces the music ten times does not keep ten
+# 23 MB pages alive.
+_simulator_cache: "dict" = {}
+_simulator_cache_lock = threading.Lock()
+_SIMULATOR_CACHE_MAX = 2
+
+
+def build_simulator(music: "tuple | None") -> bytes:
+    """The simulator page as bytes, cached per (name, size, mtime).
+
+    `music` is (path, name, type, size, mtime) or None for the lean page.
+    The lock is held across the build, not just the lookup: two clicks in
+    quick succession should queue behind one build, not run two."""
+    key = None if music is None else (music[1], music[3], music[4])
+    with _simulator_cache_lock:
+        hit = _simulator_cache.get(key)
+        if hit is not None:
+            return hit
+        builder = designer_builder()
+        if music is None:
+            page = builder.build_page(DESIGNER_SOURCE)
+        else:
+            path, name, mime, _size, _mtime = music
+            page = builder.build_page(DESIGNER_SOURCE, music=path.read_bytes(),
+                                      music_name=name, music_type=mime)
+        body = page.encode("utf-8")
+        _simulator_cache[key] = body
+        while len(_simulator_cache) > _SIMULATOR_CACHE_MAX:
+            _simulator_cache.pop(next(iter(_simulator_cache)))
+        return body
+
+
 class Handler(BaseHTTPRequestHandler):
     workspace: Workspace = None            # set by make_server()
     fleet: "Fleet | None" = None
@@ -1227,6 +1303,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._music_file(head=False)
         if path == "/api/show/export":
             return self._export_show()
+        if path == "/api/simulator":
+            query = urllib.parse.parse_qs(self.path.partition("?")[2])
+            return self._simulator(query.get("music", ["0"])[0] == "1")
         try:
             if path == "/api/state":
                 return self._json(self.workspace.state())
@@ -1315,6 +1394,47 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _simulator(self, with_music: bool) -> None:
+        """GET /api/simulator[?music=1] - the designers' single-file
+        simulator, as a download.
+
+        With music=1 and music loaded, the show's audio is embedded and the
+        file is named ...-with-music.html so nobody has to guess which copy
+        on their desktop is the one that plays. With no music loaded the
+        lean page is sent instead (the page says so in a toast) - refusing
+        would be worse: the simulator is still useful silent, and the
+        operator may simply not have uploaded the track yet."""
+        music = None
+        if with_music:
+            info = self.workspace.music_info()
+            if info is not None:
+                path = self.workspace.music / Path(info["name"]).name
+                try:
+                    mtime = int(path.stat().st_mtime)
+                except OSError:
+                    mtime = 0
+                music = (path, info["name"], info["type"], info["size"], mtime)
+        stamp = time.strftime("%Y%m%d")
+        suffix = "-with-music" if music is not None else ""
+        filename = f"az27ss-simulator-{stamp}{suffix}.html"
+        try:
+            body = build_simulator(music)
+        except Exception as exc:        # noqa: BLE001 - a download must say why
+            return self._json({"error": f"could not build the simulator: "
+                                        f"{exc.__class__.__name__}: {exc}"},
+                              status=500)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionError, OSError):
+            pass          # a cancelled 23 MB download is not an error
 
     def _music_file(self, head: bool) -> None:
         info = self.workspace.music_info()

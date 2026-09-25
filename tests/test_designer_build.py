@@ -129,6 +129,158 @@ def test_bundle_fixture_round_trips_through_the_python_model():
         assert cleaned["sequence"] == raw["sequence"]
 
 
+# ---- the embedded music (the built-in track) ----
+
+# A real, playable 8-bit mono WAV of 1000 silent samples: small enough to
+# live in a test as bytes, and an actual file a browser will decode rather
+# than a plausible-looking blob (the headless test below presses nothing,
+# but a source the media element refuses outright is not the thing being
+# shipped). 0x80 is silence for unsigned 8-bit PCM.
+def _silent_wav(samples: int = 1000) -> bytes:
+    import struct
+    pcm = b"\x80" * samples
+    fmt = struct.pack("<4sIHHIIHH", b"fmt ", 16, 1, 1, 8000, 8000, 1, 8)
+    data = struct.pack("<4sI", b"data", len(pcm)) + pcm
+    body = b"WAVE" + fmt + data
+    return struct.pack("<4sI", b"RIFF", len(body)) + body
+
+
+def _embedded(html: str) -> dict:
+    """The name/type/size SIM.embeddedMusic carries, read back out of the
+    built page (deliberately not the dataUrl - 23 MB of base64 has no
+    business in an assertion message)."""
+    block = re.search(r"embeddedMusic:\s*\{(.*?)dataUrl:", html, re.S)
+    assert block, "the page has no SIM.embeddedMusic"
+    found = dict(re.findall(r"(\w+):\s*(\"(?:[^\"\\]|\\.)*\"|\d+)", block.group(1)))
+    return {k: json.loads(v) for k, v in found.items()}
+
+
+def test_build_page_embeds_the_music_it_is_given():
+    audio = _silent_wav()
+    html = build_designer.build_page(DESIGNER_HTML, music=audio,
+                                     music_name="AZ 27SS.DEMO.wav",
+                                     music_type="audio/wav")
+    assert _embedded(html) == {"name": "AZ 27SS.DEMO.wav",
+                               "type": "audio/wav",
+                               # the AUDIO's byte count, not the base64's
+                               "size": len(audio)}
+    import base64
+    assert base64.b64encode(audio).decode("ascii") in html
+    # Still self-contained (build_page checks this itself and would have
+    # raised) - asserted again here because the whole scheme rests on
+    # check_self_contained treating a data: URL as fine while it refuses
+    # every http(s)/protocol-relative one.
+    build_designer.check_self_contained(html)
+    # In front of the modules, so SIM.embeddedMusic is there whichever way
+    # the page's boot() gets scheduled.
+    assert html.index("embeddedMusic") < html.index("SIM.look")
+
+
+def test_check_self_contained_takes_a_data_url_and_refuses_the_rest():
+    ok = '<html><audio src="data:audio/mpeg;base64,AAAA"></audio></html>'
+    build_designer.check_self_contained(ok)          # raises on failure
+    for bad, why in [
+        ('<html><script src="https://cdn.example/x.js"></script></html>', "http(s)"),
+        ('<html><script src="//cdn.example/x.js"></script></html>', "protocol-relative"),
+        ('<html><style>@import url("x.css");</style></html>', "@import"),
+        ('<html><link rel="stylesheet" href="x.css"></html>', "<link>"),
+    ]:
+        with pytest.raises(ValueError):
+            build_designer.check_self_contained(bad)
+
+
+def test_base64_does_not_trip_the_control_character_or_escaping_guards():
+    # The two guards the music script bypasses on purpose (see the module
+    # docstring): every byte value appears in this audio, so its base64
+    # covers the whole alphabet, and neither a control character nor a
+    # "</script" can come out the other side.
+    audio = bytes(range(256)) * 64
+    html = build_designer.build_page(DESIGNER_HTML, music=audio,
+                                     music_name="all-bytes.mp3", music_type="audio/mpeg")
+    body = html[html.index("embeddedMusic"):]
+    tag_end = body.index("</script>")
+    assert not re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", body[:tag_end])
+    assert "<" not in body[:tag_end]
+
+
+def test_a_hostile_music_file_name_cannot_end_the_script_element():
+    html = build_designer.build_page(
+        DESIGNER_HTML, music=b"x", music_type="audio/mpeg",
+        music_name='</script><script>globalThis.PWNED=1</script><!--.mp3')
+    assert "PWNED" in html                     # the name is still carried...
+    assert _embedded(html)["name"].endswith(".mp3")
+    # ...but only ever as \u003c inside the string literal, so it is text.
+    assert "\\u003c/script>" in html
+    start = html.index("embeddedMusic")
+    assert "</script" not in html[start:start + html[start:].index("</script>")]
+
+
+def test_music_auto_reads_the_workspaces_show_json(tmp_path):
+    audio = _silent_wav(64)
+    ws = tmp_path / "showdata"
+    (ws / "music").mkdir(parents=True)
+    (ws / "music" / "Track One.wav").write_bytes(audio)
+    (ws / "show.json").write_text(json.dumps(
+        {"duration": 600, "music": {"name": "Track One.wav",
+                                    "size": len(audio), "type": "audio/wav"}}),
+        encoding="utf-8")
+    assert build_designer.workspace_music(ws) == (audio, "Track One.wav", "audio/wav")
+
+    out = tmp_path / "built.html"
+    result = run(str(BUILD_SCRIPT), "--music", "auto", "--workspace", str(ws),
+                 "--out", str(out))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _embedded(out.read_text(encoding="utf-8"))["name"] == "Track One.wav"
+    assert out.stat().st_size > DIST.stat().st_size
+
+
+def test_music_auto_says_so_when_the_workspace_has_none(tmp_path):
+    # Silently building the lean page here would be the worst outcome: it
+    # would land on dist/az27ss-simulator.html (the committed one) and look
+    # like a success.
+    ws = tmp_path / "showdata"
+    ws.mkdir()
+    assert build_designer.workspace_music(ws) is None
+    (ws / "show.json").write_text('{"music": {"name": "gone.mp3"}}', encoding="utf-8")
+    assert build_designer.workspace_music(ws) is None, \
+        "an entry whose file is missing is not music"
+    result = run(str(BUILD_SCRIPT), "--music", "auto", "--workspace", str(ws))
+    assert result.returncode == 1
+    assert "names no music" in result.stderr
+
+
+def test_a_music_build_never_lands_on_the_committed_lean_page(tmp_path):
+    audio = _silent_wav(64)
+    src = tmp_path / "clip.wav"
+    src.write_bytes(audio)
+    before = DIST.read_bytes()
+    try:
+        result = run(str(BUILD_SCRIPT), "--music", str(src))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert build_designer.MUSIC_OUT.exists()
+        assert _embedded(build_designer.MUSIC_OUT.read_text(encoding="utf-8"))["name"] == "clip.wav"
+        assert DIST.read_bytes() == before, \
+            "a --music build must not overwrite dist/az27ss-simulator.html"
+        # ...and the file it does write is gitignored, or someone will
+        # eventually commit 23 MB of audio.
+        ignored = subprocess.run(["git", "check-ignore", "-q",
+                                  str(build_designer.MUSIC_OUT)], cwd=REPO)
+        assert ignored.returncode == 0, \
+            f"{build_designer.MUSIC_OUT} is not gitignored"
+    finally:
+        build_designer.MUSIC_OUT.unlink(missing_ok=True)
+
+
+def test_the_timeline_toolbar_offers_the_simulator_download():
+    index_text = INDEX_HTML.read_text(encoding="utf-8")
+    match = re.search(r'<a[^>]*id="tl-simulator"[^>]*>', index_text)
+    assert match, 'index.html has no "Simulator for designers…" link'
+    tag = match.group(0)
+    assert 'href="/api/simulator?music=1"' in tag
+    assert "download" in tag
+    assert "hand this file to the director's team" in tag
+
+
 def test_build_designer_excludes_any_data_stub_script(tmp_path):
     # Exercises build_designer.py's stub-exclusion directly (adversarial
     # review round 2 - F8): designer.html no longer references a stub script
@@ -225,6 +377,77 @@ class _TextAndAttrScanner(HTMLParser):
     def handle_data(self, data):
         if self._skip_tag is None:
             self.chunks.append(data)
+
+
+def _require_browser(tmp_path):
+    forced = os.environ.get("CONDUCTOR_BROWSER_TESTS") == "1"
+    if not _find_browser():
+        if forced:
+            pytest.fail("CONDUCTOR_BROWSER_TESTS=1 but no browser was found "
+                       "(set $CONDUCTOR_BROWSER to its path)")
+        pytest.skip("no Edge/Chrome found - set CONDUCTOR_BROWSER_TESTS=1 to force")
+
+
+# The probe appended to a COPY of the built page (never to the page itself):
+# --dump-dom returns the DOM, not JS values, so the one way to see what
+# SIM.app.getState() holds is to have the page write it into an element.
+# Appending it here rather than shipping a "#musiccheck" hook keeps a
+# test-only affordance out of the file a designer opens.
+_MUSIC_PROBE = """
+<script>
+window.addEventListener("load", function () {
+  setTimeout(function () {
+    var music = ((globalThis.SIM && SIM.app && SIM.app.getState()) || {}).music || {};
+    var pre = document.createElement("pre");
+    pre.id = "musiccheck-out";
+    pre.setAttribute("data-name", String(music.name));
+    pre.setAttribute("data-scheme", String(music.url).split(":")[0]);
+    document.body.appendChild(pre);
+  }, 200);
+});
+</script>
+"""
+
+
+def test_an_embedded_track_is_loaded_at_start_up_without_any_pick(tmp_path):
+    # The whole point of the feature, checked in a real browser: open a
+    # with-music build in a clean profile, touch nothing, and the transport
+    # already has audio. state.music.url being a blob: URL is what says the
+    # bytes were decoded (not merely that a name was remembered) - a page
+    # that only knew the name is exactly the silent one this replaces.
+    _require_browser(tmp_path)
+    audio = _silent_wav(8000)
+    html = build_designer.build_page(DESIGNER_HTML, music=audio,
+                                     music_name="Probe Track.wav",
+                                     music_type="audio/wav")
+    page = tmp_path / "with-music.html"
+    page.write_text(html.replace("</body>", _MUSIC_PROBE + "</body>", 1),
+                    encoding="utf-8")
+    url = "file:///" + str(page.resolve()).replace("\\", "/")
+    dom = _dump_dom(url, tmp_path)
+    match = re.search(r'<pre id="musiccheck-out" data-name="([^"]*)" '
+                      r'data-scheme="([^"]*)"', dom or "")
+    assert match, f"no #musiccheck-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    assert match.group(1) == "Probe Track.wav"
+    assert match.group(2) == "blob", \
+        f"state.music.url is {match.group(2)!r}, so nothing was decoded"
+
+
+def test_the_lean_page_has_no_built_in_track(tmp_path):
+    # The other half: the committed page must NOT claim a built-in track,
+    # or every designer who opens the lean file sees a music line promising
+    # audio that is not in it.
+    _require_browser(tmp_path)
+    page = tmp_path / "lean.html"
+    page.write_text(DIST.read_text(encoding="utf-8")
+                    .replace("</body>", _MUSIC_PROBE + "</body>", 1),
+                    encoding="utf-8")
+    url = "file:///" + str(page.resolve()).replace("\\", "/")
+    dom = _dump_dom(url, tmp_path)
+    match = re.search(r'<pre id="musiccheck-out" data-name="([^"]*)" '
+                      r'data-scheme="([^"]*)"', dom or "")
+    assert match, f"no #musiccheck-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    assert match.group(1) == "null" and match.group(2) == "null"
 
 
 def test_banned_vocabulary_never_reaches_rendered_ui(tmp_path):

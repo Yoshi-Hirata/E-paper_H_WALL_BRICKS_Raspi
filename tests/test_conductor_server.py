@@ -6,12 +6,14 @@ workspace; the CSVs are the small fixtures from tests/test_look.py.
 
 from __future__ import annotations
 
+import base64
 import http.client
 import io
 import json
 import struct
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -787,6 +789,104 @@ def test_music_over_the_limit_is_refused(tmp_path):
         conn.close()
         assert not (tmp_path / "music").exists() or \
             not list((tmp_path / "music").glob("*"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# ---- the designers' simulator, built on demand ----
+
+# The generated object literal, not the bare identifier: designer-app.js
+# reads globalThis.SIM.embeddedMusic, so the word itself is in EVERY build.
+EMBED_MARK = b"embeddedMusic: {"
+
+def test_simulator_downloads_lean_and_with_the_shows_music(tmp_path):
+    import conductor.server as server_module
+    server_module._simulator_cache.clear()
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        # No music loaded yet: music=1 still answers, with the lean page -
+        # the simulator is useful silent, and the operator may simply not
+        # have uploaded the track yet (the page says so in a toast).
+        with urllib.request.urlopen(f"{base}/api/simulator?music=1",
+                                    timeout=60) as response:
+            silent = response.read()
+            assert response.headers["Content-Type"] == "text/html; charset=utf-8"
+            disposition = response.headers["Content-Disposition"]
+        assert disposition.startswith('attachment; filename="az27ss-simulator-')
+        assert "-with-music" not in disposition
+        assert EMBED_MARK not in silent   # the identifier alone is in designer-app.js
+
+        with urllib.request.urlopen(f"{base}/api/simulator", timeout=60) as response:
+            lean = response.read()
+        assert lean == silent
+
+        data = (b"ID3" + bytes(range(256))) * 200            # ~50 KB
+        upload = urllib.request.Request(
+            f"{base}/api/music", data=data,
+            headers={"X-File-Name": "AZ 27SS.DEMO.mp3"})
+        with urllib.request.urlopen(upload, timeout=10) as response:
+            assert json.loads(response.read())["ok"]
+
+        started = time.monotonic()
+        with urllib.request.urlopen(f"{base}/api/simulator?music=1",
+                                    timeout=60) as response:
+            with_music = response.read()
+            disposition = response.headers["Content-Disposition"]
+        first_build = time.monotonic() - started
+        stamp = time.strftime("%Y%m%d")
+        assert disposition == ('attachment; filename='
+                               f'"az27ss-simulator-{stamp}-with-music.html"')
+        assert EMBED_MARK in with_music
+        assert b'name: "AZ 27SS.DEMO.mp3"' in with_music
+        assert f"size: {len(data)}".encode() in with_music
+        assert base64.b64encode(data) in with_music
+        # Bigger than the lean page by at least the base64 of the audio.
+        assert len(with_music) > len(lean) + len(data)
+
+        # A second click is served from the cache, not rebuilt: keyed on
+        # the music's name/size/mtime, none of which changed.
+        started = time.monotonic()
+        with urllib.request.urlopen(f"{base}/api/simulator?music=1",
+                                    timeout=60) as response:
+            again = response.read()
+        cached = time.monotonic() - started
+        assert again == with_music
+        assert len(server_module._simulator_cache) == 2      # lean + this one
+        assert cached <= max(first_build, 0.05), \
+            f"second build took {cached:.3f}s vs {first_build:.3f}s - not cached"
+
+        # ...and the lean page is still the lean page afterwards.
+        with urllib.request.urlopen(f"{base}/api/simulator", timeout=60) as response:
+            assert response.read() == lean
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_simulator_rebuilds_when_the_music_is_replaced(tmp_path):
+    """The whole reason this lives in the Conductor: "the music changed"
+    must be answered by pressing the button again, not by a developer."""
+    import conductor.server as server_module
+    server_module._simulator_cache.clear()
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for name, payload in [("first.mp3", b"AAAA" * 64), ("second.mp3", b"BBBB" * 64)]:
+            upload = urllib.request.Request(f"{base}/api/music", data=payload,
+                                            headers={"X-File-Name": name})
+            with urllib.request.urlopen(upload, timeout=10) as response:
+                assert json.loads(response.read())["ok"]
+            with urllib.request.urlopen(f"{base}/api/simulator?music=1",
+                                        timeout=60) as response:
+                page = response.read()
+            assert f'name: "{name}"'.encode() in page
+            assert base64.b64encode(payload) in page
     finally:
         server.shutdown()
         server.server_close()

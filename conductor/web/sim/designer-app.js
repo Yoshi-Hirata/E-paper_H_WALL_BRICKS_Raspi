@@ -53,6 +53,63 @@
   let autosaveWarned = false;
   let autosaveTimer = null;
 
+  // ------------------------------------------------------------------
+  // The built-in track (SIM.embeddedMusic)
+  // ------------------------------------------------------------------
+  // A browser cannot open a file off the disk by itself, so a page that only
+  // knows the music's NAME is a silent page - which is exactly what the
+  // director's team got. tools/build_designer.py --music (and the
+  // Conductor's own "Simulator for designers…" button, which is how the
+  // operator regenerates this file when the music changes) embeds the show's
+  // audio as SIM.embeddedMusic = {name, type, size, dataUrl}; from here on it
+  // is "the built-in track", and it is what plays unless the designer picks
+  // something else for the session.
+  //
+  // It is decoded EXACTLY ONCE, on the first ask, and the base64 string is
+  // dropped straight afterwards: for the real show that string is ~23 MB and
+  // the Blob another ~17.5 MB, and holding both for the life of the page for
+  // no reason is the difference between a heavy file and an unusable one.
+  // The resulting object URL lives as long as the page - it is never
+  // revoked, because there is nothing to revoke it in favour of (a picked
+  // file gets its own URL, and going back to the built-in track must not
+  // find a dead one).
+  let builtInUrl = null;
+  let builtInDecoded = false;
+  function builtInMusic() { return globalThis.SIM.embeddedMusic || null; }
+  function builtInMusicName() { const m = builtInMusic(); return (m && m.name) || null; }
+  function builtInMusicUrl() {
+    const m = builtInMusic();
+    if (!m) return null;
+    if (builtInDecoded) return builtInUrl;
+    builtInDecoded = true;
+    try {
+      const url = String(m.dataUrl || "");
+      const binary = atob(url.slice(url.indexOf(",") + 1));
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      builtInUrl = URL.createObjectURL(new Blob([bytes], { type: m.type || "audio/mpeg" }));
+      m.dataUrl = null;        // the big string has done its job - let it go
+    } catch (err) {
+      builtInUrl = null;       // a truncated/corrupt embed is silent, not fatal
+    }
+    return builtInUrl;
+  }
+  // What the transport should be playing: the file the designer picked for
+  // this session if there is one, otherwise the built-in track, otherwise
+  // nothing. Every path that changes either of those ends here, so the two
+  // can never disagree.
+  function pushMusicToTransport() { ensureTransport().setMusic(musicUrl || builtInMusicUrl()); }
+  // A fresh/loaded project with no music of its own adopts the built-in
+  // track's name, so the bundle the designer hands back names the audio the
+  // show is actually running on. A project that already names something
+  // else is left alone - that disagreement is worth showing, not papering
+  // over (see musicControl()).
+  function adoptBuiltInName(p) {
+    const name = builtInMusicName();
+    if (name && p && p.show && !p.show.music) p.show.music = { name };
+    return p;
+  }
+
   const ui = { tab: "designs", item: null, design: null, view: "outside", cue: null, simView: false };
 
   function loadUiPrefs() {
@@ -656,11 +713,44 @@
   }
   function musicControl() {
     const m = state.music || { name: null, url: null };
-    if (!m.name) return `<div class="group"><span>Music</span><label class="filebtn">Pick file…<input id="music-pick" type="file" accept="audio/*"></label></div>`;
+    // Which source is playing is a fact about this session, not about the
+    // project, so it is read off the module rather than out of state.music
+    // (see boot()'s buildState wrapper for why that object stays exactly
+    // {name, url}).
+    // builtInMusicUrl(), not just the name: a truncated or corrupt embed
+    // leaves the name behind but no audio, and a line reading "· built in"
+    // over silence is worse than no line at all. With no usable URL this
+    // falls through to the ordinary "(re-pick the file…)" bar, which is
+    // then the truth.
+    const embedded = builtInMusicUrl() ? builtInMusicName() : null;
+    const onBuiltIn = !!embedded && !musicUrl;
+    const pick = `<label class="filebtn">${embedded ? "Pick another file…" : "Pick file…"}<input id="music-pick" type="file" accept="audio/*"></label>`;
+    if (onBuiltIn) {
+      // The built-in track is what will play. Either it is also what the
+      // project names (the ordinary case - say so plainly and offer the
+      // per-session override), or the project names something else, in
+      // which case BOTH facts matter: the old yellow "re-pick the file"
+      // bar is still the truth about the project's own music, and the
+      // sentence after it is the truth about what pressing Play will
+      // actually produce. Saying only one of the two is how a designer
+      // ends up timing cues against the wrong piece of audio.
+      const differs = m.name && m.name !== embedded;
+      const label = differs
+        ? `${esc(m.name)} <span class="warn">(re-pick the file: it is not kept between reloads)</span> · Playing the built-in track ${esc(embedded)} instead`
+        : `${esc(embedded)} · built in`;
+      return `<div class="group"><span>Music</span><span class="meta">${label}</span>${pick}</div>`;
+    }
+    if (!m.name) return `<div class="group"><span>Music</span>${pick}</div>`;
     const missing = !m.url;
+    // "Back to the built-in track", not "Remove", whenever there is one to
+    // go back to: Remove would be a lie (the page would keep playing) and
+    // the way back has to be somewhere.
+    const undo = embedded
+      ? `<button id="music-builtin">Back to the built-in track</button>`
+      : `<button id="music-clear">Remove</button>`;
     return `<div class="group"><span>Music</span><span class="meta">${esc(m.name)}${missing ? ' <span class="warn">(re-pick the file: it is not kept between reloads)</span>' : ""}</span>
-      <label class="filebtn">Pick file…<input id="music-pick" type="file" accept="audio/*"></label>
-      <button id="music-clear">Remove</button></div>`;
+      ${pick}
+      ${undo}</div>`;
   }
   function renderTimelineTab() {
     ensureTransport();
@@ -706,6 +796,7 @@
     $("#open-project").onchange = e => { if (e.target.files[0]) openProjectFile(e.target.files[0]); e.target.value = ""; };
     const mp = $("#music-pick"); if (mp) mp.onchange = e => { if (e.target.files[0]) globalThis.SIM.app.pickMusic(e.target.files[0]); e.target.value = ""; };
     const mc = $("#music-clear"); if (mc) mc.onclick = () => globalThis.SIM.app.clearMusic();
+    const mb = $("#music-builtin"); if (mb) mb.onclick = () => globalThis.SIM.app.useBuiltInMusic();
     renderDock();
     updatePlayheadDom(transport.playhead);
   }
@@ -935,14 +1026,16 @@
       <p>Double-click <code>az27ss-simulator.html</code> (or <code>designer.html</code> during development) - no install, no server. Drop the garments' map and design CSV files anywhere on this page to begin (a folder works too). Open the <b>Timeline</b> tab and click anywhere on an item's track to add a cue there, using that item's next design; click an existing cue to edit it, or drag it to move it (hold Shift for 5 s steps instead of 1 s).</p>
       <p><b>Red</b> always means "this needs fixing before it is right": a red-outlined mm.ss field could not be read as minutes.seconds; a red left border on a cue means the model found a problem with it (open it to see why); a dot next to an item in the sidebar is red when that item has one or more problems. Clicking a track for an item that has no design CSV yet is refused with a toast, rather than creating a cue with nothing to show.</p>
       <p>When the timeline is ready, <b>Save project…</b> writes everything (every CSV plus the whole timeline) into one <code>.json</code> file - hand that file to whoever runs the show; on the operator's own page, "Load bundle…" reads it in and keeps everything already in place exactly as it was, replacing only the CSVs and the timeline.</p>
+      <p><b>Music.</b> The show's music is built into the file the operator gave you, so it plays as soon as you press Play - nothing to pick, nothing to install. If the show's music changes you receive a new file; the Timeline toolbar tells you which track is built in. You can still choose a different audio file with <b>Pick another file…</b>, which lasts for this session only - <b>Back to the built-in track</b> returns to the one that came with the file.</p>
       <p>Clock positions (Start, End, Show length, the dock's go-to box) are typed as mm.ss - minutes and seconds, not a decimal fraction of a minute: <code>3.05</code> is 3 minutes 05 seconds; a single-digit second still counts as seconds, so <code>3.5</code> is also 3 minutes 05 seconds; <code>3.60</code> is not valid (there is no 60th second) and turns the field red. The badge and the live "3 min 05 s" readout next to every one of these fields are there so this never has to be memorised.</p>
       <p>Supported browsers: Safari 14.1 or later, or a recent Chrome or Edge. A private/incognito window may refuse to keep the autosaved copy at all (see the warning banner in the header when that happens) - use <b>Save project…</b> there instead of relying on autosave.</p>
       <h2>開き方</h2><p>このファイル（<code>az27ss-simulator.html</code> または <code>designer.html</code>）をダブルクリックするだけで開きます。インストールもサーバーも不要です。Windows は Edge か Chrome、macOS は Safari か Chrome を推奨します。</p>
       <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。同じ名前のファイルは上書きされます。</p>
       <h2>mm.ss の読み方</h2><p>開始・終了・ショー全体の長さなど「時刻」は分.秒（mm.ss）で入力します。例：<code>3.05</code> → 3分05秒。<code>3.5</code> のように秒が1桁でも「3分05秒」として読みます。<code>3.60</code> のように60秒以上は無効（赤色）になります。入力欄の横に読み方がそのまま表示されます（例：「3 min 05 s」）。</p>
+      <h2>音楽</h2><p>ショーの音源は、オペレーターから渡されたこのファイルの中に埋め込まれています。再生ボタンを押せばそのまま鳴ります（選び直す操作は不要です）。音源が差し替わったときは、新しいファイルが届きます ―― Timeline のツールバーに、いま埋め込まれている曲名が出ます。別の音源で確認したいときは「Pick another file…」で選べます（そのセッションの間だけ。「Back to the built-in track」で元の埋め込み音源に戻ります）。</p>
       <h2>遷移（トランジション）6種</h2><p>各デザインの塗り替え方向を選べます：既定（配線どおり、変更なし）、Top to bottom（上から下）、Bottom to top（下から上）、Left to right (audience)（観客席から見て左から右）、Right to left (audience)（観客席から見て右から左）、Centre outward（中心から外へ）。「秒」は最初の一列が変わってから最後の一列が変わるまでの時間です。</p>
       <h2>保存と受け渡し</h2><p>「Save project…」でこのブラウザ内のプロジェクト全体（CSVとタイムライン）を1つのJSONファイルに書き出します。「Open project…」で読み込みます。オペレーター側の「Load bundle…」に同じファイルを渡すと、ユニットの割り当てはそのままに、CSVとタイムラインだけが更新されます。</p>
-      <h2>制限</h2><p>自動保存はブラウザに約4MBまで。音楽ファイルは64MBまで、名前だけ覚えていて再読み込み後は音源ファイルを選び直してください（プロジェクトファイルには音は含まれません）。保存ファイルは6MBを超えると警告、8MBを超えると保存を拒否します。プライベートブラウジングでは自動保存が効かないことがあります（そのときはヘッダーに警告が出ます）。</p>
+      <h2>制限</h2><p>自動保存はブラウザに約4MBまで。自分で選んだ音楽ファイルは64MBまでで、名前だけが記録されます（プロジェクトファイルには音のデータは入りません。再読み込み後は選び直すか、埋め込みの音源に戻してください）。保存ファイルは6MBを超えると警告、8MBを超えると保存を拒否します。プライベートブラウジングでは自動保存が効かないことがあります（そのときはヘッダーに警告が出ます）。</p>
       <h2>自己テスト</h2><p><button id="run-selftest">Run self-test</button> <span id="selftest-result"></span></p>
       <h2>連絡先</h2><p>不具合や質問は ${esc("y.hirata@r2-engineering.com")} まで。</p>
     </div>`;
@@ -999,12 +1092,16 @@
         if (musicUrl) { URL.revokeObjectURL(musicUrl); musicUrl = null; }
         musicFile = savedMusicFile;
         musicUrl = URL.createObjectURL(savedMusicFile);
-        ensureTransport().setMusic(musicUrl);
       } else {
         if (musicUrl) { URL.revokeObjectURL(musicUrl); musicUrl = null; }
         musicFile = null;
-        ensureTransport().setMusic(null);
       }
+      // pushMusicToTransport(), never setMusic(null): the no-picked-file
+      // branch used to hand the transport a bare null, which with an
+      // embedded track would mean "Run self-test silenced the file the
+      // operator built for you" - the built-in track is not the
+      // designer's to lose.
+      pushMusicToTransport();
       app.setProject(savedProject);
     }
     return result;
@@ -1160,17 +1257,29 @@
   // openBundle() used to replace project.show.music without touching
   // musicUrl at all, so state.music kept showing the OLD blob under the
   // NEW name instead of the "re-pick the file" bar plan §3.7 promises).
+  //
+  // Clearing (file = null) now means "back to the built-in track", not
+  // "silence", whenever this file has one: musicUrl going null is what
+  // hands playback back to SIM.embeddedMusic (pushMusicToTransport), and
+  // the project's music name goes back to the built-in track's rather than
+  // to nothing - the show's music has not stopped being the show's music
+  // just because the designer put their own copy away.
   function setMusicFile(file) {
     if (musicUrl) { URL.revokeObjectURL(musicUrl); musicUrl = null; }
     musicFile = file || null;
     musicUrl = file ? URL.createObjectURL(file) : null;
-    project.show.music = file ? { name: file.name } : null;
-    ensureTransport().setMusic(musicUrl);
+    project.show.music = file ? { name: file.name }
+                              : (builtInMusicName() ? { name: builtInMusicName() } : null);
+    pushMusicToTransport();
   }
   const app = {
     newProject() {
       setMusicFile(null);
-      project = freshProject(); ui.item = null; ui.design = null; ui.cue = null; persist(); rebuild();
+      // adoptBuiltInName: setMusicFile above wrote the built-in name onto
+      // the OLD project, which is about to be thrown away - the new one
+      // needs it too, or "New project" would quietly be the one way to
+      // lose the built-in track's name off the timeline.
+      project = adoptBuiltInName(freshProject()); ui.item = null; ui.design = null; ui.cue = null; persist(); rebuild();
     },
     getProject() { return project; },
     // Not part of plan_designer_sim.md §2.3's frozen list, but a natural
@@ -1357,6 +1466,15 @@
       setMusicFile(null);
       rebuild(); persist();
     },
+    // The "Back to the built-in track" button. Same code path as
+    // clearMusic() on purpose - with a built-in track present, putting the
+    // picked file away IS going back to it - but a separate name, because
+    // the two mean different things to a caller and only one of them is
+    // offered when there is no built-in track to return to.
+    useBuiltInMusic() {
+      setMusicFile(null);
+      rebuild(); persist();
+    },
     seek(sec) { ensureTransport().seek(sec); },
     play() { ensureTransport().play(); },
     pause() { ensureTransport().pause(); },
@@ -1378,7 +1496,7 @@
   }
   function boot() {
     loadUiPrefs();
-    project = loadProject();
+    project = adoptBuiltInName(loadProject());
     if (!localStorageWorks()) {
       autosaveWarned = true;   // the debounced autosave's own toast would be redundant
       const warn = document.getElementById("autosave-warn");
@@ -1387,13 +1505,35 @@
     globalThis.SIM.app = app;
     // Wrap buildState so state.music always reflects this session's live object
     // URL (SIM.buildState itself is pure and knows nothing about object URLs).
+    // Wrap buildState so state.music always reflects this session's live object
+    // URL (SIM.buildState itself is pure and knows nothing about object URLs):
+    // `url` is whatever pressing Play will actually produce - the picked file
+    // if there is one, otherwise the built-in track.
+    //
+    // Exactly the two keys {name, url}, and no more: selftest.js's `state`
+    // cases deepEqual this whole object against tests/goldens/model.json, and
+    // its `state-digest` cases hash it, so a third key here would fail the
+    // golden cross-check against Python for reasons that have nothing to do
+    // with the model. Which of the two sources is playing, and whether there
+    // is a built-in track at all, are facts about this SESSION, not about the
+    // project - musicControl() reads them straight off the module instead.
     const rawBuildState = globalThis.SIM.buildState;
-    globalThis.SIM.buildState = p => { const s = rawBuildState(p); s.music = { name: p.show.music?.name || null, url: p === project ? musicUrl : null }; return s; };
+    globalThis.SIM.buildState = p => {
+      const s = rawBuildState(p);
+      s.music = { name: p.show.music?.name || null,
+                  url: p === project ? (musicUrl || builtInMusicUrl()) : null };
+      return s;
+    };
     wireChrome();
     wireDropZone();
     wireGlobalDragHandlers();
     wireFps();
     rebuild();
+    // The transport gets the built-in track at start-up, before anything is
+    // played: the first Play is the user's own click, so the autoplay policy
+    // has nothing to object to, and the audio is decoded and ready by then
+    // rather than at the moment the designer expects sound.
+    pushMusicToTransport();
     // #displaycheck also forces the Timeline tab open (adversarial review
     // round 2 - F4): the browser-run vocabulary test needs the real
     // rendered DOM - tracks, cue table, SHORTEST INTERVAL PER ITEM, the
