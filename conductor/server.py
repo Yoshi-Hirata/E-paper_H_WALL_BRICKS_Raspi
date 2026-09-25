@@ -133,7 +133,11 @@ def _only_units(raw, shows: "dict[str, dict]") -> "list[str] | None":
     names = list(dict.fromkeys(raw))
     if not names:
         raise ValueError("no unit chosen - pick a LOOK, or All LOOKs")
-    for name in names:
+    # Nothing compiled at all (a timeline with a problem): the write is
+    # already going nowhere and the problems are the answer - saying
+    # "radxa-01 is not a unit of this timeline" on top of them would send
+    # the operator looking for the wrong thing.
+    for name in names if shows else ():
         if name not in shows:
             raise ValueError(f"{name} is not a unit of this timeline")
     return names
