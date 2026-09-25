@@ -4031,8 +4031,26 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     if (!item) return { error: "which garment? name it MODEL_…csv, or use that garment's own Add CSV" };
     if (kind === "map") return { name: `${item}_map.csv`, readAs: "map" };
     let design = hit && stem.toLowerCase().startsWith(hit.toLowerCase() + "_") ? stem.slice(hit.length + 1) : (hit === stem ? "" : stem);
-    design = design.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-_.]+|[-_.]+$/g, "") || "design";
+    // Keep letters and digits of any script: "柄A" and "柄B" must stay two
+    // names, not both become "-". Only separators the file system or the
+    // CSV rule cannot carry are folded to "-".
+    design = design.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[-_.]+|[-_.]+$/g, "") || "design";
     return { name: `${item}_color_${design}_grid.csv`, readAs: "design " + design };
+  }
+  // Several files of ONE pick that resolve to the same saved name (a
+  // designer's "AZ271SD1305_4.csv" and "AZ271SD1305_4 (1).csv", or two
+  // names that differ only in characters the design name cannot keep): a
+  // design grid gets "-2", "-3"… on its design name so nothing is lost; a
+  // second MAP for the same garment is refused, a garment has one wiring.
+  function uniqueSaveName(name, taken) {
+    if (!taken.has(name)) { taken.add(name); return name; }
+    const m = name.match(/^(.*_color_)(.+?)(_grid.*\.csv)$/i);
+    if (!m) return null;
+    for (let n = 2; n < 100; n++) {
+      const candidate = `${m[1]}${m[2]}-${n}${m[3]}`;
+      if (!taken.has(candidate)) { taken.add(candidate); return candidate; }
+    }
+    return null;
   }
   async function addFilesFromBlobs(files) {
     // Non-CSV names are refused BY NAME, like the per-item path, instead of
@@ -4043,7 +4061,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     // folder can hold a video, and reading one as text to learn it is not a
     // CSV is the one mistake this must not make.
     const list = [], refused = [];
-    const skipped = [], readAs = [];
+    const skipped = [], readAs = [], takenNames = new Set();
     for (const f of files) {
       if (isMacMetadata(f.name)) { skipped.push(String(f.name)); continue; }
       const name = macSafeName(f.name);
@@ -4053,8 +4071,10 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       catch { refused.push({ name: String(f.name), error: "could not be read" }); continue; }
       const c = conventionalName(name, text, null);
       if (c.error) { refused.push({ name: String(f.name), error: c.error }); continue; }
-      if (c.readAs) readAs.push(`${name} → ${c.name} (${c.readAs})`);
-      list.push({ name: c.name, text });
+      const saveAs = uniqueSaveName(c.name, takenNames);
+      if (saveAs === null) { refused.push({ name: String(f.name), error: `would overwrite ${c.name} from this same pick (a garment has one map)` }); continue; }
+      if (c.readAs || saveAs !== name) readAs.push(`${name} → ${saveAs}${c.readAs ? " (" + c.readAs + ")" : ""}`);
+      list.push({ name: saveAs, text });
     }
     const result = list.length ? globalThis.SIM.app.addFiles(list) : { saved: [], refused: [] };
     if (skipped.length) console.info("skipped macOS metadata files:", skipped);
@@ -4081,7 +4101,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     return m ? itemKey + raw.slice(m.index) : null;
   }
   async function addFilesToItemFromBlobs(itemKey, files) {
-    const list = [], refused = [];
+    const list = [], refused = [], became = [], takenNames = new Set();
     for (const f of files) {
       if (isMacMetadata(f.name)) continue;
       const name0 = macSafeName(f.name);
@@ -4090,9 +4110,12 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       catch { refused.push({ name: String(f.name), error: "could not be read" }); continue; }
       const c = conventionalName(name0, text, itemKey);
       if (c.error) { refused.push({ name: String(f.name), error: c.error }); continue; }
-      const name = c.name;
-      if (renameOntoItem(itemKey, name) === null) { refused.push({ name: String(f.name), error: refuseReason(name) }); continue; }
-      list.push({ name, text });
+      const onto = renameOntoItem(itemKey, c.name);
+      if (onto === null) { refused.push({ name: String(f.name), error: refuseReason(c.name) }); continue; }
+      const saveAs = uniqueSaveName(onto, takenNames);
+      if (saveAs === null) { refused.push({ name: String(f.name), error: `would overwrite ${onto} from this same pick (a garment has one map)` }); continue; }
+      if (saveAs !== name0) became.push(`${name0} → ${saveAs}${c.readAs ? " (" + c.readAs + ")" : ""}`);
+      list.push({ name: saveAs, text });
     }
     const result = list.length ? globalThis.SIM.app.addFilesToItem(itemKey, list)
                                : { saved: [], renamed: [], refused: [] };
@@ -4101,7 +4124,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     const parts = [];
     if (result.saved.length) parts.push(`${result.saved.length} file(s) added to ${itemName(item) || itemKey}`);
     // Both names, so nobody has to guess what happened to a file they picked.
-    if (result.renamed.length) parts.push("saved as " + briefly(result.renamed, r => `${r.from} → ${r.to}`));
+    if (became.length) parts.push("saved as " + briefly(became, x => x));
+    else if (result.renamed.length) parts.push("saved as " + briefly(result.renamed, r => `${r.from} → ${r.to}`));
     if (all.length) parts.push(`${all.length} refused: ` + briefly(all, r => `${r.name} (${r.error})`));
     toast(parts.join(" · ") || "No CSV files found");
     ui.cue = null; render();
