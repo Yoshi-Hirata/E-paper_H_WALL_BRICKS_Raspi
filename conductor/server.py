@@ -27,6 +27,7 @@ the show and is not undone (the delete asks first).
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import shutil
@@ -190,6 +191,13 @@ class Workspace:
         self.files.mkdir(parents=True, exist_ok=True)
         self.music = self.root / "music"        # made on the first upload
         self._lock = threading.Lock()
+        # What the timeline looked like when it was last written to the
+        # units: {"upload": revision, "demo:<NAME>": revision} - see
+        # revision() and mark_written(). Lives as long as this conductor,
+        # like fleet.shows, and is what lets the page say "changed since"
+        # about an edit made after the write (an id comparison cannot: the
+        # units hold exactly what they were sent, edits and all).
+        self.marks: "dict[str, str]" = {}
 
     # ---- show.json ----
 
@@ -913,6 +921,47 @@ class Workspace:
                          for address, table in tables.items()})
         return payloads, problems
 
+    def revision(self) -> str:
+        """A fingerprint of everything compile_show() reads: show.json as
+        it stands, and the name, size and mtime of every CSV. Two
+        revisions being equal means an Upload right now would send the
+        units exactly what they already hold.
+
+        Why not the compiled show ids themselves: compiling builds every
+        picture of every board (measured 2026-09-25: 364 ms for a two-unit
+        toy show of five cues, so seconds for ten units of eighteen), and
+        the page asks for this on every poll - once per second while the
+        Units tab is open. This costs one stat per CSV, about a
+        millisecond, and is wrong only in the harmless direction: an edit
+        that happens to compile to the same pictures reads as "changed
+        since" until the next Upload, never the other way round."""
+        parts = [self._show_path.read_text(encoding="utf-8")
+                 if self._show_path.exists() else ""]
+        for path in sorted(self.files.glob("*.csv")):
+            try:
+                info = path.stat()
+            except OSError:                 # deleted between glob and stat
+                continue
+            parts.append(f"{path.name}:{info.st_size}:{info.st_mtime_ns}")
+        return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    def mark_written(self, what: str) -> None:
+        """Remember the timeline as it is now under `what` ("upload", or
+        "demo:<NAME>") - it has just been written to the units."""
+        self.marks[what] = self.revision()
+
+    def written_state(self) -> dict:
+        """What /api/fleet tells the page about the timeline itself:
+        `revision` now, and the revision each write put on the units.
+        A name with no mark (written by an earlier conductor, or before
+        this conductor came up) is simply absent - the page then says
+        nothing about "up to date", rather than guessing."""
+        return {"revision": self.revision(),
+                "uploaded": self.marks.get("upload"),
+                "demos": {key[len("demo:"):]: value
+                          for key, value in self.marks.items()
+                          if key.startswith("demo:")}}
+
     def compile_show(self) -> "tuple[dict[str, dict], list[str]]":
         """The whole timeline -> ({unit: show file}, problems)."""
         with self._lock:
@@ -1166,15 +1215,22 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/state":
                 return self._json(self.workspace.state())
             if path == "/api/fleet":
+                # `timeline` is about the workspace, not the units: what
+                # the timeline is now, and what it was when it was last
+                # written to them (Workspace.written_state) - the page's
+                # "up to date" / "changed since" needs both, and an id
+                # comparison alone cannot see an edit made since.
                 if self.fleet is None:
                     return self._json({"units": [], "last_fire": None,
                                        "run": None, "shows": {},
                                        "corrections": [], "prepared": {},
-                                       "start_at": 0.0, "show_duration": None})
+                                       "start_at": 0.0, "show_duration": None,
+                                       "timeline": self.workspace.written_state()})
                 with self.prepared_lock:
                     prepared = dict(self.prepared)
                 return self._json(dict(self.fleet.snapshot(),
-                                       prepared=prepared))
+                                       prepared=prepared,
+                                       timeline=self.workspace.written_state()))
             if path == "/api/fleet/demos":
                 # list_demos() skips an unreachable unit rather than wait
                 # out its timeout (its result carries the exact "offline"
@@ -1442,6 +1498,11 @@ class Handler(BaseHTTPRequestHandler):
             shows, problems = self.workspace.compile_show()
             results = (fleet.upload(shows, force=bool(body.get("force")))
                        if shows else {})
+            # The timeline as it is now is what went out - remembered so
+            # an edit made after this reads as "changed since", however
+            # long the page has been open and whatever it was reloaded to.
+            if any(r["ok"] for r in results.values()):
+                self.workspace.mark_written("upload")
             return self._json({"units": results, "problems": problems,
                                "shows": {u: s["id"] for u, s in shows.items()}})
         if command == "write_demo":
@@ -1464,6 +1525,8 @@ class Handler(BaseHTTPRequestHandler):
             # exactly the problems Upload itself would have refused on.
             shows, problems = self.workspace.compile_show()
             results = fleet.write_demo(name, loop, shows) if shows else {}
+            if any(r["ok"] for r in results.values()):
+                self.workspace.mark_written(f"demo:{name}")
             return self._json({"units": results, "problems": problems,
                                "name": name})
         if command == "delete_demo":

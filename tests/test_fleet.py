@@ -19,8 +19,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.fleet import (DEMO_LIST_EVERY_S, SUPERVISE_EVERY_S, Fleet,
-                             UnitLink, default_units)
+from conductor.fleet import (DEMO_LIST_EVERY_S, SUPERVISE_EVERY_S, TIMEOUT_S,
+                             Fleet, UnitLink, default_units)
 from conductor.server import Workspace, make_server
 from tests.test_look import GRID, MAP, SKIRT_GRID, SKIRT_MAP
 from tests.test_ui_remote import SHOW, make_session, wait_until
@@ -1445,8 +1445,10 @@ def test_the_poll_asks_each_unit_for_its_demos_at_most_every_ten_seconds():
 def test_a_unit_that_cannot_list_its_demos_is_not_known_rather_than_empty():
     # An older agent (404 on /demo/list) or a unit that dropped the
     # connection must never read as "no demo stored" - the tile says
-    # nothing rather than something false, and it is asked again on the
-    # very next poll instead of ten seconds later.
+    # nothing rather than something false. And it is not asked again
+    # until the ten seconds are up: a 404 that comes back every time
+    # would otherwise be asked for on every pass, for the whole night
+    # (found in review).
     now = [1000.0]
     fleet = Fleet({}, clock=lambda: now[0])
     link = FailingLink("radxa-01", "stopped")
@@ -1456,8 +1458,40 @@ def test_a_unit_that_cannot_list_its_demos_is_not_known_rather_than_empty():
     assert fleet.snapshot()["units"][0]["demos"] is None
     link.demos = [_demo_entry("demo-a", "DEMO A", "showA")]
     link.get = StubLink.get.__get__(link, StubLink)      # the unit comes back
-    fleet._poll_demos(link)                              # no ten-second wait
+    now[0] += DEMO_LIST_EVERY_S - 0.1
+    fleet._poll_demos(link)
+    assert fleet.demos_of("radxa-01") is None            # still not asked
+    now[0] += 0.2
+    fleet._poll_demos(link)
     assert [d["name"] for d in fleet.demos_of("radxa-01")] == ["DEMO A"]
+
+
+def test_listing_the_demos_never_waits_on_a_units_own_poll():
+    # /status is that unit's clock measurement and the supervision's
+    # heartbeat; an eMMC listing (or a unit that has stopped answering)
+    # must not stretch its 2 s cadence. The listings run on one thread of
+    # their own, and the poll loop does not touch them.
+    import inspect
+    source = inspect.getsource(Fleet._poll_loop)
+    assert "_poll_demos" not in source and "demo" not in source
+    assert "_poll_demos" in inspect.getsource(Fleet._demo_loop)
+    # Its own short timeout, and only for a unit that is answering at all.
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    asked = []
+
+    class Timed(StubLink):
+        def get(self, path, learn=True, timeout=None):
+            asked.append((path, timeout))
+            return StubLink.get(self, path, learn, timeout)
+
+    offline = Timed("radxa-02", "stopped")
+    offline.online = False
+    fleet.links = {"radxa-01": Timed("radxa-01", "stopped"),
+                   "radxa-02": offline}
+    for link in fleet.links.values():
+        if link.online:
+            fleet._poll_demos(link)
+    assert asked == [("/demo/list", TIMEOUT_S)]
 
 
 def test_the_snapshot_says_which_stored_demo_is_the_show_that_was_uploaded():

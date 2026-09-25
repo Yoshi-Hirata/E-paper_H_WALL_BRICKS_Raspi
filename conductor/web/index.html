@@ -212,6 +212,7 @@ input[type=range] { width: 100%; }
 .go button.stop:hover { border-color: var(--err); color: var(--err); }
 body.busy .go button, body.busy #show-seek-wrap input,
 body.busy .dlg button, body.busy .dlg input { opacity: .45; pointer-events: none; }
+body.busy #write-back { pointer-events: none; }
 .card h2 + .sub { margin: -2px 0 8px; }
 .cue-hold, .cue-band { min-width: 7px; }
 .cue-hold { cursor: grab; } .cue-hold.dragging { cursor: grabbing; opacity: .8; z-index: 4; outline: 2px dashed var(--accent); }
@@ -260,11 +261,16 @@ body.busy .dlg button, body.busy .dlg input { opacity: .45; pointer-events: none
 button.primarybtn { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 button.primarybtn:hover { border-color: var(--accent); filter: brightness(1.08); }
 button.primarybtn:disabled { filter: none; }
-.unit-chips { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; vertical-align: middle; }
+.unit-chips { display: inline-flex; flex-wrap: nowrap; gap: 4px 6px; vertical-align: middle;
+  min-width: 0; overflow: hidden; }
 .chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line);
   border-radius: 10px; padding: 1px 9px; font-size: 11.5px; color: var(--dim);
   white-space: nowrap; letter-spacing: 0; text-transform: none; font-weight: 400; }
 .chip b { color: var(--ink); font-weight: 600; }
+.chip { overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
+/* Below a wide desktop the verdict word goes: the colour still says it,
+   and the whole sentence is in the chip's own title. */
+@media (max-width: 1280px) { .chip .verdict { display: none; } }
 .chip.ok { border-color: var(--ok); color: var(--ok); } .chip.ok b { color: var(--ok); }
 .chip.warn { border-color: var(--warn); color: var(--warn); } .chip.warn b { color: var(--warn); }
 #write-back { position: fixed; inset: 0; z-index: 9; background: rgba(12, 14, 20, .5);
@@ -283,6 +289,8 @@ button.primarybtn:disabled { filter: none; }
 .choice .what { font-size: 13.5px; }
 .choice .when { font-size: 12px; color: var(--dim); }
 .choice .why { font-size: 12.5px; color: var(--err); }
+.choice .note { font-size: 12.5px; color: var(--warn); }
+.choice .note:empty { display: none; }
 /* "Type a name first" is not a refusal, it is the next thing to do. */
 .choice .why.soft { color: var(--dim); }
 .choice .why:empty, .dlg-units:empty { display: none; }
@@ -403,7 +411,10 @@ function saveDockCellsPref() {
 // The unit's LCD font cannot draw Japanese (conductor/server.py's own DEMO_NAME_MESSAGE) -
 // kept in one place so the hint text and the maxlength can never drift apart.
 const DEMO_NAME_MAX = 14;
-const DEMO_NAME_HINT = "A-Z, 0-9 and symbols, up to 14 characters (the unit's screen cannot show Japanese)";
+const DEMO_NAME_HINT = "A-Z, 0-9 and symbols only, up to 14 characters. The unit's LCD cannot display Japanese.";
+// The same rule conductor/server.py's _demo_name applies (printable ASCII),
+// so the dialog can say no before the write does.
+const DEMO_NAME_OK = /^[\x20-\x7e]+$/;
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
              playing: false, anchor: 0, startT: 0, simView: false,
@@ -1660,27 +1671,29 @@ function unitPlaysADemo(u) {
   return ["running", "holding"].includes(show.state)
     || (show.state === "loaded" && show.burn && show.burn.state === "burning");
 }
-// What the units hold right now, as both chips and the dialog read it:
-// "uploaded" compares each unit's loaded show id with the id THIS conductor
-// uploaded to it (/api/fleet's `shows`), "demo" folds units[].demos by name
-// and uses the server's own `current` flag (the demo's show_id against that
-// same uploaded id). `edited` is this browser's memory of the timeline
-// having changed since it last wrote - the ids alone cannot see that, since
-// an edited timeline is not compiled until something is written.
-let writtenFingerprint = { upload: null, demo: null };
-function timelineFingerprint() {
-  return JSON.stringify([state.show.duration, state.show.refresh_s,
-    state.show.cues.map(c => [c.item, c.sent, c.design, !!c.partial,
-                              c.refresh, sweepOf(c).sequence, sweepOf(c).span_s])]);
-}
+// What the units hold right now, as both chips and the dialog read it.
+// Two questions, and they are not the same one:
+//   "do the units hold what this conductor sent them?"  - the ids:
+//      units[].show.id against /api/fleet's shows[unit].id, and a demo's
+//      own show_id against that same id (the server's `current` flag).
+//   "is what it sent still what is on screen?" - the revisions: the
+//      workspace's own fingerprint now (/api/fleet's timeline.revision)
+//      against the one it had when it was written (timeline.uploaded,
+//      timeline.demos[NAME]). The ids alone cannot answer this - they are
+//      both sides of the same sending, so they always agree with
+//      themselves however much the timeline has moved on since.
+// Anything not known (no mark for that write - an earlier conductor, or
+// one restarted since) is said as nothing at all, never as "up to date".
 function heldOnUnits() {
   const shows = fleet?.shows || {}, units = fleet?.units || [];
   const targets = writeTargets();
+  const names = new Set(targets.map(t => t.unit));
   const want = Object.keys(shows).length;
-  const held = units.filter(u => shows[u.name] && u.show
-                                 && u.show.id === shows[u.name].id).length;
-  const other = units.filter(u => shows[u.name] && u.show
-                                  && u.show.id !== shows[u.name].id).length;
+  // Counted among the units this timeline is FOR, so a unit that a
+  // previous upload reached and this one does not cannot make it
+  // "uploaded 2 / 1" (found in review).
+  const mine = units.filter(u => shows[u.name] && (!names.size || names.has(u.name)));
+  const held = mine.filter(u => u.show && u.show.id === shows[u.name].id).length;
   // The demo most units hold; ties go to the one that is the current show,
   // then alphabetically, so the chip never flickers between two names.
   const byName = new Map();
@@ -1695,49 +1708,58 @@ function heldOnUnits() {
     b.units.length - a.units.length
     || (b.current.every(c => c === true) ? 1 : 0) - (a.current.every(c => c === true) ? 1 : 0)
     || a.name.localeCompare(b.name));
-  const now = state ? timelineFingerprint() : null;
-  return { want, held, other, targets, demos, top: demos[0] || null,
-           // Written from this page, from the timeline as it stands now -
-           // which is how a demo can be known to be current even before
-           // anything was uploaded for the ids to be compared against.
-           uploadFresh: !!writtenFingerprint.upload && writtenFingerprint.upload === now,
-           demoFresh: !!writtenFingerprint.demo && writtenFingerprint.demo === now,
-           uploadEdited: !!writtenFingerprint.upload && writtenFingerprint.upload !== now,
-           demoEdited: !!writtenFingerprint.demo && writtenFingerprint.demo !== now };
+  return { want, held, targets, demos, top: demos[0] || null,
+           total: targets.length || Math.min(want, mine.length) || want,
+           mark: fleet?.timeline || {} };
 }
+const verdict = (fresh, stale) => fresh
+  ? ` <span class="verdict">· up to date</span>`
+  : stale ? ` <span class="verdict">· changed since</span>` : "";
 // The two chips, shown wherever the operator might wonder whether what they
-// see is on the units: THE SHOW's header and the Timeline's LOOKS AT bar.
+// see is on the units: THE SHOW's header, the Timeline's LOOKS AT bar and
+// the dialog's own head. Short on purpose - they sit in a one-row bar at
+// 1024 px, and the sentence behind them is in the title.
 function writeChipsHtml() {
   if (!fleet || !state) return "";
   const h = heldOnUnits();
-  const total = h.targets.length || h.want;
-  // "up to date" is only ever said when it is known: every target unit
-  // holds it AND what it holds came from the timeline on screen. "changed
-  // since" likewise - a unit that is merely offline makes the fraction
-  // say so, it does not make the show out of date.
+  const total = h.total, rev = h.mark.revision || null;
   let upload;
-  if (!h.want) upload = `<span class="chip">not uploaded yet</span>`;
+  if (!h.want) upload = `<span class="chip" title="Nothing has been uploaded from this conductor yet. Write to units… → Upload for the show.">not uploaded</span>`;
   else {
     const all = total > 0 && h.held >= total;
-    const ok = all && !h.uploadEdited;
-    const stale = h.uploadEdited || (all && h.other > 0);
-    upload = `<span class="chip ${ok ? "ok" : "warn"}">uploaded <b>${h.held} / ${total}</b>`
-      + (ok ? " · up to date" : stale ? " · changed since" : "") + `</span>`;
+    const known = !!rev && !!h.mark.uploaded;
+    const fresh = known && all && h.mark.uploaded === rev;
+    const stale = known && h.mark.uploaded !== rev;
+    upload = `<span class="chip ${fresh ? "ok" : "warn"}" title="${esc(
+      `${h.held} of ${total} unit(s) hold the show this conductor uploaded`
+      + (stale ? "; the timeline has been edited since - Upload again to put what you see on the units"
+         : fresh ? " - and it was made from the timeline as it is now" : ""))}">`
+      + `uploaded <b>${h.held}/${total}</b>${verdict(fresh, stale)}</span>`;
   }
   let demo;
-  if (!h.top) demo = `<span class="chip">no demo on the units</span>`;
+  if (!h.top) demo = `<span class="chip" title="No unit holds a demo it could play without this PC. Write to units… → Save on the units.">no demo</span>`;
   else {
-    // A demo's `current` is the server's comparison against the last
-    // UPLOAD - so a timeline edited since that upload makes a "current"
-    // demo older too, however true the ids still are of each other.
     const all = h.top.units.length >= total;
-    const stale = h.top.current.some(c => c === false) || h.demoEdited
-      || (h.uploadEdited && !h.demoFresh);
-    const same = (h.top.current.every(c => c === true) && !h.uploadEdited) || h.demoFresh;
-    const ok = all && same && !stale;
-    demo = `<span class="chip ${ok ? "ok" : stale ? "warn" : ""}">demo <b>${esc(h.top.name)}</b> `
-      + `${h.top.units.length} / ${total || h.top.units.length}`
-      + (ok ? " · up to date" : stale ? " · changed since" : "") + `</span>`;
+    const older = h.top.current.some(c => c === false);
+    const mark = (h.mark.demos || {})[h.top.name];
+    let fresh = false, stale = older;
+    if (rev && mark !== undefined) {
+      fresh = all && !older && mark === rev;
+      stale = older || mark !== rev;
+    } else if (rev && h.mark.uploaded) {
+      // No mark of its own (written before this conductor came up): the
+      // ids still say whether it matches the UPLOAD, which is worth
+      // something only while that upload is itself the timeline on screen.
+      const matches = h.top.current.every(c => c === true);
+      fresh = matches && all && h.mark.uploaded === rev;
+      stale = older || (matches && h.mark.uploaded !== rev);
+    }
+    demo = `<span class="chip ${fresh ? "ok" : stale ? "warn" : ""}" title="${esc(
+      `${h.top.units.length} of ${total} unit(s) can play "${h.top.name}" from their own menu with no PC`
+      + (stale ? "; it was written from an older timeline - Save on the units again"
+         : fresh ? " - written from the timeline as it is now" : ""))}">`
+      + `demo <b>${esc(h.top.name)}</b> ${h.top.units.length}/${total}`
+      + verdict(fresh, stale) + `</span>`;
   }
   return upload + demo;
 }
@@ -1761,19 +1783,37 @@ function writeState() {
     ? `${busy.join(", ")} ${busy.length === 1 ? "is" : "are"} playing a demo — press STOP first.`
     : null;
   const name = ui.demoName.trim();
-  return { cues, bad, targets, run, busy,
+  // The unit's LCD font has no Japanese glyphs and its menu row is 14
+  // characters wide - conductor/server.py's _demo_name refuses anything
+  // else, so the page says it while it is being typed instead of letting
+  // the write come back 400.
+  const nameWhy = !name ? "Type a name for the demo first."
+    : name.length > DEMO_NAME_MAX
+      ? `${name.length} characters — the unit's menu row fits ${DEMO_NAME_MAX}.`
+    : !DEMO_NAME_OK.test(name)
+      ? "A-Z, 0-9 and symbols only — the unit's LCD cannot display Japanese."
+    : null;
+  // Not a refusal: a unit that is not answering is simply reported as
+  // FAILED, and the operator may well be writing before switching them on.
+  const offline = targets.filter(t => !t.online).map(t => t.unit);
+  const note = !targets.length ? null
+    : offline.length === targets.length
+      ? `No unit is answering — nothing will be written until they are on the network.`
+    : offline.length
+      ? `${offline.join(", ")} not answering — ${offline.length === 1 ? "it" : "they"} will come back FAILED; write again once online.`
+    : null;
+  return { cues, bad, targets, run, busy, name, note, offline,
            seconds: Math.max(1, ...targets.map(t => t.seconds), 1),
            pictures: Math.max(0, ...targets.map(t => t.pictures)),
-           name,
            // Upload during a run is allowed on purpose (it is the way back
            // for one unit that lost its pictures) - it asks first instead.
            uploadWhy: both || demoPlaying,
            demoWhy: both || (run ? "The show is running — press STOP first." : demoPlaying),
-           nameWhy: name ? null : "Type a name for the demo first." };
+           nameWhy };
 }
-function writeUnitsHtml(targets) {
-  if (!targets.length) return "";
-  return `<div class="dlg-units">${targets.map(t => `<span class="u ${t.online ? "" : "gone"}">`
+function writeUnitsHtml(targets, id) {
+  if (!targets.length) return `<div class="dlg-units" id="${id}"></div>`;
+  return `<div class="dlg-units" id="${id}">${targets.map(t => `<span class="u ${t.online ? "" : "gone"}">`
     + `<span class="dot ${t.online ? "ok" : "none"}"></span>${esc(t.unit)} · ${t.pictures} pictures`
     + ` ≈ ${t.seconds} s${t.online ? "" : " · offline"}${t.demoBusy ? " · playing a demo" : ""}</span>`).join("")}</div>`;
 }
@@ -1788,14 +1828,14 @@ function writeProgressHtml() {
   }).join("");
 }
 const LCD_STEPS = (name, seconds) => `On each unit: <b>KEY2</b> opens the menu → `
-  + `<b>DEMO</b> → <b>${esc(name)}</b> → <b>KEY1</b> plays it (it writes its own pictures `
-  + `first, about ${seconds} s) · <b>KEY2</b> stops it and goes back to the menu.`;
+  + `<b>${esc(name)}</b> (just below STANDBY) → <b>KEY1</b> plays it (it writes its own `
+  + `pictures first, about ${seconds} s) · <b>KEY2</b> stops it and goes back to the menu.`;
 function writeResultHtml() {
   const r = ui.writeResult;
   if (!r) return "";
   const units = Object.entries(r.units || {}).sort();
   return `<div class="dlg-result">
-    <h3>${esc(r.title)} · ${esc(r.at)}</h3>
+    <h3 class="${r.ok ? "" : "fail"}">${esc(r.title)} · ${esc(r.at)}</h3>
     ${(r.problems || []).map(p => `<div class="fail">${esc(p)}</div>`).join("")}
     ${r.error ? `<div class="fail">${esc(r.error)}</div>` : ""}
     ${units.length ? units.map(([unit, u]) => `<div>${esc(unit)}: `
@@ -1828,7 +1868,8 @@ function writeDialogHtml() {
         <div class="what">Writes every picture into the boards now and hands the timeline to the units.
           <b>This PC then runs the show</b> — START, HOLD, NEXT and STOP on the Units tab.</div>
         <div class="when" id="write-upload-when">${uploadWhenText(s)}</div>
-        ${writeUnitsHtml(s.targets)}
+        ${writeUnitsHtml(s.targets, "write-units-upload")}
+        <div class="note" id="write-upload-note">${esc(s.note || "")}</div>
         <div class="why" id="write-upload-why">${esc(s.uploadWhy || "")}</div>
         <button class="big primarybtn" id="write-upload" ${s.uploadWhy ? "disabled" : ""}>${
           running ? "Re-write the pictures now" : "Upload for the show"}</button>
@@ -1847,8 +1888,9 @@ function writeDialogHtml() {
             Loop (starts again 5 s after the end)</label>
         </div>
         <div class="meta">${esc(DEMO_NAME_HINT)}</div>
-        ${writeUnitsHtml(s.targets)}
-        <div class="why ${s.demoWhy ? "" : "soft"}" id="write-demo-why">${esc(s.demoWhy || s.nameWhy || "")}</div>
+        ${writeUnitsHtml(s.targets, "write-units-demo")}
+        <div class="note" id="write-demo-note">${esc(s.note || "")}</div>
+        <div class="why ${s.demoWhy || s.nameWhy && ui.demoName.trim() ? "" : "soft"}" id="write-demo-why">${esc(s.demoWhy || s.nameWhy || "")}</div>
         <button class="big primarybtn" id="write-demo" ${s.demoWhy || s.nameWhy ? "disabled" : ""}>Save on the units</button>
       </div>
     </div>
@@ -1898,7 +1940,19 @@ function paintWrite() {
   if (uploadWhy) uploadWhy.textContent = s.uploadWhy || "";
   if (demoWhy) {
     demoWhy.textContent = s.demoWhy || s.nameWhy || "";
-    demoWhy.classList.toggle("soft", !s.demoWhy);
+    // Dim for "type a name" (the next thing to do), red for a refusal.
+    demoWhy.classList.toggle("soft", !(s.demoWhy || (s.nameWhy && s.name)));
+  }
+  for (const id of ["#write-upload-note", "#write-demo-note"]) {
+    const note = $(id);
+    if (note) note.textContent = s.note || "";
+  }
+  // A unit coming online, or one starting a demo, changes this list while
+  // the dialog is open - it is the answer to "who will this reach?".
+  const listed = writeUnitsHtml(s.targets, "").replace(/^<div[^>]*>|<\/div>$/g, "");
+  for (const id of ["#write-units-upload", "#write-units-demo"]) {
+    const box = $(id);
+    if (box && box.innerHTML !== listed) box.innerHTML = listed;
   }
   const upload = $("#write-upload"), demo = $("#write-demo");
   if (upload) {
@@ -1914,7 +1968,27 @@ function paintWrite() {
   if (progress) progress.innerHTML = writeProgressHtml();
   paintChips();
 }
+// The one question ① Upload and the dialog both ask while a show is
+// running - the same words, because it is the same thing they do.
+const uploadDuringRunQuestion = seconds =>
+  "The show is running. Re-write the pictures on every unit now?\n\n"
+  + "Every unit briefly leaves the show and rejoins by itself a few seconds "
+  + "later. Units already holding this show write nothing; a unit that lost "
+  + `its pictures writes them again (~${seconds} s) and rejoins after that.`;
+// How an answer read: all of it, some of it, or none of it. The result
+// heading says which - "Uploaded for the show" over a column of FAILED
+// would be the page lying about the one thing it was opened to settle.
+function writeOutcome(result) {
+  const units = Object.values(result.units || {});
+  const ok = units.filter(u => u.ok).length;
+  return { ok, total: units.length, some: ok > 0,
+           all: !!units.length && ok === units.length && !result.error
+                && !(result.problems || []).length };
+}
 async function writeUpload() {
+  // A second click while the first is still in flight would ask the
+  // question again, and fleetCommand drops the command anyway.
+  if (commandInFlight) return;
   const s = writeState();
   if (s.uploadWhy) { toast(s.uploadWhy); return; }
   // Upload during a run is the way back for ONE unit that lost its pictures
@@ -1923,32 +1997,36 @@ async function writeUpload() {
   // otherwise ("stop the show first").
   let body = {};
   if (s.run) {
-    if (!confirm("The show is running. Re-write the pictures on every unit now? "
-      + "Units already holding this show write nothing; a unit that lost its "
-      + `pictures writes them again (~${s.seconds} s) and rejoins.`)) return;
+    if (!confirm(uploadDuringRunQuestion(s.seconds))) return;
     body = { force: true };
   }
   const result = await fleetCommand("upload", body, "① Upload", "show");
   if (!result) return;
-  if (!result.error && !(result.problems || []).length) writtenFingerprint.upload = timelineFingerprint();
-  ui.writeResult = { kind: "upload", title: "Uploaded for the show",
+  const out = writeOutcome(result);
+  ui.writeResult = { kind: "upload", ok: out.all,
+                     title: out.all ? "Uploaded for the show"
+                       : out.some ? `Uploaded to ${out.ok} of ${out.total} units — the rest did not take it`
+                       : "Nothing was uploaded",
                      at: new Date().toLocaleTimeString(), units: result.units,
-                     problems: result.problems, error: result.error, ok: !result.error };
+                     problems: result.problems, error: result.error };
   renderWriteDialog();
 }
 async function writeDemo() {
+  if (commandInFlight) return;
   const s = writeState();
   if (s.demoWhy || s.nameWhy) { toast(s.demoWhy || s.nameWhy); return; }
   const name = s.name.toUpperCase();
   const result = await fleetCommand("write_demo", { name, loop: ui.demoLoop },
                                     `Save on the units as "${name}"`, "demo");
   if (!result) return;
-  const ok = !result.error && Object.values(result.units || {}).some(u => u.ok);
-  if (ok) writtenFingerprint.demo = timelineFingerprint();
-  ui.writeResult = { kind: "demo", title: `Saved on the units as "${name}"`,
+  const out = writeOutcome(result);
+  ui.writeResult = { kind: "demo", ok: out.some,
+                     title: out.all ? `Saved on the units as "${name}"`
+                       : out.some ? `Saved on ${out.ok} of ${out.total} units as "${name}" — the rest did not take it`
+                       : `"${name}" was not saved on any unit`,
                      at: new Date().toLocaleTimeString(), units: result.units,
                      problems: result.problems, error: result.error,
-                     name, seconds: s.seconds, ok };
+                     name, seconds: s.seconds };
   renderWriteDialog();
   await refreshDemos();
 }
@@ -2453,11 +2531,39 @@ document.addEventListener("keydown", e => {
 });
 // Esc deselects the cue (closes EDIT CUE back to its hint) - not while typing
 // in one of its own fields, where Esc should stay ordinary browser behaviour.
+// While "Write to units…" is open it owns the keyboard: Esc closes it,
+// Tab cycles inside it, Enter in the name field is that choice's own
+// primary - and nothing at all reaches the page behind it (Ctrl+Z would
+// undo a timeline edit, the arrows and Home would move the playhead, all
+// invisible behind the modal). Capture phase, so this runs before every
+// handler below whatever the order they were registered in.
+document.addEventListener("keydown", e => {
+  if (!ui.writeOpen) return;
+  const dialog = $("#write-dialog");
+  if (!dialog) return;
+  e.stopPropagation();
+  if (e.key === "Escape") { e.preventDefault(); closeWriteDialog(); return; }
+  if (e.key === "Enter" && e.target.id === "write-name") {
+    e.preventDefault();
+    writeDemo();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const stops = [...dialog.querySelectorAll("button, input")]
+    .filter(el => !el.disabled && el.offsetParent !== null);
+  if (!stops.length) return;
+  const first = stops[0], last = stops[stops.length - 1];
+  const here = document.activeElement;
+  if (e.shiftKey && (here === first || !dialog.contains(here))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (here === last || !dialog.contains(here))) {
+    e.preventDefault();
+    first.focus();
+  }
+}, true);
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
-  // The dialog first, and from inside its own fields too: an operator who
-  // opened "Write to units…" and changed their mind presses Esc once.
-  if (ui.writeOpen) { e.preventDefault(); closeWriteDialog(); return; }
   const tag = (e.target.tagName || "").toLowerCase();
   if (["input", "textarea", "select"].includes(tag)) return;
   if (ui.tab !== "timeline" || ui.cue === null) return;
@@ -2487,11 +2593,7 @@ document.addEventListener("click", async e => {
     // write nothing - the unit skips what its cache knows is in place.
     let body = {};
     if (fleet?.run) {
-      if (!confirm("The show is running. Re-write the pictures on every unit now?\n\n"
-        + "Every unit briefly leaves the show and rejoins by itself a few seconds "
-        + "later. Units already holding this show write nothing; a unit that lost "
-        + `its pictures writes them again (~${burnSeconds()} s) and rejoins after `
-        + "that.")) return;
+      if (!confirm(uploadDuringRunQuestion(burnSeconds()))) return;
       body = { force: true };
     }
     await fleetCommand("upload", body, "① Upload", "show");
@@ -2689,14 +2791,6 @@ document.addEventListener("click", async e => {
 // Enter ends the typing in a label or a board number (leaving the field saves it).
 document.addEventListener("keydown", e => {
   if (e.key === "Enter" && e.target.matches?.("input.lab, input.bno")) e.target.blur();
-  // Enter in the demo's name field is "I have typed the name, do it" - the
-  // primary of the choice that field belongs to. It never reaches Upload:
-  // the two choices write different things, and Enter must not pick the
-  // wrong one.
-  if (e.key === "Enter" && ui.writeOpen && e.target.id === "write-name") {
-    e.preventDefault();
-    writeDemo();
-  }
 });
 document.addEventListener("change", async e => {
   const id = e.target.id;
@@ -2923,7 +3017,7 @@ document.addEventListener("input", e => {
     if (btn) btn.disabled = !!(s.demoWhy || s.nameWhy);
     if (why) {
       why.textContent = s.demoWhy || s.nameWhy || "";
-      why.classList.toggle("soft", !s.demoWhy);
+      why.classList.toggle("soft", !(s.demoWhy || (s.nameWhy && s.name)));
     }
     return;
   }

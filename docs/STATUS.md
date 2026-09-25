@@ -35,23 +35,40 @@
   再生)。所要時間(1 枚 **0.31 秒** × いちばん重い機体の枚数。枚数はいまのタイムラインから
   数える ― 基板数 × その機体のキュー時刻の数)、送り先の機体一覧(online / offline /
   デモ再生中)、押せない理由(キュー無し・タイムラインの問題・ショー進行中・デモ再生中・
-  名前未入力)をその場に書く。実行後は機体ごとの結果、Upload ならタイルと同じ
+  名前未入力・名前が LCD で出せない・1 台も応答していない)をその場に書く。実行後は
+  機体ごとの結果(**見出し自身が成否を言う** ― 全部 / 一部 / 1 台も、最後は赤)、
+  Upload ならタイルと同じ
   `picturesText()` による焼き込みの進み(同じポーリングの同じデータ)、デモなら機体側の
-  手順(KEY2 → DEMO → 名前 → KEY1 で再生、KEY2 で停止)。Esc / 背景クリックで閉じ、
-  名前欄の Enter は「Save on the units」だけを実行する
+  手順(**KEY2** でメニュー → **名前**(STANDBY のすぐ下)→ **KEY1** で再生、**KEY2** で停止。
+  機体に DEMO というサブメニューは無い ― デモは STANDBY の下に並ぶ行そのもの)。
+  Esc / 背景クリック(書き込み中は無効)で閉じ、Tab はダイアログの中だけを回り、
+  Ctrl+Z や矢印キーは後ろのページへ届かない。名前欄の Enter は
+  「Save on the units」だけを実行する。二度押しは 1 回しか聞かない
 - **チップ 2 つ**(Timeline の THE LOOKS AT バーと Units の THE SHOW 見出し、ダイアログの頭):
-  `uploaded 10 / 10 · up to date` / `demo PARIS SS26 10 / 10 · changed since`。
-  「up to date」「changed since」は**分かるときだけ**言う ― 機体が報告する
-  `units[].show.id` ・ `units[].demos[].show_id` と、この PC が書いた `/api/fleet` の
-  `shows[unit].id` の照合、それにページ自身が覚えている「書き込み後にタイムラインを
-  編集したか」(再読み込みで忘れ、id の比較だけに戻る)
+  `uploaded 10/10 · up to date` / `demo PARIS SS26 10/10 · changed since`
+  (1280 px 以下では判定の語を隠し、色とツールチップに任せる ― 1024 px でも
+  dock の見出しが 1 行に収まるように)。判定は **2 つの照合の両方**が揃ったときだけ言う:
+  - 機体が報告する `units[].show.id` ・ `units[].demos[].show_id` と、この PC が書いた
+    `/api/fleet` の `shows[unit].id`(= 機体が持っているのは、この PC が送ったものか)
+  - ワークスペースの版 `timeline.revision` と、書き込んだ時点の版 `timeline.uploaded` ・
+    `timeline.demos[名前]`(= 送ったものは、いま画面にあるタイムラインか)。
+    **id だけでは分からない**(機体の id はこの PC が送った id そのものなので、そのあと
+    いくら編集しても一致したまま ― レビュー指摘。以前はページの記憶に頼っていて
+    再読み込みで消えた)
 - **API**: `GET /api/fleet` の各機体に **`demos`**(`[{slug,name,cues,duration,loop,show_id,
-  current}]`。`current` は上と同じ照合、比較材料が無ければ `null`)を追加。
-  一覧はポーリングループが機体ごと **10 秒に 1 回**(`DEMO_LIST_EVERY_S`)取り、
+  current}]`。`current` は上の id 照合、比較材料が無ければ `null`)を追加。
+  一覧は**専用スレッド 1 本**が機体ごと **10 秒に 1 回**(`DEMO_LIST_EVERY_S`)取り
+  (ポーリングループから外した ― eMMC の一覧取得がその機体の `/status` の間隔を
+  2 秒 → 3.5 秒に延ばしていた。失敗しても 10 秒は空ける)、
   `/demo/save` `/demo/delete` の応答(どちらも機体のメニュー全体を返す)でも更新するので、
   **タイル 1 枚につき 1 リクエストにはならない**。答えられない機体(旧エージェントの 404、
   無応答)は `null` =「分からない」で、`[]` =「1 つも無い」とは区別する。
   機体が自分で数えている個数は `demo_count` に移した(旧 `demos` の整数)
+- **API**: `GET /api/fleet` に **`timeline`**(`{revision, uploaded, demos: {名前: 版}}`)を追加。
+  `revision` は show.json と全 CSV(名前・サイズ・mtime)の指紋で、**約 1 ms**。
+  コンパイル済みの id を毎回出す案は測って捨てた ― `compile_show()` は 2 機体 5 キューの
+  おもちゃのショーで 364 ms(10 機体 18 キューなら秒単位)で、毎秒のポーリングでは払えない。
+  指紋の誤差は安全側にしか出ない(絵が変わらない編集を「changed since」と言うだけ)
 - **`POST /api/fleet/write_demo` はショー進行中に 400 `stop the show first`**(Upload と同じ。
   ただしデモに `force` は無い ― 走っているショーへの復帰手段ではないので)
 - タイルの「Demos」行は「**On unit**」行になり、個数ではなく

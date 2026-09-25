@@ -1360,9 +1360,13 @@ def test_the_fleet_snapshot_carries_the_start_position_and_the_show_length(tmp_p
     try:
         snap = json.loads(urllib.request.urlopen(
             f"http://127.0.0.1:{port}/api/fleet", timeout=5).read())
+        timeline = snap.pop("timeline")
         assert snap == {"units": [], "last_fire": None, "run": None,
                         "shows": {}, "corrections": [], "prepared": {},
                         "start_at": 0.0, "show_duration": None}
+        # Nothing to drive, but the page still asks the same question of
+        # the workspace: what is the timeline now, and what was written.
+        assert timeline["uploaded"] is None and timeline["demos"] == {}
     finally:
         no_fleet.shutdown()
         no_fleet.server_close()
@@ -1632,6 +1636,84 @@ def test_the_fleet_snapshot_carries_what_each_unit_holds_in_its_menu(tmp_path):
         server.server_close()
 
 
+def test_the_snapshot_says_whether_the_timeline_moved_since_it_was_written(tmp_path):
+    # The chips' "up to date" must not be a tautology: the ids the units
+    # report are the ids this conductor sent them, so they agree with
+    # themselves however much the timeline has been edited since. The
+    # workspace's own revision is what tells the two apart - and it lives
+    # on the server, so a page reload does not forget it.
+    from conductor.fleet import Fleet
+    from tests.test_fleet import StubLink
+
+    ws = _demo_workspace(tmp_path)
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped")}
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        before = _get(port, "/api/fleet")["timeline"]
+        assert before["uploaded"] is None and before["demos"] == {}
+        assert before["revision"]
+
+        status, _ = _post(port, "/api/fleet/upload", {})
+        assert status == 200
+        after = _get(port, "/api/fleet")["timeline"]
+        assert after["uploaded"] == after["revision"] == before["revision"]
+
+        status, payload = _post(port, "/api/fleet/write_demo",
+                                {"name": "paris ss26", "loop": False})
+        assert status == 200 and payload["units"]["radxa-01"]["ok"]
+        saved = _get(port, "/api/fleet")["timeline"]
+        assert saved["demos"] == {"PARIS SS26": saved["revision"]}
+
+        # One cue moved: everything on the units is now older than what
+        # the operator is looking at, and stays that way for every later
+        # request (this is the server's memory, not the page's).
+        ws.set_timeline(600, [_cue("a", 0), _cue("b", 30)])
+        edited = _get(port, "/api/fleet")["timeline"]
+        assert edited["revision"] != after["revision"]
+        assert edited["uploaded"] == after["revision"]
+        assert edited["demos"] == {"PARIS SS26": after["revision"]}
+        assert _get(port, "/api/fleet")["timeline"] == edited
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_write_that_reached_nobody_is_not_remembered_as_written(tmp_path):
+    # Marking the timeline as "what the units hold" when not one of them
+    # took it would have the chip say "up to date" about nothing.
+    from conductor.fleet import Fleet
+
+    _demo_workspace(tmp_path)
+    # A configured unit that does not exist: every command comes back
+    # failed, without a network call of its own.
+    fleet = Fleet({"radxa-09": "127.0.0.1:1"})
+    server = make_server(tmp_path, port=0, fleet=fleet)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, payload = _post(port, "/api/fleet/upload", {})
+        assert status == 200
+        assert payload["units"]["radxa-01"] == {"ok": False, "error": "unknown unit"}
+        timeline = _get(port, "/api/fleet")["timeline"]
+        assert timeline["uploaded"] is None and timeline["demos"] == {}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_workspace_revision_follows_the_csvs_as_well_as_the_timeline(tmp_path):
+    # compile_show() reads both, so both have to move the revision - a
+    # redrawn design is as much a reason to upload again as a moved cue.
+    ws = _demo_workspace(tmp_path)
+    first = ws.revision()
+    assert ws.revision() == first            # nothing changed: the same
+    ws.save("Look22_color_pattern02_grid.csv", GRID)
+    assert ws.revision() != first
+
+
 def test_delete_demo_validates_the_slug(tmp_path):
     from conductor.fleet import Fleet
 
@@ -1839,8 +1921,25 @@ def test_the_page_dialog_is_two_choices_with_their_consequence(page):
     # The estimate is the measured one, per picture (docs/STATUS.md).
     assert "const BURN_S_PER_PICTURE = 0.31;" in page
     assert "on the slowest unit," in page
-    # The steps on the unit, after a demo is written.
+    # The steps on the unit, after a demo is written - and the unit has
+    # no DEMO submenu: a demo is a row in the menu, right below STANDBY
+    # (ui/app.py), which is what the operator has to look for.
     assert "KEY2</b> opens the menu" in page and "KEY1</b> plays it" in page
+    assert "(just below STANDBY)" in page and "<b>DEMO</b>" not in page
+    # The name rule is the server's own, said while it is being typed.
+    assert "A-Z, 0-9 and symbols only, up to 14 characters." in page
+    assert r"const DEMO_NAME_OK = /^[\x20-\x7e]+$/;" in page
+    assert "the unit's LCD cannot display Japanese." in page
+    assert "the unit's menu row fits ${DEMO_NAME_MAX}." in page
+    # A result heading never claims more than happened, and a unit that
+    # is not answering is said before the write, not only after it.
+    assert "function writeOutcome(result)" in page
+    assert 'ok: out.all' in page and "Nothing was uploaded" in page
+    assert "No unit is answering" in page and 'id="write-upload-note"' in page
+    # The modal owns the keyboard and the backdrop while it is open.
+    assert 'body.busy #write-back { pointer-events: none; }' in page
+    assert 'if (e.key !== "Tab") return;' in page
+    assert "if (commandInFlight) return;" in page
     # Every reason a choice cannot be taken says so where the choice is.
     for why in ("The timeline has no cues yet", "fix them on the Timeline tab",
                 "The show is running — press STOP first.",
@@ -1850,9 +1949,15 @@ def test_the_page_dialog_is_two_choices_with_their_consequence(page):
 
 def test_the_page_chips_say_what_the_units_hold(page):
     assert 'class="unit-chips"' in page and "function writeChipsHtml()" in page
-    for words in ("not uploaded yet", "no demo on the units", "uploaded <b>",
+    for words in ("not uploaded", "no demo", "uploaded <b>",
                   "· up to date", "· changed since", "<span>On unit</span>"):
         assert words in page, words
     # The chips read the snapshot's own fields - the ids the units report
-    # against the ids this conductor wrote (units[].demos, /api/fleet shows).
+    # against the ids this conductor wrote (units[].demos, /api/fleet shows)
+    # AND the workspace revision behind them, which is the only thing that
+    # can see the timeline having been edited since it was written.
     assert "u.demos" in page and "fleet.shows" in page
+    assert "fleet?.timeline" in page and "h.mark.uploaded" in page
+    # The verdict word is droppable at a narrow window, so the chips stay
+    # on one row in the Timeline dock's head.
+    assert 'class="verdict"' in page and "@media (max-width: 1280px)" in page

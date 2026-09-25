@@ -343,6 +343,14 @@ class Fleet:
                                       daemon=True)
             thread.start()
             self._threads.append(thread)
+        # The demo listings have a thread of their own: a unit's /status
+        # poll is also its clock measurement and the supervision's
+        # heartbeat, and must not wait behind an eMMC listing (measured
+        # 2026-09-25: doing it inline stretched that unit's 2 s cadence to
+        # 3.5 s every time it came round).
+        demos = threading.Thread(target=self._demo_loop, daemon=True)
+        demos.start()
+        self._threads.append(demos)
 
     def stop(self) -> None:
         self._stop.set()
@@ -356,37 +364,55 @@ class Fleet:
                     self._supervise(link)
                 except Exception as exc:    # noqa: BLE001 - next poll retries
                     link.error = f"supervise: {exc}"
-                self._poll_demos(link)
             self._stop.wait(self.poll_s)
 
     # ---- what each unit holds in its own menu ----
 
+    def _demo_loop(self) -> None:
+        """One thread for all of them: every unit that has answered a poll
+        is asked what it holds every DEMO_LIST_EVERY_S. A unit that is
+        slow to answer (or not answering at all) delays only the other
+        units' listings, never anyone's /status."""
+        while not self._stop.is_set():
+            for link in list(self.links.values()):
+                if self._stop.is_set():
+                    break
+                if link.online:
+                    self._poll_demos(link)
+            self._stop.wait(1.0)
+
     def _poll_demos(self, link: UnitLink) -> None:
-        """Every DEMO_LIST_EVERY_S, after a poll that answered: what demos
-        does this unit hold? Timestamped BEFORE the request, so a unit that
-        refuses /demo/list (an older agent) is asked once every ten
-        seconds, not on every poll. A failure is "not known" (None), not
-        "none stored" - the page must not read an old agent's 404 as an
-        empty menu."""
+        """Every DEMO_LIST_EVERY_S: what demos does this unit hold?
+        Timestamped BEFORE the request, and NOT reset by a failure, so a
+        unit that refuses /demo/list (an older agent: a 404 every time) or
+        times out is asked once every ten seconds - never on every pass
+        (found in review). A failure is "not known" (None), not "none
+        stored" - the page must not read an old agent's 404 as an empty
+        menu. Its own short timeout: this is a listing, not a command."""
         now = self._clock()
         with self._demos_lock:
             if now - self._demos_at.get(link.name, -1e9) < DEMO_LIST_EVERY_S:
                 return
             self._demos_at[link.name] = now
         try:
-            demos = link.get("/demo/list", learn=False).get("demos")
+            demos = link.get("/demo/list", learn=False,
+                             timeout=TIMEOUT_S).get("demos")
         except Exception:                   # noqa: BLE001 - offline is a state
             demos = None
-        self.remember_demos(link.name, demos)
+        self.remember_demos(link.name, demos, retry_soon=False)
 
-    def remember_demos(self, name: str, demos) -> None:
+    def remember_demos(self, name: str, demos, retry_soon: bool = True) -> None:
         """The answer of a /demo/list, /demo/save or /demo/delete: what
-        this unit holds, as of now. `None` means "not known" and also
-        makes the poll loop ask again at once (a write whose answer did
-        not carry the new list still updates the tiles within a poll)."""
+        this unit holds, as of now. `None` is "not known".
+
+        `retry_soon` (the write path) then asks again on the next pass
+        instead of in ten seconds - a /demo/save whose answer did not
+        carry the new menu leaves the tiles blank until it does. The poll
+        path passes False: a unit that cannot answer at all must not be
+        asked every second for the rest of the night."""
         with self._demos_lock:
             self._demos[name] = list(demos) if isinstance(demos, list) else None
-            if demos is None:
+            if demos is None and retry_soon:
                 self._demos_at[name] = -1e9
 
     def demos_of(self, name: str) -> "list[dict] | None":
@@ -629,7 +655,7 @@ class Fleet:
             if not link.online:
                 raise RuntimeError("offline")
             demos = link.get("/demo/list").get("demos") or []
-            self.remember_demos(link.name, demos)
+            self.remember_demos(link.name, demos, retry_soon=False)
             return {"demos": demos}
         return self._each(list(self.links), action)
 
