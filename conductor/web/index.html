@@ -1101,6 +1101,7 @@ function renderTimeline() {
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
         <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
         <label class="filebtn" title="Load a project sent by the designers: their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
+        <a class="filebtn" id="tl-simulator" href="/api/simulator?music=1" download title="Downloads the single-file simulator with the show's current music embedded - hand this file to the director's team; rebuild it here whenever the music changes">Simulator for designers…</a>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
         hatched = refreshing · solid = held until End · Esc deselects</div>
@@ -1499,6 +1500,51 @@ async function loadShowFile(file) {
   } catch (err) { toast("Import failed: " + err.message); }
   await refresh();
 }
+// "Simulator for designers…": fetch the page, THEN save it.
+//
+// Not the anchor's own download (adversarial review - F7): with `download`
+// set, a failed build came back as a 500 whose JSON body the browser
+// cheerfully saved as az27ss-simulator-…html - a file that looks like the
+// simulator, opens blank, and says nothing about what went wrong. Fetching
+// first means a failure is a toast and nothing lands in Downloads. The
+// href stays on the element so the link can still be copied, and so a
+// middle-click does something sensible.
+let simulatorBusy = false;
+async function downloadSimulator() {
+  if (simulatorBusy) return;                 // one build at a time
+  simulatorBusy = true;
+  const named = state?.music?.name;
+  toast(named
+    ? `Building the simulator with ${named} - a large file, this takes a moment`
+    : "No music is loaded, so this will be the simulator without a built-in track");
+  let url = null;
+  try {
+    const response = await fetch("/api/simulator?music=1");
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try { detail = (await response.json()).error || detail; } catch {}
+      toast("Could not build the simulator: " + detail);
+      return;
+    }
+    const named_as = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "");
+    const name = named_as ? named_as[1] : "az27ss-simulator.html";
+    url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url; link.download = name;
+    document.body.appendChild(link); link.click(); link.remove();
+    toast(named ? `Downloaded ${name}`
+                : `Downloaded ${name} - it has no music in it; upload the show's music and download it again`);
+  } catch (err) {
+    toast("Could not build the simulator: " + (err?.message || err));
+  } finally {
+    simulatorBusy = false;
+    // Revoked on a timer, not straight away: the download has to have
+    // started reading the blob first, and ~23 MB held for half a minute
+    // is cheaper than a download that dies on click.
+    if (url) setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+}
+
 async function loadBundleFile(file) {
   if (!file) return;
   let data;
@@ -2580,6 +2626,7 @@ document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
+  if (e.target.id === "tl-simulator") { e.preventDefault(); downloadSimulator(); return; }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
   if (e.target.id === "tl-dock-toggle") { ui.dock = ui.dock === "collapsed" ? "compact" : "collapsed"; saveDockPref(); renderTimeline(); return; }
   if (e.target.closest("#tl-editor-toggle")) { ui.editorOpen = !ui.editorOpen; renderTimeline(); return; }

@@ -18,6 +18,37 @@
 
 ## 2. 直近で完成したもの
 
+**演出家のシミュレーターに音源を埋め込む(2026-09-25、依頼者の指摘「音がなっていないようだ」から)**
+
+原因は仕様どおりの動作だった:ブラウザは自分でディスク上のファイルを開けないので、
+曲**名**しか知らないページは黙っているしかない。演出家が毎回 Pick file… で音源を選ばない限り、
+`dist/az27ss-simulator.html` は無音のまま。**音源をファイルの中に入れる**以外に道は無い。
+
+- **配布ファイルに音源を埋め込む**: `tools/build_designer.py --music PATH|auto|none`。
+  `auto` はワークスペース(既定 `./showdata`)の `show.json` が指す音源。
+  `SIM.embeddedMusic = {name, type, size, dataUrl}` という `<script>` 1 個を他のモジュールより
+  前に差し込む。ページ側は起動時に 1 度だけ Blob 化(base64 文字列は捨てる)、
+  最初の Play は利用者のクリックなので autoplay 制限にも当たらない
+- **「今後音源が変更となる可能性」への答えは Conductor 側のボタン**: Timeline ツールバーの
+  **Simulator for designers…**(`GET /api/simulator?music=1`)が、そのとき読み込まれている音源で
+  ページをサーバ内で組み立てて
+  `az27ss-simulator-YYYYMMDD-with-music.html` としてダウンロードさせる。
+  **音源を差し替えたら、このボタンをもう 1 回押して渡し直すだけ**(開発者もチェックアウトも不要。
+  音源の 名前/サイズ/mtime をキーにキャッシュするので 2 回目は即座)。
+  音楽が未アップロードなら音源なし版が落ちてきて、その旨トーストで出る
+- **画面**: 音楽欄は「曲名 · built in」。**Pick another file…** でそのセッションだけ差し替えでき、
+  **Back to the built-in track** で戻る。プロジェクトが別の曲名を持っているときは、
+  従来の黄色い帯に加えて「Playing the built-in track 曲名 instead」も出す
+  (記録されている名前と、実際に鳴るものの両方を言う)。Run self-test や New project で
+  埋め込み音源を失わないことも確認済み
+- **コミットされるのは今までどおり音源なしの `dist/az27ss-simulator.html`**(565,274 バイト、
+  2 MB の上限も `--check` もこちらだけ)。音源入り
+  (`dist/az27ss-simulator-with-music.html`)は .gitignore 済み
+- 実測(本番音源 AZ 27SS.DEMO.mp3 = 17,542,144 バイト):ページ 23,955,070 バイト、
+  ヘッドレス Edge で `domInteractive` 348 ms / `domComplete` 747 ms(音源なしは
+  34 ms / 211 ms)。サーバ側の初回ビルド約 1.8 秒(その間だけオペレーターの画面が
+  固まる ―― Python の CPU 処理が GIL を握るため)、2 回目はキャッシュで 0.05 秒
+
 **「Write to units…」- 機体への書き込みを 1 つの入口に(2026-09-25、依頼者の指摘から)**
 
 依頼者の指摘:「Timeline で作成したシナリオを各機体に焼き込む機能について、UI 上で

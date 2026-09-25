@@ -4,3 +4,8 @@ __pycache__/
 .pytest_cache/
 ~$*
 showdata/
+# The simulator with the show's music inside it (~23 MB for a 17.5 MB MP3).
+# Built on demand - the Conductor's Timeline toolbar has a "Simulator for
+# designers…" button, or `python tools/build_designer.py --music auto` -
+# and never committed: only the lean dist/az27ss-simulator.html is.
+dist/*-with-music.html

@@ -308,6 +308,42 @@ Raspberry Pi Zero 2 W ──USB CDC── 基板 ID:1 ──4芯(TTL UART)──
 | `python tools/make_starter.py` | `conductor/web/sim/starter.js`(`conductor/web/starter/*.csv` を JS の定数に固めたもの。初回起動時の既定データ) | `conductor/web/starter/*.csv` を足す/変えたとき |
 | `python tools/build_designer.py` | `dist/az27ss-simulator.html`(`conductor/web/designer.html` と `conductor/web/sim/*.css/*.js` を 1 個の HTML に inline したもの。**フラグなしが出荷版**(`goldens.js`/`selftest.js` 抜き、550 KB 前後) - コミットされている `dist/` はこれ。`--with-goldens` を付けると自己テスト付きの開発版(1.1 MB 前後、Python 側との答え合わせ用)が作れる。`--no-starter` で初期データ抜きのビルドも作れる) | `conductor/web/designer.html`・`conductor/web/sim/*` のいずれかを変えたとき(上の 2 つを先に作り直してから) |
 
+#### ビルドの 2 系統(音源入り / 音源なし)
+
+`build_designer.py` の出力は 2 つあり、**コミットされるのは音源なしの
+`dist/az27ss-simulator.html` だけ**(2 MB の上限も `--check` もこちらだけの話)。
+
+| | 何が入るか | どう作るか | 置き場所 |
+|---|---|---|---|
+| **lean(コミット版)** | 音源なし。約 560 KB | `python tools/build_designer.py` | `dist/az27ss-simulator.html`(コミットする) |
+| **音源入り(配布版)** | ショーの音源を base64 で埋め込み。17.5 MB の MP3 で約 23 MB | 通常は **Conductor の Timeline タブの「Simulator for designers…」ボタン**(`GET /api/simulator?music=1`、サーバ内で `build_page()` を呼ぶ)。手元で作るなら `python tools/build_designer.py --music auto`(`./showdata` の `show.json` が指す音源。`--workspace` で変更可、`--music PATH` で直接指定も可) | `dist/az27ss-simulator-with-music.html`(**.gitignore 済み。絶対にコミットしない**) |
+
+- 埋め込みは `SIM.embeddedMusic = {name, type, size, dataUrl}` という `<script>` 1 個で、
+  他のモジュールより**前**に出る(dev ページの `defer` でも、ビルド版のインライン順でも、
+  `designer-app.js` の `boot()` が動く時点で必ず居るようにするため)。ページ側は起動時に
+  1 度だけ Blob 化して object URL を作り、base64 文字列は捨てる(designer-app.js の
+  `builtInMusicUrl()`)。**音源は再エンコードしない**(このマシンに ffmpeg は無いし、
+  ショーのマスターを勝手に作り直すのはこのスクリプトの仕事ではない)
+- `check_self_contained()` は `data:` URL を通し、`http(s)://`・プロトコル相対 `//`・
+  `@import`・`<link>` だけを弾く
+- **生成した音源スクリプトも、他のモジュールと同じエスケープ(`_escape_script_hazards` +
+  制御文字チェック)を通す。ただし base64 本体だけは対象外**(文字種が `A-Za-z0-9+/=` で
+  `<` も制御文字も原理的に含まれないので、23 MB に正規表現を 3 回かけても何も見つからない)
+- **ファイル名は JSON + `<` でエスケープ、MIME は「エスケープではなく検証」**:
+  MIME は `data:` URL の中に生の文字列として入る(直後の `;base64,` は URL 構文であって
+  文字列ではないので、引用もエスケープもできない)。`show.json` は人が手で直せるファイルで、
+  `type` に `audio/mpeg";x="` と書けば `dataUrl` のリテラルを閉じて後続がコードになる。
+  そのため `safe_mime()` が `type/subtype`(RFC 9110 の token 文字のみ)に
+  合致しないものを弾き、拡張子から引いた MIME に差し替える(ビルドは失敗させない
+  ―― オペレーターの打ち間違いで配布物が作れなくなる方が困るし、拡張子の方が当てになる)
+- **音源が変わったときの手順は「ボタンをもう 1 回押す」だけ**。開発者を呼ぶ必要は無い
+  (2 回目以降のクリックは、音源の 名前/サイズ/`st_mtime_ns`/先頭・末尾 64 KB のダイジェストを
+  キーにしたキャッシュから即座に返る。`int(st_mtime)` では、同名・同サイズの差し替えが
+  同じ秒内に起きると古い音源を配ってしまう)
+- **音源を変えた直後の 1 回だけ、オペレーターの画面が 1.6 秒ほど固まる**:
+  ビルドは Python の CPU 処理で、その間 GIL を握るため `/api/state` のポーリングが待たされる。
+  ボタンを押したときのトーストはそのための予告でもある。2 回目以降はキャッシュなので止まらない
+
 3 つとも `--check` モードで「コミットされているものと同じか」を確認できる
 (`tests/test_sim_goldens.py::test_goldens_are_current`、
 `tests/test_designer_build.py::test_build_is_current`)。**生成物を手で直接編集しない**
