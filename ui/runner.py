@@ -1027,7 +1027,7 @@ class DemoRunner:
             elif self._burn_cache.get((board, slot)) == (array, table):
                 pass                     # unchanged: nothing to write
             elif self._save_one(bus, groups, slot, dev_type, board,
-                                array, table):
+                                array, table, span_s=cue.get("span_s")):
                 self._burn_cache[(board, slot)] = (array, table)
             else:
                 failed.append((board, slot))
