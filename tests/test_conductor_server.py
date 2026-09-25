@@ -2348,6 +2348,40 @@ def test_the_page_dialog_is_two_choices_with_their_consequence(page):
         assert why in page, why
 
 
+def test_the_page_dialog_can_write_one_looks_units(page):
+    # The radio group at the top: All LOOKs by default, then one row per
+    # LOOK the timeline reaches, in the order the LOOKS AT row uses.
+    for part in ('id="write-only"', 'id="write-only-h"', 'id="write-only-all"',
+                 'name="write-only"', 'role="radiogroup"',
+                 'id="write-upload-only"', 'id="write-demo-only"'):
+        assert part in page, part
+    assert "Which LOOKs" in page and "All LOOKs — ${all} unit" in page
+    assert "function writeRows()" in page and "lookGroups().map" in page
+    # A row names its LOOK, its garments, its units and its wait; one with
+    # no unit is listed and disabled rather than hidden.
+    for part in ("<b>LOOK ${esc(r.look)}</b>", "esc(r.units.join(\", \"))",
+                 "picture${r.pictures === 1 ? \"\" : \"s\"}", "≈ ${r.seconds} s",
+                 '"no unit"', "r.why ? \" disabled\" : \"\""):
+        assert part in page, part
+    # Both choices say what a one-LOOK write leaves behind - and the
+    # Upload one says what it means for START.
+    assert "START needs every unit of the timeline to hold this upload" in page
+    assert "use this for checking one look, then Upload for all before the show." in page
+    assert "the other units keep theirs." in page
+    # What goes to the server, and the question asked during a run.
+    assert "s.only ? { units: s.only } : {}" in page
+    assert "const uploadDuringRunQuestion = (seconds, only) =>" in page
+    assert 'only ? only.join(", ") : "every unit"' in page
+    # A LOOK that has gone from the timeline is refused, never widened
+    # back out to the whole fleet behind the operator's back.
+    assert "The LOOK you picked is no longer in the timeline" in page
+    assert "ui.writeOnly = null;" in page       # every time the dialog opens
+    # Which units hold what is on screen, from the server's per-unit mark.
+    assert "function unitHoldsRevision(unit)" in page
+    assert "mark.uploaded_units || {}" in page
+    assert "· has this upload" in page and "· older upload" in page
+
+
 def test_the_page_chips_say_what_the_units_hold(page):
     assert 'class="unit-chips"' in page and "function writeChipsHtml()" in page
     for words in ("not uploaded", "no demo", "uploaded <b>",
