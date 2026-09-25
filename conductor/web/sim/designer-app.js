@@ -1226,6 +1226,42 @@
     const n = String(name);
     return /^\._/.test(n) || n === ".DS_Store" || /^__MACOSX$/i.test(n);
   }
+  // A CSV that is not NAMED the wiring site's way (2026-09-25: a designer's
+  // Mac offered "AZ271SD1305_1_HW.csv") is read by its FIRST LINE instead:
+  //   side,row,col,board_no,socket,…  -> that garment's map
+  //   side,row,shift,1,2,3,…          -> a design grid of that garment
+  // and saved under the conventional name, so everything downstream (the
+  // Conductor included) still sees *_map.csv / *_color_NAME_grid.csv. The
+  // garment is the one named up front (the per-item button) or the item
+  // whose model starts the file name; with neither, the file is refused
+  // with a reason that says how to name it.
+  function sniffCsvKind(text) {
+    const first = String(text).replace(/^\uFEFF/, "").split(/\r?\n/).find(l => l.trim()) || "";
+    const cols = first.split(",").map(c => c.trim().toLowerCase());
+    if (cols[0] !== "side" || cols[1] !== "row") return null;
+    if (cols.includes("board_no") && cols.includes("socket")) return "map";
+    if (cols[2] === "shift" && cols.length > 3 && cols.slice(3).every(c => /^\d+$/.test(c))) return "grid";
+    return null;
+  }
+  function conventionalName(name, text, itemHint) {
+    const n = String(name);
+    if (globalThis.SIM.look.kind(n) !== null) return { name: n };
+    if (!/\.csv$/i.test(n)) return { error: refuseReason(n) };
+    const kind = sniffCsvKind(text);
+    if (!kind) return { error: "neither a map (first line side,row,col,board_no,socket,…) nor a design grid (side,row,shift,1,2,…)" };
+    const stem = n.replace(/\.csv$/i, "");
+    // The garment whose model starts the file name, if any - the target
+    // when no garment was named up front, and in either case the prefix
+    // to strip off the design name ("AZ271SD1305_1_HW" -> "1_HW").
+    const hit = state.items.map(i => i.item).filter(k => stem === k || stem.toLowerCase().startsWith(k.toLowerCase() + "_"))
+      .sort((a, b) => b.length - a.length)[0] || null;
+    const item = itemHint || hit;
+    if (!item) return { error: "which garment? name it MODEL_…csv, or use that garment's own Add CSV" };
+    if (kind === "map") return { name: `${item}_map.csv`, readAs: "map" };
+    let design = hit && stem.toLowerCase().startsWith(hit.toLowerCase() + "_") ? stem.slice(hit.length + 1) : (hit === stem ? "" : stem);
+    design = design.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-_.]+|[-_.]+$/g, "") || "design";
+    return { name: `${item}_color_${design}_grid.csv`, readAs: "design " + design };
+  }
   async function addFilesFromBlobs(files) {
     // Non-CSV names are refused BY NAME, like the per-item path, instead of
     // dropped in silence (adversarial review F6): dropping a folder whose
@@ -1235,16 +1271,22 @@
     // folder can hold a video, and reading one as text to learn it is not a
     // CSV is the one mistake this must not make.
     const list = [], refused = [];
-    const skipped = [];
+    const skipped = [], readAs = [];
     for (const f of files) {
       if (isMacMetadata(f.name)) { skipped.push(String(f.name)); continue; }
       const name = macSafeName(f.name);
       if (!/\.csv$/i.test(name)) { refused.push({ name: String(f.name), error: refuseReason(name) }); continue; }
-      try { list.push({ name, text: await readFileAsText(f) }); }
-      catch { refused.push({ name: String(f.name), error: "could not be read" }); }
+      let text;
+      try { text = await readFileAsText(f); }
+      catch { refused.push({ name: String(f.name), error: "could not be read" }); continue; }
+      const c = conventionalName(name, text, null);
+      if (c.error) { refused.push({ name: String(f.name), error: c.error }); continue; }
+      if (c.readAs) readAs.push(`${name} → ${c.name} (${c.readAs})`);
+      list.push({ name: c.name, text });
     }
     const result = list.length ? globalThis.SIM.app.addFiles(list) : { saved: [], refused: [] };
     if (skipped.length) console.info("skipped macOS metadata files:", skipped);
+    if (readAs.length) toast("read by content: " + briefly(readAs, x => x));
     const all = refused.concat(result.refused);
     const parts = [];
     if (result.saved.length) parts.push(`${result.saved.length} file(s) added`);
@@ -1270,10 +1312,15 @@
     const list = [], refused = [];
     for (const f of files) {
       if (isMacMetadata(f.name)) continue;
-      const name = macSafeName(f.name);
+      const name0 = macSafeName(f.name);
+      let text;
+      try { text = await readFileAsText(f); }
+      catch { refused.push({ name: String(f.name), error: "could not be read" }); continue; }
+      const c = conventionalName(name0, text, itemKey);
+      if (c.error) { refused.push({ name: String(f.name), error: c.error }); continue; }
+      const name = c.name;
       if (renameOntoItem(itemKey, name) === null) { refused.push({ name: String(f.name), error: refuseReason(name) }); continue; }
-      try { list.push({ name, text: await readFileAsText(f) }); }
-      catch { refused.push({ name: String(f.name), error: "could not be read" }); }
+      list.push({ name, text });
     }
     const result = list.length ? globalThis.SIM.app.addFilesToItem(itemKey, list)
                                : { saved: [], renamed: [], refused: [] };
@@ -1474,6 +1521,8 @@
     // was (runSelfTestSafely() above is the one caller today).
     setProject(p) { project = p; rebuild(); persist(); },
     getState() { return state; },
+    // Test seam: how an arbitrary CSV name+text would be taken in (see conventionalName()).
+    classifyCsv(name, text, itemHint) { return conventionalName(String(name), String(text), itemHint || null); },
     render() { render(); },
     addFiles(list) {
       const saved = [], refused = [];
