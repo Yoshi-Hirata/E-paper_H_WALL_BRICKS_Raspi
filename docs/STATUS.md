@@ -18,6 +18,52 @@
 
 ## 2. 直近で完成したもの
 
+**「Write to units…」に **WHICH LOOKs** - 書き込むルックを選ぶ(2026-09-25、依頼者の要望から)**
+
+依頼者の要望:「WRITE TO UNITS のポップアップウィンドウ内で、書き込むルックを選択できる
+ようにして。ラジオボタンをクリックして選択するでよい」。1 ルックだけ直したときに
+全 10 台へ焼き直す必要は無い ― が、**そのぶん「全部入っているのか」を嘘にしない**のが
+このラウンドの中身。
+
+- **ダイアログ上部のラジオ 1 組**(2 つの選択肢の上):「**All LOOKs — n units**」(既定。
+  ダイアログを開くたびにここへ戻る ― 1 時間前の 1 ルック選択が残っていることが、
+  ショーが 1 台だけに出て行く道そのものなので)、続けてタイムラインが届くルックを
+  LOOK 順に 1 行ずつ:
+  `LOOK 26 · AZ271SC6302 (Tops) + AZ271SB2303 (Skirt) → radxa-01 · 5 pictures ≈ 2 s`。
+  行の作り方は「THE LOOKS AT」と同じ `lookGroups()` ― **1 台に縫い付けた上下 2 着は 1 行**、
+  2 台にまたがるルックは両方の機体名を出す。LOOK 番号を持たないもの(バッグ)は
+  型番で 1 行。機体が割り当たっていない行は **`— no unit` で disabled** のまま並べる
+  (隠さない ― ショーの一部であることは言う価値がある)。矢印キーで移動でき、
+  disabled の行は飛ばす。Tab の閉じ込めはそのまま
+- **選んだ行が下のすべてを絞る**: 送り先の一覧、`About N s — … on the slowest unit`、
+  見出しの `… · 1 unit · LOOK 26 only`、実行後の結果と焼き込みの進み。
+  **チップは fleet 全体のまま**(「いま画面にあるものは機体に入っているか」は、
+  これから 1 ルックを書くかどうかで変わる問いではない)
+- **選択時の一文**:Upload の下に「Only LOOK 26's unit is written. **START needs every unit
+  of the timeline to hold this upload** — use this for checking one look, then Upload for
+  all before the show.」、Save on the units の下に「Only LOOK 26's unit gets the demo;
+  the other units keep theirs.」。ショー進行中の Upload の確認ダイアログは、
+  **これから一瞬ショーを離れる機体の名前**を出す
+- **API**: `POST /api/fleet/upload` ・ `/api/fleet/write_demo` に任意の **`units: [名前]`**
+  (省略 = 全部 = これまでの全クライアントの動き)。名前はコンパイル済みのショーと
+  照合し、**このタイムラインの機体でなければ 400 `radxa-07 is not a unit of this
+  timeline`**(ページは見えているタイムラインから作るので、食い違い = 片方が古い。
+  黙って落として「成功」と言うより止める)。`Fleet.upload(shows, force=, only=)` ・
+  `write_demo(..., only=)` はその機体だけに POST し、**`self.shows` は置き換えではなく
+  マージ**(残りの機体はまだ前の Upload で走っている ― 忘れると START と SEEK ごと失う)
+- **部分的な書き込みは、fleet 全体を「書き込み済み」にしない**: ワークスペースの印を
+  **機体ごと**にし(`Workspace.unit_marks`)、fleet 全体の印は**タイムラインの全機体が
+  その版を持っているときだけ**立てる(それ以外は落とす)。`/api/fleet` の `timeline` に
+  **`uploaded_units`** と **`demo_units`** を追加。チップはこの機体ごとの版を読むので、
+  1 ルックの Upload は `uploaded 1/2`(判定語なし)、編集後に 1 ルックだけ焼き直せば
+  `2/2 · changed since` になり、黙り込まない。ダイアログの機体一覧とタイルの Show 行に
+  `· has this upload` / `· older upload`(`(older timeline)`)が出る。
+  自分の版を持つデモは、**その機体の Upload が古いというだけでは古いと言わない**
+- **テスト: 723 件 + skip 1**(+8: server の units フィルタ 4 = 受理・400・部分 Upload が
+  fleet の印を立てない・全体印が戻る、fleet の `only=` 3、ページの id と文言 1)。
+  ブラウザ確認は偽機体 2 台(**127.0.0.1:19401/19402**)と 8786 の conductor で、
+  LOOK 26 を選んで Upload → radxa-04 には 1 バイトも行かず、チップは `uploaded 1/2`
+
 **演出家のシミュレーターに音源を埋め込む(2026-09-25、依頼者の指摘「音がなっていないようだ」から)**
 
 原因は仕様どおりの動作だった:ブラウザは自分でディスク上のファイルを開けないので、

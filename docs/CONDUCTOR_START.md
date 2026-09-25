@@ -118,6 +118,11 @@ python -m conductor serve --open
 > - **B = Save on the units** … **PC なしで流したいときはこちら**(§7)。各機体自身の
 >   メニューに名前つきで保存し、機体が KEY1 で再生する
 >
+> どちらもダイアログ上部の **WHICH LOOKs** のラジオで「All LOOKs」(既定)か LOOK 1 つを
+> 選べる。1 つだけ選ぶとその LOOK の機体にしか書かないので、**START はタイムラインの
+> 全機体が同じ Upload を持っていることを要求する** - 1 ルックの Upload は確認用、
+> 本番前には必ず All LOOKs でもう一度 Upload すること。
+>
 > いまタイムラインが機体に入っているかは、Timeline の「THE LOOKS AT」バーと
 > Units タブの「THE SHOW」見出しのチップ(`uploaded 10 / 10 · up to date` /
 > `demo "PARIS SS26" 10 / 10 · changed since`)で分かる。
