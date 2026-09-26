@@ -170,8 +170,22 @@ python -m conductor serve --open
    - **ショーの最中にページを開き直したときは、ブラウザが自分から音を出さない決まりなので、
      MUSIC 行に緑の「Music: click to join」が出る。1 回押せばいまのショーの位置から鳴り出す**
      (押すまで無音。ページはエラーにならない)
-   - 右の表示が今の状態:`playing 1:23` / `paused` / `stopped` / `blocked — click to join` /
-     `no track`(音源が未アップロード。Timeline タブの **Load music** で入れる)
+   - **音を出す Conductor は 1 台・1 タブだけにする**。同じ PC で 2 つのタブを開いた場合は
+     片方だけが鳴り、もう片方は `another Conductor tab is playing it` と出て黙る。
+     **別々の PC で 2 台開くと両方鳴って 0.1〜0.3 秒ずれる**(互いを知る手段が無い) ―
+     音を出さない方は `Music with THE SHOW` のチェックを外すこと
+   - 右の表示が今の状態:
+
+     | 表示 | 意味 |
+     |---|---|
+     | `playing 1:23` | その位置を再生中(`· muted` が付いていれば消音中) |
+     | `paused` | HOLD 中、または START の待ち時間(0:00 前)。RESUME/開始で続く |
+     | `stopped` | ショーが走っていない、または終わった |
+     | `track ended` | 曲がショーより短く、曲の終わりまで来た |
+     | `blocked — click to join` | ブラウザが自動再生を断った。緑のボタンを 1 回押す |
+     | `no track` | 音源が未アップロード。Timeline タブの **Load music** で入れる |
+     | `off` | `Music with THE SHOW` のチェックが外れている |
+     | `another Conductor tab is playing it` | 同じ PC の別タブが鳴らしている |
 
 5. 終わったら黒いウィンドウを閉じる。機体は本体のメニューに戻る(Units タブの Release)
 6. **PC と機体のコードは必ず一緒に更新する**。古いページは機体の `cancelled` / `none` を
