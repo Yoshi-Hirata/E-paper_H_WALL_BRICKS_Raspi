@@ -1066,6 +1066,29 @@ def test_stop_and_start_again_leaves_no_verdict_behind(rig):
     assert not any("landed already" in line for line in runner.log)
 
 
+def test_a_second_preset_is_checked_like_the_first(rig):
+    """Review round 4: PRESET puts the first cue up again, which is a new
+    fire onto a garment the last verdict says nothing about. Both presets
+    are checked (and a STOP in between changes nothing about that)."""
+    player, session, runner, bus, store = rig
+    player.load(make_show())
+    assert wait_burned(player)
+    player.preset()
+    assert wait_until(lambda: len(verdicts(bus)) == 1)
+    first = dict(session.verify or {})
+    assert first.get("landed") == "deaf"
+
+    gen = session.glass_gen
+    player.preset()
+    assert session.glass_gen > gen                  # a new generation...
+    assert json.loads((store / "show-run.json")
+                      .read_text(encoding="utf-8"))["verify"] is None
+    assert wait_until(lambda: len(verdicts(bus)) == 2)   # ...and checked
+    assert wait_until(lambda: (session.verify or {}) != first)
+    assert len([f for f in bus.log if f.cmd == SHOW]) == 2
+    assert not any("landed already" in line for line in runner.log)
+
+
 def test_every_lap_of_a_looping_show_is_checked(rig):
     """The same show run again and again (ui/app.py's demo loop) reuses
     its cue ids; every lap's triggers get their own check."""

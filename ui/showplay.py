@@ -423,6 +423,16 @@ class ShowPlayer:
             self._run_no += 1
             show, first = self.show, self.show["cues"][0]
             self._forget_garment()
+            # A preset repaints the garment, so the last check's verdict
+            # is not about what is going up now - and a second PRESET of
+            # the same cue must be checked on its own, not waved through
+            # as "landed already" (ui/runner.py). Today the _run_no bump
+            # above happens to make every preset a new session key, which
+            # would do it too; this says it where it is meant rather than
+            # leaning on that (review round 4).
+            self.session.forget_verify()
+            self._verify_seen = None
+            self._persist()
             # No write to budget for any more - the picture is already
             # burned into its slot; a small margin only covers arm()
             # possibly waiting for the port (start_remote()).
