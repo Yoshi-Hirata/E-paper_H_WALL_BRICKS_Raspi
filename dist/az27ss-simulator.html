@@ -816,6 +816,10 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   const _MAP_NAME = /^(.+?)_map/i;
   const _GRID_NAME = /^(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$/i;
   const _PATTERN_NO = /^pattern\s*0*(\d+)$/i;
+  // The production site's own "HW 用 CSV" name for the same grid:
+  // <item>_<配色案名>_HW.csv (conductor/look.py's _HW_NAME).
+  const _HW_NAME = /^(.+?)_(.+)_HW$/i;
+  const _HW_SUFFIX = "_HW";
 
   function defaultShift(row) { return row % 2 !== 0 ? 0.5 : 0; }
 
@@ -831,7 +835,25 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     const stem = stemOf(name);
     if (_IS_GRID.test(stem)) return "grid";
     if (_IS_MAP.test(stem)) return "map";
+    if (_HW_NAME.test(stem)) return "grid";
     return null;
+  }
+
+  // <item>_<配色案名>_HW -> [item, 配色案名], conductor/look.py's
+  // _split_hw(): the longest garment the caller already knows about wins
+  // (the design name may hold underscores of its own), and with no such
+  // list the item is whatever precedes the FIRST underscore.
+  function splitHw(stem, items) {
+    const body = stem.slice(0, stem.length - _HW_SUFFIX.length);
+    const known = (items || []).filter(Boolean).slice()
+      .sort((a, b) => b.length - a.length);
+    for (const k of known) {
+      if (body.toLowerCase().startsWith(k.toLowerCase() + "_")) {
+        return [body.slice(0, k.length), body.slice(k.length + 1)];
+      }
+    }
+    const cut = body.indexOf("_");
+    return cut === -1 ? [body, ""] : [body.slice(0, cut), body.slice(cut + 1)];
   }
 
   function mapItem(filename) {
@@ -839,11 +861,18 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     return m ? m[1] : null;
   }
 
-  function nameParts(filename) {
+  function nameParts(filename, items) {
     const stem = stemOf(filename);
     const m = _GRID_NAME.exec(stem);
-    if (!m) return [null, null, stem];
-    const item = m[1], name = m[2];
+    let item, name;
+    if (m) {
+      item = m[1]; name = m[2];
+    } else if (_HW_NAME.test(stem)) {
+      const hw = splitHw(stem, items);
+      item = hw[0]; name = hw[1];
+    } else {
+      return [null, null, stem];
+    }
     const num = _PATTERN_NO.exec(name);
     if (num) {
       const n = parseInt(num[1], 10);
@@ -1734,10 +1763,14 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
 
     // ---- designs ----
     const orphans = [];
+    // The garments whose map the loop above already parsed - what tells
+    // nameParts() where the item ends in an <item>_<名前>_HW.csv whose
+    // design name has underscores of its own (server.py's _known_items()).
+    const knownItems = Object.keys(maps).map(k => maps[k].item).filter(Boolean);
     names.forEach(name => {
       if (look.kind(name) !== "grid") return;
       const text = files[name];
-      const parts = look.nameParts(name);          // [item, pattern, label]
+      const parts = look.nameParts(name, knownItems);   // [item, pattern, label]
       const parseResult = look.parseDesign(text, { name, item: parts[0], pattern: parts[1] });
       let design = null;
       let problems = [];
@@ -4169,7 +4202,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       <p>Clock positions (Start, End, Show length, the dock's go-to box) are typed as mm.ss - minutes and seconds, not a decimal fraction of a minute: <code>3.05</code> is 3 minutes 05 seconds; a single-digit second still counts as seconds, so <code>3.5</code> is also 3 minutes 05 seconds; <code>3.60</code> is not valid (there is no 60th second) and turns the field red. The badge and the live "3 min 05 s" readout next to every one of these fields are there so this never has to be memorised.</p>
       <p>Supported browsers: Safari 14.1 or later, or a recent Chrome or Edge. A private/incognito window may refuse to keep the autosaved copy at all (see the warning banner in the header when that happens) - use <b>Save project…</b> there instead of relying on autosave.</p>
       <h2>開き方</h2><p>このファイル（<code>az27ss-simulator.html</code> または <code>designer.html</code>）をダブルクリックするだけで開きます。インストールもサーバーも不要です。Windows は Edge か Chrome、macOS は Safari か Chrome を推奨します。</p>
-      <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。<b>Designs</b> タブの「DESIGNS OF THIS ITEM」にある「Add CSV」を使うと、選んだファイルはその1着だけに追加されます（別の型番の名前でも、その1着の名前で保存されます）。ただし<b>他の衣装のマップCSV（<code>*_map.csv</code>）は受け付けません</b>（配線図は柄と違って入れ替えられるものではないため）。その場合はヘッダーの「Add CSV」を使ってください。同じ名前のファイルは上書きされます。</p>
+      <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。<b>Designs</b> タブの「DESIGNS OF THIS ITEM」にある「Add CSV」を使うと、選んだファイルはその1着だけに追加されます（別の型番の名前でも、その1着の名前で保存されます）。ただし<b>他の衣装のマップCSV（<code>*_map.csv</code>）は受け付けません</b>（配線図は柄と違って入れ替えられるものではないため）。その場合はヘッダーの「Add CSV」を使ってください。同じ名前のファイルは上書きされます。配線ナビの「HW 用 CSV」で書き出したファイル（<code>&lt;型番&gt;_&lt;配色案名&gt;_HW.csv</code>）はそのまま入れられます。</p>
       <h2>タイムライン（デザインを後ろに足していく）</h2><p>ショーは通常、${esc(clockShort(0))} から順に、次々と後ろへデザインを足していきます。方法は2つあります。①<b>トラックの好きな位置をクリック</b>すると、その時刻にデザインを置けます。空いている場所にポインタを重ねると、置かれる位置と「+ デザイン名 at m.ss」という薄い帯（プレビュー）が出るので、そのままクリックしてください。②トラック行の右端にある<b>「+」ボタン</b>を押すと、その衣装の<b>次のデザイン</b>（そのアイテムのデザイン一覧で、最後のキューの次にあるもの。最後まで行くと先頭に戻ります）を、直前のデザインの描画が終わった直後（complete の時刻＋1秒）に追加します。続けて押していけば、ローテーション全体をトラック上に並べられます。追加先がショーの終わりを超える場合は <b>Show length</b> が自動的に延長され、その旨が表示されます。<b>EDIT CUE</b> の<b>「＋ Add next design after this cue」</b>も同じ動作で、いま開いているキューの後ろに追加します。追加されたキューは必ず EDIT CUE に開かれます。</p>
       <p><b>「+」の2つの注意点。</b>まだ何も置いていないトラックで「+」を押すと、最初の1つは ${esc(clockShort(0))} に置かれます ―― これはそのアイテムの<b>プリセット</b>（ショー開始前に表示しておく絵）になります。ショー本編の最初のデザインは、もう一度「+」を押してください（1秒後に入ります）。また、デザインが1つしかないアイテムでは、ローテーションの行き先がないため同じデザインが繰り返し追加されます。</p>
       <h2>mm.ss の読み方</h2><p>開始・終了・ショー全体の長さなど「時刻」は分.秒（mm.ss）で入力します。例：<code>3.05</code> → 3分05秒。<code>3.5</code> のように秒が1桁でも「3分05秒」として読みます。<code>3.60</code> のように60秒以上は無効（赤色）になります。入力欄の横に読み方がそのまま表示されます（例：「3 min 05 s」）。</p>
@@ -4328,7 +4361,10 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   // second MAP for the same garment is refused, a garment has one wiring.
   function uniqueSaveName(name, taken) {
     if (!taken.has(name)) { taken.add(name); return name; }
-    const m = name.match(/^(.*_color_)(.+?)(_grid.*\.csv)$/i);
+    // Both spellings of a design name: <item>_color_<name>_grid.csv and
+    // the site's own <item>_<name>_HW.csv.
+    const m = name.match(/^(.*_color_)(.+?)(_grid.*\.csv)$/i)
+      || name.match(/^([^_]+_)(.+?)(_HW\.csv)$/i);
     if (!m) return null;
     for (let n = 2; n < 100; n++) {
       const candidate = `${m[1]}${m[2]}-${n}${m[3]}`;
@@ -4381,7 +4417,10 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   // to. Returns null for "cannot belong to any item".
   function renameOntoItem(itemKey, name) {
     const raw = String(name);
-    const m = raw.match(/(_map|_color_.+grid).*\.csv$/i);
+    // _.+_HW last, so a *_map.csv or a conventional *_color_NAME_grid.csv
+    // is still read as itself: AZ271SD1301_1_HW.csv picked on another
+    // garment becomes <item>_1_HW.csv.
+    const m = raw.match(/(_map|_color_.+grid|_.+_HW).*\.csv$/i);
     return m ? itemKey + raw.slice(m.index) : null;
   }
   async function addFilesToItemFromBlobs(itemKey, files) {
@@ -4562,7 +4601,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   // take the name and ignore it, so a dropped .xlsx and a mis-named CSV got
   // the same sentence, and the .xlsx one did not describe the problem).
   function refuseReason(name) {
-    return /\.csv$/i.test(String(name)) ? "not a *_map.csv or *_color_NAME_grid.csv"
+    return /\.csv$/i.test(String(name)) ? "not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv"
                                         : "not a .csv file";
   }
   // A refusal/rename list, short enough to read in a toast: a dropped folder

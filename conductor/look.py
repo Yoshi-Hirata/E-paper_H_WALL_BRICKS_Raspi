@@ -17,6 +17,9 @@ Two files, as delivered by the designers (2026-09-21, Look22):
       has no hole, or - for a hole whose colour is not decided yet. One
       file per cue. `shift` (0 / 0.5) is the half-scale offset of that
       row (the rows are laid like bricks), used only to draw the preview.
+      The production site's "HW 用 CSV" button writes this same file
+      under its own name, LookNN_<配色案名>_HW.csv; kind() and
+      Design.name_parts() read both spellings.
 
 They join on (side, row, col). row 0 is the hem, the highest row the
 neck. Both files are drawn as seen from the INSIDE of the garment (the
@@ -92,11 +95,57 @@ _MAP_NAME = re.compile(r"(.+?)_map", re.IGNORECASE)
 _GRID_NAME = re.compile(r"(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$",
                         re.IGNORECASE)
 _PATTERN_NO = re.compile(r"pattern\s*0*(\d+)$", re.IGNORECASE)
+# The production site's own "HW 用 CSV" button writes the SAME grid
+# (csvGrid(): side,row,shift,1..W) under its own official name,
+# <item>_<配色案名>_HW.csv - "AZ271SD1301_1_HW.csv" is design "1" of
+# AZ271SD1301, exactly what this module otherwise calls
+# AZ271SD1301_color_1_grid.csv. Both names are read as a design here, so a
+# designer can drop the file the site gave them without renaming it.
+_HW_NAME = re.compile(r"(.+?)_(.+)_HW$", re.IGNORECASE)
+_HW_SUFFIX = "_HW"
+_IS_MAP = re.compile(r"_map$", re.IGNORECASE)
+_IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
 _MAP_COLUMNS = ("side", "row", "col", "board_no", "socket")
 _SHIFT_COLUMN = "shift"
 _EMPTY_CELLS = ("", "0")       # no hole here
 _UNDECIDED = "-"               # a hole, colour not chosen yet
 
+
+
+def kind(name: str) -> "str | None":
+    """"map", "grid" or None, from the file's NAME alone.
+
+    Three spellings are a grid: the conventional
+    <item>_color_<name>_grid.csv, and the production site's own
+    <item>_<配色案名>_HW.csv. A *_map.csv is always the map, whatever else
+    the name says.
+    """
+    if not str(name).lower().endswith(".csv"):
+        return None
+    stem = Path(name).stem
+    if _IS_GRID.search(stem):
+        return "grid"
+    if _IS_MAP.search(stem):
+        return "map"
+    if _HW_NAME.match(stem):
+        return "grid"
+    return None
+
+
+def _split_hw(stem: str, items=None) -> "tuple[str, str]":
+    """<item>_<配色案名>_HW -> (item, 配色案名).
+
+    The design name may itself hold underscores ("summer_2"), so where the
+    caller knows which garments exist the longest matching one wins; with
+    no such list (look.py on its own) the item is what precedes the FIRST
+    underscore, which is how every model number delivered so far reads.
+    """
+    body = stem[:-len(_HW_SUFFIX)]
+    for known in sorted((i for i in (items or []) if i), key=len, reverse=True):
+        if body.lower().startswith(known.lower() + "_"):
+            return body[:len(known)], body[len(known) + 1:]
+    item, _, name = body.partition("_")
+    return item, name
 
 
 class LookError(ValueError):
@@ -318,9 +367,9 @@ class Design:
     undecided: "set[tuple[str, int, int]]" = field(default_factory=set)
 
     @classmethod
-    def from_csv(cls, path) -> "Design":
+    def from_csv(cls, path, items=None) -> "Design":
         path = Path(path)
-        item, pattern, label = cls.name_parts(path.name)
+        item, pattern, label = cls.name_parts(path.name, items)
         with open(path, newline="", encoding="utf-8-sig") as handle:
             design = cls.parse(handle, name=path.name, item=item,
                                pattern=pattern)
@@ -328,12 +377,21 @@ class Design:
             return design
 
     @staticmethod
-    def name_parts(filename) -> "tuple[str | None, int | None, str]":
-        """(item, pattern number, label) from a design file's name."""
-        match = _GRID_NAME.match(Path(filename).stem)
-        if not match:
-            return None, None, Path(filename).stem
-        item, name = match.group(1), match.group(2)
+    def name_parts(filename, items=None) -> "tuple[str | None, int | None, str]":
+        """(item, pattern number, label) from a design file's name.
+
+        `items` is the garments the caller already knows about, used only
+        to split an <item>_<配色案名>_HW.csv whose design name has
+        underscores of its own (see _split_hw).
+        """
+        stem = Path(filename).stem
+        match = _GRID_NAME.match(stem)
+        if match:
+            item, name = match.group(1), match.group(2)
+        elif _HW_NAME.match(stem):
+            item, name = _split_hw(stem, items)
+        else:
+            return None, None, stem
         number = _PATTERN_NO.match(name)
         if number:
             return item, int(number.group(1)), f"P{int(number.group(1)):02d}"

@@ -44,6 +44,7 @@ from . import sequence, showfile, timeline
 from .fleet import DEFAULT_LEAD_S, Fleet, default_units
 from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, default_shift, unit_board_ids)
+from .look import kind as file_kind
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 REPO_DIR = Path(__file__).resolve().parent.parent
@@ -75,8 +76,6 @@ _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # about the show (see Workspace.revision).
 _REVISION_IGNORES = {"music", "labels"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
-_IS_MAP = re.compile(r"_map$", re.IGNORECASE)
-_IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
 _MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
 _COPY_NO = re.compile(r"-\d+$")
 _LOOK_NO = re.compile(r"look\s*0*(\d+)", re.IGNORECASE)
@@ -87,6 +86,13 @@ _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 def _key(position) -> str:
     return "|".join(str(part) for part in position)
+
+
+def _known_items(maps: "dict[str, LookMap]") -> "list[str]":
+    """The garments this workspace already has a map for - what tells
+    Design.name_parts() where the item ends in an <item>_<name>_HW.csv
+    whose design name carries underscores of its own."""
+    return [m.item for m in maps.values() if m.item]
 
 
 def music_type(name: str) -> str:
@@ -877,22 +883,17 @@ class Workspace:
 
     # ---- files ----
 
-    @staticmethod
-    def kind(name: str) -> "str | None":
-        stem = Path(name).stem
-        if not name.lower().endswith(".csv"):
-            return None
-        if _IS_GRID.search(stem):
-            return "grid"
-        if _IS_MAP.search(stem):
-            return "map"
-        return None
+    # One grammar for both sides of the wire: conductor/look.py's
+    # file_kind() also reads the production site's own
+    # <item>_<配色案名>_HW.csv as a grid, so a file straight from the
+    # "HW 用 CSV" button uploads without being renamed first.
+    kind = staticmethod(file_kind)
 
     def save(self, name: str, text: str) -> str:
         name = _SAFE_NAME.sub("_", Path(name).name)
         if self.kind(name) is None:
-            raise ValueError(f"{name}: not a *_map.csv or "
-                             "*_color_NAME_grid.csv")
+            raise ValueError(f"{name}: not a *_map.csv, "
+                             "*_color_NAME_grid.csv or *_HW.csv")
         with self._lock:
             # open(), not Path.write_text(newline=...): that is 3.10+, and
             # the units' Python 3.9 should be able to run this too.
@@ -952,7 +953,8 @@ class Workspace:
                 problems.append(f"{item}: not assigned to a unit")
                 continue
             try:
-                design = Design.from_csv(self.files / Path(design_name).name)
+                design = Design.from_csv(self.files / Path(design_name).name,
+                                         items=_known_items(maps))
                 on_unit = [m for key, m in maps.items()
                            if assigned.get(m.item) == unit]
                 ids = unit_board_ids(on_unit)
@@ -1142,7 +1144,8 @@ class Workspace:
         for path in paths:
             if self.kind(path.name) == "grid":
                 try:
-                    designs[path.name] = Design.from_csv(path)
+                    designs[path.name] = Design.from_csv(
+                        path, items=_known_items(maps))
                 except (OSError, LookError):
                     pass
         for key, look_map in maps.items():
@@ -1223,8 +1226,9 @@ class Workspace:
         for path in paths:
             if self.kind(path.name) != "grid":
                 continue
+            known = _known_items(maps)
             try:
-                design = Design.from_csv(path)
+                design = Design.from_csv(path, items=known)
                 problems = []
             except (OSError, LookError) as exc:     # deleted meanwhile, too
                 design, problems = None, getattr(exc, "problems", [str(exc)])
@@ -1233,7 +1237,7 @@ class Workspace:
             record = {"name": path.name,
                       "pattern": design.pattern if design else None,
                       "label": (design.label if design
-                                else Design.name_parts(path.name)[2]),
+                                else Design.name_parts(path.name, known)[2]),
                       # problems: as a full cue. partial_problems: as a
                       # cue that leaves uncoloured scales as they are - a
                       # design that only passes that way is a partial one,

@@ -5391,6 +5391,167 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   },
   {
    "expect": {
+    "kind": "map",
+    "parts": [
+     null,
+     null,
+     "Sample_map"
+    ]
+   },
+   "filename": "Sample_map.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "Sample",
+     1,
+     "P01"
+    ]
+   },
+   "filename": "Sample_color_pattern01_grid.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "Look22",
+     null,
+     "ref_multicolor_redorange_s22"
+    ]
+   },
+   "filename": "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1301",
+     null,
+     "1"
+    ]
+   },
+   "filename": "AZ271SD1301_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1301",
+     null,
+     "summer_2"
+    ]
+   },
+   "filename": "AZ271SD1301_summer_2_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1301",
+     null,
+     "summer_2"
+    ]
+   },
+   "filename": "AZ271SD1301_summer_2_HW.csv",
+   "items": [
+    "AZ271SD1301"
+   ],
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "B_1"
+    ]
+   },
+   "filename": "AZ271SD1305_B_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1305_B",
+     null,
+     "1"
+    ]
+   },
+   "filename": "AZ271SD1305_B_1_HW.csv",
+   "items": [
+    "AZ271SD1305",
+    "AZ271SD1305_B"
+   ],
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1301",
+     3,
+     "P03"
+    ]
+   },
+   "filename": "AZ271SD1301_pattern03_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "parts": [
+     null,
+     null,
+     "AZ271SD1301_HW"
+    ]
+   },
+   "filename": "AZ271SD1301_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "parts": [
+     null,
+     null,
+     "notes"
+    ]
+   },
+   "filename": "notes.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "parts": [
+     null,
+     null,
+     "Sample_map"
+    ]
+   },
+   "filename": "Sample_map.txt",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
     "map": {
      "boardNos": [
       17,

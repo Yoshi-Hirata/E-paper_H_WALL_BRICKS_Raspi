@@ -3544,11 +3544,14 @@ document.addEventListener("mouseover", e => {
 async function uploadOwn(item, fileList) {
   const files = [], refused = [];
   for (const f of fileList) {
-    const rest = f.name.match(/(_map|_color_.+grid).*\.csv$/i);
+    // _.+_HW: the wiring site's own "HW 用 CSV" name for a design grid
+    // (AZ271SD1301_1_HW.csv). Last of the three, so a *_map.csv or a
+    // conventional *_color_NAME_grid.csv is still read as itself.
+    const rest = f.name.match(/(_map|_color_.+grid|_.+_HW).*\.csv$/i);
     if (rest) files.push({ name: item.item + f.name.slice(rest.index), text: await f.text() });
     else refused.push(f.name);
   }
-  const note = refused.length ? `Not a *_map.csv or *_color_NAME_grid.csv: ${refused.join(", ")}` : "";
+  const note = refused.length ? `Not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv: ${refused.join(", ")}` : "";
   if (files.length) upload(files, note); else toast(note);
 }
 async function upload(fileList, note) {

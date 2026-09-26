@@ -148,13 +148,23 @@ def test_http_api_round_trip(tmp_path):
         _, raw = call("/api/files", {"files": [
             {"name": "Look22_map.csv", "text": MAP},
             {"name": "Look22_color_pattern01_grid.csv", "text": GRID},
+            # Straight from the wiring site's "HW 用 CSV" button, under
+            # the name that button gives it (2026-09-26).
+            {"name": "Look22_1_HW.csv", "text": GRID},
             {"name": "notes.csv", "text": "x"}]})
         result = json.loads(raw)
-        assert len(result["saved"]) == 2 and len(result["refused"]) == 1
+        assert len(result["saved"]) == 3 and len(result["refused"]) == 1
+        state = json.loads(call("/api/state")[1])
+        # The _HW.csv belongs to Look22 like any other design, and the
+        # Designs list calls it by the 配色案名 in its name ("1").
+        assert [(d["name"], d["label"]) for d in state["items"][0]["designs"]] == [
+            ("Look22_color_pattern01_grid.csv", "P01"),
+            ("Look22_1_HW.csv", "1")]
         call("/api/assign", {"item": "Look22", "unit": "radxa-03"})
         state = json.loads(call("/api/state")[1])
         assert state["items"][0]["unit"] == "radxa-03"
         call("/api/delete", {"name": "Look22_color_pattern01_grid.csv"})
+        call("/api/delete", {"name": "Look22_1_HW.csv"})
         assert json.loads(call("/api/state")[1])["items"][0]["designs"] == []
     finally:
         server.shutdown()
@@ -558,7 +568,9 @@ def test_board_numbers_are_checked_and_survive_a_new_csv(workspace):
 def test_designer_named_files_are_accepted_and_labelled(workspace):
     name = "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv"
     assert Workspace.kind(name) == "grid"
-    assert Workspace.kind("AZ271SD1305_ref_multicolor_redorange_s22_HW.csv") is None
+    # The production site's own "HW 用 CSV" name is a grid too, as of
+    # 2026-09-26 - it used to be refused and had to be renamed by hand.
+    assert Workspace.kind("AZ271SD1305_ref_multicolor_redorange_s22_HW.csv") == "grid"
     workspace.save(name, GRID)
     designs = item(workspace.state(), "Look22")["designs"]
     assert [(d["label"], d["pattern"]) for d in designs] == \

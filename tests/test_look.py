@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -446,6 +447,33 @@ def test_a_design_is_named_after_what_the_designer_typed():
         "AZ271SD1305_color_ref_multicolor_redorange_s22_grid-2_A-2.csv"
     ) == ("AZ271SD1305", None, "ref_multicolor_redorange_s22")
     assert Design.name_parts("notes.csv") == (None, None, "notes")
+
+
+def test_the_wiring_sites_own_hw_name_is_a_design_too():
+    # The site's "HW 用 CSV" button writes <型番>_<配色案名>_HW.csv, its
+    # official name for what this module otherwise calls
+    # <item>_color_<name>_grid.csv (2026-09-26).
+    assert look_mod.kind("AZ271SD1301_1_HW.csv") == "grid"
+    assert look_mod.kind("AZ271SD1301_map.csv") == "map"
+    assert look_mod.kind("AZ271SD1301_color_pattern01_grid.csv") == "grid"
+    assert look_mod.kind("AZ271SD1301_1_HW.txt") is None
+    # No 配色案名 at all: nothing to call the design, so not a grid.
+    assert look_mod.kind("AZ271SD1301_HW.csv") is None
+    assert Design.name_parts("AZ271SD1301_1_HW.csv") == ("AZ271SD1301", None, "1")
+    # A 配色案名 with underscores of its own: without a list of the
+    # garments that exist, the item is what precedes the FIRST underscore.
+    assert Design.name_parts("AZ271SD1301_summer_2_HW.csv") == \
+        ("AZ271SD1301", None, "summer_2")
+    # With one, the longest garment that fits wins - which is the only way
+    # to tell AZ271SD1305_B's design "1" from AZ271SD1305's design "B_1".
+    assert Design.name_parts("AZ271SD1305_B_1_HW.csv") == \
+        ("AZ271SD1305", None, "B_1")
+    assert Design.name_parts("AZ271SD1305_B_1_HW.csv",
+                             ["AZ271SD1305", "AZ271SD1305_B"]) == \
+        ("AZ271SD1305_B", None, "1")
+    # patternNN still numbers the design, whichever name it arrives under.
+    assert Design.name_parts("AZ271SD1301_pattern03_HW.csv") == \
+        ("AZ271SD1301", 3, "P03")
 
 
 # ---- tools/make_sample_grids.py: sample grids follow the map's own shift ----

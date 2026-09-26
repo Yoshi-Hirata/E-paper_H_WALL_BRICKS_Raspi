@@ -149,9 +149,16 @@ def test_goldens_cover_every_sequence_and_rule(golden):
     assert seq_covered == set(sequence.SEQUENCES)
 
     kinds = {c["kind"] for c in golden["cases"]}
-    for expected_kind in ("fmt", "canonical", "clock", "mmss", "map", "design", "check", "ranks",
-                          "timeline", "state"):
+    for expected_kind in ("fmt", "canonical", "clock", "mmss", "names", "map", "design", "check",
+                          "ranks", "timeline", "state"):
         assert expected_kind in kinds, f"no golden cases of kind {expected_kind!r}"
+
+    # The file-name grammar covers both spellings of a design file, the
+    # site's own <model>_<配色案名>_HW.csv included.
+    name_cases = [c for c in golden["cases"] if c["kind"] == "names"]
+    assert {c["expect"]["kind"] for c in name_cases} == {"map", "grid", None}
+    assert any(c["filename"].lower().endswith("_hw.csv")
+               and c["expect"]["kind"] == "grid" for c in name_cases)
 
     # state-digest cases come from conductor/web/starter/*.csv (Q's
     # committed real maps), not showdata/ - they must always be present

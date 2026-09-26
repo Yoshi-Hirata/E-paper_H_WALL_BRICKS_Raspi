@@ -173,10 +173,14 @@
 
     // ---- designs ----
     const orphans = [];
+    // The garments whose map the loop above already parsed - what tells
+    // nameParts() where the item ends in an <item>_<名前>_HW.csv whose
+    // design name has underscores of its own (server.py's _known_items()).
+    const knownItems = Object.keys(maps).map(k => maps[k].item).filter(Boolean);
     names.forEach(name => {
       if (look.kind(name) !== "grid") return;
       const text = files[name];
-      const parts = look.nameParts(name);          // [item, pattern, label]
+      const parts = look.nameParts(name, knownItems);   // [item, pattern, label]
       const parseResult = look.parseDesign(text, { name, item: parts[0], pattern: parts[1] });
       let design = null;
       let problems = [];

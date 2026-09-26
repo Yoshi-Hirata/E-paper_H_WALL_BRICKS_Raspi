@@ -496,6 +496,10 @@
   const _MAP_NAME = /^(.+?)_map/i;
   const _GRID_NAME = /^(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$/i;
   const _PATTERN_NO = /^pattern\s*0*(\d+)$/i;
+  // The production site's own "HW 用 CSV" name for the same grid:
+  // <item>_<配色案名>_HW.csv (conductor/look.py's _HW_NAME).
+  const _HW_NAME = /^(.+?)_(.+)_HW$/i;
+  const _HW_SUFFIX = "_HW";
 
   function defaultShift(row) { return row % 2 !== 0 ? 0.5 : 0; }
 
@@ -511,7 +515,25 @@
     const stem = stemOf(name);
     if (_IS_GRID.test(stem)) return "grid";
     if (_IS_MAP.test(stem)) return "map";
+    if (_HW_NAME.test(stem)) return "grid";
     return null;
+  }
+
+  // <item>_<配色案名>_HW -> [item, 配色案名], conductor/look.py's
+  // _split_hw(): the longest garment the caller already knows about wins
+  // (the design name may hold underscores of its own), and with no such
+  // list the item is whatever precedes the FIRST underscore.
+  function splitHw(stem, items) {
+    const body = stem.slice(0, stem.length - _HW_SUFFIX.length);
+    const known = (items || []).filter(Boolean).slice()
+      .sort((a, b) => b.length - a.length);
+    for (const k of known) {
+      if (body.toLowerCase().startsWith(k.toLowerCase() + "_")) {
+        return [body.slice(0, k.length), body.slice(k.length + 1)];
+      }
+    }
+    const cut = body.indexOf("_");
+    return cut === -1 ? [body, ""] : [body.slice(0, cut), body.slice(cut + 1)];
   }
 
   function mapItem(filename) {
@@ -519,11 +541,18 @@
     return m ? m[1] : null;
   }
 
-  function nameParts(filename) {
+  function nameParts(filename, items) {
     const stem = stemOf(filename);
     const m = _GRID_NAME.exec(stem);
-    if (!m) return [null, null, stem];
-    const item = m[1], name = m[2];
+    let item, name;
+    if (m) {
+      item = m[1]; name = m[2];
+    } else if (_HW_NAME.test(stem)) {
+      const hw = splitHw(stem, items);
+      item = hw[0]; name = hw[1];
+    } else {
+      return [null, null, stem];
+    }
     const num = _PATTERN_NO.exec(name);
     if (num) {
       const n = parseInt(num[1], 10);

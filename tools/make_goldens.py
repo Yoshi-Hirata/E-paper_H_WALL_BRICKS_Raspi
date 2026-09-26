@@ -290,6 +290,35 @@ DESIGN_FIXTURES = ["Sample_color_pattern01_grid.csv", "Skirt_color_pattern01_gri
                    "Sample_color_undecided_grid.csv", "Sample_color_zerowhite_grid.csv",
                    "Sample_color_extracells_grid.csv"]
 
+# kind()/name_parts() on both spellings of a design file's name, the
+# _HW.csv one included (2026-09-26). `items` is the garments the caller
+# already knows about - the only way to tell where the item ends when the
+# 配色案名 itself carries underscores.
+NAME_CASES = [
+    ("Sample_map.csv", None),
+    ("Sample_color_pattern01_grid.csv", None),
+    ("Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv", None),
+    ("AZ271SD1301_1_HW.csv", None),
+    ("AZ271SD1301_summer_2_HW.csv", None),
+    ("AZ271SD1301_summer_2_HW.csv", ["AZ271SD1301"]),
+    ("AZ271SD1305_B_1_HW.csv", None),
+    ("AZ271SD1305_B_1_HW.csv", ["AZ271SD1305", "AZ271SD1305_B"]),
+    ("AZ271SD1301_pattern03_HW.csv", None),
+    ("AZ271SD1301_HW.csv", None),          # no 配色案名: not a grid
+    ("notes.csv", None),
+    ("Sample_map.txt", None),
+]
+
+
+def name_cases() -> list:
+    cases = []
+    for filename, items in NAME_CASES:
+        item, pattern, label = Design.name_parts(filename, items)
+        cases.append({"kind": "names", "filename": filename, "items": items,
+                      "expect": {"kind": look.kind(filename),
+                                 "parts": [item, pattern, label]}})
+    return cases
+
 
 def map_cases() -> list:
     cases = []
@@ -678,6 +707,7 @@ def build_goldens() -> dict:
     cases += canonical_cases()
     cases += clock_cases()
     cases += mmss_cases()
+    cases += name_cases()
     cases += map_cases()
     cases += design_cases()
     cases += check_cases()
