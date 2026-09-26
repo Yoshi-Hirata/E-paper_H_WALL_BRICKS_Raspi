@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 import sys
 import time
 from pathlib import Path
@@ -9,29 +10,87 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
 from epaper.protocol import Frame
 from ui.patterns import BY_KEY
-from ui.runner import DemoRunner
+from ui.runner import NO_DELAY, DemoRunner
+
+
+GET_VERSION = 0x02          # the landing check's read-only question
 
 
 class FakeBus:
-    """Records frames and ACKs everything (optionally failing on a cmd)."""
+    """Records frames and ACKs everything (optionally failing on a cmd).
 
-    def __init__(self, nak_on: int | None = None, ack_cmd: int = 0x80):
+    The landing check (ui/runner.py's _verify_landing()) asks one board
+    0x02 after a cue's broadcast and reads whether it answers at all, so
+    this bus answers that question per board:
+
+      "deaf"    silence - the board is repainting, which is what a board
+                that TOOK the show broadcast does. The default, because
+                that is the normal outcome on the real wall
+      "busy"    ACK_BUSY: working, so the broadcast landed
+      "idle"    ACK_FAIL 0x0A - what production firmware really answers
+                to 0x02 (docs/SPECIFICATION.md 5.5). An answer means the
+                board is listening, so it never got the show
+      "version" ACK_SUCCESS with version bytes: the same "it answered",
+                for the firmware the V1.0 spec described
+    """
+
+    def __init__(self, nak_on: int | None = None, ack_cmd: int = 0x80,
+                 witness: "dict[int, str] | None" = None,
+                 deaf_boards: bool = True):
         self.sent: list[Frame] = []
         self.requested: list[Frame] = []
         self.nak_on = nak_on
         self.ack_cmd = ack_cmd
         self.closed = False
+        self.witness = dict(witness or {})
+        self.witness_default = "deaf" if deaf_boards else "idle"
+        # One late answer from a board nobody is asking any more - the
+        # frame a deaf board queues and sends after its repaint.
+        self.stray: "int | None" = None
+        self.asked: "list[Frame]" = []      # only the 0x02 questions
+        self.asked_at: "list[float]" = []
+        self.sent_at: "list[float]" = []    # when each send() went out
+
+    @property
+    def broadcasts(self) -> "list[Frame]":
+        """Every "show slot N" that went to the whole bus."""
+        return [f for f in self.sent if f.cmd == 0x1D and f.dest == 0xFF]
 
     def send(self, frame):
         self.sent.append(frame)
+        self.sent_at.append(time.monotonic())
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         self.requested.append(frame)
+        if frame.cmd == GET_VERSION:
+            return self._version_reply(frame)
         if self.nak_on is not None and frame.cmd == self.nak_on:
             return None
         # Real boards answer with DevType 0xFF (docs/SPECIFICATION.md 5.3).
         return Frame(dest=0x00, src=frame.dest, dev_type=0xFF,
                      cmd=self.ack_cmd)
+
+    def _version_reply(self, frame):
+        self.asked.append(frame)
+        self.asked_at.append(time.monotonic())
+        if self.stray is not None:
+            # A late answer to an EARLIER question, from another board.
+            src, self.stray = self.stray, None
+            return Frame(dest=0x00, src=src, dev_type=0xFF, cmd=0x80)
+        state = self.witness.get(frame.dest, self.witness_default)
+        if isinstance(state, list):
+            # A board that answers differently each time it is asked;
+            # the last entry is what it keeps saying.
+            state = state.pop(0) if len(state) > 1 else state[0]
+        if state == "deaf":
+            return None
+        if state == "busy":
+            return Frame(dest=0x00, src=frame.dest, dev_type=0xFF, cmd=0x82)
+        if state == "version":
+            return Frame(dest=0x00, src=frame.dest, dev_type=0xFF, cmd=0x80,
+                         data=b"\x01\x04")
+        return Frame(dest=0x00, src=frame.dest, dev_type=0xFF, cmd=0x81,
+                     data=b"\x0a")
 
     def __enter__(self):
         return self
@@ -67,6 +126,10 @@ def make_runner(bus, **kwargs):
     kwargs.setdefault("link_poll", 0.01)
     kwargs.setdefault("probe_sweep_delay", 0.01)
     kwargs.setdefault("reprobe_interval", 0.05)
+    # The landing check waits a second on the real unit (the boards' deaf
+    # window); here it waits long enough to be observable and no longer.
+    kwargs.setdefault("verify_after", 0.05)
+    kwargs.setdefault("verify_read", 0.01)
     # The fake port has no device node, so standby would read every poll
     # as an unplug. Tests that care about that supply their own.
     kwargs.setdefault("link_token", lambda port: "up")
@@ -199,7 +262,7 @@ class Wall(FakeBus):
         super().__init__()
         self.present = set(present)
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         self.requested.append(frame)
         if frame.dest != 0xFF and frame.dest not in self.present:
             return None
@@ -255,3 +318,264 @@ def test_a_given_list_is_probed_as_given():
     assert wait_until(lambda: "panels online" in " ".join(runner.log), timeout=10)
     assert runner.expected == 3 and any("panels online: 2/3" in l for l in runner.log)
     runner.stop()
+
+
+# ---- the landing check: did the cue's broadcast reach the boards? ----
+#
+# radxa-04, LOOK26 rehearsal 2026-09-26: the last cue was recorded as
+# fired (+166 ms) and the boards never changed - the unit's USB link had
+# been dropping frames all evening ("usb1-port1: disabled by hub (EMI?)",
+# ttyACM0 -> ttyACM1 mid-show), and a show broadcast is one unacknowledged
+# frame. The runner now asks one board whether it is repainting and, only
+# if it plainly is not, sends the frame once more. See ui/runner.py's
+# VERIFY_AFTER_S for the deaf window this leans on.
+
+SHOW, GUARD = 0x1D, 0x17
+
+
+def cue_array(color: int = 3) -> bytes:
+    return bytes([0xFE] + [color] * 60 + [0xFF, 0xFF, 0xFE])
+
+
+def sweep_table(first_frames: int) -> bytes:
+    """A delay table whose earliest socket starts `first_frames` frames
+    (10 ms each) after the show broadcast."""
+    return struct.pack(">64H",
+                       *([NO_DELAY] + [first_frames] * 62 + [NO_DELAY]))
+
+
+def fired_cue(bus, boards=(1,), delays=None, span_s=None, **kwargs):
+    """Prepare a cue, fire it, and wait for the fire itself.
+
+    The landing check is still running when this returns - that is what
+    the callers are here to watch.
+    """
+    from ui.remote import FIRED, READY, RemoteSession
+
+    runner = make_runner(bus, boards=list(boards), **kwargs)
+    session = RemoteSession(runner)
+    session.prepare("c1", {b: cue_array(b) for b in boards},
+                    delays=delays, span_s=span_s)
+    assert wait_until(lambda: session.phase == READY)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED)
+    return session, runner
+
+
+def logged(runner, text: str) -> bool:
+    return any(text in line for line in runner.log)
+
+
+def test_a_silent_board_means_the_broadcast_landed():
+    # Silence is the GOOD answer: the board is deaf because it is
+    # repainting, which is what taking the broadcast looks like.
+    bus = FakeBus()                                   # every board deaf
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify == {"cue": "c1", "landed": "deaf",
+                              "resent": False, "witness": 1}
+    assert len(bus.broadcasts) == 1
+    assert [f.cmd for f in bus.asked] == [GET_VERSION]
+    assert logged(runner, "cue c1 landed (@01 deaf)")
+    runner.stop()
+
+
+def test_a_busy_board_also_means_the_broadcast_landed():
+    bus = FakeBus(witness={1: "busy"})
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify["landed"] == "busy"
+    assert session.verify["resent"] is False
+    assert len(bus.broadcasts) == 1
+    assert logged(runner, "cue c1 landed (@01 busy)")
+    runner.stop()
+
+
+def test_a_board_still_listening_gets_the_show_frame_again():
+    # "idle" is ACK_FAIL 0x0A, what production firmware answers to 0x02
+    # (docs/SPECIFICATION.md 5.5): an answer at all means the board is
+    # not repainting, so it never got the show.
+    bus = FakeBus(witness={1: ["idle", "deaf"]})
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify == {"cue": "c1", "landed": "deaf",
+                              "resent": True, "witness": 1}
+    assert len(bus.broadcasts) == 2
+    assert [f.data[0] for f in bus.broadcasts] == [19, 19]      # same slot
+    assert logged(runner, "cue c1 not applied at @01, re-sent +")
+    assert logged(runner, "cue c1 landed (@01 deaf)")
+    runner.stop()
+
+
+def test_the_version_answer_of_the_v1_0_spec_reads_the_same_way():
+    # A firmware that actually answers 0x02 with a version is just as
+    # much "awake and listening" as one that refuses it.
+    bus = FakeBus(witness={1: ["version", "busy"]})
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify["resent"] is True
+    assert len(bus.broadcasts) == 2
+    runner.stop()
+
+
+def test_a_cue_is_never_broadcast_more_than_twice():
+    # The 2026-08-14 measurement is the rule here: every extra copy is
+    # another full repaint. Two is the cap, whatever the board says.
+    bus = FakeBus(witness={1: "idle"})                # never repaints
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify == {"cue": "c1", "landed": "idle-after-resend",
+                              "resent": True, "witness": 1}
+    assert len(bus.broadcasts) == 2
+    assert len(bus.asked) == 2
+    assert logged(runner, "cue c1 re-send unconfirmed @01")
+    runner.stop()
+    assert len(bus.broadcasts) == 2                   # and nothing after
+
+
+def test_a_re_sent_cue_still_reports_the_first_send_as_its_fire_time():
+    bus = FakeBus(witness={1: ["idle", "deaf"]})
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    first = bus.sent_at[bus.sent.index(bus.broadcasts[0])]
+    assert abs(session.fired_at - first) < 0.01       # not the re-send
+    assert session.status()["late_ms"] < 50
+    assert session.status()["verify"]["resent"] is True
+    runner.stop()
+
+
+def test_the_guard_stop_waits_for_the_re_sent_picture_not_the_first_one():
+    bus = FakeBus(witness={1: ["idle", "deaf"]})
+    session, runner = fired_cue(bus, guard_delay=0.4)
+    assert wait_until(lambda: session.verify is not None)
+    last_show = max(i for i, f in enumerate(bus.sent)
+                    if f.cmd == SHOW and f.dest == 0xFF)
+    assert wait_until(lambda: any(f.cmd == GUARD and f.dest == 0xFF
+                                  for f in bus.sent[last_show:]), timeout=3)
+    guard = next(i for i in range(last_show, len(bus.sent))
+                 if bus.sent[i].cmd == GUARD and bus.sent[i].dest == 0xFF)
+    assert bus.sent_at[guard] - bus.sent_at[last_show] >= 0.35
+    runner.stop()
+
+
+def test_the_witness_is_the_board_whose_sweep_starts_first():
+    # Board 1 starts 0.30 s into the sweep, board 2 at 0.10 s: board 2 is
+    # the one surely repainting when the question goes out, and the
+    # question waits for ITS start, not for the broadcast.
+    bus = FakeBus()
+    session, runner = fired_cue(bus, boards=(1, 2),
+                                delays={1: sweep_table(30),
+                                        2: sweep_table(10)},
+                                span_s=0.3)
+    assert wait_until(lambda: session.verify is not None)
+    assert [f.dest for f in bus.asked] == [2]
+    fired = bus.sent_at[bus.sent.index(bus.broadcasts[0])]
+    assert 0.10 + 0.05 <= bus.asked_at[0] - fired < 0.30
+    assert session.verify["witness"] == 2
+    runner.stop()
+
+
+def test_a_cue_with_no_sweep_asks_a_live_board_straight_away():
+    bus = FakeBus()
+    session, runner = fired_cue(bus, boards=(1, 2))   # cleared tables
+    assert wait_until(lambda: session.verify is not None)
+    assert [f.dest for f in bus.asked] == [1]
+    fired = bus.sent_at[bus.sent.index(bus.broadcasts[0])]
+    assert bus.asked_at[0] - fired < 0.30
+    assert session.verify["landed"] == "deaf"
+    runner.stop()
+
+
+def test_a_swept_cue_whose_tables_are_unknown_is_not_checked():
+    # A show burned before this unit restarted: the pictures are in the
+    # slots, but nothing here knows when each board starts drawing, so
+    # there is no honest instant to ask at - and asking too early would
+    # cost the wall a second repaint. Said in the log rather than guessed.
+    from ui.remote import FIRED, RemoteSession
+
+    bus = FakeBus(witness={1: "idle"})
+    runner = make_runner(bus, boards=[1])
+    session = RemoteSession(runner)
+    session.arm("c1", 4, span_s=3.0)                  # burned elsewhere
+    assert wait_until(lambda: runner.live == [1])     # the probing is done
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED)
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify["landed"] == "skipped"
+    assert bus.asked == [] and len(bus.broadcasts) == 1
+    assert logged(runner, "cue c1 verify skipped: no sweep table known "
+                          "for slot 4")
+    runner.stop()
+
+
+def test_the_check_gives_the_port_to_a_cue_that_comes_due():
+    from ui.remote import FIRED, RemoteSession
+
+    bus = FakeBus()
+    runner = make_runner(bus, boards=[1], verify_after=0.6)
+    session = RemoteSession(runner)
+    session.arm("c1", 2)
+    assert wait_until(lambda: runner.live == [1])
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED)
+    # ...and a second cue lands inside the check's window.
+    at = time.monotonic() + 0.15
+    session.arm("c2", 3)
+    session.fire("c2", at)
+    assert wait_until(lambda: session.verify is not None, timeout=3)
+    assert session.verify["cue"] == "c2"         # c1's window was given up
+    assert abs(session.fired_at - at) < 0.05     # and c2 was not held up
+    assert logged(runner, "cue c1 verify skipped: cue c2 is due")
+    assert [f.data[0] for f in bus.broadcasts] == [2, 3]
+    runner.stop()
+
+
+def test_a_stop_during_the_check_ends_it_at_once():
+    from ui.remote import FIRED, RemoteSession
+
+    bus = FakeBus(witness={1: "idle"})
+    runner = make_runner(bus, boards=[1], verify_after=5.0)
+    session = RemoteSession(runner)
+    session.arm("c1", 2)
+    assert wait_until(lambda: runner.live == [1])
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED)
+    began = time.monotonic()
+    runner.stop()
+    assert time.monotonic() - began < 2.0             # not the 5 s window
+    assert bus.asked == [] and len(bus.broadcasts) == 1
+    assert logged(runner, "cue c1 verify skipped: stopped")
+
+
+def test_a_late_reply_from_another_board_is_not_taken_as_an_answer():
+    # A board that was deaf when an earlier question arrived answers it
+    # after its repaint; that frame lands in this question's read window.
+    # Reading it as "board 1 is idle" would re-send the show for nothing.
+    bus = FakeBus(witness={1: "idle"})
+    bus.stray = 20                                    # the first ask gets it
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify["landed"] == "deaf"
+    assert len(bus.broadcasts) == 1
+    assert logged(runner, "cue c1 stray reply from 0x14 ignored")
+    runner.stop()
+
+
+def test_the_check_can_be_switched_off():
+    bus = FakeBus(witness={1: "idle"})
+    session, runner = fired_cue(bus, verify_fire=False)
+    time.sleep(0.2)
+    assert bus.asked == [] and len(bus.broadcasts) == 1
+    assert session.verify is None
+    runner.stop()
+
+
+def test_the_pattern_loop_is_left_alone():
+    # Only a show's cues are checked: the demo loop repaints every
+    # interval anyway, and a question after every cycle would be noise.
+    bus = FakeBus(witness={1: "idle"})
+    runner = make_runner(bus, boards=[1, 2])
+    runner.start(BY_KEY["wave"])
+    assert wait_until(lambda: runner.cycle >= 2)
+    runner.stop()
+    assert bus.asked == []

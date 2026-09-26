@@ -27,7 +27,7 @@ from .puller import RepoPuller
 from .rebooter import Rebooter
 from .remote import RemoteSession
 from .showplay import ShowPlayer
-from .runner import DEFAULT_BOARDS, DemoRunner
+from .runner import DEFAULT_BOARDS, VERIFY_AFTER_S, DemoRunner
 from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
                       usb_rebind)
 from .versions import BoardVersions
@@ -293,6 +293,19 @@ def main() -> int:
     ap.add_argument("--interval", type=float, default=60.0,
                     help="seconds between panel refreshes (default 60)")
     ap.add_argument("--guard-delay", type=float, default=12.0)
+    # The landing check (ui/runner.py's VERIFY_AFTER_S). On by default;
+    # the switch is here so an operator can take it off the wire at the
+    # venue without editing code, and so the deaf window it leans on can
+    # be re-measured on real panels by moving the second.
+    ap.add_argument("--no-verify-fire", action="store_true",
+                    help="do not check that a cue's show broadcast reached "
+                         "the boards (the check is one read-only query a "
+                         "second after the cue, and one re-send if no board "
+                         "took it)")
+    ap.add_argument("--verify-after", type=float, default=VERIFY_AFTER_S,
+                    help=f"seconds after a cue's broadcast (and after the "
+                         f"witness board's own sweep start) before that "
+                         f"check asks (default {VERIFY_AFTER_S})")
     ap.add_argument("--slot", type=int, default=TEST_SLOT)
     ap.add_argument("--pattern", choices=[p.key for p in PATTERNS],
                     help="start this pattern immediately instead of showing "
@@ -338,7 +351,9 @@ def main() -> int:
     # can bring the boards back as ttyACM1. `port` is only the label.
     runner = DemoRunner(boards=args.boards, interval=args.interval,
                         guard_delay=args.guard_delay, slot=args.slot,
-                        port=args.port)
+                        port=args.port,
+                        verify_fire=not args.no_verify_fire,
+                        verify_after=args.verify_after)
 
     firmware = Path(args.firmware) if args.firmware else find_firmware()
     images = [firmware] if args.firmware else find_firmware_images()

@@ -137,6 +137,19 @@ class RemoteSession:
         # ui/runner.py's _guard_for()).
         self.span_s: float | None = None
         self.refresh_s: float | None = None
+        # What the unit's own landing check made of the last cue it sent
+        # (ui/runner.py's _verify_landing()): None until a cue has fired,
+        # then {"cue", "landed", "resent", "witness"} -
+        #   landed "deaf" / "busy"  the witness board was repainting, so
+        #                           the broadcast was taken; nothing to see
+        #   landed "idle-after-resend"  even the one re-send could not be
+        #                           confirmed - the garment may be showing
+        #                           the previous picture
+        #   landed "skipped"        not checked (no board, no table, or a
+        #                           cue came due) - says nothing either way
+        # `resent` is true when a second broadcast went out at all, which
+        # is the operator's cue that the link dropped a frame.
+        self.verify: dict | None = None
         self._job: dict | None = None
 
         # A show's own burn (see the module docstring): None means
@@ -210,6 +223,7 @@ class RemoteSession:
             self.error = None
             self.saved, self.failed = [], []
             self.fire_at = self.fired_at = self.prepare_s = None
+            self.verify = None
             self.slot, self.dev_type = slot, dev_type
             self.span_s, self.refresh_s = span_s, refresh_s
             self._job = {"cue_id": cue_id, "boards": dict(boards),
@@ -241,6 +255,7 @@ class RemoteSession:
             self.error = None
             self.saved, self.failed = [], []
             self.fire_at = self.fired_at = self.prepare_s = None
+            self.verify = None
             self.slot, self.dev_type = slot, dev_type
             self.span_s, self.refresh_s = span_s, refresh_s
             self._job = None
@@ -290,6 +305,7 @@ class RemoteSession:
             self.cue_id, self.label, self.error = None, "", None
             self.fire_at = self.fired_at = None
             self.span_s = self.refresh_s = None
+            self.verify = None
             self._job = None
         self.runner.standby()
 
@@ -471,6 +487,19 @@ class RemoteSession:
             self.fired_at = at
             self.phase = FIRED
 
+    def verified(self, cue_id: str, landed: str, resent: bool = False,
+                 witness: "int | None" = None) -> None:
+        """What the landing check found (see `self.verify`).
+
+        `fired_at` and `late_ms` are deliberately left alone: they are
+        about the cue's first broadcast, and a re-send repairs that cue
+        rather than making a new, later one."""
+        with self._lock:
+            if cue_id != self.cue_id:
+                return              # a newer cue arrived meanwhile
+            self.verify = {"cue": cue_id, "landed": landed,
+                           "resent": bool(resent), "witness": witness}
+
     def failed_with(self, message: str) -> None:
         with self._lock:
             if self.phase in (PREPARING, READY, ARMED):
@@ -504,6 +533,7 @@ class RemoteSession:
                 "prepare_s": self.prepare_s,
                 "fire_at": self.fire_at, "fired_at": self.fired_at,
                 "late_ms": late_ms,
+                "verify": dict(self.verify) if self.verify else None,
                 "boards": runner.reported_boards, "live": list(runner.live),
                 "no_sweep": sorted(runner.no_sweep),
                 "standby_ready": bool(runner.standby_ready),

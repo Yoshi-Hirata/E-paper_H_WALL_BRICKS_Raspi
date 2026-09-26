@@ -36,8 +36,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
-from epaper.commands import (TEST_SLOT, clear_pipeline, save_color,
-                             save_pipeline, show_single, slot_config, stop)
+from epaper.commands import (TEST_SLOT, clear_pipeline, get_version,
+                             save_color, save_pipeline, show_single,
+                             slot_config, stop)
 from epaper.protocol import ACK_INVALID_CMD, ACK_SUCCESS, DEV_NUMBER_BRAND
 
 NO_DELAY = 0xFFFF          # in a show file's table: no delay for this socket
@@ -72,10 +73,35 @@ ACK_SUCCESS, ACK_BUSY = 0x80, 0x82
 # repaint. Measured on the production boards 2026-08-14: three copies
 # made board 1 repaint twice (34 s) and board 20 finish at 35 s, while a
 # single copy had both boards repainting in step (deaf 0.7-17.1 s and
-# 1.2-17.3 s) - the whole "lag between boards" was this. A genuinely
-# lost frame costs one cycle and the next one repairs it.
+# 1.2-17.3 s) - the whole "lag between boards" was this. In the pattern
+# loop a genuinely lost frame costs one cycle and the next one repairs
+# it; a show's cue has no next cycle, which is what the LANDING CHECK
+# below is for - it sends a second copy only once it has evidence that
+# the first one was NOT taken, so the repeat costs a repaint exactly
+# when a repaint is what is missing.
 SHOW_REPEATS = 1
 SHOW_GAP_S = 0.15
+# ---- the landing check (radxa-04, LOOK26 rehearsal, 2026-09-26) ----
+# A show cue's broadcast is one unacknowledged frame. On a unit with a
+# noisy USB link (kernel "usb1-port1: disabled by hub (EMI?)", ttyACM0 ->
+# ttyACM1 mid-show) the last cue was recorded as fired and the boards
+# never changed: nothing on the wire says a broadcast was dropped.
+#
+# So after the broadcast the runner asks ONE board a read-only question
+# (CMD_GET_VERSION, 0x02 - it stores nothing and plays nothing) and reads
+# the SILENCE, not the answer: a board repainting its e-paper answers
+# nothing until it is done (deaf 0.7-17.1 s, measured 2026-08-14), so
+# silence or ACK_BUSY means the frame landed. A board that answers is
+# idle, which means it never got the show - and only then is the
+# broadcast sent again, once. Never twice: two copies would be the
+# 2026-08-14 double repaint, and an unconfirmed cue is reported instead.
+#
+# VERIFY_AFTER_S is measured from the moment the WITNESS board starts
+# repainting (its own sweep delay), so it lands inside that 0.7 s..end
+# deaf window. Re-measure both numbers if the panels or the firmware
+# change: docs/DEVELOPMENT.md section 6 says how.
+VERIFY_AFTER_S = 1.0
+VERIFY_READ_S = 0.3       # the witness answers in ms or not at all
 LINK_POLL_S = 2.0         # how often standby checks the panel link
 LINK_GUARD_S = 60.0       # how often standby re-suppresses the autoplay
 PROBE_SWEEPS = 3          # setup passes over the board list
@@ -158,6 +184,9 @@ class DemoRunner:
                  port_wait: float = 10.0,
                  show_repeats: int = SHOW_REPEATS,
                  show_gap: float = SHOW_GAP_S,
+                 verify_fire: bool = True,
+                 verify_after: float = VERIFY_AFTER_S,
+                 verify_read: float = VERIFY_READ_S,
                  link_poll: float = LINK_POLL_S,
                  link_guard: float = LINK_GUARD_S,
                  link_token=device_token,
@@ -189,6 +218,12 @@ class DemoRunner:
         self.port_wait = port_wait
         self.show_repeats = show_repeats
         self.show_gap = show_gap
+        # The landing check after a cue's broadcast (see VERIFY_AFTER_S).
+        # Off means the old behaviour exactly: one frame, no question
+        # asked - which is also what every non-cue path still does.
+        self.verify_fire = verify_fire
+        self.verify_after = verify_after
+        self.verify_read = verify_read
         self.link_poll = link_poll
         self.link_guard = link_guard
         self._link_token = link_token
@@ -230,6 +265,10 @@ class DemoRunner:
         # the same guard stop as any other; _run_remote() picks this up.
         self._guard_owed: "float | None" = None
         self._firing = False       # inside _fire_at(): never re-enter it
+        # When the LAST show broadcast of the current cue went out - the
+        # first one, or the landing check's re-send. The guard STOP is
+        # measured from this, not from the fire time.
+        self._last_show_at: "float | None" = None
         self.cycle = 0
         self.failures = 0          # cycles abandoned since the demo started
         self.started_at: float | None = None
@@ -532,7 +571,7 @@ class DemoRunner:
             return
         due = session.due()             # re-read: it may have just fired
         if due is not None and self._fire_at(bus, groups, session, *due):
-            self._guard_owed = time.monotonic() + self._guard_for(session)
+            self._guard_owed = self._guard_after_fire(session)
 
     def _wait_probing(self, bus, groups: int, seconds: float) -> bool:
         """A wait inside the probing that still lets a cue through: the
@@ -1122,6 +1161,173 @@ class DemoRunner:
                    min(GUARD_MAX_S,
                        float(refresh_s) + float(span_s) + margin))
 
+    def _guard_after_fire(self, session) -> float:
+        """When the guard STOP may go out after a cue.
+
+        Measured from the LAST broadcast of that cue, not from its fire
+        time: the landing check's re-send restarts the picture, so the
+        guard has to move with it or a re-sent cue gets its 0x17 while
+        it is still drawing."""
+        base = self._last_show_at
+        if base is None:
+            base = time.monotonic()
+        return base + self._guard_for(session)
+
+    # ---- did the broadcast land? (see VERIFY_AFTER_S) ----
+
+    def _sweep_start(self, board: int, slot: int) -> "float | None":
+        """Seconds after a show broadcast before this board's FIRST
+        socket starts repainting `slot`, or None if nothing here knows.
+
+        What is known comes from the writes this runner made: the table
+        it last sent (_delays_sent) or, when a burn skipped the write
+        because the board already held it, the burn cache. A board whose
+        firmware has no sweeps (no_sweep) ignores tables altogether and
+        always starts at once.
+        """
+        if board in self.no_sweep:
+            return 0.0
+        table = self._delays_sent.get((board, slot))
+        if table is None:
+            cached = self._burn_cache.get((board, slot))
+            table = cached[1] if cached else None
+        if table is None:
+            return None
+        timed = [v for v in struct.unpack(">64H", table) if v != NO_DELAY]
+        return min(timed) * FRAME_S if timed else 0.0
+
+    def _witness(self, session, slot: int) -> "tuple[int, float] | None":
+        """(board, delay) - who to ask after the broadcast, and when.
+
+        The witness is a LIVE board that starts repainting EARLIEST: by
+        the time the question goes out it is the one most surely inside
+        its deaf window, so its silence is the strongest evidence that
+        the broadcast landed. With no sweep anywhere every socket starts
+        at once and any live board will do.
+
+        None means "do not ask": a swept cue whose tables this runner
+        never wrote (a burn done before a restart, say) gives no honest
+        instant to ask at - asking too early reads a board that has not
+        begun as "idle" and costs the wall a second repaint, which is
+        worse than not checking.
+        """
+        live = list(self.live)
+        if not live:
+            return None
+        known = [(start, board) for start, board in
+                 ((self._sweep_start(b, slot), b) for b in live)
+                 if start is not None]
+        if known:
+            start, board = min(known)
+            return board, start
+        if getattr(session, "span_s", None):
+            return None
+        return live[0], 0.0
+
+    def _verify_wait(self, session, until: float) -> "str | None":
+        """Wait for the instant to ask; a reason to give up, or None.
+
+        The check owns the port for a second, and a cue owns it before
+        anything else: a trigger that falls at or before `until` takes
+        the window (the next broadcast is the answer to "did the last
+        one land" anyway). A cue armed for later does NOT - on a show
+        the next cue is armed the moment this one applies, and yielding
+        to that would mean never checking anything.
+        """
+        while True:
+            if self._stop.is_set():
+                return "stopped"
+            due = session.due()
+            if due is not None and due[1] <= until:
+                return f"cue {due[0]} is due"
+            left = until - time.monotonic()
+            if left <= 0:
+                return None
+            self._stop.wait(min(left, 0.05))
+
+    def _ask_witness(self, bus, groups: int, board: int, dev_type: int,
+                     cue_id: str) -> str:
+        """One short read-only question. "idle", "busy" or "deaf".
+
+        "idle" - the board answered, so it is listening, so it is not
+        repainting, so the show frame never reached it. Any answer means
+        that: production firmware refuses 0x02 with ACK_FAIL 0x0A
+        (docs/SPECIFICATION.md 5.5), and a refusal is an answer. Only
+        ACK_BUSY is read as "working", and silence as "deaf".
+
+        A frame from another board is a late answer to an earlier
+        question (host/epaper/transport.py drops those, this is the
+        backstop) - it says nothing about this board, so it is read as
+        deaf: the cautious way round, since the cost of a wrong "idle"
+        is a second repaint on the glass.
+        """
+        ack = bus.request(get_version(board, groups, dev_type=dev_type),
+                          retries=1, timeout=self.verify_read)
+        if ack is None:
+            return "deaf"
+        if ack.src != board:
+            self.emit(f"cue {cue_id} stray reply from "
+                      f"0x{ack.src:02X} ignored")
+            return "deaf"
+        if ack.cmd == ACK_BUSY:
+            return "busy"
+        return "idle"
+
+    def _verify_landing(self, bus, groups: int, session, cue_id: str,
+                        slot: int, dev_type: int, sent_at: float) -> None:
+        """Check that the cue's broadcast landed; re-send it once if not.
+
+        At most two broadcasts per cue leave this method, ever: the one
+        _fire_at() already sent and, only against evidence that no board
+        took it, one more. Everything else is a log line.
+        """
+        if not self.verify_fire:
+            return
+        chosen = self._witness(session, slot)
+        if chosen is None:
+            why = ("no live board" if not self.live
+                   else f"no sweep table known for slot {slot}")
+            self.emit(f"cue {cue_id} verify skipped: {why}")
+            self._record_verify(session, cue_id, "skipped", False, None)
+            return
+        board, delay = chosen
+        resent = False
+        while True:
+            give_up = self._verify_wait(session, sent_at + delay
+                                        + self.verify_after)
+            if give_up is not None:
+                self.emit(f"cue {cue_id} verify skipped: {give_up}")
+                self._record_verify(session, cue_id, "skipped", resent, board)
+                return
+            state = self._ask_witness(bus, groups, board, dev_type, cue_id)
+            if state != "idle":
+                self.emit(f"cue {cue_id} landed (@{board:02d} {state})")
+                self._record_verify(session, cue_id, state, resent, board)
+                return
+            if resent:
+                # Two broadcasts out and the board still says it is idle.
+                # A third is not insurance, it is the 2026-08-14 double
+                # repaint; the operator is told instead.
+                self.emit(f"cue {cue_id} re-send unconfirmed @{board:02d}")
+                self._record_verify(session, cue_id, "idle-after-resend",
+                                    True, board)
+                return
+            bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
+            again = time.monotonic()
+            self.emit(f"cue {cue_id} not applied at @{board:02d}, "
+                      f"re-sent +{(again - sent_at) * 1000:.0f} ms")
+            self._last_show_at = sent_at = again
+            resent = True
+
+    def _record_verify(self, session, cue_id: str, landed: str,
+                       resent: bool, board: "int | None") -> None:
+        """Tell the session, for /status and the show PC's tile. A
+        session too old to know about landing checks simply is not
+        told."""
+        verified = getattr(session, "verified", None)
+        if verified is not None:
+            verified(cue_id, landed, resent=resent, witness=board)
+
     def _fire_at(self, bus, groups: int, session, cue_id: str, at: float,
                  slot: int, dev_type: int) -> bool:
         """Send the one broadcast "show slot" at monotonic time `at`.
@@ -1139,6 +1345,12 @@ class DemoRunner:
         stretch, so it keeps reprobing (cheap: _reprobe() only touches
         the bus once every reprobe_interval) rather than only doing so
         between cues.
+
+        It returns a second or so AFTER the broadcast, not at it: the
+        landing check (_verify_landing()) holds the port for that long
+        to find out whether the frame was taken. Nothing else may use
+        the bus meanwhile - no reprobe in particular, which is why that
+        wait is _verify_wait() and not the loop above.
         """
         self._firing = True
         try:
@@ -1155,7 +1367,11 @@ class DemoRunner:
                 else:
                     time.sleep(0.0005)
             bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
-            sent_at = time.monotonic()
+            sent_at = self._last_show_at = time.monotonic()
+            # The time the PC is told is this FIRST send, whatever the
+            # landing check does afterwards: "how late was the cue" is
+            # about when the picture was asked for, and a re-send is a
+            # repair of that same cue, not a later one.
             session.fired(cue_id, sent_at)
         finally:
             # Released only once the session has been told: until then
@@ -1166,6 +1382,8 @@ class DemoRunner:
         self.cycle += 1
         self.emit(f"cue {cue_id} fired slot {slot} "
                   f"{(sent_at - at) * 1000:+.0f} ms")
+        self._verify_landing(bus, groups, session, cue_id, slot, dev_type,
+                             sent_at)
         return True
 
     def _run_remote(self, session) -> None:
@@ -1312,7 +1530,7 @@ class DemoRunner:
                             # unit (2026-09-25), which on stage is the
                             # garment sitting on the wrong picture.
                             if self._fire_at(bus, groups, session, *late):
-                                guard_due = time.monotonic() + self._guard_for(session)
+                                guard_due = self._guard_after_fire(session)
                         if needs_setup:
                             # The one broadcast 0x17 for this port session
                             # (docs/MERIS_REPLY_3SLOT.pdf: one is enough
@@ -1330,7 +1548,7 @@ class DemoRunner:
                         due = session.due()
                         if due is not None:
                             if self._fire_at(bus, groups, session, *due):
-                                guard_due = time.monotonic() + self._guard_for(session)
+                                guard_due = self._guard_after_fire(session)
                             continue
                         now = time.monotonic()
                         if self._guard_owed is not None:
