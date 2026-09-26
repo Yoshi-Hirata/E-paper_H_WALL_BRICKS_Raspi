@@ -909,3 +909,201 @@ def test_the_pattern_loop_is_left_alone():
     assert wait_until(lambda: runner.cycle >= 2)
     runner.stop()
     assert bus.asked == []
+
+
+# ---- a show's board list is THE list: nothing outside it is touched ----
+#
+# radxa-04 (tops, 16 boards), 2026-09-26 rehearsals: it came up in
+# STANDBY, its discovery logged "board 17-22 absent, skipping" (the
+# explore looks EXPLORE_GAP past the last live board) - and those six
+# stayed in `absent` after the show's own list of 1-16 arrived. The
+# reprobe then spent ~15 s of every minute on six serial timeouts to
+# sockets the show knew were empty, and the cues whose trigger fell
+# inside one went out +492 / +246 / +73 ms late. radxa-05, which started
+# straight into REMOTE with the job's list, had an empty `absent`, no
+# probing and fires +1 ms.
+
+SHOW_BOARDS = list(range(1, 17))        # the tops garment
+
+
+def explored_unit(bus, **kwargs):
+    """A unit that came up on its own and explored the bus, as radxa-04
+    did before the show PC ever spoke to it."""
+    kwargs.setdefault("verify_fire", False)
+    runner = make_runner(bus, boards=None, **kwargs)
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: "panels online" in " ".join(runner.log),
+                      timeout=20)
+    runner.stop()
+    return runner
+
+
+def show_cue(session, runner, boards=SHOW_BOARDS, cue_id="c1"):
+    """The show PC's job, which carries the garment's board list."""
+    from ui.remote import READY
+
+    session.prepare(cue_id, {b: cue_array(b) for b in boards})
+    assert wait_until(lambda: session.phase == READY, timeout=20)
+
+
+def fire_once(session, cue_id: str, slot: int = 2, ahead: float = 0.2):
+    """Arm a cue already burned into `slot` and fire it; how late it was."""
+    from ui.remote import FIRED
+
+    at = time.monotonic() + ahead
+    session.arm(cue_id, slot)
+    session.fire(cue_id, at)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10)
+    return session.fired_at - at
+
+
+def test_a_shows_board_list_drops_the_boards_outside_it():
+    from ui.remote import RemoteSession
+
+    bus = Wall(set(SHOW_BOARDS))
+    runner = explored_unit(bus)
+    assert runner.absent == set(range(17, 23))       # six empty sockets
+    assert logged(runner, "board 17-22 absent, skipping")
+
+    session = RemoteSession(runner)
+    show_cue(session, runner)
+    assert runner.boards == SHOW_BOARDS and runner.explore is False
+    assert runner.absent == set() and runner.live == SHOW_BOARDS
+    assert logged(runner,
+                  "boards 1-16 from the show (17-22 dropped, not probed)")
+
+    # ...and nothing reaches a dropped socket for the rest of the show:
+    # several reprobe intervals (0.05 s here, 60 s on the unit) of it,
+    # with cues fired in the middle.
+    bus.sent.clear()
+    bus.requested.clear()
+    late = [fire_once(session, "c2"), fire_once(session, "c3")]
+    time.sleep(4 * runner.reprobe_interval)
+    touched = {f.dest for f in bus.sent + bus.requested}
+    assert touched <= set(SHOW_BOARDS) | {0xFF}
+    assert all(0 <= slip < 0.05 for slip in late)    # +1 ms on radxa-05
+    session.release()
+
+
+def test_a_listed_board_that_was_silent_still_joins_the_show():
+    # The other half of the rule: a board powered on late is on the
+    # show's own list, so it keeps its chance to come back.
+    from ui.remote import RemoteSession
+
+    bus = Wall(set(SHOW_BOARDS) - {5})
+    runner = explored_unit(bus)
+    assert runner.absent == {5} | set(range(17, 23))
+
+    session = RemoteSession(runner)
+    show_cue(session, runner)
+    assert runner.absent == {5}                      # the list's own, only
+    assert logged(runner,
+                  "boards 1-16 from the show (17-22 dropped, not probed)")
+    bus.present.add(5)                               # its feed came back on
+    assert wait_until(lambda: 5 in runner.live, timeout=10)
+    assert runner.absent == set() and logged(runner, "board 5 joined")
+    session.release()
+
+
+def test_a_board_outside_the_shows_list_is_ignored_even_if_it_answers():
+    from ui.remote import RemoteSession
+
+    bus = Wall(set(SHOW_BOARDS))
+    runner = explored_unit(bus)
+    session = RemoteSession(runner)
+    show_cue(session, runner)
+
+    bus.present.add(17)              # a board on a socket the show omits
+    bus.sent.clear()
+    bus.requested.clear()
+    time.sleep(4 * runner.reprobe_interval)
+    assert 17 not in runner.boards and 17 not in runner.live
+    assert 17 not in runner.absent
+    assert not [f for f in bus.sent + bus.requested if f.dest == 17]
+    assert runner.expected == 16 and runner.reported_boards == SHOW_BOARDS
+    session.release()
+
+
+def test_releasing_the_show_gives_the_unit_its_own_discovery_back():
+    from ui.remote import RemoteSession
+
+    bus = Wall(set(SHOW_BOARDS))
+    runner = explored_unit(bus)
+    session = RemoteSession(runner)
+    show_cue(session, runner)
+    assert runner.explore is False and runner.boards == SHOW_BOARDS
+
+    session.release()                       # KEY2 / the PC hands it back
+    seen = sum("panels online" in line for line in runner.log)
+    bus.requested.clear()
+    runner.start(BY_KEY["solid"])           # the unit's own menu again
+    assert wait_until(lambda: sum("panels online" in line
+                                  for line in runner.log) > seen, timeout=20)
+    assert logged(runner, "the show's board list is released, exploring again")
+    assert runner.explore is True
+    assert runner.absent == set(range(17, 23))       # discovery as before
+    assert max(f.dest for f in bus.requested if f.dest != 0xFF) == 22
+    runner.stop()
+
+
+def test_an_explicit_boards_list_is_kept_across_a_show():
+    # A unit started with --boards was never exploring; the show's list
+    # rules while the show runs, and nothing turns discovery on after it.
+    from ui.remote import RemoteSession
+
+    bus = Wall({1, 2, 3})
+    runner = make_runner(bus, boards=[1, 2, 3], verify_fire=False)
+    session = RemoteSession(runner)
+    show_cue(session, runner, boards=[1, 2], cue_id="c1")
+    assert runner.boards == [1, 2] and runner.explore is False
+    session.release()
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: "panels online" in " ".join(runner.log),
+                      timeout=10)
+    assert runner.explore is False           # never explored, never will
+    runner.stop()
+
+
+def test_one_port_session_never_changes_the_group_count_under_it():
+    # The group count is a header byte on every frame, and the boards
+    # are configured with it (0x1B). An exploring setup TRIMS the list
+    # as it probes (1..60 down to 1..22), so a group count that followed
+    # the list would leave the boards configured in the first sweep
+    # disagreeing with every frame sent after them - and a board that
+    # joined at a later reprobe configured differently from its
+    # neighbours (review, 2026-09-27). Only a list that is REPLACED - a
+    # show's - moves it, and that comes with a fresh setup.
+    bus = Wall(set(SHOW_BOARDS))
+    runner = make_runner(bus, boards=None, verify_fire=False)
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: runner.cycle >= 2, timeout=20)
+    assert runner.boards == list(range(1, 23))        # trimmed while probing
+    runner.stop()
+    assert {f.group_count for f in bus.sent + bus.requested} == {60}
+    assert {f.group_count for f in bus.requested if f.cmd == 0x1B} == {60}
+
+
+def test_the_group_count_follows_the_shows_board_list():
+    from ui.remote import RemoteSession
+
+    bus = Wall(set(SHOW_BOARDS))
+    runner = explored_unit(bus)
+    session = RemoteSession(runner)
+    show_cue(session, runner)
+
+    bus.sent.clear()
+    bus.requested.clear()
+    fire_once(session, "c2")
+    counted = [f for f in bus.sent + bus.requested
+               if f.cmd in (0x1D, 0x17)]                 # show single, stop
+    assert counted and all(f.group_count == 16 for f in counted)
+
+    # A list with a gap counts by its highest address, not its length.
+    show_cue(session, runner, boards=[1, 2, 20], cue_id="c3")
+    assert runner.boards == [1, 2, 20]
+    bus.sent.clear()
+    bus.requested.clear()
+    fire_once(session, "c4")
+    counted = [f for f in bus.sent + bus.requested if f.cmd in (0x1D, 0x17)]
+    assert counted and all(f.group_count == 20 for f in counted)
+    session.release()
