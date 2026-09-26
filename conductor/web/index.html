@@ -458,7 +458,7 @@ button.primarybtn:disabled { filter: none; }
   <div class="tabs">
     <button id="undo" title="Undo (Ctrl+Z)">↶ Undo</button><button id="redo" title="Redo (Ctrl+Y / Ctrl+Shift+Z)">Redo ↷</button>
   </div>
-  <label class="filebtn">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
+  <label class="filebtn" tabindex="0" role="button">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
   <span class="meta">or drop CSV files anywhere on the page</span>
   <span class="ws" id="ws"></span>
 </header>
@@ -619,8 +619,14 @@ function toast(text) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", 6000);
 }
 const clock = s => { const n = Math.round(Math.abs(s)); return (s < 0 ? "-" : "") + Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0"); };
-function parseClock(text) {                       // "3:20" or "200" -> seconds
-  const m = String(text).trim().match(/^(?:(\d+):)?(\d{1,4})$/);
+// "3:20", "3.20" or "200" -> seconds. The dot spelling is the designers'
+// own (SIM.mmss writes and reads mm.ss, and their simulator prints every
+// time that way), so a cue sheet copied off their screen can be typed in
+// here as it stands instead of being translated a colon at a time. A bare
+// number is still SECONDS here, as it always was - this page's field says
+// "Show length", not "minutes".
+function parseClock(text) {
+  const m = String(text).trim().match(/^(?:(\d+)[:.])?(\d{1,4})$/);
   if (!m) return null;
   if (m[1] !== undefined && Number(m[2]) >= 60) return null;     // "3:75" is a typo
   return (m[1] !== undefined ? Number(m[1]) * 60 : 0) + Number(m[2]);
@@ -842,7 +848,7 @@ function renderContent() {
               </div>
             </div>`; }).join("")
             || `<div class="meta">Add design CSV files (*_color_NAME_grid.csv)</div>`}</div>
-          <div class="meta" style="margin-top:8px"><label class="filebtn">Add CSV to this item<input id="pick-own" type="file" accept=".csv" multiple></label>
+          <div class="meta" style="margin-top:8px"><label class="filebtn" tabindex="0" role="button">Add CSV to this item<input id="pick-own" type="file" accept=".csv" multiple></label>
             <span style="margin-left:6px">whatever look the files are named after, they are saved as ${esc(item.item)}_… and belong to this item alone</span></div>
         </div>
         ${design ? `<div class="card"><h2>COLOURS USED</h2><table><tbody>
@@ -1336,9 +1342,9 @@ function renderTimeline() {
   const music = state.music || null;
   const musicHtml = music
     ? `<span class="meta">${esc(music.name)} (${fmtSize(music.size)})</span>
-       <label class="filebtn" title="Upload another audio file for the show (MP3, WAV, OGG, M4A; up to 64 MB)">Replace music<input type="file" id="tp-music-replace" accept="audio/*"></label>
+       <label class="filebtn" tabindex="0" role="button" title="Upload another audio file for the show (MP3, WAV, OGG, M4A; up to 64 MB)">Replace music<input type="file" id="tp-music-replace" accept="audio/*"></label>
        <button id="tp-music-remove" class="danger">Remove</button>`
-    : `<label class="filebtn" title="Upload the show's audio (MP3, WAV, OGG, M4A; up to 64 MB): playback then follows the music">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`;
+    : `<label class="filebtn" tabindex="0" role="button" title="Upload the show's audio (MP3, WAV, OGG, M4A; up to 64 MB): playback then follows the music">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`;
   const playBtns = `<button id="tp-play" title="Play/Pause (Space)">${ui.playing ? "⏸ Pause" : "▶ Play"}</button>
         <button id="tp-stop" title="Stop and rewind to 0:00">⏹ Stop</button>
         <span class="meta" id="tp-time">${clock(ui.playhead)} / ${clock(D)}</span>`;
@@ -1384,8 +1390,8 @@ function renderTimeline() {
       </div>
       <div class="group">
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
-        <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
-        <label class="filebtn" title="Load a project sent by the designers: their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
+        <label class="filebtn" tabindex="0" role="button" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
+        <label class="filebtn" tabindex="0" role="button" title="Load a project sent by the designers: their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
         <a class="filebtn" id="tl-simulator" href="/api/simulator?music=1" download title="Downloads the single-file simulator with the show's current music embedded - hand this file to the director's team; rebuild it here whenever the music changes">Simulator for designers…</a>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue, or press <b>+</b> at the end of its row ·
@@ -3957,8 +3963,12 @@ document.addEventListener("change", async e => {
   else if (id === "tl-load-show") { const f = e.target.files[0]; e.target.value = ""; await loadShowFile(f); }
   else if (id === "tl-load-bundle") { const f = e.target.files[0]; e.target.value = ""; await loadBundleFile(f); }
   else if (id === "duration") {
-    const seconds = parseClock(e.target.value);
-    if (seconds === null || seconds < 1) { toast("Enter the length as m:ss"); renderTimeline(); return; }
+    const typed = parseClock(e.target.value);
+    if (typed === null || typed < 1) { toast("Enter the length as m:ss or mm.ss (e.g. 10:00 or 10.00)"); renderTimeline(); return; }
+    // 99:59 is what the clock can show and what every time field here is
+    // read against; a longer show would print times the page cannot draw.
+    const seconds = Math.min(MAX_SHOW_DURATION_S, typed);
+    if (seconds !== typed) toast(`The show cannot run past ${clock(MAX_SHOW_DURATION_S)} - set to that.`);
     ui.playhead = Math.min(ui.playhead, seconds); await saveShow(state.show.cues, seconds);
   } else if (id === "refresh") {
     const seconds = Number(e.target.value);
@@ -3974,7 +3984,7 @@ document.addEventListener("change", async e => {
     // by the server; it is never silently clamped.
     if (id === "cue-start") {
       const seconds = parseClock(e.target.value);
-      if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
+      if (seconds === null) { toast("Enter the time as m:ss or mm.ss (e.g. 3:20 or 3.20)"); renderTimeline(); return; }
       const onItem = item ? cuesOf(item) : [];
       const idx = onItem.findIndex(c => c.id === cue.id);
       const prev = idx > 0 ? onItem[idx - 1] : null;
@@ -3987,7 +3997,7 @@ document.addEventListener("change", async e => {
     // outright (no save) if it would land before this picture is complete.
     if (id === "cue-end") {
       const seconds = parseClock(e.target.value);
-      if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
+      if (seconds === null) { toast("Enter the time as m:ss or mm.ss (e.g. 3:20 or 3.20)"); renderTimeline(); return; }
       if (seconds < cue.complete) { toast(`End cannot be before the picture is complete (${clock(cue.complete)})`); renderTimeline(); return; }
       const onItem = item ? cuesOf(item) : [];
       const idx = onItem.findIndex(c => c.id === cue.id);
@@ -4226,11 +4236,26 @@ document.addEventListener("pointercancel", endPhDrag);
 window.addEventListener("blur", endPhDrag);
 // Space toggles play/pause, except while typing, over a control that owns the
 // key, or off the Timeline tab (there is nothing to play/pause to look at).
+// A <label class="filebtn"> IS the button its name says it is - the
+// <input type=file> inside it is display:none - so it carries tabindex and
+// role="button", and has to answer Enter and Space the way the <button>s
+// beside it do. Without this the only way to reach "Add CSV", "Load
+// show…" or "Load music" was a mouse.
+document.addEventListener("keydown", e => {
+  if (e.key !== "Enter" && e.key !== " " && e.code !== "Space") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const btn = e.target.closest?.("label.filebtn");
+  const input = btn && btn.querySelector("input[type=file]");
+  if (!input) return;
+  e.preventDefault();          // Space must not also scroll, or start the show
+  input.click();
+});
 document.addEventListener("keydown", e => {
   if (e.key !== " " && e.code !== "Space") return;
   if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (["input", "select", "textarea", "button"].includes(tag)) return;
+  if (e.target.closest?.("label.filebtn")) return;   // that label IS a button
   if (ui.tab !== "timeline") return;
   e.preventDefault();
   togglePlayback();

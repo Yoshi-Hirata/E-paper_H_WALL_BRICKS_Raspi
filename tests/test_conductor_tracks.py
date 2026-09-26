@@ -64,6 +64,7 @@ _PROBE = """
   var wait = ms => new Promise(r => setTimeout(r, ms));
   var $$ = sel => [...document.querySelectorAll(sel)];
   function trackOf(key) { return document.querySelector('.tl-track[data-track="' + key + '"]'); }
+  function toastNow() { return (document.querySelector("#toast") || {}).textContent || ""; }
   function hover(track, frac, shift) {
     var box = track.getBoundingClientRect();
     track.dispatchEvent(new PointerEvent("pointermove", { bubbles: true,
@@ -142,7 +143,35 @@ _PROBE = """
       await wait(500);
       out.afterLink = cueRow("Look22");
 
-      // 7. A click on empty track space places the design the ghost promised.
+      // 7. The time fields read the designers' own mm.ss as well as m:ss,
+      //    and the show cannot be set past 99:59.
+      out.clocks = ["3:20", "3.20", "3.05", "200", "0.30", "3:75", "", "abc", "1:2:3"]
+        .map(s => [s, parseClock(s)]);
+      out.maxShow = MAX_SHOW_DURATION_S;
+      var dur = document.querySelector("#duration");
+      dur.value = "999.00";
+      dur.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait(500);
+      out.clamped = { duration: state.show.duration, toast: toastNow() };
+      dur = document.querySelector("#duration");
+      dur.value = "8.30";
+      dur.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait(500);
+      out.mmssDuration = state.show.duration;
+
+      // 8. The file buttons are reachable and operable from the keyboard.
+      out.fileButtons = [...document.querySelectorAll("label.filebtn")].map(
+        b => ({ text: b.textContent.trim().slice(0, 20), tabindex: b.getAttribute("tabindex"),
+                role: b.getAttribute("role") }));
+      var picked = 0;
+      var addCsv = document.querySelector("label.filebtn");
+      addCsv.querySelector("input[type=file]").click = function () { picked++; };
+      addCsv.focus();
+      addCsv.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      addCsv.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true }));
+      out.keyboardPicks = picked;
+
+      // 9. A click on empty track space places the design the ghost promised.
       hover(trackOf("Look22"), 0.82);
       await wait(60);
       var promised = ghostNow(trackOf("Look22"));
@@ -254,3 +283,40 @@ def test_edit_cue_offers_the_same_append(tracks):
 def test_a_click_places_exactly_what_the_ghost_promised(tracks):
     placed = tracks["clickPlaced"]
     assert float(placed["promised"]["at"]) in placed["placed"], placed
+
+
+# ------------------------------------------------------------ the polish
+
+def test_a_time_field_reads_the_designers_own_mm_ss(tracks):
+    # Their simulator prints and parses mm.ss (SIM.mmss), so a cue sheet
+    # copied off their screen has to be typeable here as it stands.
+    clocks = dict((k, v) for k, v in tracks["clocks"])
+    assert clocks["3:20"] == 200 and clocks["3.20"] == 200
+    assert clocks["3.05"] == 185
+    assert clocks["0.30"] == 30
+    assert clocks["200"] == 200, "a bare number is still seconds on this page"
+    # ...and nonsense is still nonsense.
+    assert clocks["3:75"] is None and clocks[""] is None
+    assert clocks["abc"] is None and clocks["1:2:3"] is None
+
+
+def test_the_show_cannot_be_set_past_99_59(tracks):
+    assert tracks["maxShow"] == 99 * 60 + 59
+    clamped = tracks["clamped"]
+    assert clamped["duration"] == 99 * 60 + 59, clamped
+    # Clamped OUT LOUD: a show length silently different from what was
+    # typed is the kind of thing nobody notices until the run-through.
+    assert "99:59" in clamped["toast"], clamped
+    # A plain mm.ss length still lands where it says.
+    assert tracks["mmssDuration"] == 8 * 60 + 30, tracks["mmssDuration"]
+
+
+def test_the_file_buttons_are_reachable_and_operable_from_the_keyboard(tracks):
+    buttons = tracks["fileButtons"]
+    assert buttons, "no file buttons on the page at all"
+    for button in buttons:
+        assert button["tabindex"] == "0", button
+        assert button["role"] == "button", button
+    # Enter and Space both open the picker - and Space must not also start
+    # the show while a file button has the focus.
+    assert tracks["keyboardPicks"] == 2, tracks["keyboardPicks"]
