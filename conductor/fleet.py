@@ -263,6 +263,14 @@ class UnitLink:
                 "name": self.name, "address": self.address,
                 "online": self.online, "error": self.error,
                 "rtt_ms": None if self.rtt is None else round(self.rtt * 1000, 1),
+                # NOT a lag: half of the best round trip, i.e. the WIDTH of
+                # the error bar on this unit's clock ("+-3 ms"). The tile
+                # calls it "clock accuracy" for that reason. How far the
+                # unit's show clock actually is from this PC's is
+                # `show_lag_ms`, added by Fleet._unit_snapshot() - the raw
+                # `offset` cannot be it, since the two monotonic clocks
+                # count from two different boots and their difference is
+                # some arbitrary number of seconds.
                 "sync_ms": None if best is None else round(best[0] * 500, 1),
                 "samples": len(self._samples),
                 "host": status.get("host"), "commit": status.get("commit"),
@@ -270,6 +278,12 @@ class UnitLink:
                 "label": status.get("label"),
                 "boards": len(status.get("boards", [])),
                 "live": len(status.get("live", [])),
+                # ...and WHICH ones are answering, not only how many. A
+                # unit can carry two garments (a top and its skirt on one
+                # Radxa); "11 of 12 answering" then says nothing about
+                # which garment lost a board, and the NOW -> NEXT board
+                # has a row for each of them to colour.
+                "live_ids": list(status.get("live", [])),
                 # The board list the unit is really working to, passed
                 # through as it comes: the ids it counts as its own, the
                 # ones it is still probing, where the list came from
@@ -283,8 +297,11 @@ class UnitLink:
                 "absent": list(status.get("absent", [])),
                 "boards_source": status.get("boards_source"),
                 "group_count": status.get("group_count"),
-                # How long the unit says it has been up, so the tile can
-                # see a restart that happened after the Upload.
+                # How long the unit says it has been up (ui/agent.py), so
+                # the tile can see a restart that happened after the
+                # Upload - and so the NOW -> NEXT board's vitals can say
+                # "restarted 3 min ago", which is the one thing that
+                # explains a unit that lost its pictures mid-show.
                 "uptime_s": status.get("uptime_s"),
                 "saved": len(status.get("saved", [])),
                 "failed": status.get("failed", []),
@@ -329,6 +346,11 @@ class Fleet:
         # rehearsal in. Empty after a conductor restart: nothing is
         # claimed then, the page simply shows no mark.
         self._uploaded_at: "dict[str, float]" = {}
+        # What each unit said its T0 was at the instant this side last
+        # moved T0, and for which move each unit has since been seen on
+        # the new one. Both are `show_lag_ms`'s gate - see _t0_moved().
+        self._t0_was: "dict[str, float | None]" = {}
+        self._t0_seen: "dict[str, float]" = {}
         self.run: "dict | None" = None
         # Where START begins when nothing says otherwise - moved by SEEK
         # while there is no run, reset by every START and STOP.
@@ -503,7 +525,7 @@ class Fleet:
         reporting = [b for b in reporting if b is not _NO_BURN_KEY]
         burned = sum(1 for b in reporting
                      if isinstance(b, dict) and b.get("state") == "burned")
-        return {"units": [self._unit_snapshot(link)
+        return {"units": [self._unit_snapshot(link, run)
                           for link in self.links.values()],
                 "last_fire": self.last_fire, "run": run,
                 # `boards`: the ids THIS show gives that unit
@@ -518,7 +540,7 @@ class Fleet:
                 "show_duration": duration if self.shows else None,
                 "burn": {"burned": burned, "total": len(reporting)}}
 
-    def _unit_snapshot(self, link) -> dict:
+    def _unit_snapshot(self, link, run: "dict | None" = None) -> dict:
         """The unit's tile, the demos it holds (the cache the poll loop
         keeps, so a tile costs no request - see demos_of()), plus the last
         thing it refused this conductor's supervision ("run refused: still
@@ -531,6 +553,7 @@ class Fleet:
         return dict(link.snapshot(),
                     refused=None if refused is None
                     else f"{refused[0]} refused: {refused[1]}",
+                    show_lag_ms=self._show_lag_ms(link, run),
                     # How long ago this conductor wrote the show to this
                     # unit, against which the unit's own uptime_s says
                     # whether it has restarted since. None when this
@@ -540,6 +563,75 @@ class Fleet:
                     uploaded_ago_s=(None if at is None
                                     else round(self._clock() - at, 1)),
                     demos=self.demos_of(link.name))
+
+    def _show_lag_ms(self, link, run: "dict | None") -> "float | None":
+        """How far this unit's show clock is behind this PC's, in ms -
+        the honest answer to "how late is that garment?".
+
+        The unit runs the show off a T0 in its OWN monotonic clock; this
+        PC's T0 translated into that clock is `run["t0"] + offset` (the
+        same arithmetic _supervise() corrects a unit with). Whatever is
+        left is the disagreement:
+
+            lag = unit_t0 - (run_t0 + offset)
+
+        A LATER T0 on the unit means it thinks the show started later
+        than this PC does, so its position is that much smaller: positive
+        = the unit is BEHIND this PC. Normally a millisecond or two, and
+        never more than T0_TOLERANCE_S for long, since _supervise() puts
+        a unit further out than that right.
+
+        None when there is nothing to compare: no run, no clock
+        measurement, an offline unit (its last status is however old the
+        silence is, and a number from then is worse than no number), a
+        unit not running this conductor's show (a demo, an old upload,
+        one that has not answered), or one on hold - held units carry the
+        position, not a T0.
+
+        ...and None until the unit has actually TAKEN a T0 this side has
+        moved. START, SEEK, RESUME and NEXT move T0 here on the instant,
+        while the unit's side of the comparison is whatever its last poll
+        said - so right after a 30 s seek the arithmetic is perfectly
+        correct and perfectly useless ("-30000 ms"), and every row on the
+        board goes red at the exact moment the operator is watching it.
+
+        Waiting out a poll does NOT settle that, which is what the first
+        version of this got wrong: the poll that follows the move is the
+        one _supervise() computes its correction FROM, so the first
+        status admitted by a clock alone can still be the pre-correction
+        one. The gate is therefore the unit's own answer, not the time:
+        it opens for this move once the unit reports a T0 that is either
+        no longer the one it had when the move happened (_t0_moved()
+        photographed it) or already within T0_TOLERANCE_S of where this
+        PC wants it - and once open it stays open for that move.
+
+        "Changed", not merely "close": a unit that took the new T0 and
+        landed a third of a second out is exactly what this number
+        exists to show, and a gate that only opened on agreement could
+        never let a real lag through. "Close" is there for the other
+        case, a run ADOPTED from the units, where their T0 is where the
+        run came from and nothing about it will change.
+        """
+        if not run or run.get("state") != "running" or not link.online:
+            return None
+        offset = link.offset
+        show = self.shows.get(link.name)
+        unit = (link.status or {}).get("show")
+        if offset is None or show is None or not isinstance(unit, dict):
+            return None
+        if unit.get("id") != show["id"] or unit.get("t0") is None:
+            return None
+        if unit.get("state") not in ("running", "ended"):
+            return None
+        lag = round((unit["t0"] - (run["t0"] + offset)) * 1000, 1)
+        set_at = run.get("t0_set_at")
+        if set_at is None or self._t0_seen.get(link.name) == set_at:
+            return lag
+        if (unit["t0"] == self._t0_was.get(link.name)
+                and abs(lag) > T0_TOLERANCE_S * 1000):
+            return None                     # still on the T0 it had before
+        self._t0_seen[link.name] = set_at
+        return lag
 
     def _raw_burn(self, name: str):
         """Whatever this unit currently reports as `status.show.burn`,
@@ -942,8 +1034,33 @@ class Fleet:
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",
                         "held_at": None, "force": bool(force)}
             self.start_at = 0.0
-            self._run_gen += 1
+            self._t0_moved()
         return self._send_run(self._targets())
+
+    def _t0_moved(self) -> None:
+        """One call for "the run just changed" - START, SEEK, HOLD,
+        RESUME, NEXT, STOP and the adoption of a run found on the units.
+        Must be made under _run_lock.
+
+        It bumps the generation _supervise() checks before it posts
+        anything (so a correction computed a moment ago is dropped rather
+        than sent on top of the operator's move), and it stamps the run
+        and photographs what every unit says its T0 is RIGHT NOW - before
+        a single command has gone out. `_show_lag_ms` needs both: T0
+        moves here on the instant, while what a unit reports is up to a
+        poll old, so a 30 s seek would otherwise be reported as every
+        unit being 30 s out of step and the whole board would go red.
+        """
+        self._run_gen += 1
+        if self.run is None:
+            self._t0_was, self._t0_seen = {}, {}
+            return
+        self.run["t0_set_at"] = self._clock()
+        # Rebound, never mutated in place: snapshot() reads these from
+        # whichever thread is serving the page.
+        self._t0_was = {name: ((link.status or {}).get("show") or {}).get("t0")
+                        for name, link in self.links.items()}
+        self._t0_seen = {}
 
     def seek(self, to_s: float, lead_s: float = DEFAULT_LEAD_S
              ) -> "tuple[str, dict[str, dict]]":
@@ -972,7 +1089,7 @@ class Fleet:
                 self.run["t0"] = self._clock() + lead_s - to_s
                 mode = "running"
                 send = True
-            self._run_gen += 1
+            self._t0_moved()
         if send:
             return mode, self._send_run(self._targets())
         return mode, {}
@@ -982,7 +1099,7 @@ class Fleet:
             if not self.run or self.run["state"] != "running":
                 return {}
             self.run.update(state="holding", held_at=self._clock())
-            self._run_gen += 1
+            self._t0_moved()
         return self.simple(self._targets(), "/show/hold")
 
     def resume(self) -> "dict[str, dict]":
@@ -991,7 +1108,7 @@ class Fleet:
                 return {}
             self.run["t0"] += self._clock() - self.run["held_at"]
             self.run.update(state="running", held_at=None)
-            self._run_gen += 1
+            self._t0_moved()
         return self._send_run(self._targets())
 
     def next_cue(self, lead_s: float = DEFAULT_LEAD_S) -> "dict[str, dict]":
@@ -1016,7 +1133,7 @@ class Fleet:
             if self.run["state"] == "holding":  # NEXT also lets go of a hold
                 self.run["t0"] += self._clock() - self.run["held_at"]
                 self.run.update(state="running", held_at=None)
-            self._run_gen += 1
+            self._t0_moved()
         return self._send_run(self._targets())
 
     def stop_show(self) -> "dict[str, dict]":
@@ -1027,7 +1144,7 @@ class Fleet:
             self._demo_told = set()     # the next demo episode is announced again
             self.run = None
             self.start_at = 0.0
-            self._run_gen += 1
+            self._t0_moved()
         return self.simple(targets, "/show/stop")
 
     def _supervise(self, link: UnitLink) -> None:
@@ -1204,7 +1321,7 @@ class Fleet:
                 # up (or restarted) is not where THIS run began - the
                 # units, not the page, decided that (found in review).
                 self.start_at = 0.0
-                self._run_gen += 1
+                self._t0_moved()
 
     # ---- commands, to many units at once ----
 

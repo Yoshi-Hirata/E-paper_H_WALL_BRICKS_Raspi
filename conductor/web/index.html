@@ -121,7 +121,11 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
   color: var(--accent); z-index: 10; pointer-events: none; }
 #drop.on { display: flex; }
 #toast { position: fixed; right: 18px; bottom: 18px; background: var(--ink); color: var(--bg);
-  padding: 8px 14px; border-radius: 8px; display: none; max-width: 60vw; font-size: 13px; z-index: 11; }
+  padding: 8px 14px; border-radius: 8px; display: none; max-width: 60vw; font-size: 13px;
+  /* Above everything, the stage monitor (70) included: a toast is how a
+     refusal or a failed command says so, and one hidden behind a
+     fullscreen board is a message the operator never gets. */
+  z-index: 90; }
 .empty { color: var(--dim); padding: 60px 0; text-align: center; }
 
 /* ---- timeline ---- */
@@ -237,6 +241,80 @@ input[type=range] { width: 100%; }
 .musicbar #show-music-join:hover { filter: brightness(1.12); }
 .musicbar #show-music-mute.muted { background: var(--err); border-color: var(--err); color: var(--bg); font-weight: 600; }
 .musicbar #show-music-vol { width: 110px; }
+
+/* ---- the NOW -> NEXT board (THE SHOW panel, under the big clock) ----
+   One header line saying what fires next, then one row per garment. The
+   same markup serves the stage monitor (body.stagemon), which only makes
+   everything bigger and puts it on black - there is no second board. */
+#nownext { margin: 10px 0 4px; }
+.nn-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px;
+  border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.nn-cap { font-size: 12px; font-weight: 700; letter-spacing: .12em; color: var(--dim); }
+.nn-time { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.nn-count { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 96px; }
+.nn-count.amber { color: var(--warn); }
+.nn-count.red { color: var(--err); animation: nn-pulse .8s ease-in-out infinite; }
+@keyframes nn-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .nn-count.red { animation: none; } }
+.nn-what { font-size: 17px; font-weight: 600; flex: 1 1 200px; min-width: 0; }
+.nn-fired { font-size: 22px; font-weight: 700; letter-spacing: .1em; color: var(--ok); }
+.nn-note { font-size: 13px; color: var(--dim); flex-basis: 100%; }
+.nn-follow { font-size: 12px; color: var(--dim); text-align: right; line-height: 1.45;
+  flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.nn-follow div { white-space: nowrap; }
+.nn-tools { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+.nn-rows { display: flex; flex-direction: column; gap: 4px; }
+/* minmax(0, …) on every flexible column, so a narrow window squeezes the
+   text (which ellipsises) instead of pushing the row off the side of the
+   page - a board with a horizontal scrollbar is no use to anyone. */
+.nn-row { display: grid; align-items: center; gap: 6px 10px; font-size: 12px;
+  grid-template-columns: 124px minmax(0, 1.2fr) 58px minmax(0, 1.2fr) 96px minmax(0, 1.4fr);
+  border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; }
+.nn-row.off { opacity: .55; }
+.nn-row.soon { border-color: var(--warn); }
+.nn-row.now { border-color: var(--err); }
+.nn-who b { font-size: 14px; display: block; }
+.nn-who small { color: var(--dim); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nn-cell { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; }
+/* A fixed box the garment is fitted into, rather than a size on the SVG:
+   renderGarment() writes its own inline width/max-width (boardThumb strips
+   them), and a viewBox told to fill a box scales itself to fit whatever
+   shape the garment is. */
+.nn-thumb { flex: 0 0 auto; background: var(--garment); border-radius: 4px;
+  width: 92px; height: 46px; padding: 2px; display: flex; align-items: center; justify-content: center; }
+.nn-thumb svg { display: block; width: 100%; height: 100%; }
+.nn-txt { min-width: 0; }
+.nn-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.nn-when { color: var(--dim); font-variant-numeric: tabular-nums; }
+.nn-when .c.amber { color: var(--warn); font-weight: 700; }
+.nn-when .c.red { color: var(--err); font-weight: 700; }
+.nn-prog { height: 4px; border-radius: 2px; background: var(--line); margin-top: 3px; overflow: hidden; }
+.nn-prog i { display: block; height: 100%; background: var(--accent); }
+.nn-arr { text-align: center; color: var(--dim); }
+.nn-arr b { display: block; font-size: 19px; color: var(--ink); line-height: 1.1; }
+.nn-state .ok { color: var(--ok); } .nn-state .warnx { color: var(--warn); } .nn-state .err { color: var(--err); }
+.nn-vit { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nn-vit.amber { color: var(--warn); } .nn-vit.red { color: var(--err); font-weight: 600; }
+.nn-bags { margin-top: 4px; }
+.nn-bags > button { font-size: 12px; }
+.nn-empty { color: var(--dim); font-size: 12px; }
+/* The stage monitor: the same board, fullscreen, on black. Requested via the
+   Fullscreen API; when the browser refuses (or ESC leaves it) the fixed
+   overlay below is the whole feature on its own. */
+#nn-stage { position: fixed; inset: 0; z-index: 70; background: #0b0b0e; color: #f2f2f6;
+  overflow: auto; padding: 18px 22px; display: none; }
+body.stagemon #nn-stage { display: block; }
+body.stagemon { overflow: hidden; }
+#nn-stage #nownext { margin: 0; }
+#nn-stage .nn-head, #nn-stage .nn-row { border-color: #3a3a46; }
+#nn-stage .nn-cap, #nn-stage .nn-who small, #nn-stage .nn-when, #nn-stage .nn-vit,
+#nn-stage .nn-arr, #nn-stage .nn-note, #nn-stage .nn-follow { color: #a6a6b6; }
+#nn-stage .nn-time { font-size: 40px; } #nn-stage .nn-count { font-size: 54px; min-width: 150px; }
+#nn-stage .nn-what { font-size: 26px; } #nn-stage .nn-fired { font-size: 34px; }
+#nn-stage .nn-row { font-size: 16px; grid-template-columns: 180px minmax(0, 1.3fr) 74px minmax(0, 1.3fr) 118px minmax(0, 1.5fr); }
+#nn-stage .nn-who b { font-size: 20px; }
+#nn-stage .nn-thumb { width: 128px; height: 64px; }
+#nn-stage .nn-follow { font-size: 15px; }
 body.busy .go button, body.busy #show-seek-wrap input,
 body.busy .dlg button, body.busy .dlg input { opacity: .45; pointer-events: none; }
 body.busy #write-back { pointer-events: none; }
@@ -437,6 +515,11 @@ button.primarybtn:disabled { filter: none; }
 <!-- "Write to units…" lives outside #content: it must survive the render of
      whichever tab it was opened from (and be reachable from both). -->
 <div id="write-host"></div>
+<!-- The stage monitor: the NOW -> NEXT board on its own, fullscreen, on
+     black. Outside #content for the same reason as the dialog above - the
+     board node is MOVED in here and back, so there is never a second board
+     to keep in step (see placeBoard()). -->
+<div id="nn-stage"></div>
 
 <script>
 "use strict";
@@ -518,7 +601,14 @@ const ui = { tab: "items", item: null, design: null, mode: "design", view: "outs
              // that should be waiting for the next Upload), otherwise a row key
              // from writeRows().
              writeOpen: false, writeFocus: "upload", writeResult: null,
-             writeOnly: null };
+             writeOnly: null,
+             // The NOW -> NEXT board (THE SHOW panel): the three bags are
+             // collapsed because nothing synchronises them, the stage
+             // monitor is the fullscreen view of the same board, and
+             // nextLeadUntil is when a NEXT the operator just pressed
+             // actually fires (performance.now() + the lead), which is what
+             // the header counts down during the lead.
+             bagsOpen: false, stage: false, nextLeadUntil: 0 };
 let fleet = null;
 let state = null;
 // The last GET /api/fleet/demos answer ({units: {unit: [demo,...]}, offline: [unit,...]}),
@@ -3041,6 +3131,636 @@ const UPLOAD_TITLE = "Writes every picture into the boards now (one per cue, "
   + "cue, or editing one in place, only rewrites its own slot (seconds); "
   + "inserting or removing a cue earlier in the show rewrites every slot "
   + "after it (~3 min per unit). START waits for every unit to finish writing.";
+// ---- THE SHOW's NOW -> NEXT board ---------------------------------------
+// Under the big clock: one header line saying what fires next and in how
+// many seconds, then one row per garment - what it is wearing now, how it
+// will change, what it changes to and when, and how its Radxa is doing.
+//
+// The operator's decisions (2026-09-27, verbatim): 「衣装ごとの行は 全 LOOK
+// を常に表示。ただし、バッグのみ折り畳み(同期制御しないため)。ステージ
+// モニター(全画面)は今回含める。カウントダウンの色替えの閾値(10 s / 3 s)
+// はこの値でよい。追加で、それぞれのlookにシンプルにradxaのバイタルを表示
+// して。このホストPCと比較した遅れ時間を表示したい。」
+//
+// Every number on it comes from two things that already exist: this
+// workspace's own timeline (state.show.cues, with the sent/complete the
+// server computes) and /api/fleet's last poll, carried forward with
+// performance.now() exactly as the big clock, the seek bar and the music do
+// it. No clock, no poll and no API of its own.
+//
+// <<< SHOWBOARD: the pure decision layer (tests/test_conductor_board.py
+// lifts everything between these two markers out of this page and runs it on
+// its own in a headless browser - keep it free of the DOM, of `fleet`, of
+// `state` and of any clock of its own). >>>
+const SHOWBOARD = (() => {
+  // The countdown's two thresholds. The operator confirmed these values
+  // (「カウントダウンの色替えの閾値(10 s / 3 s)はこの値でよい」): neutral
+  // above ten seconds, amber at ten, red and pulsing at three.
+  const AMBER_S = 10, RED_S = 3;
+  // "FIRED" flashes for this long at the instant a cue goes out - long
+  // enough to catch out of the corner of an eye, gone before the next thing
+  // happens.
+  const FIRED_S = 1;
+  // A unit whose show clock is further than this from this PC's is red (the
+  // fleet corrects anything past 50 ms on its own, so 200 ms means the
+  // correction is not landing); a round trip longer than this is amber. A
+  // unit that started less than RESTART_S ago says so, because a restart is
+  // what explains a unit that lost its pictures mid-show.
+  const LAG_BAD_MS = 200, RTT_SLOW_MS = 100, RESTART_S = 600;
+  // Which way a cue sweeps, as one character - conductor/sequence.py's six.
+  const ARROWS = { natural: "■", center: "◎", top_down: "↓",
+                   bottom_up: "↑", left_right: "→", right_left: "←" };
+
+  // m:ss - the same rule as the page's own clock(), written out here
+  // because the pure layer may not reach outside itself for it.
+  function mmss(s) {
+    const n = Math.round(Math.abs(s));
+    return (s < 0 ? "-" : "") + Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0");
+  }
+  // A countdown counts whole seconds and stops at zero: "1 s" stands for the
+  // whole of the last second (tenths are not wanted), and a cue already gone
+  // never reads as a negative number of seconds still to come.
+  const secs = s => Math.max(0, Math.ceil(s - 1e-6));
+  const arrow = seq => ARROWS[seq] || ARROWS.natural;
+  const tone = s => s === null || s === undefined ? ""
+    : s <= RED_S ? "red" : s <= AMBER_S ? "amber" : "";
+
+  // The bags. Nothing synchronises them (「バッグのみ折り畳み(同期制御しない
+  // ため)」), so the board collapses them into one group rather than give each
+  // a row that never changes.
+  //
+  // NO CUE FIRES IT is the necessary condition, and the name is only the
+  // hint on top (review): a LOOK number is blank for ANY item whose file is
+  // not LookNN - conductor/server.py leaves it empty for AZ271SC6302_*.csv
+  // until someone types one - and /bag/i matches a "Bag-strap Tops". A
+  // garment the show actually changes is never folded away, whatever it is
+  // called; and a bag that somehow does get a cue keeps a row of its own.
+  const isBag = row => (row.cues || []).length === 0
+    && (/^AZ271SG/i.test(row.item || "")
+        || /bag/i.test(row.model || "")
+        || !String(row.look === undefined || row.look === null ? "" : row.look).trim());
+
+  // The show's own phase, from /api/fleet's run and the position on it.
+  //   "loaded"  uploaded, never started: START runs from 0:00, or from the
+  //             remembered start_at, and the panels hold the 0:00 preset
+  //   "kept"    the same, except a show HAS run here (`ranBefore`): STOP
+  //             leaves every panel showing whatever it last drew, and the
+  //             board must not pretend the preset is back on the glass
+  //   "running" / "holding" / "ended" (past the show's own length)
+  function phase(run, t, duration, ranBefore) {
+    if (!run) return ranBefore ? "kept" : "loaded";
+    if (run.state === "holding") return "holding";
+    if (duration > 0 && t >= duration) return "ended";
+    return "running";
+  }
+  // The two phases where nothing is moving and START is what comes next.
+  const atRest = how => how === "loaded" || how === "kept";
+
+  // One garment at t, from that garment's own cues (sorted by `sent`, each
+  // {id, at, sent, complete, design, label, sequence, span}):
+  //   now       the last cue whose picture is finished - what is worn
+  //   changing  the cue in flight, if any (sent <= t < complete)
+  //   next      the earliest cue still to be sent
+  // A cue in flight is NOT the next one: it has already gone out, and the
+  // NEXT column must show what comes after it - otherwise the row counts the
+  // same cue down twice and the garment appears to change twice.
+  function rowAt(cues, t) {
+    let now = null, changing = null, next = null;
+    for (const cue of cues) {
+      if (cue.sent > t) { if (!next) next = cue; continue; }
+      if (t < cue.complete) changing = cue; else now = cue;
+    }
+    const out = { now, changing, next, last: !next, none: !cues.length,
+                  left: null, progress: null, in: next ? next.sent - t : null };
+    if (changing) {
+      const span = changing.complete - changing.sent;
+      out.left = Math.max(0, changing.complete - t);
+      out.progress = span > 0 ? Math.min(1, Math.max(0, (t - changing.sent) / span)) : 1;
+    }
+    return out;
+  }
+
+  // The words for one row. `at` is rowAt()'s answer, `how` the phase.
+  //
+  // `nowUnknown` is the page's cue to draw no thumbnail at all: after a STOP
+  // the panels hold whatever they last drew, and this board cannot know what
+  // that was - recomputing the design at start_at would put the 0:00 preset
+  // on screen for garments that are standing on stage in their last look.
+  function rowText(at, how, duration) {
+    const out = { now: "", changing: "", next: "", when: "", count: null,
+                  tone: "", arrow: "", span: "", nowUnknown: false };
+    if (how === "kept") {
+      out.now = "(whatever the panels kept)";
+      out.nowUnknown = true;
+    } else {
+      out.now = at.changing ? at.changing.label
+        : at.now ? at.now.label : "(as before the show)";
+      if (at.changing) out.changing = "changing… " + secs(at.left) + " s left";
+    }
+    // A garment no cue ever touches - a spare, or one whose cues are not on
+    // the timeline yet. "last design" would be a lie: there was no first one.
+    if (at.none) { out.next = "no cue — nothing changes it"; return out; }
+    // The show is over: every garment keeps what it has, and nothing is
+    // coming. Said before "last design", which is about a garment that has
+    // run out of cues while the show has not.
+    if (how === "ended") { out.next = "show ended"; return out; }
+    const cue = at.next;
+    if (!cue) {
+      // Past its last cue a garment keeps what it wears to the end of the
+      // show - said in full, because a blank NEXT reads like a fault.
+      out.next = "last design — until the show ends " + mmss(duration);
+      return out;
+    }
+    out.next = cue.label;
+    out.arrow = arrow(cue.sequence);
+    out.span = cue.span > 0 ? cue.span.toFixed(1) + " s" : "";
+    out.when = mmss(Math.max(0, cue.at));
+    if (atRest(how)) return out;                  // a time, but nothing counting
+    out.count = secs(at.in);
+    if (how === "holding") return out;            // frozen: no colour, no pulse
+    out.tone = tone(at.in);
+    return out;
+  }
+
+  // Every cue still ahead of t, grouped by the instant it is sent: cues that
+  // go out together are one entry, because they are one broadcast and the
+  // operator watches them as one change.
+  function ahead(cues, t) {
+    const groups = new Map();
+    for (const cue of cues) {
+      if (cue.sent <= t) continue;
+      const key = cue.sent.toFixed(3);
+      if (!groups.has(key)) groups.set(key, { at: cue.at, sent: cue.sent, cues: [] });
+      groups.get(key).cues.push(cue);
+    }
+    return [...groups.values()].sort((a, b) => a.sent - b.sent);
+  }
+  // Seconds since the most recent cue went out, or null when none has -
+  // what makes "FIRED" flash. Read off t alone, so a HOLD freezes it and it
+  // never needs a timer, a flag or a memory of its own.
+  function firedAgo(cues, t) {
+    let last = null;
+    for (const cue of cues)
+      if (cue.sent <= t && (last === null || cue.sent > last)) last = cue.sent;
+    return last === null ? null : t - last;
+  }
+
+  // The header line.
+  //   phase/t/duration/startAt  the show, as above
+  //   groups    ahead()'s answer
+  //   names     cue id -> what to call that garment ("LOOK 26 Tops")
+  //   agoS      firedAgo()'s answer
+  //   leadLeft  seconds left of a NEXT the operator just pressed, or null
+  function header(now) {
+    const out = { cap: "NEXT", time: "", count: null, tone: "", fired: false,
+                  garments: [], following: [], note: "" };
+    // Only a running show fires anything. A HOLD freezes agoS at whatever it
+    // was, and "loaded" reads the preset (sent before 0:00) as a cue that
+    // just went out - neither is a flash the operator should see.
+    if (now.phase === "running" && now.agoS !== null && now.agoS !== undefined
+        && now.agoS >= 0 && now.agoS < FIRED_S) out.fired = true;
+    if (now.leadLeft !== null && now.leadLeft !== undefined && now.leadLeft > 0)
+      out.note = "NEXT in " + secs(now.leadLeft) + " s";
+    const first = (now.groups || [])[0] || null;
+    if (now.phase === "ended") {
+      out.cap = "SHOW ENDED";
+      out.note = out.note || "show ended";
+      return out;
+    }
+    if (!first) {
+      out.cap = now.phase === "holding" ? "ON HOLD" : "NO CUE AHEAD";
+      out.note = out.note || (atRest(now.phase)
+        ? "Nothing on the timeline yet."
+        : "Every cue has gone out — the show ends " + mmss(now.duration) + ".");
+      return out;
+    }
+    out.time = mmss(Math.max(0, first.at));
+    out.garments = first.cues.map(c => now.names[c.id] || c.item);
+    out.following = (now.groups || []).slice(1, 4).map(g => ({
+      at: mmss(Math.max(0, g.at)),
+      what: g.cues.map(c => now.names[c.id] || c.item).join(" + "),
+      design: [...new Set(g.cues.map(c => c.label))].join(" + ") }));
+    if (atRest(now.phase)) {
+      out.note = out.note || "START runs from " + mmss(now.startAt || 0)
+        + (now.phase === "kept"
+           ? " — the panels keep what they are showing until it does" : "");
+      return out;
+    }
+    const left = first.sent - now.t;
+    out.count = secs(left);
+    if (now.phase === "holding") {
+      out.cap = "NEXT (HELD)";
+      out.note = out.note || "HELD at " + mmss(now.t) + " — " + secs(left)
+        + " s to the next cue after RESUME";
+      return out;
+    }
+    out.tone = tone(left);
+    return out;
+  }
+
+  // This garment's own boards, of the ones its unit says are answering.
+  // `boardNos` are the board numbers of THIS garment (the map's own), not
+  // the unit's: a Radxa can carry a top and a skirt, and "11 of 12
+  // answering" then names neither of them. /api/fleet's `live_ids` is the
+  // list behind the count the tile shows.
+  function boardsOf(u, boardNos) {
+    const want = (boardNos || []).map(Number).filter(n => Number.isFinite(n));
+    if (!Array.isArray(u.live_ids)) {
+      // An agent too old to list them. The unit-wide counts only mean
+      // anything when this garment IS the whole unit; with two garments on
+      // one Radxa "7 of 8 answering" belongs to neither of them, so the
+      // count reads "?" rather than a number about somebody else.
+      const live = typeof u.live === "number" ? u.live : null;
+      const total = want.length || u.boards || 0;
+      const alone = !want.length || want.length === (u.boards || 0);
+      return { have: alone ? live : null, want: total,
+               missing: !!(alone && total && live !== null && live < total) };
+    }
+    if (!want.length) return { have: u.live_ids.length, want: u.boards || 0, missing: false };
+    const answering = new Set(u.live_ids.map(Number));
+    const have = want.filter(n => answering.has(n)).length;
+    return { have, want: want.length, missing: have < want.length };
+  }
+
+  // One garment's Radxa, in one line. `u` is /api/fleet's unit snapshot (or
+  // null when the garment is not assigned to one); `boardNos` are that
+  // garment's own board numbers.
+  //
+  // "lag" is show_lag_ms (conductor/fleet.py): how far this unit's show
+  // clock is behind THIS PC's, positive = behind. It is NOT sync_ms, which
+  // is half a round trip - the width of the error bar, not an error - so
+  // the two are shown together ("+4 ±3 ms"): a lag inside its own error bar
+  // is not a lag, and the pair says that without a word.
+  //
+  // `parts` is the same line broken up, so the page can hang a tooltip on
+  // each value - the sign of the lag above all, which "+48 ms" cannot say
+  // for itself (friendly review). `text` is those parts joined.
+  const LAG_WHY = "+ = this unit's show clock is BEHIND this PC's (it thinks "
+    + "the show started later); - = ahead. Measured as the unit's own T0 "
+    + "against this PC's. The ± after it is how accurately this unit's "
+    + "clock is known at all (half a round trip) - a lag inside that is not "
+    + "a lag. Blank for a moment after START, a seek, RESUME or NEXT, until "
+    + "the unit has been polled on the new T0.";
+  function vitals(u, boardNos) {
+    const plain = (text, tone) => ({ text, parts: [{ text }], tone,
+                                     offline: true, missing: false });
+    if (!u) return plain("no unit assigned", "red");
+    if (!u.online) return plain(u.name + " · unit offline", "red");
+    const lag = u.show_lag_ms;
+    const known = lag !== null && lag !== undefined;
+    const bar = typeof u.sync_ms === "number" ? " ±" + Math.round(u.sync_ms) : "";
+    const b = boardsOf(u, boardNos);
+    const bits = [
+      { text: u.name },
+      { text: "lag " + (known ? (lag >= 0 ? "+" : "") + Math.round(lag) + bar + " ms" : "—"),
+        title: LAG_WHY },
+      { text: "rtt " + (u.rtt_ms === null || u.rtt_ms === undefined ? "—" : Math.round(u.rtt_ms) + " ms"),
+        title: "The round trip to this unit on the show's WLAN." },
+      { text: "boards " + (b.have === null ? "?" : b.have) + "/" + (b.want || "?"),
+        title: "Boards of THIS garment that are answering, out of the ones "
+          + "its map has - not the whole unit's, which may carry two garments." }];
+    if (u.late_ms !== null && u.late_ms !== undefined)
+      bits.push({ text: "fired " + (u.late_ms >= 0 ? "+" : "") + Math.round(u.late_ms) + " ms",
+                  title: "How late this unit sent its last cue, by its own clock." });
+    if (typeof u.uptime_s === "number" && u.uptime_s < RESTART_S)
+      bits.push({ text: u.uptime_s < 60 ? "restarted just now"
+                    : "restarted " + Math.round(u.uptime_s / 60) + " min ago",
+                  title: "This unit came up less than ten minutes ago - which is "
+                    + "what explains one that lost its pictures mid-show." });
+    const bad = b.missing || (known && Math.abs(lag) > LAG_BAD_MS);
+    const slow = !bad && typeof u.rtt_ms === "number" && u.rtt_ms > RTT_SLOW_MS;
+    return { text: bits.map(x => x.text).join(" · "), parts: bits,
+             tone: bad ? "red" : slow ? "amber" : "",
+             offline: false, missing: b.missing };
+  }
+
+  return { AMBER_S, RED_S, FIRED_S, LAG_BAD_MS, RTT_SLOW_MS, RESTART_S, ARROWS,
+           mmss, secs, arrow, tone, isBag, phase, atRest, rowAt, rowText,
+           ahead, firedAgo, header, boardsOf, vitals };
+})();
+// <<< /SHOWBOARD >>>
+
+// The board itself is ONE node, created once and moved between THE SHOW card
+// and the stage monitor - never rebuilt by renderFleet()'s innerHTML. That is
+// what lets the thumbnails keep their circle cache across a tab switch, and
+// what keeps the stage monitor alive when the operator renders another tab
+// behind it.
+let boardEl = null;
+const BOARD = {
+  sig: null,            // the structure the rows were built for
+  rows: [],             // per-row DOM handles and colour caches
+  head: null,           // the header's own handles
+  // renderGarment's cell size. It only sets the proportions here (the box's
+  // own size is in the CSS and the viewBox fits into it), but it does decide
+  // how thick a scale's outline looks against its fill: too small a cell and
+  // every circle reads as a ring.
+  cell: 8,
+  stageWanted: false    // the Fullscreen API was asked, so ESC means "leave"
+};
+// A garment's short name for the header: "LOOK 26 Tops". The model number is
+// the only thing that says which garment of a shared LOOK this is, and it
+// usually does ("... (Tops)" / "... (Skirt)") - the same hint lookGroups()
+// stacks a shared cell by.
+function garmentWord(item) {
+  const m = item.model || "";
+  if (/top/i.test(m)) return "Tops";
+  if (/skirt/i.test(m)) return "Skirt";
+  if (/bottom|pants|trouser/i.test(m)) return "Bottom";
+  if (/bag/i.test(m)) return "Bag";
+  return "";
+}
+// A cue as the pure layer wants it: the times the server computed, the
+// design's own name, and the sweep that actually applies (the design's
+// default or this cue's override).
+function boardCue(cue, item) {
+  const design = item.designs.find(d => d.name === cue.design) || null;
+  const sweep = sweepOf(cue);
+  return { id: cue.id, item: cue.item, at: cue.at, sent: cue.sent,
+           complete: cue.complete, design: cue.design,
+           label: design ? designLabel(design) + (cue.partial ? " (partial)" : "")
+                         : cue.design + " (missing)",
+           sequence: sweep.sequence, span: Math.max(0, Number(cue.span) || 0) };
+}
+// One row per garment, ordered by unit (the operator reads the board left to
+// right along the stage, and the units are numbered along it). A garment with
+// no unit sorts last.
+function boardRows() {
+  const order = {};
+  (state?.units || []).forEach((u, i) => { order[u] = i; });
+  const rows = trackItems().map(item => ({
+    key: item.item, item: item.item, look: item.look, model: item.model,
+    unit: item.unit || "", garment: item,
+    name: [item.look ? "LOOK " + item.look : item.item, garmentWord(item)]
+      .filter(Boolean).join(" "),
+    // This garment's OWN board numbers, which is what its vitals count
+    // against - a unit may carry a top and a skirt, and its own totals
+    // would then belong to neither row.
+    boardNos: (item.boards || []).map(b => b.board_no),
+    cues: cuesOf(item).map(c => boardCue(c, item))
+  }));
+  const rank = r => r.unit && r.unit in order ? order[r.unit] : 999;
+  rows.sort((a, b) => rank(a) - rank(b)
+    || (Number(a.look) || 1e9) - (Number(b.look) || 1e9)
+    || a.item.localeCompare(b.item));
+  return rows;
+}
+// What a rebuild depends on: the garments, their units and their cues, plus
+// whether the bags are open. Everything else the board shows is a number that
+// changes four times a second and is poked into place instead.
+function boardSig(rows) {
+  return rows.map(r => r.key + "@" + r.unit + "/" + r.boardNos.join("-") + "#"
+    + r.cues.map(c => c.id + ":" + c.sent + ":" + c.complete + ":" + c.design
+                 + ":" + c.sequence + ":" + c.span).join(",")).join("|")
+    + "|" + (ui.bagsOpen ? 1 : 0);
+}
+function boardRowHtml(r) {
+  const who = r.look ? "LOOK " + r.look : r.item;
+  const sub = [r.model, r.unit || "no unit"].filter(Boolean).join(" · ");
+  return `<div class="nn-row" data-row="${esc(r.key)}">
+    <div class="nn-who"><b>${esc(who)}</b><small title="${esc(r.item)}">${esc(sub)}</small></div>
+    <div class="nn-cell"><div class="nn-thumb" data-now></div>
+      <div class="nn-txt"><div class="nn-name" data-now-name></div>
+        <div class="nn-when" data-chg></div>
+        <div class="nn-prog" data-prog hidden><i></i></div></div></div>
+    <div class="nn-arr" data-arr><b></b><span></span></div>
+    <div class="nn-cell"><div class="nn-thumb" data-next></div>
+      <div class="nn-txt"><div class="nn-name" data-next-name></div>
+        <div class="nn-when" data-next-when></div></div></div>
+    <div class="nn-state" data-state></div>
+    <div class="nn-vit" data-vit></div>
+  </div>`;
+}
+function ensureBoard() {
+  if (boardEl) return;
+  boardEl = document.createElement("div");
+  boardEl.id = "nownext";
+}
+// Put the board where it belongs right now - in THE SHOW card, or in the
+// stage overlay - and nowhere else. Moving the node keeps every cache.
+//
+// With no home at all (the stage monitor closed while the operator was on
+// another tab, so there is no #nn-slot to go back into) the board comes out
+// of the document entirely, rather than sit invisible inside the closed
+// overlay being repainted four times a second for nobody.
+function placeBoard() {
+  ensureBoard();
+  const host = ui.stage ? $("#nn-stage") : $("#nn-slot");
+  if (!host) { boardEl.remove(); return; }
+  if (boardEl.parentNode !== host) host.appendChild(boardEl);
+}
+function buildBoard(rows) {
+  ensureBoard();
+  const bags = rows.filter(SHOWBOARD.isBag), worn = rows.filter(r => !SHOWBOARD.isBag(r));
+  const bagsBtn = bags.length
+    ? `<div class="nn-bags"><button id="nn-bags-btn" title="A bag carries no LOOK number and no cue fires it, so nothing here synchronises it. Open the group to see its unit all the same.">${
+        ui.bagsOpen ? "▾" : "▸"} Bags (not synchronised) · ${bags.length}</button>
+       ${ui.bagsOpen ? `<div class="nn-rows" style="margin-top:4px">${bags.map(boardRowHtml).join("")}</div>` : ""}</div>`
+    : "";
+  boardEl.innerHTML = `
+    <div class="nn-head">
+      <span class="nn-cap" data-cap>NEXT</span>
+      <span class="nn-time" data-time></span>
+      <span class="nn-count" data-count></span>
+      <span class="nn-fired" data-fired hidden>FIRED</span>
+      <span class="nn-what" data-what></span>
+      <div class="nn-follow" data-follow></div>
+      <div class="nn-note" data-note></div>
+    </div>
+    <div class="nn-tools">
+      <button id="nn-stage-btn" title="The same board, fullscreen on black, for a monitor at the side of the stage. ESC comes back.">${
+        ui.stage ? "Leave stage monitor (ESC)" : "Stage monitor"}</button>
+      <button id="nn-join" style="display:none" title="This browser will not start audio on its own after a reload - one click starts it at the show's position. The same button as the one in the MUSIC row.">Music: click to join</button>
+    </div>
+    ${worn.length ? `<div class="nn-rows">${worn.map(boardRowHtml).join("")}</div>`
+       : `<div class="nn-empty">No garment has a map CSV yet — the board fills in from the Designs tab.</div>`}
+    ${bagsBtn}`;
+  const head = boardEl.querySelector(".nn-head");
+  BOARD.head = { cap: head.querySelector("[data-cap]"), time: head.querySelector("[data-time]"),
+                 count: head.querySelector("[data-count]"), fired: head.querySelector("[data-fired]"),
+                 what: head.querySelector("[data-what]"), follow: head.querySelector("[data-follow]"),
+                 note: head.querySelector("[data-note]") };
+  const shown = ui.bagsOpen ? worn.concat(bags) : worn;
+  // Matched up by the key each row carries, never by position: the bags
+  // live in a second .nn-rows further down the markup, and an index into a
+  // flat querySelectorAll only happens to agree with `shown` today. An item
+  // name is a file stem and may hold anything a file name may, so the
+  // elements are read out and looked up rather than selected for.
+  const byKey = new Map();
+  boardEl.querySelectorAll(".nn-row").forEach(el => byKey.set(el.dataset.row, el));
+  BOARD.rows = shown.map(r => {
+    const el = byKey.get(r.key);
+    return { r, el,
+             nowBox: el.querySelector("[data-now]"), nowName: el.querySelector("[data-now-name]"),
+             chg: el.querySelector("[data-chg]"), prog: el.querySelector("[data-prog]"),
+             bar: el.querySelector("[data-prog] i"), arr: el.querySelector("[data-arr]"),
+             nextBox: el.querySelector("[data-next]"), nextName: el.querySelector("[data-next-name]"),
+             nextWhen: el.querySelector("[data-next-when]"), state: el.querySelector("[data-state]"),
+             vit: el.querySelector("[data-vit]"),
+             // What each thumbnail was last DRAWN for: a garment's circles
+             // only move when the settled design changes (its own row shifts),
+             // so the SVG is rebuilt then and only then - every tick in
+             // between writes fills, exactly as updateThumbColors() does.
+             nowKey: null, nextKey: null, vitText: null,
+             circles: new Map(), colors: new Map() };
+  });
+}
+// Draw one garment into a thumbnail box and remember its circles.
+function boardThumb(cache, box, item, colors, shifts) {
+  box.innerHTML = renderGarment(item, { cell: BOARD.cell, mode: "design",
+                                        labels: false, tag: true, colors, shifts });
+  // renderGarment() writes its own width/max-width inline, for a row that
+  // sizes its cells by hand (layoutLooks). Here the BOX has the size and the
+  // viewBox fits itself into it, so the inline style only gets in the way.
+  const svg = box.querySelector("svg");
+  if (svg) svg.removeAttribute("style");
+  if (!cache) return;
+  cache.circles = new Map();
+  cache.colors = new Map();
+  box.querySelectorAll("g[data-k]").forEach(el => cache.circles.set(el.dataset.k, el.querySelector("circle")));
+}
+// The 250 ms repaint. Text, classes and a handful of circle fills - never
+// innerHTML, unless the timeline itself changed under it (boardSig) or a
+// garment settled on a new design.
+function paintBoard() {
+  if (!boardEl || !boardEl.isConnected || !state) return;
+  const rows = boardRows();
+  const sig = boardSig(rows);
+  if (sig !== BOARD.sig) { BOARD.sig = sig; buildBoard(rows); }
+  // The same position the big clock, the seek bar and the LOOK row use - the
+  // last poll carried forward with performance.now(), or the operator's drag
+  // target while the seek bar is being dragged, so a seek lands here at once.
+  const t = fleetShowPos(), run = fleet?.run || null, D = fleetDuration();
+  // Has a show actually run on these units? With no run at all the position
+  // falls back to start_at, and recomputing the designs there would put the
+  // 0:00 preset on the board for garments that are standing on stage in
+  // their last look - STOP's own button says the panels keep their image.
+  // A unit that has applied a cue of ITS OWN show (not a demo it is
+  // playing) is the fleet's own record that the show has been through.
+  //
+  // Deliberately NOT compared against this workspace's show id: a unit
+  // still carrying the applied count of a PREVIOUS show, after a fresh
+  // Upload and before any START, reads "kept" - and that is the truth.
+  // The glass is holding that older show's last picture, which is
+  // exactly what this phase exists to stop the board denying.
+  const ranBefore = (fleet?.units || []).some(u => u.show && !u.show.demo
+    && ((Number(u.show.applied) || 0) > 0 || u.show.state === "ended"));
+  const how = SHOWBOARD.phase(run, t, D, ranBefore);
+  const all = [], names = {};
+  for (const r of rows) for (const c of r.cues) { all.push(c); names[c.id] = r.name; }
+  const leadMs = ui.nextLeadUntil - performance.now();
+  const h = SHOWBOARD.header({ phase: how, t, duration: D, startAt: fleetStartAt(),
+                               groups: SHOWBOARD.ahead(all, t), names,
+                               agoS: SHOWBOARD.firedAgo(all, t),
+                               leadLeft: leadMs > 0 ? leadMs / 1000 : null });
+  const H = BOARD.head;
+  if (H) {
+    H.cap.textContent = h.cap;
+    H.time.textContent = h.time;
+    H.count.textContent = h.count === null ? "" : "−" + h.count + " s";
+    H.count.className = "nn-count " + h.tone;
+    H.fired.hidden = !h.fired;
+    H.what.textContent = h.garments.join(" · ");
+    H.follow.innerHTML = h.following.map(f =>
+      `<div>${esc(f.at)} · ${esc(f.what)} · ${esc(f.design)}</div>`).join("");
+    H.note.textContent = h.note;
+  }
+  for (const c of BOARD.rows) {
+    const at = SHOWBOARD.rowAt(c.r.cues, t), txt = SHOWBOARD.rowText(at, how, D);
+    const item = c.r.garment;
+    // NOW: what the unit is showing. flicker:false, the same as the live LOOK
+    // row right below it - the simulator's flicker wave is the Timeline's
+    // dramatisation of a repaint, and two different pictures of one garment
+    // on one screen would be worse than none (fix round finding 5).
+    // ...unless nothing here can know what is on the glass (after a STOP):
+    // then the box is empty rather than showing a design nobody chose.
+    const worn = txt.nowUnknown ? null : wornAt(item, t, { flicker: false });
+    const nowKey = txt.nowUnknown ? "?" : at.now ? at.now.id : "-";
+    c.nowBox.style.display = txt.nowUnknown ? "none" : "";
+    if (c.nowKey !== nowKey) {
+      c.nowKey = nowKey;
+      if (worn) boardThumb(c, c.nowBox, item, worn.colors, worn.shifts);
+      else { c.nowBox.innerHTML = ""; c.circles = new Map(); c.colors = new Map(); }
+    }
+    if (worn) for (const [key, circle] of c.circles) {
+      const fill = fillFor(worn.colors[key]);
+      if (c.colors.get(key) !== fill) { c.colors.set(key, fill); if (circle) circle.setAttribute("fill", fill); }
+    }
+    c.nowName.textContent = txt.now;
+    c.chg.textContent = txt.changing;
+    c.prog.hidden = !at.changing;
+    if (at.changing) c.bar.style.width = (100 * at.progress).toFixed(1) + "%";
+    // The transition, as one character and its span.
+    c.arr.firstElementChild.textContent = txt.arrow;
+    c.arr.lastElementChild.textContent = txt.span;
+    c.arr.title = at.next ? seqLabel(at.next.sequence) : "";
+    // NEXT: a still of the design that is coming. Redrawn only when the cue
+    // ahead changes, which is at most once per cue of this garment.
+    const nextKey = at.next ? at.next.id : "-";
+    if (c.nextKey !== nextKey) {
+      c.nextKey = nextKey;
+      const design = at.next ? item.designs.find(d => d.name === at.next.design) : null;
+      // Nothing coming: no box either. An empty grey rectangle where a
+      // garment should be reads as a picture that failed to draw.
+      c.nextBox.style.display = design ? "" : "none";
+      if (design) boardThumb(null, c.nextBox, item, design.colors, design.shifts);
+      else c.nextBox.innerHTML = "";
+    }
+    c.nextName.textContent = txt.next;
+    c.nextWhen.innerHTML = (txt.when ? esc(txt.when) : "")
+      + (txt.count === null ? "" : ` <span class="c ${txt.tone}">−${txt.count} s</span>`);
+    const u = c.r.unit ? (fleet?.units || []).find(x => x.name === c.r.unit) || null : null;
+    c.state.innerHTML = u && u.online ? esc(lateText(u)) + verifyMark(u) : "";
+    const v = SHOWBOARD.vitals(u, c.r.boardNos);
+    // Each value carries its own tooltip - which way the lag's sign runs,
+    // above all - so the line is spans rather than text. Rewritten only
+    // when it says something different, since most ticks it does not.
+    if (c.vitText !== v.text) {
+      c.vitText = v.text;
+      c.vit.innerHTML = v.parts.map(p => p.title
+        ? `<span title="${esc(p.title)}">${esc(p.text)}</span>` : esc(p.text)).join(" · ");
+    }
+    c.vit.className = "nn-vit " + v.tone;
+    c.el.classList.toggle("off", v.offline);
+    c.el.classList.toggle("soon", how === "running" && txt.tone === "amber");
+    c.el.classList.toggle("now", how === "running" && txt.tone === "red");
+  }
+  const join = $("#nn-join");
+  if (join) join.style.display = showMusic.plan && showMusic.plan.join ? "" : "none";
+}
+// The stage monitor. The Fullscreen API when the browser allows it; the fixed
+// overlay underneath is the whole feature on its own when it does not, so a
+// refusal costs nothing but the title bar.
+function setStage(on) {
+  ui.stage = on;
+  document.body.classList.toggle("stagemon", on);
+  placeBoard();
+  BOARD.sig = null;               // the button's own label is part of the build
+  if (on) {
+    const host = $("#nn-stage");
+    if (host && host.requestFullscreen) {
+      BOARD.stageWanted = true;
+      const asked = host.requestFullscreen();
+      if (asked && asked.catch) asked.catch(() => { BOARD.stageWanted = false; });
+    }
+  } else if (document.fullscreenElement) {
+    BOARD.stageWanted = false;
+    try { document.exitFullscreen(); } catch {}
+  }
+  paintBoard();
+}
+// ESC out of fullscreen closes the monitor too (and the other way round: the
+// branch above has already let go of the element, so this cannot loop).
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement && ui.stage && BOARD.stageWanted) {
+    BOARD.stageWanted = false;
+    setStage(false);
+  }
+});
+// ...and ESC on the plain overlay, where there is no fullscreen to leave.
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && ui.stage && !document.fullscreenElement) setStage(false);
+});
+
 function renderFleet() {
   const items = assignedItems();
   for (const item of items)
@@ -3055,6 +3775,10 @@ function renderFleet() {
         <div class="showclock" id="show-clock"><small>—</small>0:00</div>
         <div class="shownext" id="show-next"></div>
       </div>
+      <!-- The NOW -> NEXT board is MOVED into this slot (placeBoard()), never
+           rendered into it: it has to survive this innerHTML, and the stage
+           monitor has to survive a render of another tab behind it. -->
+      <div id="nn-slot"></div>
       <div class="thumbs small" id="show-thumbs" style="margin-top:8px"></div>
       ${seekBlockHtml()}
       ${musicBlockHtml()}
@@ -3109,6 +3833,8 @@ function renderFleet() {
     <div class="card"><h2>UNITS</h2>
       <div class="meta sub">Every unit is polled every 2 s, and each round trip also measures its clock offset.</div><div class="tiles" id="tiles"></div></div>`;
   renderThumbs(THUMBS.fleet, fleetShowPos());
+  placeBoard();                // the board moves back into its slot, cache and all
+  paintBoard();                // ...and fills in now, not in 250 ms
   renderTiles();
   paintChips();
   paintShowMusic();            // the bar is freshly built: fill it in now, not in 250 ms
@@ -3198,7 +3924,11 @@ function showClockText() {
   if (sub) sub.textContent = "The timeline is uploaded to the units; after START each unit runs it on its own clock, with or without this PC."
     + (want > 0 && loaded < want ? " (workspace timeline)" : "");
 }
-setInterval(showClockText, 250);
+// The 250 ms heartbeat of THE SHOW panel. showClockText() stands down when
+// its own card is not on screen; the board does not, because the stage
+// monitor keeps it alive over whichever tab the operator left behind it -
+// paintBoard() is the one that checks whether the node is connected at all.
+setInterval(() => { showClockText(); paintBoard(); }, 250);
 // When a unit's Pictures row first shows "burning" (this browser tab's own
 // wall clock, not the unit's) it is timestamped here, purely to show an
 // elapsed count alongside "writing n / N" - cheap, and forgotten the moment
@@ -3296,6 +4026,12 @@ function demosOnUnitHtml(u) {
   return u.demos.map(d => `${esc(d.name)} (${esc(d.cues ?? "?")} cue${d.cues === 1 ? "" : "s"}`
     + ` · ${clock(d.duration || 0)}${d.loop ? " · loop" : ""})`
     + (d.current === false ? ` <span class="warn">older</span>` : "")).join("<br>");
+}
+// "Fired late by": the tile's own wording, shared with the NOW -> NEXT
+// board's status column so the two can never disagree about a unit.
+function lateText(u) {
+  return u.late_ms === null || u.late_ms === undefined
+    ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms";
 }
 // The unit's own board list against the one this show gives it.
 //
@@ -3437,7 +4173,7 @@ function renderTiles() {
       <div class="row"><span>Boards (answering / expected)</span><b>${u.live} / ${expected || u.boards || "?"}${boardListMark(u)}</b></div>
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
-      <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}${verifyMark(u)}</b></div>
+      <div class="row"><span>Fired late by</span><b>${esc(lateText(u))}${verifyMark(u)}</b></div>
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version")
             + (unitHoldsRevision(u.name) === false ? " (older timeline)" : "") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
@@ -3476,10 +4212,15 @@ async function pollFleet() {
   // told that another tab had it, sat there in silence (review finding).
   // Chrome exempts a page that is playing audio from intensive throttling,
   // so the one poll a second keeps arriving.
+  // ...and whenever the stage monitor is up, which is a board over whichever
+  // tab it was opened from: a countdown that stopped moving because the
+  // operator had wandered onto the Designs tab is the one thing that view
+  // must never do.
   const asleep = document.hidden && !musicIsPlayingHere();
-  if (!asleep && (ui.tab === "fleet" || ui.writeOpen || chipsOnly || musicWantsFleet())) {
+  if (!asleep && (ui.tab === "fleet" || ui.writeOpen || chipsOnly || ui.stage || musicWantsFleet())) {
     await fetchFleet();
     renderTiles();
+    paintBoard();
     paintWrite();
     paintChips();
   }
@@ -3586,7 +4327,15 @@ document.addEventListener("click", async e => {
   // plan()'s "claim"). That is still allowed, because the click gives the
   // document sticky activation - the gesture unlocks audio for the rest of
   // the document's life, not just for the call stack it happened on.
-  if (e.target.id === "show-music-join") { showMusic.blocked = false; showMusicTick(); return; }
+  // The same one click, from the MUSIC row or from the NOW -> NEXT board -
+  // the board carries its own copy of the button because the stage monitor
+  // covers the MUSIC row, and a fullscreen view the operator cannot start
+  // the music from is a view they have to leave.
+  if (e.target.id === "show-music-join" || e.target.id === "nn-join") {
+    showMusic.blocked = false; showMusicTick(); paintBoard(); return;
+  }
+  if (e.target.id === "nn-stage-btn") { setStage(!ui.stage); return; }
+  if (e.target.id === "nn-bags-btn") { ui.bagsOpen = !ui.bagsOpen; BOARD.sig = null; paintBoard(); return; }
   if (e.target.id === "show-music-mute") {
     player.muted = !player.muted;
     saveMusicAudioPrefs();
@@ -3693,7 +4442,26 @@ document.addEventListener("click", async e => {
     }
     return;
   }
-  if (e.target.id === "show-next-cue") { await fleetCommand("next", { lead_s: ui.lead }, `NEXT (next cue in ${ui.lead} s)`, "show"); return; }
+  if (e.target.id === "show-next-cue") {
+    // The lead the units were given, remembered on this PC's own wall clock:
+    // the board's header counts it down ("NEXT in 3 s") so the operator can
+    // see that the press landed before anything on stage moves. Set before
+    // the await, because the command itself takes a moment and the lead is
+    // already running by the time it answers; cleared again if it was
+    // refused, so the header never counts down a cue that is not coming.
+    const lead = ui.lead;
+    ui.nextLeadUntil = performance.now() + lead * 1000;
+    paintBoard();
+    const result = await fleetCommand("next", { lead_s: lead }, `NEXT (next cue in ${lead} s)`, "show");
+    // Cleared unless a unit was actually told. next_cue() answers `{}` -
+    // no error, no units - when there is no cue ahead, when the next one
+    // is already inside the lead, and when there is no run at all; the
+    // countdown must not run for a cue nobody is bringing forward.
+    if (!result || result.error || !Object.keys(result.units || {}).length)
+      ui.nextLeadUntil = 0;
+    paintBoard();
+    return;
+  }
   if (e.target.id === "show-stop") {
     if (confirm("Stop the show? The panels keep what they are showing.")) {
       const result = await fleetCommand("stop", {}, "STOP", "show");
