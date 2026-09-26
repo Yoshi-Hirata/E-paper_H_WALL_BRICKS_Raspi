@@ -12,7 +12,7 @@ Deterministic: no timestamps, no absolute paths, sorted keys, "\\n" endings,
 UTF-8. Run with --check to verify the committed output is up to date (used by
 tests/test_designer_build.py::test_starter_is_current) instead of writing it.
 
-Usage: make_starter.py [--source DIR] [--check]
+Usage: make_starter.py [--source DIR] [--check] [--adopt-new] [--drop-missing]
     --source DIR   where the CSVs live (default: <repo>/showdata/files)
 """
 import argparse
@@ -85,14 +85,19 @@ def read_normalised(path: Path) -> str:
     return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def build_files(source: Path, adopt_new: bool = False) -> "dict[str, str]":
+def build_files(source: Path, adopt_new: bool = False, drop_missing: bool = False) -> "dict[str, str]":
     """The starter set is the CSVs already committed under conductor/web/starter
     (refreshed from the operator's copies in `source`); a CSV that exists only
     in `source` - an operator's experiment, say AZ271SB2303_color_black_grid.csv
     made for a rehearsal - is NOT pulled in unless --adopt-new says so
     (2026-09-26: two such files made --check fail on the operator's PC)."""
     committed = {p.name for p in STARTER_DIR.glob("*.csv")} if STARTER_DIR.is_dir() else set()
-    files = {}
+    # The committed copies are the base: a starter CSV that is missing from
+    # `source` keeps its committed content (a partial or mid-sync showdata
+    # can never narrow the set by accident - review of 088ed33); removing
+    # one is explicit, --drop-missing.
+    files = {} if drop_missing else {n: read_normalised(STARTER_DIR / n)
+                                     for n in sorted(committed) if kind(n)}
     for path in sorted(source.glob("*.csv")):
         if kind(path.name) is None:
             print(f"make_starter: skipping {path.name} (not a *_map.csv or "
@@ -156,7 +161,11 @@ def main():
     ap.add_argument("--source", type=Path, default=REPO / "showdata" / "files")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--adopt-new", action="store_true",
-                    help="also take CSVs that are not yet part of the committed starter set")
+                    help="also take CSVs that are not yet part of the committed starter set "
+                         "(note: the starter show's opening cue is the first design by name, "
+                         "so a new design can change which one opens)")
+    ap.add_argument("--drop-missing", action="store_true",
+                    help="drop committed starter CSVs that are no longer in --source")
     args = ap.parse_args()
 
     if not args.source.is_dir():
@@ -164,7 +173,7 @@ def main():
               "(showdata/ is gitignored; ask for a copy of the wiring maps)", file=sys.stderr)
         return 0 if args.check else 1
 
-    files = build_files(args.source, adopt_new=args.adopt_new)
+    files = build_files(args.source, adopt_new=args.adopt_new, drop_missing=args.drop_missing)
     show = build_show(files)
     js_text = render_js(files, show)
 
