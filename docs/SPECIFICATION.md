@@ -213,7 +213,11 @@ pipeline = 1。
   `show-run.json` が持つのは **`show`(どのショーか)・`state`・`t0_wall`
   (T0 を壁時計で)・`applied`(いまガーメントに出ている cue)** と、
   **`demo`(true = LCD のメニューから始めたスタンドアロンデモ)・
-  `demo_name`(PC が付けた名前)・`demo_slug`(メニュー行の識別子)**。
+  `demo_name`(PC が付けた名前)・`demo_slug`(メニュー行の識別子)・
+  `demo_loop`(ループ再生か)**。**`show-run.json` を先に、`show.json` を
+  後に書く** ― 途中で電源が落ちても「前のショーの記録」が「新しく読み込んだ
+  同一 id のショー」と組になることが無いように(デモは PC のショーから
+  作られるので id が一致しうる)
   - デモは**デモとして**戻る。走っていた(`state: running`)なら、焼き込み
     記録(`show-burn.json`)がそのショーを指していることを条件に**そのまま
     走り直す** ― 再焼き込みはしない(絵はスロットに残っている)。ショールームの
@@ -225,11 +229,19 @@ pipeline = 1。
   - `demo` キーを持たない古い `show-run.json`、および `show` が
     `show.json` と食い違う記録(load() の途中で電源が落ちた形)は
     **PC のショー**として扱う ― 安全側:PC が上書きできるほうに倒す
-  - LCD 側のガード(`ui/app.py` の `_enter_demo()`):デモ行の KEY1 が
-    断られるのは **PC のショーが running / holding のときだけ**
-    (メニューに 5 秒の注記「PC show loaded - use the PC」)。
-    loaded / stopped / ended の PC ショーはデモで上書きしてよい ―
-    PC の次の `/show/load`(または監視の id 不一致リロード)が戻す
+  - LCD 側のガード(`ui/app.py` の `_pc_show_wins()`):デモ行の KEY1 が
+    断られるのは **PC が本当にその機体を握っている 3 つの場合だけ**
+    (メニューに 5 秒の注記)――
+    ① ショーが running / holding(注記「PC show running - stop it on the
+    PC」)、② `restore()` がガーメントに戻したショーが待機中
+    (hold されていた、あるいは T0 を PC に確認してもらう途中。`state` は
+    `loaded` に見えるが絵は出ている。同じ注記)、
+    ③ 絵を書き込んでいる最中(`burn.state: burning` ― PC の Upload が
+    飛んでいる。注記「PC is writing pictures - wait」)。
+    それ以外の loaded / stopped / ended の PC ショーはデモで上書きしてよい。
+    **上書きした PC のショーは、オペレーターがもう一度 Upload するまで
+    戻らない** ― デモが走っているあいだ監視(`_supervise()`)は何もしないので、
+    自動では戻らない
 
 ## 4. 演出仕様
 

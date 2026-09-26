@@ -47,14 +47,14 @@ a knock on stage cannot drop a garment out of the show.
 
 A standalone demo (ui/demos.py) IS a menu row, one per show the PC has
 written into this unit, sorted in right after STANDBY. KEY1 is refused
-only while the PC's show is RUNNING or HOLDING - then the PC really is
-in control and the menu says so for 5 s - and a PC show that is merely
-LOADED, STOPPED or ENDED is superseded, since the PC's own next
-/show/load puts it straight back. KEY1 loads it (ui/showplay.py's
-ShowPlayer, with demo=True and the row's slug, so that a restart in the
-middle of one brings the demo back AS a demo and _adopt_restored_demo()
-hands it back to this screen) and the DEMO screen opens right away, on the
-burn ui/remote.py's RemoteSession.burn() just started - it shows
+only while the PC is really in control of the unit - its show running or
+held, its show restored onto the garment and waiting, or its pictures
+being written right now (_pc_show_wins(), a 5 s note on the menu) - and
+a PC show that is merely LOADED, STOPPED or ENDED is superseded, the
+operator getting it back by Uploading again from the PC. KEY1 loads it
+(ui/showplay.py's ShowPlayer, with demo=True and the row's slug and
+loop flag) and the DEMO screen opens right away, on the burn
+ui/remote.py's RemoteSession.burn() just started - it shows
 "writing n/N  KEY2 cancel" (status.show.burn) while that runs, and KEY2
 during it cancels the burn and returns to the menu, same as any other
 time on this screen. Once burn.state is "burned" the App itself calls
@@ -73,6 +73,13 @@ re-burn. A show PC still wins: /prepare and /show/load are refused
 while the demo runs (ui/agent.py), so the operator presses STOP on the
 Units tab, which is /show/stop and ends the demo the same way KEY2
 does.
+
+A demo survives a restart of the unit. ShowPlayer.restore() brings one
+that was playing back playing (ui/showplay.py), before this App is even
+built, so _adopt_restored_demo() picks it up at start-up: the DEMO
+screen, the name, the loop, the cursor on its row. A showroom left
+looping comes back by itself after a power cut, and KEY2 (or the PC's
+STOP) is still what ends it.
 
 With `locked` set the buttons do nothing at all, except that they still
 wake the screen; the UNLOCK_SEQUENCE frees them temporarily and the lock
@@ -445,7 +452,8 @@ class App:
 
     # ---- standalone demos (ui/demos.py) ----
 
-    def _start_demo_show(self, slug: str, name: "str | None" = None) -> bool:
+    def _start_demo_show(self, slug: str, name: "str | None" = None,
+                         loop: "bool | None" = None) -> bool:
         """Load the stored show fresh (KEY1, and KEY1-hold's restart - the
         operator may have just re-written this very slug); only starts
         the burn - _track_demo() calls run() itself once it settles.
@@ -456,14 +464,16 @@ class App:
         show.
 
         `name` (the row's label) is what /status.show.demo_name carries
-        for the PC's Units tile; a restart that does not pass one again
-        (KEY1-hold) keeps whatever _enter_demo() set the first time. The
-        slug goes with it, so that a restart of the UNIT can hand this
-        same demo back to this same screen (_adopt_restored_demo())."""
+        for the PC's Units tile, and `loop` is the row's own flag; a
+        restart that passes neither again (KEY1-hold) keeps whatever
+        _enter_demo() set the first time. Both go on disk with the slug,
+        so that a restart of the UNIT can hand this same demo, looping as
+        it was, back to this same screen (_adopt_restored_demo())."""
         try:
             show = self.demo_store.load(slug)
             self.player.load(show, demo=True, slug=slug,
-                             name=self._demo_name if name is None else name)
+                             name=self._demo_name if name is None else name,
+                             loop=self._demo_loop if loop is None else loop)
             self._demo_show_id = show["id"]
             self._demo_awaiting_run = True
             self._demo_burn_error = None
@@ -478,28 +488,48 @@ class App:
         brings a demo that was RUNNING back running, as a demo - so the
         screen has to pick it up too, or the LCD would sit on the menu
         while the garment plays, KEY2 would not stop it, and a `loop`
-        demo would stop at its last cue. The loop flag comes from the
-        menu row the slug names, which is where the operator last set it
-        (the run record only says WHICH demo, never how it was listed).
+        demo would stop at its last cue. (restore() only ever comes back
+        LOADED or RUNNING, never HOLDING.)
+
+        The slug names the menu row; a record written by the release
+        before the slug existed has none, so the row whose stored show is
+        this very show is looked up instead (DemoStore.list() carries
+        `show_id`). Failing even that - the row was deleted from the PC
+        while the unit was off - the demo is still adopted: it keeps
+        playing and looping and KEY2 still ends it, only KEY1-hold has
+        nothing to reload and drops back to the menu.
+
+        `loop` is whatever was recorded with the demo, or the row's own
+        flag when the record predates it (or the operator has since
+        turned looping on): either one is a reason to play it again.
 
         A demo restored merely LOADED is left on the menu on purpose:
         nothing is on the garment, and KEY1 on its row starts it.
         """
         player = self.player
         if (player is None or not player.is_demo or player.show is None
-                or player.state not in (RUNNING, HOLDING)
-                or not player.demo_slug):
+                or player.state != RUNNING):
             return
-        row = next((r for r in self._demo_rows
-                    if r.slug == player.demo_slug), None)
-        self._playing_demo = player.demo_slug
+        slug, show_id = player.demo_slug, player.show["id"]
+        if not slug and self.demo_store is not None:
+            try:
+                slug = next((entry["slug"] for entry in self.demo_store.list()
+                             if entry.get("show_id") == show_id), "")
+            except OSError:
+                slug = ""
+        row = next((r for r in self._demo_rows if r.slug == slug), None)
+        self._playing_demo = slug
         self._demo_name = player.demo_name or (row.label if row else "")
-        self._demo_loop = bool(row.loop) if row is not None else False
-        self._demo_show_id = player.show["id"]
+        self._demo_loop = player.demo_loop or bool(row and row.loop)
+        self._demo_show_id = show_id
         self._demo_ended_at = None
         self._demo_awaiting_run = False
         self._demo_burn_error = None
         self._standby = False
+        # The cursor sits on the row that is playing, so KEY2 lands back
+        # on the menu at the demo the operator was looking at.
+        if row is not None:
+            self.select(row.key)
         self.screen = Screen.DEMO
         self._dirty = True
 
@@ -558,21 +588,11 @@ class App:
         if self.player is None or self.demo_store is None:
             return
         player = self.player
-        if (player.show is not None and not player.is_demo
-                and player.state in (RUNNING, HOLDING)):
-            # The PC's show is actually on the garment right now - the PC
-            # really is in control, and loading over it here would fight
-            # a show in progress. A PC show that is merely LOADED,
-            # STOPPED or ENDED is not: the PC's own next /show/load puts
-            # it back (and the conductor's _supervise() reloads on an id
-            # mismatch by itself), so a demo may supersede it. That used
-            # to be refused too, which is how a unit that restarted
-            # mid-demo - its demo restored as a plain LOADED PC show -
-            # answered KEY1 on every demo row with nothing but this note
-            # (radxa-05, 2026-09-26).
-            self._note_on_menu("PC show loaded - use the PC")
+        note = self._pc_show_wins(player)
+        if note is not None:
+            self._note_on_menu(note)
             return
-        if not self._start_demo_show(row.slug, row.label):
+        if not self._start_demo_show(row.slug, row.label, row.loop):
             return
         self._standby = False
         self._playing_demo = row.slug
@@ -581,6 +601,43 @@ class App:
         self._demo_ended_at = None
         self.screen = Screen.DEMO
         self._dirty = True
+
+    @staticmethod
+    def _pc_show_wins(player) -> "str | None":
+        """Why a demo row's KEY1 must be refused right now, in the
+        operator's words - or None, when the PC is not in charge of this
+        unit and a demo may take it.
+
+        The PC wins in three cases, and only these three:
+
+          - its show is RUNNING or HOLDING: it is on the garment and
+            being driven, and a demo would paint over a show in progress
+          - restore() put its show back on the garment and it is waiting
+            (held, or mid-show with a T0 the PC has yet to confirm) -
+            still the PC's picture, though the state reads LOADED.
+            `restored_running` is never cleared, so it counts only while
+            it is still THIS show; load() and stop() drop the pairing
+          - the pictures are being written right now: the conductor's
+            own Upload is in flight, and KEY1 would cancel that burn
+
+        A PC show that is merely LOADED, STOPPED or ENDED is none of
+        those: a demo supersedes it, and the operator gets it back by
+        Uploading again from the PC. Refusing those too is what left a
+        unit that had restarted mid-demo - its demo restored as a plain
+        LOADED PC show - answering KEY1 on every demo row with nothing
+        but a note (radxa-05, 2026-09-26).
+        """
+        if player.show is None or player.is_demo:
+            return None
+        if player.state in (RUNNING, HOLDING):
+            return "PC show running - stop it on the PC"
+        if (player.restored_running
+                and player.show.get("id") == player.restored_id):
+            return "PC show running - stop it on the PC"
+        burn = (player.status() or {}).get("burn") or {}
+        if burn.get("state") == "burning":
+            return "PC is writing pictures - wait"
+        return None
 
     def _note_on_menu(self, text: str, seconds: float = 5.0) -> None:
         # 5 s, not 3: the operator presses KEY1 and looks at the wall,
