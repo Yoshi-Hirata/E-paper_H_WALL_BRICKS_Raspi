@@ -278,6 +278,12 @@ class UnitLink:
                 "label": status.get("label"),
                 "boards": len(status.get("boards", [])),
                 "live": len(status.get("live", [])),
+                # ...and WHICH ones are answering, not only how many. A
+                # unit can carry two garments (a top and its skirt on one
+                # Radxa); "11 of 12 answering" then says nothing about
+                # which garment lost a board, and the NOW -> NEXT board
+                # has a row for each of them to colour.
+                "live_ids": list(status.get("live", [])),
                 # The board list the unit is really working to, passed
                 # through as it comes: the ids it counts as its own, the
                 # ones it is still probing, where the list came from
@@ -576,8 +582,25 @@ class Fleet:
         unit not running this conductor's show (a demo, an old upload,
         one that has not answered), or one on hold - held units carry the
         position, not a T0.
+
+        ...and None for one poll after T0 itself moved. START, SEEK,
+        RESUME and NEXT all move T0 here on the instant, while the unit's
+        side of the comparison is whatever its last poll said - so for a
+        moment after a 30 s seek the arithmetic is perfectly correct and
+        perfectly useless ("-30000 ms"), and every row on the board would
+        go red at exactly the point the operator is watching it. Waiting
+        out one poll costs nothing: nothing has gone wrong yet that a
+        number two seconds later would not also show.
         """
         if not run or run.get("state") != "running" or not link.online:
+            return None
+        # getattr: a link that cannot say WHEN it last answered cannot say
+        # whether its answer predates the move either, and "no number" is
+        # the right answer to that.
+        set_at = run.get("t0_set_at")
+        last_seen = getattr(link, "last_seen", None)
+        if set_at is not None and (last_seen is None
+                                   or last_seen < set_at + self.poll_s):
             return None
         offset = link.offset
         show = self.shows.get(link.name)
@@ -991,8 +1014,25 @@ class Fleet:
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",
                         "held_at": None, "force": bool(force)}
             self.start_at = 0.0
-            self._run_gen += 1
+            self._t0_moved()
         return self._send_run(self._targets())
+
+    def _t0_moved(self) -> None:
+        """One call for "the run just changed" - START, SEEK, HOLD,
+        RESUME, NEXT, STOP and the adoption of a run found on the units.
+        Must be made under _run_lock.
+
+        It bumps the generation _supervise() checks before it posts
+        anything (so a correction computed a moment ago is dropped rather
+        than sent on top of the operator's move), and stamps the run with
+        WHEN this happened. `_show_lag_ms` needs that stamp: T0 moves here
+        instantly, while what a unit reports is up to a poll old, so for
+        one poll after a 30 s seek every unit would otherwise be reported
+        as 30 s out of step and the whole board would go red.
+        """
+        self._run_gen += 1
+        if self.run is not None:
+            self.run["t0_set_at"] = self._clock()
 
     def seek(self, to_s: float, lead_s: float = DEFAULT_LEAD_S
              ) -> "tuple[str, dict[str, dict]]":
@@ -1021,7 +1061,7 @@ class Fleet:
                 self.run["t0"] = self._clock() + lead_s - to_s
                 mode = "running"
                 send = True
-            self._run_gen += 1
+            self._t0_moved()
         if send:
             return mode, self._send_run(self._targets())
         return mode, {}
@@ -1031,7 +1071,7 @@ class Fleet:
             if not self.run or self.run["state"] != "running":
                 return {}
             self.run.update(state="holding", held_at=self._clock())
-            self._run_gen += 1
+            self._t0_moved()
         return self.simple(self._targets(), "/show/hold")
 
     def resume(self) -> "dict[str, dict]":
@@ -1040,7 +1080,7 @@ class Fleet:
                 return {}
             self.run["t0"] += self._clock() - self.run["held_at"]
             self.run.update(state="running", held_at=None)
-            self._run_gen += 1
+            self._t0_moved()
         return self._send_run(self._targets())
 
     def next_cue(self, lead_s: float = DEFAULT_LEAD_S) -> "dict[str, dict]":
@@ -1065,7 +1105,7 @@ class Fleet:
             if self.run["state"] == "holding":  # NEXT also lets go of a hold
                 self.run["t0"] += self._clock() - self.run["held_at"]
                 self.run.update(state="running", held_at=None)
-            self._run_gen += 1
+            self._t0_moved()
         return self._send_run(self._targets())
 
     def stop_show(self) -> "dict[str, dict]":
@@ -1076,7 +1116,7 @@ class Fleet:
             self._demo_told = set()     # the next demo episode is announced again
             self.run = None
             self.start_at = 0.0
-            self._run_gen += 1
+            self._t0_moved()
         return self.simple(targets, "/show/stop")
 
     def _supervise(self, link: UnitLink) -> None:
@@ -1253,7 +1293,7 @@ class Fleet:
                 # up (or restarted) is not where THIS run began - the
                 # units, not the page, decided that (found in review).
                 self.start_at = 0.0
-                self._run_gen += 1
+                self._t0_moved()
 
     # ---- commands, to many units at once ----
 
