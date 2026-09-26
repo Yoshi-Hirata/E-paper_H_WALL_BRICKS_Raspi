@@ -121,7 +121,11 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
   color: var(--accent); z-index: 10; pointer-events: none; }
 #drop.on { display: flex; }
 #toast { position: fixed; right: 18px; bottom: 18px; background: var(--ink); color: var(--bg);
-  padding: 8px 14px; border-radius: 8px; display: none; max-width: 60vw; font-size: 13px; z-index: 11; }
+  padding: 8px 14px; border-radius: 8px; display: none; max-width: 60vw; font-size: 13px;
+  /* Above everything, the stage monitor (70) included: a toast is how a
+     refusal or a failed command says so, and one hidden behind a
+     fullscreen board is a message the operator never gets. */
+  z-index: 90; }
 .empty { color: var(--dim); padding: 60px 0; text-align: center; }
 
 /* ---- timeline ---- */
@@ -604,7 +608,7 @@ const ui = { tab: "items", item: null, design: null, mode: "design", view: "outs
              // nextLeadUntil is when a NEXT the operator just pressed
              // actually fires (performance.now() + the lead), which is what
              // the header counts down during the lead.
-             bagsOpen: false, stage: false, nextLeadUntil: 0, nextLeadS: 0 };
+             bagsOpen: false, stage: false, nextLeadUntil: 0 };
 let fleet = null;
 let state = null;
 // The last GET /api/fleet/demos answer ({units: {unit: [demo,...]}, offline: [unit,...]}),
@@ -3182,24 +3186,35 @@ const SHOWBOARD = (() => {
     : s <= RED_S ? "red" : s <= AMBER_S ? "amber" : "";
 
   // The bags. Nothing synchronises them (「バッグのみ折り畳み(同期制御しない
-  // ため)」), so the board collapses the three of them into one group rather
-  // than give each a row that never changes. Any one of three things makes a
-  // garment a bag: it is one of the AZ271SG* items, its model number says
-  // Bag, or it carries no LOOK number at all.
-  const isBag = row => /^AZ271SG/i.test(row.item || "")
-    || /bag/i.test(row.model || "")
-    || !String(row.look === undefined || row.look === null ? "" : row.look).trim();
+  // ため)」), so the board collapses them into one group rather than give each
+  // a row that never changes.
+  //
+  // NO CUE FIRES IT is the necessary condition, and the name is only the
+  // hint on top (review): a LOOK number is blank for ANY item whose file is
+  // not LookNN - conductor/server.py leaves it empty for AZ271SC6302_*.csv
+  // until someone types one - and /bag/i matches a "Bag-strap Tops". A
+  // garment the show actually changes is never folded away, whatever it is
+  // called; and a bag that somehow does get a cue keeps a row of its own.
+  const isBag = row => (row.cues || []).length === 0
+    && (/^AZ271SG/i.test(row.item || "")
+        || /bag/i.test(row.model || "")
+        || !String(row.look === undefined || row.look === null ? "" : row.look).trim());
 
   // The show's own phase, from /api/fleet's run and the position on it.
-  //   "loaded"  uploaded, never started (or stopped): START runs from 0:00,
-  //             or from the remembered start_at
+  //   "loaded"  uploaded, never started: START runs from 0:00, or from the
+  //             remembered start_at, and the panels hold the 0:00 preset
+  //   "kept"    the same, except a show HAS run here (`ranBefore`): STOP
+  //             leaves every panel showing whatever it last drew, and the
+  //             board must not pretend the preset is back on the glass
   //   "running" / "holding" / "ended" (past the show's own length)
-  function phase(run, t, duration) {
-    if (!run) return "loaded";
+  function phase(run, t, duration, ranBefore) {
+    if (!run) return ranBefore ? "kept" : "loaded";
     if (run.state === "holding") return "holding";
     if (duration > 0 && t >= duration) return "ended";
     return "running";
   }
+  // The two phases where nothing is moving and START is what comes next.
+  const atRest = how => how === "loaded" || how === "kept";
 
   // One garment at t, from that garment's own cues (sorted by `sent`, each
   // {id, at, sent, complete, design, label, sequence, span}):
@@ -3215,7 +3230,7 @@ const SHOWBOARD = (() => {
       if (cue.sent > t) { if (!next) next = cue; continue; }
       if (t < cue.complete) changing = cue; else now = cue;
     }
-    const out = { now, changing, next, last: !next,
+    const out = { now, changing, next, last: !next, none: !cues.length,
                   left: null, progress: null, in: next ? next.sent - t : null };
     if (changing) {
       const span = changing.complete - changing.sent;
@@ -3226,12 +3241,25 @@ const SHOWBOARD = (() => {
   }
 
   // The words for one row. `at` is rowAt()'s answer, `how` the phase.
+  //
+  // `nowUnknown` is the page's cue to draw no thumbnail at all: after a STOP
+  // the panels hold whatever they last drew, and this board cannot know what
+  // that was - recomputing the design at start_at would put the 0:00 preset
+  // on screen for garments that are standing on stage in their last look.
   function rowText(at, how, duration) {
     const out = { now: "", changing: "", next: "", when: "", count: null,
-                  tone: "", arrow: "", span: "" };
-    out.now = at.changing ? at.changing.label
-      : at.now ? at.now.label : "(as before the show)";
-    if (at.changing) out.changing = "changing… " + secs(at.left) + " s left";
+                  tone: "", arrow: "", span: "", nowUnknown: false };
+    if (how === "kept") {
+      out.now = "(whatever the panels kept)";
+      out.nowUnknown = true;
+    } else {
+      out.now = at.changing ? at.changing.label
+        : at.now ? at.now.label : "(as before the show)";
+      if (at.changing) out.changing = "changing… " + secs(at.left) + " s left";
+    }
+    // A garment no cue ever touches - a spare, or one whose cues are not on
+    // the timeline yet. "last design" would be a lie: there was no first one.
+    if (at.none) { out.next = "no cue — nothing changes it"; return out; }
     // The show is over: every garment keeps what it has, and nothing is
     // coming. Said before "last design", which is about a garment that has
     // run out of cues while the show has not.
@@ -3247,7 +3275,7 @@ const SHOWBOARD = (() => {
     out.arrow = arrow(cue.sequence);
     out.span = cue.span > 0 ? cue.span.toFixed(1) + " s" : "";
     out.when = mmss(Math.max(0, cue.at));
-    if (how === "loaded") return out;             // a time, but nothing counting
+    if (atRest(how)) return out;                  // a time, but nothing counting
     out.count = secs(at.in);
     if (how === "holding") return out;            // frozen: no colour, no pulse
     out.tone = tone(at.in);
@@ -3301,7 +3329,7 @@ const SHOWBOARD = (() => {
     }
     if (!first) {
       out.cap = now.phase === "holding" ? "ON HOLD" : "NO CUE AHEAD";
-      out.note = out.note || (now.phase === "loaded"
+      out.note = out.note || (atRest(now.phase)
         ? "Nothing on the timeline yet."
         : "Every cue has gone out — the show ends " + mmss(now.duration) + ".");
       return out;
@@ -3312,8 +3340,10 @@ const SHOWBOARD = (() => {
       at: mmss(Math.max(0, g.at)),
       what: g.cues.map(c => now.names[c.id] || c.item).join(" + "),
       design: [...new Set(g.cues.map(c => c.label))].join(" + ") }));
-    if (now.phase === "loaded") {
-      out.note = out.note || "START runs from " + mmss(now.startAt || 0);
+    if (atRest(now.phase)) {
+      out.note = out.note || "START runs from " + mmss(now.startAt || 0)
+        + (now.phase === "kept"
+           ? " — the panels keep what they are showing until it does" : "");
       return out;
     }
     const left = first.sent - now.t;
@@ -3328,40 +3358,85 @@ const SHOWBOARD = (() => {
     return out;
   }
 
+  // This garment's own boards, of the ones its unit says are answering.
+  // `boardNos` are the board numbers of THIS garment (the map's own), not
+  // the unit's: a Radxa can carry a top and a skirt, and "11 of 12
+  // answering" then names neither of them. /api/fleet's `live_ids` is the
+  // list behind the count the tile shows.
+  function boardsOf(u, boardNos) {
+    const want = (boardNos || []).map(Number).filter(n => Number.isFinite(n));
+    if (!Array.isArray(u.live_ids)) {
+      // An agent too old to list them. The unit-wide counts only mean
+      // anything when this garment IS the whole unit; with two garments on
+      // one Radxa "7 of 8 answering" belongs to neither of them, so the
+      // count reads "?" rather than a number about somebody else.
+      const live = typeof u.live === "number" ? u.live : null;
+      const total = want.length || u.boards || 0;
+      const alone = !want.length || want.length === (u.boards || 0);
+      return { have: alone ? live : null, want: total,
+               missing: !!(alone && total && live !== null && live < total) };
+    }
+    if (!want.length) return { have: u.live_ids.length, want: u.boards || 0, missing: false };
+    const answering = new Set(u.live_ids.map(Number));
+    const have = want.filter(n => answering.has(n)).length;
+    return { have, want: want.length, missing: have < want.length };
+  }
+
   // One garment's Radxa, in one line. `u` is /api/fleet's unit snapshot (or
-  // null when the garment is not assigned to one); `expected` is how many
-  // boards this garment has.
+  // null when the garment is not assigned to one); `boardNos` are that
+  // garment's own board numbers.
   //
   // "lag" is show_lag_ms (conductor/fleet.py): how far this unit's show
   // clock is behind THIS PC's, positive = behind. It is NOT sync_ms, which
-  // is half a round trip - the width of the error bar, not an error.
-  function vitals(u, expected) {
-    if (!u) return { text: "no unit assigned", tone: "red", offline: true, missing: false };
-    if (!u.online) return { text: u.name + " · unit offline", tone: "red",
-                            offline: true, missing: false };
+  // is half a round trip - the width of the error bar, not an error - so
+  // the two are shown together ("+4 ±3 ms"): a lag inside its own error bar
+  // is not a lag, and the pair says that without a word.
+  //
+  // `parts` is the same line broken up, so the page can hang a tooltip on
+  // each value - the sign of the lag above all, which "+48 ms" cannot say
+  // for itself (friendly review). `text` is those parts joined.
+  const LAG_WHY = "+ = this unit's show clock is BEHIND this PC's (it thinks "
+    + "the show started later); - = ahead. Measured as the unit's own T0 "
+    + "against this PC's. The ± after it is how accurately this unit's "
+    + "clock is known at all (half a round trip) - a lag inside that is not "
+    + "a lag. Blank for a moment after START, a seek, RESUME or NEXT, until "
+    + "the unit has been polled on the new T0.";
+  function vitals(u, boardNos) {
+    const plain = (text, tone) => ({ text, parts: [{ text }], tone,
+                                     offline: true, missing: false });
+    if (!u) return plain("no unit assigned", "red");
+    if (!u.online) return plain(u.name + " · unit offline", "red");
     const lag = u.show_lag_ms;
     const known = lag !== null && lag !== undefined;
-    const live = u.live === null || u.live === undefined ? null : u.live;
-    const want = expected || u.boards || 0;
-    const missing = want > 0 && live !== null && live < want;
-    const bits = [u.name,
-      "lag " + (known ? (lag >= 0 ? "+" : "") + Math.round(lag) + " ms" : "—"),
-      "rtt " + (u.rtt_ms === null || u.rtt_ms === undefined ? "—" : Math.round(u.rtt_ms) + " ms"),
-      "boards " + (live === null ? "?" : live) + "/" + (want || "?")];
+    const bar = typeof u.sync_ms === "number" ? " ±" + Math.round(u.sync_ms) : "";
+    const b = boardsOf(u, boardNos);
+    const bits = [
+      { text: u.name },
+      { text: "lag " + (known ? (lag >= 0 ? "+" : "") + Math.round(lag) + bar + " ms" : "—"),
+        title: LAG_WHY },
+      { text: "rtt " + (u.rtt_ms === null || u.rtt_ms === undefined ? "—" : Math.round(u.rtt_ms) + " ms"),
+        title: "The round trip to this unit on the show's WLAN." },
+      { text: "boards " + (b.have === null ? "?" : b.have) + "/" + (b.want || "?"),
+        title: "Boards of THIS garment that are answering, out of the ones "
+          + "its map has - not the whole unit's, which may carry two garments." }];
     if (u.late_ms !== null && u.late_ms !== undefined)
-      bits.push("fired " + (u.late_ms >= 0 ? "+" : "") + Math.round(u.late_ms) + " ms");
+      bits.push({ text: "fired " + (u.late_ms >= 0 ? "+" : "") + Math.round(u.late_ms) + " ms",
+                  title: "How late this unit sent its last cue, by its own clock." });
     if (typeof u.uptime_s === "number" && u.uptime_s < RESTART_S)
-      bits.push(u.uptime_s < 60 ? "restarted just now"
-                : "restarted " + Math.round(u.uptime_s / 60) + " min ago");
-    const bad = missing || (known && Math.abs(lag) > LAG_BAD_MS);
+      bits.push({ text: u.uptime_s < 60 ? "restarted just now"
+                    : "restarted " + Math.round(u.uptime_s / 60) + " min ago",
+                  title: "This unit came up less than ten minutes ago - which is "
+                    + "what explains one that lost its pictures mid-show." });
+    const bad = b.missing || (known && Math.abs(lag) > LAG_BAD_MS);
     const slow = !bad && typeof u.rtt_ms === "number" && u.rtt_ms > RTT_SLOW_MS;
-    return { text: bits.join(" · "), tone: bad ? "red" : slow ? "amber" : "",
-             offline: false, missing };
+    return { text: bits.map(x => x.text).join(" · "), parts: bits,
+             tone: bad ? "red" : slow ? "amber" : "",
+             offline: false, missing: b.missing };
   }
 
   return { AMBER_S, RED_S, FIRED_S, LAG_BAD_MS, RTT_SLOW_MS, RESTART_S, ARROWS,
-           mmss, secs, arrow, tone, isBag, phase, rowAt, rowText, ahead,
-           firedAgo, header, vitals };
+           mmss, secs, arrow, tone, isBag, phase, atRest, rowAt, rowText,
+           ahead, firedAgo, header, boardsOf, vitals };
 })();
 // <<< /SHOWBOARD >>>
 
@@ -3417,7 +3492,10 @@ function boardRows() {
     unit: item.unit || "", garment: item,
     name: [item.look ? "LOOK " + item.look : item.item, garmentWord(item)]
       .filter(Boolean).join(" "),
-    boards: item.boards ? item.boards.length : 0,
+    // This garment's OWN board numbers, which is what its vitals count
+    // against - a unit may carry a top and a skirt, and its own totals
+    // would then belong to neither row.
+    boardNos: (item.boards || []).map(b => b.board_no),
     cues: cuesOf(item).map(c => boardCue(c, item))
   }));
   const rank = r => r.unit && r.unit in order ? order[r.unit] : 999;
@@ -3430,7 +3508,7 @@ function boardRows() {
 // whether the bags are open. Everything else the board shows is a number that
 // changes four times a second and is poked into place instead.
 function boardSig(rows) {
-  return rows.map(r => r.key + "@" + r.unit + "/" + r.boards + "#"
+  return rows.map(r => r.key + "@" + r.unit + "/" + r.boardNos.join("-") + "#"
     + r.cues.map(c => c.id + ":" + c.sent + ":" + c.complete + ":" + c.design
                  + ":" + c.sequence + ":" + c.span).join(",")).join("|")
     + "|" + (ui.bagsOpen ? 1 : 0);
@@ -3502,8 +3580,15 @@ function buildBoard(rows) {
                  what: head.querySelector("[data-what]"), follow: head.querySelector("[data-follow]"),
                  note: head.querySelector("[data-note]") };
   const shown = ui.bagsOpen ? worn.concat(bags) : worn;
-  BOARD.rows = shown.map((r, i) => {
-    const el = boardEl.querySelectorAll(".nn-row")[i];
+  // Matched up by the key each row carries, never by position: the bags
+  // live in a second .nn-rows further down the markup, and an index into a
+  // flat querySelectorAll only happens to agree with `shown` today. An item
+  // name is a file stem and may hold anything a file name may, so the
+  // elements are read out and looked up rather than selected for.
+  const byKey = new Map();
+  boardEl.querySelectorAll(".nn-row").forEach(el => byKey.set(el.dataset.row, el));
+  BOARD.rows = shown.map(r => {
+    const el = byKey.get(r.key);
     return { r, el,
              nowBox: el.querySelector("[data-now]"), nowName: el.querySelector("[data-now-name]"),
              chg: el.querySelector("[data-chg]"), prog: el.querySelector("[data-prog]"),
@@ -3515,7 +3600,8 @@ function buildBoard(rows) {
              // only move when the settled design changes (its own row shifts),
              // so the SVG is rebuilt then and only then - every tick in
              // between writes fills, exactly as updateThumbColors() does.
-             nowKey: null, nextKey: null, circles: new Map(), colors: new Map() };
+             nowKey: null, nextKey: null, vitText: null,
+             circles: new Map(), colors: new Map() };
   });
 }
 // Draw one garment into a thumbnail box and remember its circles.
@@ -3544,7 +3630,15 @@ function paintBoard() {
   // last poll carried forward with performance.now(), or the operator's drag
   // target while the seek bar is being dragged, so a seek lands here at once.
   const t = fleetShowPos(), run = fleet?.run || null, D = fleetDuration();
-  const how = SHOWBOARD.phase(run, t, D);
+  // Has a show actually run on these units? With no run at all the position
+  // falls back to start_at, and recomputing the designs there would put the
+  // 0:00 preset on the board for garments that are standing on stage in
+  // their last look - STOP's own button says the panels keep their image.
+  // A unit that has applied a cue of ITS OWN show (not a demo it is
+  // playing) is the fleet's own record that the show has been through.
+  const ranBefore = (fleet?.units || []).some(u => u.show && !u.show.demo
+    && ((Number(u.show.applied) || 0) > 0 || u.show.state === "ended"));
+  const how = SHOWBOARD.phase(run, t, D, ranBefore);
   const all = [], names = {};
   for (const r of rows) for (const c of r.cues) { all.push(c); names[c.id] = r.name; }
   const leadMs = ui.nextLeadUntil - performance.now();
@@ -3571,10 +3665,17 @@ function paintBoard() {
     // row right below it - the simulator's flicker wave is the Timeline's
     // dramatisation of a repaint, and two different pictures of one garment
     // on one screen would be worse than none (fix round finding 5).
-    const worn = wornAt(item, t, { flicker: false });
-    const nowKey = at.now ? at.now.id : "-";
-    if (c.nowKey !== nowKey) { c.nowKey = nowKey; boardThumb(c, c.nowBox, item, worn.colors, worn.shifts); }
-    for (const [key, circle] of c.circles) {
+    // ...unless nothing here can know what is on the glass (after a STOP):
+    // then the box is empty rather than showing a design nobody chose.
+    const worn = txt.nowUnknown ? null : wornAt(item, t, { flicker: false });
+    const nowKey = txt.nowUnknown ? "?" : at.now ? at.now.id : "-";
+    c.nowBox.style.display = txt.nowUnknown ? "none" : "";
+    if (c.nowKey !== nowKey) {
+      c.nowKey = nowKey;
+      if (worn) boardThumb(c, c.nowBox, item, worn.colors, worn.shifts);
+      else { c.nowBox.innerHTML = ""; c.circles = new Map(); c.colors = new Map(); }
+    }
+    if (worn) for (const [key, circle] of c.circles) {
       const fill = fillFor(worn.colors[key]);
       if (c.colors.get(key) !== fill) { c.colors.set(key, fill); if (circle) circle.setAttribute("fill", fill); }
     }
@@ -3603,8 +3704,15 @@ function paintBoard() {
       + (txt.count === null ? "" : ` <span class="c ${txt.tone}">−${txt.count} s</span>`);
     const u = c.r.unit ? (fleet?.units || []).find(x => x.name === c.r.unit) || null : null;
     c.state.innerHTML = u && u.online ? esc(lateText(u)) + verifyMark(u) : "";
-    const v = SHOWBOARD.vitals(u, c.r.boards);
-    c.vit.textContent = v.text;
+    const v = SHOWBOARD.vitals(u, c.r.boardNos);
+    // Each value carries its own tooltip - which way the lag's sign runs,
+    // above all - so the line is spans rather than text. Rewritten only
+    // when it says something different, since most ticks it does not.
+    if (c.vitText !== v.text) {
+      c.vitText = v.text;
+      c.vit.innerHTML = v.parts.map(p => p.title
+        ? `<span title="${esc(p.title)}">${esc(p.text)}</span>` : esc(p.text)).join(" · ");
+    }
     c.vit.className = "nn-vit " + v.tone;
     c.el.classList.toggle("off", v.offline);
     c.el.classList.toggle("soon", how === "running" && txt.tone === "amber");
@@ -4336,11 +4444,15 @@ document.addEventListener("click", async e => {
     // already running by the time it answers; cleared again if it was
     // refused, so the header never counts down a cue that is not coming.
     const lead = ui.lead;
-    ui.nextLeadS = lead;
     ui.nextLeadUntil = performance.now() + lead * 1000;
     paintBoard();
     const result = await fleetCommand("next", { lead_s: lead }, `NEXT (next cue in ${lead} s)`, "show");
-    if (!result || result.error) ui.nextLeadUntil = 0;
+    // Cleared unless a unit was actually told. next_cue() answers `{}` -
+    // no error, no units - when there is no cue ahead, when the next one
+    // is already inside the lead, and when there is no run at all; the
+    // countdown must not run for a cue nobody is bringing forward.
+    if (!result || result.error || !Object.keys(result.units || {}).length)
+      ui.nextLeadUntil = 0;
     paintBoard();
     return;
   }
