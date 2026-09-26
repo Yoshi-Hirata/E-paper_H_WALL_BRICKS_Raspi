@@ -7,7 +7,7 @@ import time
 import serial
 from serial.tools import list_ports
 
-from .protocol import Frame, decode, hexdump
+from .protocol import ADDR_BROADCAST, Frame, decode, hexdump
 
 BAUDRATE = 115200
 ACK_TIMEOUT_S = 0.5
@@ -103,12 +103,39 @@ class Bus:
                     return frame
         return None
 
-    def request(self, frame: Frame, retries: int = MAX_RETRIES) -> Frame | None:
-        """Send and wait for ACK. Returns None on timeout after retries."""
+    def request(self, frame: Frame, retries: int = MAX_RETRIES,
+                timeout: float = ACK_TIMEOUT_S) -> Frame | None:
+        """Send and wait for THIS frame's ACK; None on timeout after retries.
+
+        Only an answer from the board the frame was addressed to counts.
+        A board that was deaf when a command arrived does not discard it:
+        it answers after its repaint, up to seconds later, and that frame
+        lands in the read window of whatever was asked next. Taking it as
+        the answer to the new question attributes a board's "yes" to a
+        different board - which ui/runner.py's landing check made easy to
+        hit, since it deliberately asks a board that is expected to be
+        deaf. A frame from anyone else is logged as a stray and the wait
+        goes on with what is left of the timeout.
+
+        `timeout` is the read window per try (the landing check uses a
+        short one; a board that is going to answer does so in
+        milliseconds, and the whole point of the question is the silence).
+        """
         for attempt in range(1, retries + 1):
             self.send(frame)
-            ack = self.recv()
-            if ack:
+            deadline = time.monotonic() + timeout
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                ack = self.recv(left)
+                if ack is None:
+                    break
+                if frame.dest != ADDR_BROADCAST and ack.src != frame.dest:
+                    if self.verbose:
+                        print(f"-- stray reply from 0x{ack.src:02X} "
+                              f"(0x{ack.cmd:02X}), ignored")
+                    continue
                 return ack
             if self.verbose and attempt < retries:
                 print(f"-- timeout, retry {attempt}/{retries - 1}")

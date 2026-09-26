@@ -212,6 +212,83 @@ span 1 秒のスイープだと**最後のスケールが Complete の時点で�
   終わったら ▶ Play が戻ること・走行中は断られること
 - ドキュメント:CONDUCTOR_START §6 の手順 4 に音源の節(状態表示の一覧つき)
 
+
+**着弾確認付き送信 ― キューのブロードキャストが届いたか機体自身が
+確かめ、届いていなければ 1 回だけ送り直す(radxa-04、2026-09-26)**
+
+現象:16 枚構成トップスの LOOK26 リハーサル。最後のキューの
+「スロット 6 表示」ブロードキャストは `fired (+166 ms)` と記録された
+のに、基板は何も変わらなかった。その機体の USB は一晩中ノイズを
+拾っていた(`usb1-port1: disabled by hub (EMI?)`、ショー中に
+ttyACM0→ttyACM1 の再列挙、90 秒前に `ERROR bus Input/output error`)。
+**表示は ACK の無い 1 通のブロードキャスト**(`SHOW_REPEATS = 1`。
+2 通目は基板が丸ごともう 1 回描き直すので増やせない ― 2026-08-14 実測)
+なので、取りこぼしても**誰も気づけない**。
+
+直したもの([DEVELOPMENT.md](DEVELOPMENT.md) 6 章に詳細):
+
+- 発火後(**立会い基板のスイープ開始 + 1.5 秒**)、**立会い基板 1 枚**に
+  読み取り専用の `0x02` を**2 回**投げ、**沈黙を読む**。
+  無応答/`ACK_BUSY` = 描いている = 届いた。
+  何か答えた = 描いていない = 届いていない(製品 FW は 0x02 に
+  `ACK_FAIL 0x0A` を返す ― [SPECIFICATION.md](SPECIFICATION.md) 5.5。
+  拒否も「答え」として数える)
+- 届いていない時だけ **もう 1 通だけ**送り直す。**1 回の発火につき
+  ブロードキャストは最大 2 通**(heal の再発火は確認しないので
+  ちょうど 1 通増えるだけ)。送り直す直前に停止と次キューをもう一度
+  見る ― 質問に 0.6 秒かかるので、その間に事情が変わりうる
+- 送り直すかどうかは**「次キューを何秒遅らせるか」**で決める
+  (`REPAIR_LATE_S = 2` 秒。基板は再描画中のコマンドを溜めて後で
+  実行するので、コストは二度描きではなく**次の絵の遅れ**)。
+  `now + refresh_s + span_s ≤ 次の発火時刻 + 2 秒`なら送り直す ―
+  9 秒間隔・リフレッシュ 7 秒なら span 1 秒は送り直し、span 7 秒は
+  送り直さない
+- **送り直さないと決めたときも「損失」として赤で出す**
+  (`landed: "idle-not-repaired"`)。届いていないと判ったものを
+  「何も表示しない」にはしない。2 通目でも確認できなければ
+  `cue X re-send unconfirmed @NN` で同じく赤。どちらも
+  `show-run.json` に保存して**再起動後も出したまま**にする(実機が
+  まだ間違った絵のままだから)。再開して RUNNING に戻ったショーでは
+  数秒後に次キューの判定で上書きされるので、保存が効くのは
+  **最後のキューで止まった/HOLD/LOADED のまま再起動した場合**
+- **聞く相手は既定で USB 直結基板(アドレス 1)だけ**
+  (`--verify-witness usb`)。485 中継越しの照会は安全未確認で、
+  0x29 は中継するとマスタの CDC を固める([SPECIFICATION.md](SPECIFICATION.md)
+  5.7)― **ショー中にマスタが固まるのは 1 通落ちるより悪い**。
+  待つ長さはその基板自身のスイープ開始 + 1.5 秒なので、中央から始まる
+  スイープでは確認が数秒後になる(ログの `checked +3.6 s`)。
+  アドレス 1 が生きていなければ `verify skipped: usb board absent`
+- `--verify-witness any`(開始が最も早い基板を聞く)は
+  **ベンチ試験で「中継した 0x02 がマスタを固めない」ことを確認して
+  から**。手順は [DEVELOPMENT.md](DEVELOPMENT.md) 6 章
+- 機体のログに出る行は 5 通り:
+  `cue X landed (@01 deaf, checked +1.5 s)` /
+  `cue X landed (@01 busy, checked +1.5 s)` /
+  `cue X not applied at @01 (checked +1.5 s), re-sent +1504 ms` /
+  `cue X re-send unconfirmed @01 (checked +3.0 s)` /
+  `cue X not applied at @01 (checked +1.5 s), not re-sent: cue Y due in 4.5 s`
+  (確認しなかった時は
+  `cue X verify skipped: ...` ― `usb board absent` /
+  `no sweep table known for slot N` / `sweep start N s too late to check` /
+  `cue Y is due` / `stopped` / `no live board`。heal は
+  `cue X landed already, not checked again`)
+- `/status` に `verify: {cue, landed, resent, witness}` が乗り、
+  Conductor の Units タイルに小さく **`re-sent`(琥珀)**/
+  **`not applied`(赤)** が出る。届いた時は**何も出ない**。この記録は
+  「最後に確認したキュー」のものでキュー名を持ち、**次のキューが arm
+  されても消えない**(判定が届くのは発火から 1.5 秒以上あと。消して
+  いたらショー中の判定は一度も表示されない)
+- ガード停止は**最後に送ったブロードキャスト**から数える(送り直すと
+  一緒にずれる)。PC に報告する `fired` 時刻は**最初の 1 通**のまま
+  (遅れの意味を変えないため)
+- **前提と再測定**:基板は表示コマンドの 0.7〜1.2 秒後から描き終わりまで
+  無応答(2026-08-14 実測、2 枚で 0.7 秒と 1.2 秒)。既定の 1.5 秒は
+  その遅いほうより後ろに置いてある。**基板の型が変わったら下げる前に
+  再測定**(`--verify-after` を振る)。止めるなら `--no-verify-fire`
+- 副産物:`Bus.request()` が**宛先以外の基板からの返事を答えとして
+  採らなくなった**(描き終わった基板が数秒遅れで返す ACK が、次の
+  質問の受信窓に落ちてくる)。`stray reply ... ignored` として捨てる
+
 **再起動でデモが「PC のショー」に化けて LCD が無反応になる不具合
 (radxa-05、2026-09-26)**
 

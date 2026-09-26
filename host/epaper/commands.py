@@ -9,6 +9,7 @@ import struct
 from .protocol import (
     ADDR_PC,
     CMD_DELETE_SLOT,
+    CMD_GET_VERSION,
     CMD_SAVE_COLOR,
     CMD_SET_SLOT_CONFIG,
     CMD_SHOW_SINGLE,
@@ -43,6 +44,24 @@ def _frame(dest: int, cmd: int, data: bytes, group_count: int,
 
 def stop(dest: int, group_count: int = 2) -> Frame:
     return _frame(dest, CMD_PLAY_STOP, b"", group_count)
+
+
+def get_version(dest: int, group_count: int = 2,
+                dev_type: int = DEV_H_WALL_BRICKS) -> Frame:
+    """"Are you listening?" (0x02) - the only READ-ONLY question there is.
+
+    Nothing on the board changes, nothing is played and nothing is
+    stored, which is why this is what ui/runner.py asks a board after a
+    show broadcast to find out whether the broadcast landed. Never use
+    0x17 (stop) or 0x1E (next slot) for that: both act on the glass.
+
+    The answer's CONTENT is useless: production firmware answers
+    ACK_FAIL 0x0A to every variant tried (docs/SPECIFICATION.md 5.5,
+    measured 2026-09-17), so the version is not actually readable. What
+    the caller reads is whether the board answered at all - a board
+    repainting its e-paper answers nothing until it is done.
+    """
+    return _frame(dest, CMD_GET_VERSION, b"", group_count, dev_type)
 
 
 def slot_config(dest: int, slot: int, mode: int = MODE_ALL_AT_ONCE,

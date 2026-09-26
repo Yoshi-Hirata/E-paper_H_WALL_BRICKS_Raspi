@@ -123,6 +123,40 @@ def test_prepare_then_fire_lands_on_every_unit_at_one_instant(fleet, units):
         if u["name"] in units))
 
 
+def test_a_unit_that_had_to_re_send_a_cue_says_so_in_the_fleet(fleet, units):
+    # Each unit checks on its own whether the boards took its broadcast
+    # and sends it once more when they plainly did not (ui/runner.py's
+    # landing check). The tile's small "re-sent" / "not applied" marker
+    # is this field, so it has to survive the whole way: session ->
+    # /status -> UnitLink.snapshot().
+    units["radxa-01"].bus.witness = {1: ["idle", "deaf"]}   # first one lost
+    fleet.prepare({name: payload("c1", 3) for name in units})
+    assert wait_until(lambda: all(u.session.phase == "ready"
+                                  for u in units.values()))
+    fleet.fire({name: "c1" for name in units}, lead_s=0.4)
+    assert wait_until(lambda: all(u.session.verify for u in units.values()))
+
+    def snap():
+        return {u["name"]: u for u in fleet.snapshot()["units"]}
+
+    assert wait_until(lambda: (snap()["radxa-01"]["verify"] or {}).get("resent"))
+    assert snap()["radxa-01"]["verify"]["landed"] == "deaf"
+    assert len(units["radxa-01"].shows) == 2            # the re-send
+    # The units that were heard first time say so, and the tile shows
+    # nothing for them.
+    assert snap()["radxa-02"]["verify"] == {"cue": "c1", "landed": "deaf",
+                                            "resent": False, "witness": 1}
+    assert len(units["radxa-02"].shows) == 1
+    assert snap()["radxa-09"]["verify"] is None         # never answered at all
+    # A loss the unit found and did NOT repair (the next cue was too
+    # close to send the frame again) travels the same way, and the tile
+    # renders it red - a known loss is never shown as nothing.
+    units["radxa-03"].session.verified("c1", "idle-not-repaired",
+                                       resent=False, witness=1)
+    assert wait_until(lambda: (snap()["radxa-03"]["verify"] or {}).get("landed")
+                      == "idle-not-repaired")
+
+
 def test_an_unreachable_unit_does_not_hold_up_the_others(fleet, units):
     cues = {name: payload("c2", 4) for name in list(units) + ["radxa-09"]}
     results = fleet.prepare(cues)

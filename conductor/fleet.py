@@ -274,6 +274,13 @@ class UnitLink:
                 "failed": status.get("failed", []),
                 "prepare_s": status.get("prepare_s"),
                 "late_ms": status.get("late_ms"),
+                # The unit's own landing check on the last cue it fired
+                # (ui/remote.py's RemoteSession.verify): None from an
+                # agent too old to run one, and nothing to show when the
+                # broadcast simply landed - the tile only marks a cue
+                # that had to be re-sent, or one that could not be
+                # confirmed even then.
+                "verify": status.get("verify"),
                 # How many demos the unit says it holds, in its own poll
                 # answer (None from an agent too old to count them). What
                 # those demos ARE is the fleet's cached /demo/list, added

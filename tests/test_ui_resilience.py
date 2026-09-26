@@ -62,7 +62,7 @@ class FaultBus:
         self._maybe_raise()
         self.sent.append(frame)
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         self._maybe_raise()
         self.requested.append(frame)
         if self.fail_first > 0:
@@ -267,7 +267,7 @@ class PartialWallBus(FaultBus):
         super().__init__(**kwargs)
         self.dead = set(dead)
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.dest in self.dead:
             self._maybe_raise()
             self.requested.append(frame)
@@ -308,7 +308,7 @@ def test_a_late_ack_from_another_board_is_not_an_answer():
     # receive window of whatever was asked next - seen on hardware
     # vouching for empty socket 5 and stalling setup on "cfg @05".
     class StaleAckBus(FaultBus):
-        def request(self, frame, retries=3):
+        def request(self, frame, retries=3, timeout=None):
             if frame.dest == 5:
                 self.requested.append(frame)
                 return Frame(dest=0, src=20, dev_type=0xFF, cmd=0x80)

@@ -99,7 +99,7 @@ def ordered_bus(monkeypatch):
         self.times.append(time.monotonic())
         return original_send(self, frame)
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         self.log.append(frame)
         self.times.append(time.monotonic())
         return original_request(self, frame, retries)
@@ -256,7 +256,7 @@ class RefusesSaveBus:
         self.requested = self._bus.requested
         self.sent = self._bus.sent
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.cmd == SAVE and frame.dest == self.board:
             self.requested.append(frame)
             return None
@@ -952,7 +952,7 @@ class SlowSaveBus:
     def times(self):
         return self._bus.times
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.cmd == SAVE:
             time.sleep(self._delay)
         return self._bus.request(frame, retries)
@@ -970,6 +970,138 @@ class SlowSaveBus:
 def saved_pairs(bus):
     """(board, slot) of every colour write on the bus."""
     return {(f.dest, f.data[0]) for f in bus.log if f.cmd == SAVE}
+
+
+def test_a_cue_that_could_not_be_confirmed_survives_a_restart(tmp_path):
+    """The unit checks whether its own broadcast reached the boards
+    (ui/runner.py's landing check). A cue it could not confirm is about a
+    garment that may STILL be wrong, so the red marker has to outlive the
+    process - it used to be held only in the session and a restart wiped
+    it while nothing on the wall had changed.
+
+    Board 1 answers every question here, so the unit's own verdict is
+    "sent twice, still idle" - a real red one rather than an injected
+    one, which a heal's own check would overwrite a moment later (B1,
+    review round 3: that race made this test flaky under load).
+    """
+    session, runner, bus = make_session(FakeBus(witness={1: "idle"}))
+    player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        player.load(make_show(sents=(-REFRESH, 0.4, 5.0), duration=30))
+        assert wait_burned(player)
+        # T0 read AFTER the burn: taken before it, a slow burn on a
+        # loaded machine leaves the show several seconds in and the cue
+        # AFTER this one fires too, replacing the verdict under the test.
+        player.run(time.monotonic() - 1.0)
+        assert wait_until(lambda: player.applied == "q01")
+        assert wait_until(lambda: (session.verify or {}).get("landed")
+                          == "idle-after-resend")
+        assert wait_until(lambda: (json.loads(
+            (tmp_path / "show-run.json").read_text(encoding="utf-8")
+        ).get("verify") or {}).get("landed") == "idle-after-resend")
+        # Held on the cue that went wrong - which is the case this is
+        # really for: a resumed RUNNING show checks its next cue within
+        # seconds and replaces the verdict anyway, while a show stopped,
+        # held or merely loaded has nothing else that would ever say the
+        # garment is wrong. Nothing fires from here, so what is on disk
+        # once the last check has landed is the final word - and it is
+        # that record, whichever cue it names, that has to come back.
+        player.hold()
+        time.sleep(0.3)
+        red = json.loads((tmp_path / "show-run.json")
+                         .read_text(encoding="utf-8"))["verify"]
+        assert red["landed"] == "idle-after-resend" and red["resent"] is True
+    finally:
+        player.close()                                      # "power cut"
+        runner.stop()
+
+    session2, runner2, bus2 = make_session()
+    reborn = ShowPlayer(session2, store=tmp_path, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        reborn.restore()
+        assert session2.status()["verify"] == red
+        # Nothing is firing (the show is held), so it stands until
+        # someone starts the show again - and that clears it, since a
+        # new run's fires are checked on their own merits
+        # (test_stop_and_start_again_leaves_no_verdict_behind).
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
+def verdicts(bus):
+    """The landing check's questions on this bus (0x02)."""
+    return [f for f in bus.log if f.cmd == 0x02]
+
+
+def test_stop_and_start_again_leaves_no_verdict_behind(rig):
+    """B2, review round 3: a verdict outlived the run it belonged to. A
+    red "not applied" from run 1 hung over run 2's tile, and - worse -
+    the unit read it as "this cue already landed" and never checked the
+    next run's own fire of the same cue id."""
+    player, session, runner, bus, store = rig
+    show = make_show(sents=(0.0, 0.3), duration=0.6)
+    player.load(show)
+    assert wait_burned(player)
+    player.run(time.monotonic() + 0.1)
+    assert wait_until(lambda: player.state == ENDED, timeout=6)
+    assert wait_until(lambda: len(verdicts(bus)) == 2)     # both fires checked
+    assert session.verify is not None                      # run 1's verdict
+    assert wait_until(lambda: (json.loads(
+        (store / "show-run.json").read_text(encoding="utf-8")
+    ).get("verify") or {}).get("landed") == "deaf")
+
+    player.stop()
+    assert session.status()["verify"] is None              # gone from /status
+    assert json.loads((store / "show-run.json")
+                      .read_text(encoding="utf-8"))["verify"] is None
+    # START again. The same cue ids, onto a garment nobody was vouching
+    # for meanwhile: both fires go out and both are checked on their own.
+    player.run(time.monotonic() + 0.1)
+    assert wait_until(lambda: len(verdicts(bus)) == 4, timeout=6)
+    assert not any("landed already" in line for line in runner.log)
+
+
+def test_a_second_preset_is_checked_like_the_first(rig):
+    """Review round 4: PRESET puts the first cue up again, which is a new
+    fire onto a garment the last verdict says nothing about. Both presets
+    are checked (and a STOP in between changes nothing about that)."""
+    player, session, runner, bus, store = rig
+    player.load(make_show())
+    assert wait_burned(player)
+    player.preset()
+    assert wait_until(lambda: len(verdicts(bus)) == 1)
+    first = dict(session.verify or {})
+    assert first.get("landed") == "deaf"
+
+    gen = session.glass_gen
+    player.preset()
+    assert session.glass_gen > gen                  # a new generation...
+    assert json.loads((store / "show-run.json")
+                      .read_text(encoding="utf-8"))["verify"] is None
+    assert wait_until(lambda: len(verdicts(bus)) == 2)   # ...and checked
+    assert wait_until(lambda: (session.verify or {}) != first)
+    assert len([f for f in bus.log if f.cmd == SHOW]) == 2
+    assert not any("landed already" in line for line in runner.log)
+
+
+def test_every_lap_of_a_looping_show_is_checked(rig):
+    """The same show run again and again (ui/app.py's demo loop) reuses
+    its cue ids; every lap's triggers get their own check."""
+    player, session, runner, bus, _ = rig
+    show = make_show(sents=(0.0, 0.3), duration=0.6)
+    player.load(show)
+    assert wait_burned(player)
+    for lap in range(1, 4):
+        player.run(time.monotonic() + 0.05)
+        assert wait_until(lambda: player.state == ENDED, timeout=6)
+        assert wait_until(lambda: len(verdicts(bus)) == 2 * lap, timeout=6)
+    assert len([f for f in bus.log if f.cmd == SHOW]) == 6
+    assert not any("landed already" in line for line in runner.log)
 
 
 def test_a_restart_in_the_middle_of_the_burn_comes_back_unburned(tmp_path):
