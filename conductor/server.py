@@ -461,7 +461,6 @@ class Workspace:
             return raw
         cleaned = timeline.clean([raw])[0]
         if raw.get("align", "done") == "done" and cleaned["at"] > 0:
-            eff = timeline.effective_refresh(cleaned, refresh)
             span = 0.0
             sweep = timeline.resolve(cleaned, transitions)
             if sweep["sequence"] != "natural":
@@ -469,7 +468,11 @@ class Workspace:
                 if look_map is not None:
                     span = sequence.span_s(look_map, sweep["sequence"],
                                            sweep["span_s"])
-            cleaned["at"] = max(0.0, round(cleaned["at"] - eff - span, 1))
+            # The same "send to picture complete" the timeline models
+            # (timeline.complete_s over a cue carrying this span), so the
+            # instant the old `align: done` meant is unchanged.
+            paint = timeline.complete_s(dict(cleaned, span=span), refresh)
+            cleaned["at"] = max(0.0, round(cleaned["at"] - paint, 1))
         return cleaned
 
     def _migrate_align(self, show: dict) -> dict:
@@ -1480,6 +1483,12 @@ class Workspace:
             name = fact["unit"] or f"({fact['item']})"
             unit_boards[name] = unit_boards.get(name, 0) + fact["boards"]
         return {"show": {"duration": duration, "refresh_s": refresh,
+                         # The current default, so the page never has a
+                         # refresh number of its own: it labels the "show
+                         # default" choice with refresh_s and offers the
+                         # hint to a show still set below this one.
+                         "refresh_default": timeline.REFRESH_S,
+                         "panel_repaint_s": timeline.PANEL_REPAINT_S,
                          "cues": cues, "warnings": warnings,
                          "min_interval": {unit: timeline.min_interval(n, refresh)
                                           for unit, n in unit_boards.items()}},
