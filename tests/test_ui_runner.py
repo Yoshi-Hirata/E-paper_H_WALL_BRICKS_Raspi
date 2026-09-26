@@ -376,7 +376,7 @@ def test_a_silent_board_means_the_broadcast_landed():
                               "resent": False, "witness": 1}
     assert len(bus.broadcasts) == 1
     assert [f.cmd for f in bus.asked] == [GET_VERSION]
-    assert logged(runner, "cue c1 landed (@01 deaf)")
+    assert logged(runner, "cue c1 landed (@01 deaf, checked +")
     runner.stop()
 
 
@@ -387,7 +387,7 @@ def test_a_busy_board_also_means_the_broadcast_landed():
     assert session.verify["landed"] == "busy"
     assert session.verify["resent"] is False
     assert len(bus.broadcasts) == 1
-    assert logged(runner, "cue c1 landed (@01 busy)")
+    assert logged(runner, "cue c1 landed (@01 busy, checked +")
     runner.stop()
 
 
@@ -402,8 +402,8 @@ def test_a_board_still_listening_gets_the_show_frame_again():
                               "resent": True, "witness": 1}
     assert len(bus.broadcasts) == 2
     assert [f.data[0] for f in bus.broadcasts] == [19, 19]      # same slot
-    assert logged(runner, "cue c1 not applied at @01, re-sent +")
-    assert logged(runner, "cue c1 landed (@01 deaf)")
+    assert logged(runner, "cue c1 not applied at @01 (checked +")
+    assert logged(runner, "cue c1 landed (@01 deaf, checked +")
     runner.stop()
 
 
@@ -458,12 +458,14 @@ def test_the_guard_stop_waits_for_the_re_sent_picture_not_the_first_one():
     runner.stop()
 
 
-def test_the_witness_is_the_board_whose_sweep_starts_first():
+def test_the_any_policy_asks_the_board_whose_sweep_starts_first():
     # Board 1 starts 0.30 s into the sweep, board 2 at 0.10 s: board 2 is
     # the one surely repainting when the question goes out, and the
-    # question waits for ITS start, not for the broadcast.
+    # question waits for ITS start, not for the broadcast. Only on a wall
+    # where a relayed 0x02 has been shown to be harmless (SPECIFICATION
+    # 5.7) - hence not the default.
     bus = FakeBus()
-    session, runner = fired_cue(bus, boards=(1, 2),
+    session, runner = fired_cue(bus, boards=(1, 2), verify_witness="any",
                                 delays={1: sweep_table(30),
                                         2: sweep_table(10)},
                                 span_s=0.3)
@@ -472,6 +474,61 @@ def test_the_witness_is_the_board_whose_sweep_starts_first():
     fired = bus.sent_at[bus.sent.index(bus.broadcasts[0])]
     assert 0.10 + 0.05 <= bus.asked_at[0] - fired < 0.30
     assert session.verify["witness"] == 2
+    runner.stop()
+
+
+def test_the_witness_is_the_usb_board_even_when_another_starts_earlier():
+    # The default policy. Board 2 starts the sweep and board 1 only
+    # 0.30 s later, but board 1 is the one on the USB cable: a query to
+    # board 2 has to be relayed by board 1, and a relayed query is not
+    # known to be safe (0x29 wedges that CDC until a power cycle -
+    # docs/SPECIFICATION.md 5.7). So the check waits for board 1's own
+    # start instead, however much later that is.
+    bus = FakeBus()
+    session, runner = fired_cue(bus, boards=(1, 2),
+                                delays={1: sweep_table(30),
+                                        2: sweep_table(0)},
+                                span_s=0.3)
+    assert wait_until(lambda: session.verify is not None)
+    assert [f.dest for f in bus.asked] == [1]
+    fired = bus.sent_at[bus.sent.index(bus.broadcasts[0])]
+    assert bus.asked_at[0] - fired >= 0.30 + 0.05
+    assert session.verify["witness"] == 1
+    # ...and the log says how long after the cue the answer was read, so
+    # a witness that only starts late is not mistaken for a slow check.
+    assert logged(runner, "cue c1 landed (@01 deaf, checked +0.")
+    runner.stop()
+
+
+def test_the_question_is_never_asked_before_the_witness_is_deaf():
+    # THE invariant behind the whole check: a board that has not started
+    # repainting answers, an answer means "re-send", and a re-send of a
+    # frame that did land repaints the whole wall twice (2026-08-14). So
+    # the question may never go out before the witness's own sweep start
+    # plus the full deaf window - here 0.50 s + 0.20 s.
+    bus = FakeBus()
+    session, runner = fired_cue(bus, boards=(1, 2), verify_after=0.2,
+                                delays={1: sweep_table(50),
+                                        2: sweep_table(0)},
+                                span_s=0.5)
+    assert wait_until(lambda: session.verify is not None, timeout=3)
+    fired = bus.sent_at[bus.sent.index(bus.broadcasts[0])]
+    assert bus.asked_at[0] - fired >= 0.50 + 0.2
+    assert len(bus.broadcasts) == 1                   # nothing re-sent
+    assert not logged(runner, "early")
+    runner.stop()
+
+
+def test_the_check_is_skipped_when_the_usb_board_is_absent():
+    # Nobody else may be asked under the default policy: the boards that
+    # are there are all behind the relay of a board that is not.
+    bus = FakeBus(witness={2: "idle", 3: "idle"})
+    session, runner = fired_cue(bus, boards=(2, 3))
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify == {"cue": "c1", "landed": "skipped",
+                              "resent": False, "witness": None}
+    assert bus.asked == [] and len(bus.broadcasts) == 1
+    assert logged(runner, "cue c1 verify skipped: usb board absent")
     runner.stop()
 
 

@@ -32,19 +32,33 @@ ttyACM0→ttyACM1 の再列挙、90 秒前に `ERROR bus Input/output error`)。
 
 直したもの([DEVELOPMENT.md](DEVELOPMENT.md) 6 章に詳細):
 
-- 発火の約 1 秒後、**立会い基板 1 枚**に読み取り専用の `0x02` を 1 回
-  投げ、**沈黙を読む**。無応答/`ACK_BUSY` = 描いている = 届いた。
+- 発火後(**立会い基板のスイープ開始 + 1 秒**)、**立会い基板 1 枚**に
+  読み取り専用の `0x02` を 1 回投げ、**沈黙を読む**。
+  無応答/`ACK_BUSY` = 描いている = 届いた。
   何か答えた = 描いていない = 届いていない(製品 FW は 0x02 に
   `ACK_FAIL 0x0A` を返す ― [SPECIFICATION.md](SPECIFICATION.md) 5.5。
   拒否も「答え」として数える)
 - 届いていない時だけ **もう 1 通だけ**送り直す。**1 キューあたり
   ブロードキャストは最大 2 通**。2 通目でも確認できなければ
   `cue X re-send unconfirmed @NN` と記録
+- **聞く相手は既定で USB 直結基板(アドレス 1)だけ**
+  (`--verify-witness usb`)。485 中継越しの照会は安全未確認で、
+  0x29 は中継するとマスタの CDC を固める([SPECIFICATION.md](SPECIFICATION.md)
+  5.7)― **ショー中にマスタが固まるのは 1 通落ちるより悪い**。
+  待つ長さはその基板自身のスイープ開始 + 1 秒なので、中央から始まる
+  スイープでは確認が数秒後になる(ログの `checked +3.6 s`)。
+  アドレス 1 が生きていなければ `verify skipped: usb board absent`
+- `--verify-witness any`(開始が最も早い基板を聞く)は
+  **ベンチ試験で「中継した 0x02 がマスタを固めない」ことを確認して
+  から**。手順は [DEVELOPMENT.md](DEVELOPMENT.md) 6 章
 - 機体のログに出る行は 4 通り:
-  `cue X landed (@NN deaf)` / `cue X landed (@NN busy)` /
-  `cue X not applied at @NN, re-sent +NNN ms` /
-  `cue X re-send unconfirmed @NN`(確認しなかった時は
-  `cue X verify skipped: ...`)
+  `cue X landed (@01 deaf, checked +1.0 s)` /
+  `cue X landed (@01 busy, checked +1.0 s)` /
+  `cue X not applied at @01 (checked +1.0 s), re-sent +1004 ms` /
+  `cue X re-send unconfirmed @01 (checked +2.0 s)`(確認しなかった時は
+  `cue X verify skipped: ...` ― `usb board absent` /
+  `no sweep table known for slot N` / `cue Y is due` / `stopped` /
+  `no live board`)
 - `/status` に `verify: {cue, landed, resent, witness}` が乗り、
   Conductor の Units タイルに小さく **`re-sent`(琥珀)**/
   **`not applied`(赤)** が出る。届いた時は**何も出ない**

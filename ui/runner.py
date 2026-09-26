@@ -39,7 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 from epaper.commands import (TEST_SLOT, clear_pipeline, get_version,
                              save_color, save_pipeline, show_single,
                              slot_config, stop)
-from epaper.protocol import ACK_INVALID_CMD, ACK_SUCCESS, DEV_NUMBER_BRAND
+from epaper.protocol import (ACK_INVALID_CMD, ACK_SUCCESS, ADDR_BUS_MASTER,
+                             DEV_NUMBER_BRAND)
 
 NO_DELAY = 0xFFFF          # in a show file's table: no delay for this socket
 FRAME_S = 0.01             # conductor/sequence.py's FRAME_S: one table frame
@@ -102,6 +103,24 @@ SHOW_GAP_S = 0.15
 # change: docs/DEVELOPMENT.md section 6 says how.
 VERIFY_AFTER_S = 1.0
 VERIFY_READ_S = 0.3       # the witness answers in ms or not at all
+# WHICH board may be asked. Only one board of a garment is on the USB
+# cable - the RS-485 master, address 1 (ADDR_BUS_MASTER; the production
+# wall is ID:1 on USB, docs/SPECIFICATION.md 5.7, and every garment is
+# addressed 1..n by rank, so 1 is always the one the unit talks to
+# directly). Everything else is reached through that board's relay, and
+# a relayed query is not known to be safe: 0x29 over the relay is never
+# answered AND wedges the master's USB CDC until a power cycle (5.7,
+# reproduced on radxa-01 2026-09-17). 0x02 has never been tried that
+# way. A wedged master mid-show is worse than the lost frame this check
+# exists to catch, so the default asks the USB board and nobody else.
+#
+# "any" is the earliest-starting live board (the strongest witness,
+# since it is the most surely repainting) and is for AFTER a bench test
+# shows a relayed 0x02 is harmless - the procedure is in
+# docs/DEVELOPMENT.md section 6.
+WITNESS_USB = "usb"
+WITNESS_ANY = "any"
+USB_BOARD = ADDR_BUS_MASTER
 LINK_POLL_S = 2.0         # how often standby checks the panel link
 LINK_GUARD_S = 60.0       # how often standby re-suppresses the autoplay
 PROBE_SWEEPS = 3          # setup passes over the board list
@@ -187,6 +206,7 @@ class DemoRunner:
                  verify_fire: bool = True,
                  verify_after: float = VERIFY_AFTER_S,
                  verify_read: float = VERIFY_READ_S,
+                 verify_witness: str = WITNESS_USB,
                  link_poll: float = LINK_POLL_S,
                  link_guard: float = LINK_GUARD_S,
                  link_token=device_token,
@@ -224,6 +244,11 @@ class DemoRunner:
         self.verify_fire = verify_fire
         self.verify_after = verify_after
         self.verify_read = verify_read
+        # Anything but an explicit "any" is the safe policy: a witness
+        # behind the RS-485 relay is a risk nobody has measured yet
+        # (see WITNESS_USB).
+        self.verify_witness = (WITNESS_ANY if verify_witness == WITNESS_ANY
+                               else WITNESS_USB)
         self.link_poll = link_poll
         self.link_guard = link_guard
         self._link_token = link_token
@@ -1196,33 +1221,47 @@ class DemoRunner:
         timed = [v for v in struct.unpack(">64H", table) if v != NO_DELAY]
         return min(timed) * FRAME_S if timed else 0.0
 
-    def _witness(self, session, slot: int) -> "tuple[int, float] | None":
-        """(board, delay) - who to ask after the broadcast, and when.
+    def _witness(self, session, slot: int) -> "tuple[int, float] | str":
+        """(board, delay) - who to ask after the broadcast, and when -
+        or a string saying why nothing may be asked at all.
 
-        The witness is a LIVE board that starts repainting EARLIEST: by
-        the time the question goes out it is the one most surely inside
-        its deaf window, so its silence is the strongest evidence that
-        the broadcast landed. With no sweep anywhere every socket starts
-        at once and any live board will do.
+        Under the default `usb` policy there is exactly one candidate,
+        the board on the USB cable (see WITNESS_USB): a relayed question
+        could wedge that board's CDC, and a wedged master mid-show is
+        worse than the lost frame this is looking for. Under `any` the
+        witness is the LIVE board that starts repainting EARLIEST, which
+        is the strongest witness - by the time the question goes out it
+        is the one most surely inside its deaf window.
 
-        None means "do not ask": a swept cue whose tables this runner
-        never wrote (a burn done before a restart, say) gives no honest
-        instant to ask at - asking too early reads a board that has not
-        begun as "idle" and costs the wall a second repaint, which is
-        worse than not checking.
+        `delay` is that board's OWN first-socket start. On a sweep that
+        begins away from it the question is asked seconds after the fire
+        rather than one second after it; that is the price of asking a
+        board whose answer means something.
+
+        A reason instead of a board means "do not ask": a swept cue
+        whose tables this runner never wrote (a burn done before a
+        restart, say) gives no honest instant to ask at, and asking too
+        early reads a board that has not begun as "idle" - which costs
+        the wall a second repaint, worse than not checking.
         """
         live = list(self.live)
         if not live:
-            return None
+            return "no live board"
+        if self.verify_witness == WITNESS_USB:
+            if USB_BOARD not in live:
+                return "usb board absent"
+            candidates = [USB_BOARD]
+        else:
+            candidates = live
         known = [(start, board) for start, board in
-                 ((self._sweep_start(b, slot), b) for b in live)
+                 ((self._sweep_start(b, slot), b) for b in candidates)
                  if start is not None]
         if known:
             start, board = min(known)
             return board, start
         if getattr(session, "span_s", None):
-            return None
-        return live[0], 0.0
+            return f"no sweep table known for slot {slot}"
+        return candidates[0], 0.0
 
     def _verify_wait(self, session, until: float) -> "str | None":
         """Wait for the instant to ask; a reason to give up, or None.
@@ -1284,38 +1323,53 @@ class DemoRunner:
         if not self.verify_fire:
             return
         chosen = self._witness(session, slot)
-        if chosen is None:
-            why = ("no live board" if not self.live
-                   else f"no sweep table known for slot {slot}")
-            self.emit(f"cue {cue_id} verify skipped: {why}")
+        if isinstance(chosen, str):
+            self.emit(f"cue {cue_id} verify skipped: {chosen}")
             self._record_verify(session, cue_id, "skipped", False, None)
             return
         board, delay = chosen
         resent = False
         while True:
-            give_up = self._verify_wait(session, sent_at + delay
-                                        + self.verify_after)
+            ask_at = sent_at + delay + self.verify_after
+            give_up = self._verify_wait(session, ask_at)
             if give_up is not None:
                 self.emit(f"cue {cue_id} verify skipped: {give_up}")
                 self._record_verify(session, cue_id, "skipped", resent, board)
                 return
+            # THE INVARIANT: never ask before the witness has had its own
+            # sweep start plus the whole deaf window. A board that has not
+            # begun repainting answers, an answer means "re-send", and a
+            # re-send on a frame that did land is the 2026-08-14 double
+            # repaint of the entire wall. _verify_wait() is the only way
+            # in and cannot return early, so this is unreachable - and it
+            # stays, because a future change to the timing that breaks it
+            # must skip the check rather than repaint the garment twice.
+            checked = time.monotonic() - sent_at
+            if checked < delay + self.verify_after - 0.001:
+                self.emit(f"cue {cue_id} verify skipped: asked "
+                          f"{delay + self.verify_after - checked:.2f} s early")
+                self._record_verify(session, cue_id, "skipped", resent, board)
+                return
             state = self._ask_witness(bus, groups, board, dev_type, cue_id)
             if state != "idle":
-                self.emit(f"cue {cue_id} landed (@{board:02d} {state})")
+                self.emit(f"cue {cue_id} landed (@{board:02d} {state}, "
+                          f"checked +{checked:.1f} s)")
                 self._record_verify(session, cue_id, state, resent, board)
                 return
             if resent:
                 # Two broadcasts out and the board still says it is idle.
                 # A third is not insurance, it is the 2026-08-14 double
                 # repaint; the operator is told instead.
-                self.emit(f"cue {cue_id} re-send unconfirmed @{board:02d}")
+                self.emit(f"cue {cue_id} re-send unconfirmed @{board:02d} "
+                          f"(checked +{checked:.1f} s)")
                 self._record_verify(session, cue_id, "idle-after-resend",
                                     True, board)
                 return
             bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
             again = time.monotonic()
-            self.emit(f"cue {cue_id} not applied at @{board:02d}, "
-                      f"re-sent +{(again - sent_at) * 1000:.0f} ms")
+            self.emit(f"cue {cue_id} not applied at @{board:02d} (checked "
+                      f"+{checked:.1f} s), re-sent "
+                      f"+{(again - sent_at) * 1000:.0f} ms")
             self._last_show_at = sent_at = again
             resent = True
 

@@ -27,7 +27,8 @@ from .puller import RepoPuller
 from .rebooter import Rebooter
 from .remote import RemoteSession
 from .showplay import ShowPlayer
-from .runner import DEFAULT_BOARDS, VERIFY_AFTER_S, DemoRunner
+from .runner import (DEFAULT_BOARDS, VERIFY_AFTER_S, WITNESS_ANY,
+                     WITNESS_USB, DemoRunner)
 from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
                       usb_rebind)
 from .versions import BoardVersions
@@ -306,6 +307,14 @@ def main() -> int:
                     help=f"seconds after a cue's broadcast (and after the "
                          f"witness board's own sweep start) before that "
                          f"check asks (default {VERIFY_AFTER_S})")
+    ap.add_argument("--verify-witness", choices=(WITNESS_USB, WITNESS_ANY),
+                    default=WITNESS_USB,
+                    help="which board that check may ask: usb (default) "
+                         "asks only the board on the USB cable, since a "
+                         "relayed query is not known to be safe "
+                         "(SPECIFICATION 5.7); any asks whichever live "
+                         "board starts repainting first - only after the "
+                         "bench test in DEVELOPMENT.md section 6")
     ap.add_argument("--slot", type=int, default=TEST_SLOT)
     ap.add_argument("--pattern", choices=[p.key for p in PATTERNS],
                     help="start this pattern immediately instead of showing "
@@ -353,7 +362,8 @@ def main() -> int:
                         guard_delay=args.guard_delay, slot=args.slot,
                         port=args.port,
                         verify_fire=not args.no_verify_fire,
-                        verify_after=args.verify_after)
+                        verify_after=args.verify_after,
+                        verify_witness=args.verify_witness)
 
     firmware = Path(args.firmware) if args.firmware else find_firmware()
     images = [firmware] if args.firmware else find_firmware_images()
