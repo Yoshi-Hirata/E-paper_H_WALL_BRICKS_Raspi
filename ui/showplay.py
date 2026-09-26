@@ -912,6 +912,15 @@ class ShowPlayer:
         """
         session = self.session
         key = self._key(show, cue)
+        # Every start of driving comes through here - preset(), run(),
+        # RESUME, NEXT, a heal - and arm() below is what takes the port
+        # back after a KEY2/KEY1 detour, on a runner that has just gone
+        # back to its own discovery. So the garment's list goes with it,
+        # every time: it is idempotent (the worker only logs and
+        # re-probes when it actually changes) and it costs no bus
+        # traffic. Without it, Upload -> KEY2 -> KEY1 -> START put the
+        # unit straight back into radxa-04's state (review, 2026-09-27).
+        session.set_boards(show_boards(show))
         if heal or session.cue_id != key or session.phase == FAILED:
             session.arm(key, int(cue["slot"]),
                        int(show.get("dev_type", 3)), cue.get("label", ""),

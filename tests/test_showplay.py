@@ -1623,6 +1623,9 @@ def test_a_load_whose_burn_is_all_cache_still_applies_the_board_list(tmp_path):
         player.load(show)
         assert wait_burned(player)
         assert runner.boards == TOPS and runner.absent == set()
+        # The burn that followed brought the same list; it is still the
+        # show file's, and /status still says so.
+        assert runner.boards_source == "show"
 
         # The same show again: every (board, slot) is in the burn cache,
         # so the burn writes nothing at all - and the list still stands.
@@ -1635,6 +1638,67 @@ def test_a_load_whose_burn_is_all_cache_still_applies_the_board_list(tmp_path):
         assert not [f for f in bus.log if f.dest in EMPTY_SOCKETS]
         # Said once, when the list actually changed - not on every load.
         assert sum("from the show" in line for line in runner.log) == 1
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_start_after_a_key2_key1_detour_hands_the_list_over_again(tmp_path):
+    # The detour the review found: Upload, KEY2 (the PC lets go), KEY1
+    # (the unit plays its own pattern and explores again), then START.
+    # Only load() and restore() used to hand the list over, so the show
+    # ran on a unit that was back in radxa-04's state. Every start of
+    # driving goes through _send(), so that is where it belongs.
+    from ui.patterns import BY_KEY
+
+    session, runner, bus = make_session(Wall(set(TOPS)), boards=None,
+                                        verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        standby_discovery(runner, bus)
+        player.load(make_tops_show())
+        assert wait_burned(player)
+        assert runner.boards == TOPS and runner.boards_source == "show"
+
+        session.release()                       # KEY2: back to the MENU
+        assert runner.boards_source == "explore"
+        runner.start(BY_KEY["solid"])           # KEY1: its own pattern
+        assert wait_until(lambda: runner.absent == EMPTY_SOCKETS, timeout=20)
+        runner.stop()
+
+        bus.log.clear()
+        bus.times.clear()
+        player.run(time.monotonic() + 0.2)      # ...and the PC starts it
+        assert wait_until(lambda: player.applied == "q00", timeout=10)
+        assert runner.boards == TOPS and runner.boards_source == "show"
+        assert runner.absent == set() and runner.group_count == 16
+        assert not [f for f in bus.log if f.dest in EMPTY_SOCKETS]
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_the_show_files_own_list_wins_over_a_narrower_burn(tmp_path):
+    # The burn's board list is the union of its cues' boards, which is a
+    # subset of the garment by construction - applying it over the show
+    # file's own list would quietly drop boards the garment has (review,
+    # 2026-09-27).
+    session, runner, bus = make_session(Wall(set(TOPS)), boards=None,
+                                        verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        standby_discovery(runner, bus)
+        show = make_tops_show()
+        for cue in show["cues"]:                # only half the garment
+            for board in range(9, 17):
+                cue["boards"].pop(str(board))
+                cue["state"].pop(str(board))
+        player.load(show)
+        assert wait_burned(player)
+        assert runner.boards == TOPS            # the show file's own 1-16
+        assert runner.boards_source == "show" and runner.group_count == 16
     finally:
         player.close()
         runner.stop()

@@ -421,12 +421,17 @@ def test_status_says_which_board_list_is_in_force():
     assert status["boards"] == [1, 2, 3] and status["absent"] == []
     assert status["group_count"] == 3
 
-    # A show's list takes over while the show is on...
+    # A job's list takes over while the PC drives ("show" is reserved
+    # for a show file's own garment list - see set_boards())...
     session.prepare("c1", {1: array(3), 2: array(4)})
     assert wait_until(lambda: session.phase == READY)
     status = session.status()
-    assert status["boards_source"] == "show"
+    assert status["boards_source"] == "job"
     assert status["boards"] == [1, 2] and status["group_count"] == 2
+
+    # ...and a show file's list says so, whoever brings it next.
+    session.set_boards([1, 2])
+    assert wait_until(lambda: runner.boards_source == "show", timeout=5)
 
     # ...and the unit's own comes back when the port does.
     session.release()
@@ -491,6 +496,25 @@ def test_status_names_the_unit_and_serves_the_clock(agent):
     assert code == 200 and set(clock) == {"mono", "wall"}
 
 
+def test_release_alone_gives_the_unit_its_own_list_back():
+    # KEY2 to the MENU without starting a pattern: the unit is its own
+    # again from that moment, not from whenever somebody next presses
+    # KEY1. A bench unit released like this used to report the show's
+    # 16 boards for ever (review, 2026-09-27).
+    session, runner, bus = make_session(boards=[1, 2, 3], verify_fire=False)
+    session.prepare("c1", {1: array(3), 2: array(4)})
+    assert wait_until(lambda: session.phase == READY)
+    # One job's boards are a job's, not a show's - nothing here says
+    # anything about a garment.
+    assert runner.boards == [1, 2] and runner.boards_source == "job"
+    session.release()
+    assert runner.boards == [1, 2, 3] and runner.boards_source == "fixed"
+    assert runner.group_count == 3
+    assert session.status()["boards"] == [1, 2, 3]
+    assert any("released, back to boards 1-3" in line for line in runner.log)
+    runner.stop()
+
+
 def test_the_board_list_in_force_travels_over_http(agent):
     agent, session, runner, bus = agent
     status = call(agent, "/status")[1]
@@ -502,7 +526,7 @@ def test_the_board_list_in_force_travels_over_http(agent):
                                         "2": array(4).hex()}})
     assert wait_until(lambda: call(agent, "/status")[1]["phase"] == "ready")
     status = call(agent, "/status")[1]
-    assert status["boards_source"] == "show" and status["boards"] == [1, 2]
+    assert status["boards_source"] == "job" and status["boards"] == [1, 2]
     assert status["group_count"] == 2
 
 

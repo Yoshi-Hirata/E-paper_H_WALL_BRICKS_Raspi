@@ -250,10 +250,13 @@ class DemoRunner:
         # list only rules while the show does - see _apply_job_boards().
         self._own_explore = self.explore
         self._own_boards = list(self.boards)
-        # True while a show's own list is the one in force (`boards_source`
-        # says so in /status, and the PC's tile marks a unit whose list is
-        # not the show's).
-        self._boards_from_show = False
+        # Where the list in force came from while it is not this unit's
+        # own: "show" (a show file's garment list, ui/remote.py's
+        # set_boards()) or "job" (the boards of one /prepare or one
+        # burn). None means the unit's own list rules. `boards_source`
+        # reports it, and the PC's tile marks a unit whose list is not
+        # the show's.
+        self._boards_given: "str | None" = None
         self.interval = interval
         self.guard_delay = guard_delay
         self.slot = slot           # the LOCAL pattern loop's working slot
@@ -465,17 +468,7 @@ class DemoRunner:
         self.caption = None
         self.failures = 0
         self.error = None
-        # Back on the unit's own menu (KEY2, or a release from the show
-        # PC): a show's board list ruled only while the show did, so the
-        # unit goes back to what it was started with - its own discovery,
-        # or the --boards list it was given.
-        if self._boards_from_show:
-            self._boards_from_show = False
-            self.explore = self._own_explore
-            self.boards = list(self._own_boards)
-            back = ("exploring again" if self.explore
-                    else f"back to boards {self._fmt_boards(self.boards)}")
-            self.emit(f"the show's board list is released, {back}")
+        self.take_own_boards()
         # live/absent survive across starts on purpose: the wall does not
         # change because a different pattern was picked, and re-sweeping
         # eighteen empty sockets would hold the first frame for half a
@@ -752,18 +745,48 @@ class DemoRunner:
     @property
     def boards_source(self) -> str:
         """Where the list in force came from, for /status and the PC's
-        tile: the show PC's own list ("show"), this unit's discovery
-        ("explore"), or the --boards it was started with ("fixed").
+        tile: a show file's own garment list ("show"), one job's boards
+        ("job" - a manual /prepare, or a burn on a unit holding no show
+        list), this unit's discovery ("explore"), or the --boards it was
+        started with ("fixed").
 
         The rehearsal failure this exists for was invisible from the
         Conductor: every picture was written, and what was wrong was
         which sockets the unit believed in (radxa-04, 2026-09-26)."""
-        if self._boards_from_show:
-            return "show"
+        if self._boards_given is not None:
+            return self._boards_given
         return "explore" if self.explore else "fixed"
 
-    def _apply_job_boards(self, wanted: "list[int]") -> bool:
+    def take_own_boards(self) -> bool:
+        """Back to the list this unit was started with; True if it moved.
+
+        A show PC's list rules only while the show PC does. This is the
+        one way back: _start() calls it when the unit's own menu takes
+        the port (KEY1, standby), and ui/remote.py's release() calls it
+        when the PC simply lets go (KEY2 to MENU, with no pattern
+        started - which used to leave a bench unit reporting the show's
+        16 boards for ever; review, 2026-09-27). Safe to call at any
+        time: it only ever restores what the constructor was given.
+        """
+        if self._boards_given is None:
+            return False
+        self._boards_given = None
+        self.explore = self._own_explore
+        self.boards = list(self._own_boards)
+        back = ("exploring again" if self.explore
+                else f"back to boards {self._fmt_boards(self.boards)}")
+        self.emit(f"the show's board list is released, {back}")
+        return True
+
+    def _apply_job_boards(self, wanted: "list[int]",
+                          source: str = "job") -> bool:
         """Adopt the show PC's board list as THE list; True if it changed.
+
+        `source` is where the list came from, for /status: "show" is the
+        show file's own garment list (ui/remote.py's set_boards()),
+        "job" the boards of one /prepare or one burn. A job that brings
+        the very same list a show already set does not take the show's
+        name off it.
 
         The PC knows the garment, so while its list is in force nothing
         outside it is live, absent or explored: a socket the show does
@@ -792,7 +815,8 @@ class DemoRunner:
         self.live = [b for b in wanted if b in was_live]
         self.boards = wanted
         self.explore = False            # the show PC knows the garment
-        self._boards_from_show = True
+        if source == "show" or changed or self._boards_given is None:
+            self._boards_given = source
         if changed:
             note = (f" ({self._fmt_boards(dropped)} dropped, not probed)"
                     if dropped else "")
@@ -1703,10 +1727,15 @@ class DemoRunner:
                     needs_setup = True
                     groups = self._group_count()
                     while not self._stop.is_set():
-                        # Whatever the list is now - a job's, a show
-                        # file's, or what an exploring setup trimmed it
-                        # to - the group count follows it.
-                        groups = self._group_count()
+                        # `groups` is taken again ONLY where the list is
+                        # replaced (below), never per pass: an exploring
+                        # setup trims the list as it goes, and following
+                        # that mid-session would have the boards it
+                        # already slot_configured with one group count
+                        # served frames with another - and a board that
+                        # joined later configured differently from its
+                        # neighbours (review, 2026-09-27).
+                        #
                         # The show file's own garment list, handed over
                         # with no job to write (ui/remote.py's
                         # set_boards(), called by ui/showplay.py). This
@@ -1717,7 +1746,7 @@ class DemoRunner:
                         # cue's fire, so both already follow it.
                         listed = session.take_boards()
                         if listed:
-                            if self._apply_job_boards(listed):
+                            if self._apply_job_boards(listed, source="show"):
                                 needs_setup = True
                             groups = self._group_count()
                         # A job's own board list is applied BEFORE setup
@@ -1765,9 +1794,28 @@ class DemoRunner:
                             wanted = sorted({b for cue in burn_job["cues"]
                                             for b in cue["boards"]})
                             if wanted:
-                                if self._apply_job_boards(wanted):
-                                    needs_setup = True
-                                groups = self._group_count()
+                                # The show file's own list wins over the
+                                # burn's union of cue boards: the union
+                                # is a subset of it by construction, and
+                                # the subset would quietly drop boards
+                                # the garment does have (review,
+                                # 2026-09-27). A cue naming a board
+                                # OUTSIDE it is a show file at odds with
+                                # itself - the picture still has to go
+                                # somewhere, so the list widens, says so,
+                                # and stops calling itself the show's.
+                                from_show = self.boards_source == "show"
+                                outside = [b for b in wanted
+                                           if b not in self.boards]
+                                if from_show and outside:
+                                    self.emit("the burn names board "
+                                              f"{self._fmt_boards(outside)} "
+                                              "outside the show's own list")
+                                    wanted = sorted(set(self.boards) | set(wanted))
+                                if outside or not from_show:
+                                    if self._apply_job_boards(wanted):
+                                        needs_setup = True
+                                    groups = self._group_count()
                             if needs_setup:
                                 if not self._setup(bus, groups):
                                     if self.error != "no boards answering":
@@ -1918,12 +1966,14 @@ class DemoRunner:
                     while not self._stop.is_set():
                         if not self._hold_while_paused():
                             break
-                        # Taken again every cycle: an exploring setup
-                        # trims the list to what the bus really carries
-                        # (1..60 down to 1..22, say), and the group count
-                        # has to follow it the way it follows a show's
-                        # own list (_group_count()).
-                        groups = self._group_count()
+                        # `groups` is the one this worker started with and
+                        # stays that way: the exploring setup trims the
+                        # list while it probes, and a group count that
+                        # followed it would leave the boards configured
+                        # in the first sweep disagreeing with every frame
+                        # after it (review, 2026-09-27). A list that is
+                        # REPLACED - a show's - is a different matter and
+                        # is taken again where it happens (_run_remote).
                         if needs_setup and not self._setup(bus, groups):
                             consecutive += 1
                         elif self._cycle(bus, groups, rng):

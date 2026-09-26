@@ -360,10 +360,15 @@ class RemoteSession:
             # to be left standing here despite what the commit said).
             self._forget_verify_locked()
             self._job = None
-            # ...and the show's board list with it: the unit's own
-            # discovery takes over (ui/runner.py's _start()).
+            # ...and the show's board list with it.
             self._boards = None
         self.runner.stop()
+        # The unit is its own again from this moment, not from whenever
+        # somebody next presses KEY1: a bench unit released to the MENU
+        # used to go on reporting the show's 16 boards for ever (review,
+        # 2026-09-27). After stop(), so the worker is not holding the
+        # list it is being relieved of.
+        self.runner.take_own_boards()
 
     # ---- called by the agent: burning a show's cues into their slots ----
 

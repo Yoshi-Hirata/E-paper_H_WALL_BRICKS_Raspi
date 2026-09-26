@@ -1064,6 +1064,25 @@ def test_an_explicit_boards_list_is_kept_across_a_show():
     runner.stop()
 
 
+def test_one_port_session_never_changes_the_group_count_under_it():
+    # The group count is a header byte on every frame, and the boards
+    # are configured with it (0x1B). An exploring setup TRIMS the list
+    # as it probes (1..60 down to 1..22), so a group count that followed
+    # the list would leave the boards configured in the first sweep
+    # disagreeing with every frame sent after them - and a board that
+    # joined at a later reprobe configured differently from its
+    # neighbours (review, 2026-09-27). Only a list that is REPLACED - a
+    # show's - moves it, and that comes with a fresh setup.
+    bus = Wall(set(SHOW_BOARDS))
+    runner = make_runner(bus, boards=None, verify_fire=False)
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: runner.cycle >= 2, timeout=20)
+    assert runner.boards == list(range(1, 23))        # trimmed while probing
+    runner.stop()
+    assert {f.group_count for f in bus.sent + bus.requested} == {60}
+    assert {f.group_count for f in bus.requested if f.cmd == 0x1B} == {60}
+
+
 def test_the_group_count_follows_the_shows_board_list():
     from ui.remote import RemoteSession
 

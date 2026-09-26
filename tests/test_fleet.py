@@ -171,10 +171,12 @@ def test_the_board_list_a_unit_works_to_reaches_the_tile(fleet, units):
     assert tile["board_ids"] == list(range(1, 21))     # make_runner's --boards
     assert tile["absent"] == [] and tile["group_count"] == 20
     assert isinstance(tile["uptime_s"], int)
-    # A cue carries the garment's own list, and the tile follows it.
+    # A cue carries its own board list, and the tile follows it - as a
+    # job's list, not a show's (only a show file's garment list is
+    # "show", ui/remote.py's set_boards()).
     fleet.prepare({"radxa-01": payload("c1", 3, boards=(1, 2))})
     assert wait_until(lambda: units["radxa-01"].session.phase == "ready")
-    assert wait_until(lambda: snap()["radxa-01"]["boards_source"] == "show")
+    assert wait_until(lambda: snap()["radxa-01"]["boards_source"] == "job")
     tile = snap()["radxa-01"]
     assert tile["board_ids"] == [1, 2] and tile["group_count"] == 2
     # A unit that never answered says nothing at all, rather than

@@ -108,6 +108,12 @@ CASES = {
     "show_file_without_a_list": (unit(boards_source="explore"),
                                  {"id": "tops", "boards": []}),
     "agent_too_old_to_say": (unit(boards_source=None, absent=None), TOPS),
+    # A unit playing its own demo from its own menu: the list it is
+    # working to is the DEMO's garment, and this show has no business
+    # judging it (review, 2026-09-27).
+    "playing_its_own_demo": (
+        unit(boards_source="explore", absent=list(range(17, 23)),
+             show={"id": "demo", "state": "running", "demo": True}), TOPS),
 }
 
 RESTART_CASES = {
@@ -117,6 +123,10 @@ RESTART_CASES = {
     "nothing_uploaded_by_this_conductor": unit(uptime_s=30, uploaded_ago_s=None),
     "agent_without_an_uptime": unit(uptime_s=None, uploaded_ago_s=600),
     "offline": unit(online=False, uptime_s=30, uploaded_ago_s=600),
+    "playing_its_own_demo": unit(uptime_s=30, uploaded_ago_s=900,
+                                 show={"id": "demo", "state": "running",
+                                       "demo": True}),
+    "no_show_at_all": unit(uptime_s=30, uploaded_ago_s=900, show=None),
 }
 
 _PROBE = """<!doctype html><meta charset="utf-8"><title>boardlist</title><body>
@@ -169,7 +179,7 @@ def test_the_ranges_read_like_the_units_own_log(answers):
 def test_a_unit_on_the_shows_list_is_not_marked(answers):
     for name in ("on_the_shows_list", "offline", "no_show_on_the_unit",
                  "no_show_uploaded_for_it", "show_file_without_a_list",
-                 "agent_too_old_to_say"):
+                 "agent_too_old_to_say", "playing_its_own_demo"):
         assert answers["notes"][name] is None, name
 
 
@@ -227,5 +237,6 @@ def test_a_restart_after_the_upload_is_marked_and_nothing_else_is(answers):
     assert answers["restarts"]["restarted_after_the_upload"] is True
     for name in ("up_since_before_the_upload", "within_the_rounding_slack",
                  "nothing_uploaded_by_this_conductor",
-                 "agent_without_an_uptime", "offline"):
+                 "agent_without_an_uptime", "offline",
+                 "playing_its_own_demo", "no_show_at_all"):
         assert answers["restarts"][name] is False, name

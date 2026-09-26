@@ -3343,11 +3343,17 @@ const BOARDLIST = (() => {
                         ...(unit && unit.absent || [])].map(Number))]
       .filter(n => Number.isFinite(n)).sort(up);
   }
+  // A unit playing its own demo from its own menu is not this show's to
+  // judge: its list is the DEMO's garment, and holding that up against
+  // the show would mark a unit that is doing exactly what was asked of
+  // it (review, 2026-09-27). The same goes for the restart mark below.
+  const drivenByUs = unit =>
+    !!unit && unit.online && !!unit.show && !unit.show.demo;
   // null when there is nothing to say - which is every healthy unit, and
   // also every unit we cannot honestly judge: offline, no show of ours,
   // an older agent that does not report its list at all.
   function note(unit, show) {
-    if (!unit || !unit.online || !unit.show) return null;
+    if (!drivenByUs(unit)) return null;
     const source = unit.boards_source;
     if (!source) return null;
     const want = ranges((show && show.boards) || []);
@@ -3370,7 +3376,7 @@ const BOARDLIST = (() => {
   // back after it: its pictures are still in the boards' flash, but
   // everything it only held in memory started again from nothing.
   function restarted(unit) {
-    if (!unit || !unit.online) return false;
+    if (!drivenByUs(unit)) return false;
     const uptime = unit.uptime_s, ago = unit.uploaded_ago_s;
     if (typeof uptime !== "number" || typeof ago !== "number") return false;
     return uptime + RESTART_SLACK_S < ago;
