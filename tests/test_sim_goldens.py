@@ -167,7 +167,8 @@ def test_goldens_cover_every_sequence_and_rule(golden):
     assert seq_covered == set(sequence.SEQUENCES)
 
     kinds = {c["kind"] for c in golden["cases"]}
-    for expected_kind in ("fmt", "canonical", "clock", "mmss", "names", "map", "design", "check",
+    for expected_kind in ("fmt", "canonical", "clock", "mmss", "names", "intake",
+                          "map", "design", "check",
                           "ranks", "timeline", "state"):
         assert expected_kind in kinds, f"no golden cases of kind {expected_kind!r}"
 
@@ -187,6 +188,21 @@ def test_goldens_cover_every_sequence_and_rule(golden):
         hits = [i for i, p in enumerate(result) if "made for another layout of" in p]
         assert hits in ([], [0]), \
             "the geometry sentence must lead, not trail the per-scale problems"
+
+    # Taking a picked file in (2026-09-27): every one of the five rules
+    # that decides what a dropped CSV is SAVED as has to be cross-checked,
+    # not just the ones that were easy to write cases for - a rule only
+    # the simulator applies is a rule the show PC will disagree with.
+    intake_ops = {c["op"] for c in golden["cases"] if c["kind"] == "intake"}
+    assert intake_ops == {"macSafeName", "isMacMetadata", "uniqueSaveName",
+                          "sniffCsvKind", "conventionalName"}
+    sniffed = [c["expect"] for c in golden["cases"]
+               if c["kind"] == "intake" and c["op"] == "sniffCsvKind"]
+    assert set(sniffed) == {"map", "grid", None}
+    # A garment has one wiring file: uniqueSaveName has nowhere to put a
+    # number on a *_map.csv and must say so rather than invent a name.
+    assert any(c["expect"] is None for c in golden["cases"]
+               if c["kind"] == "intake" and c["op"] == "uniqueSaveName")
 
     # The file-name grammar covers both spellings of a design file, the
     # site's own <model>_<配色案名>_HW.csv included.

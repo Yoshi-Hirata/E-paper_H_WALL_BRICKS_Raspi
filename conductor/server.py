@@ -47,6 +47,8 @@ from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, default_shift, unit_board_ids)
 from .look import kind as file_kind
 from .look import file_stem, map_item
+from .look import NOT_A_CSV_NAME
+from .look import conventional_name as look_conventional_name
 from .look import is_mac_metadata as look_is_mac_metadata
 from .look import mac_safe_name as look_mac_safe_name
 from .look import name_problem as look_name_problem
@@ -88,12 +90,6 @@ _REVISION_IGNORES = {"music", "labels"}
 # no cue references it by name, so folding a stray character to "_" costs
 # nothing and saves a whole class of filesystem trouble.
 _SAFE_MUSIC_NAME = re.compile(r"[^\w.\- ]", re.UNICODE)
-# Why a CSV whose name says nothing is turned away. One sentence, in one
-# place: Workspace.save(), import_bundle() and the /api/files intake all
-# print it, and the designers' simulator prints the same words
-# (designer-app.js's refuseReason).
-NOT_A_CSV_NAME = ("not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv "
-                  "(the wiring site writes _HW in capitals)")
 _MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
 _COPY_NO = re.compile(r"-[0-9]+$")
 # [0-9], never \d - see conductor/look.py's _PATTERN_NO: Python's \d takes
@@ -1160,6 +1156,7 @@ class Workspace:
         """
         with self._lock:
             taken = {path.name for path in self.files.glob("*.csv")}
+        items = self.item_names()
         saved: "list[str]" = []
         renamed: "dict[str, str]" = {}
         skipped: "dict[str, str]" = {}
@@ -1174,11 +1171,18 @@ class Workspace:
                 refused.append(f"{raw}: a macOS metadata file, not one of "
                                "the designers' CSVs")
                 continue
-            wanted = look_mac_safe_name(raw)
+            resolved = look_conventional_name(look_mac_safe_name(raw), text,
+                                              None, items)
+            if "error" in resolved:
+                refused.append(f"{raw}: {resolved['error']}")
+                continue
             try:
-                wanted = workspace_name(wanted)
+                # The name conventional_name() built is still put through
+                # the shared rule: the garment half of it can come from a
+                # caller, not only from a map already on disk.
+                wanted = workspace_name(resolved["name"])
             except ValueError as exc:
-                refused.append(str(exc))
+                refused.append(f"{raw}: {exc}")
                 continue
             if self.kind(wanted) is None:
                 refused.append(f"{raw}: {NOT_A_CSV_NAME}")

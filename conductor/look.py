@@ -254,6 +254,43 @@ _METADATA_FOLDER = "__MACOSX"
 _DESIGN_NUMBER = re.compile(r"^(.*_color_)(.+?)(_grid.*\.csv)$", re.IGNORECASE)
 _HW_NUMBER = re.compile(r"^([^_]+_)(.+?)(_HW\.csv)$", re.IGNORECASE)
 _MAX_COPIES = 100
+# Why a CSV whose name says nothing is turned away. One sentence, in one
+# place: conductor/server.py prints it and so does the simulator
+# (designer-app.js's refuseReason, through SIM.look).
+NOT_A_CSV_NAME = ("not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv "
+                  "(the wiring site writes _HW in capitals)")
+NOT_A_CSV_FILE = "not a .csv file"
+NOT_A_CSV_BODY = ("neither a map (first line side,row,col,board_no,socket,…) "
+                  "nor a design grid (side,row,shift,1,2,…)")
+NO_GARMENT = ("which garment? name it MODEL_…csv, or use that garment's "
+              "own Add CSV")
+_CSV_SUFFIX = re.compile(r"\.csv$", re.IGNORECASE)
+_MAP_HEADER = ("board_no", "socket")
+_GRID_HEADER = ("side", "row", "shift")
+_GRID_COLUMN = re.compile(r"^[0-9]+$")     # [0-9], never \d - see _PATTERN_NO
+# JavaScript's own \s, written out. NEVER Python's \s or str.strip() here
+# (the lesson of _NAME_TRIM, one layer down): the two classes differ at
+# U+FEFF (JS trims it, Python does not) and at U+0085/U+001C-U+001F
+# (Python trims those, JS does not), and a design name trimmed by one
+# rule on the Conductor and another in the simulator is two designs.
+_JS_SPACE = ("\t\n\v\f\r         "
+             "         　"
+             "﻿")
+# The edges a design name read out of a file name never keeps: the
+# separators that were holding it to the item, and the same whitespace.
+_DESIGN_EDGE = re.compile(
+    "^[-_." + _JS_SPACE + "]+|[-_." + _JS_SPACE + "]+$")
+# Whatever a file name may not hold, folded to "-" rather than dropped.
+# Defensive only - name_problem() has already refused every one of these
+# by the time conventional_name() gets here - but it is the simulator's
+# own line, and the two must not drift.
+_DESIGN_UNUSABLE = re.compile("[\x00-\x1f\x7f-\x9f/\\\\／＼:*?\"<>|]+")
+_LEADING_UNDERSCORE = re.compile(r"^_")
+
+
+def _js_trim(text) -> str:
+    """str.trim() as JavaScript does it - see _JS_SPACE."""
+    return str(text).strip(_JS_SPACE)
 
 
 def mac_safe_name(name) -> str:
@@ -305,6 +342,111 @@ def unique_save_name(name: str, taken) -> "str | None":
         if candidate not in taken:
             return candidate
     return None
+
+
+def refuse_reason(name) -> str:
+    """Why a file nothing else could place is turned away."""
+    return (NOT_A_CSV_NAME if str(name).lower().endswith(".csv")
+            else NOT_A_CSV_FILE)
+
+
+def sniff_csv_kind(text) -> "str | None":
+    """"map", "grid" or None, from the file's FIRST LINE.
+
+    A CSV that is not NAMED the wiring site's way (2026-09-25: a
+    designer's Mac offered "AZ271SD1305_1_HW.csv" - and a designer who
+    renames a file at all offers anything) is read by its header:
+
+      side,row,col,board_no,socket,…   -> that garment's map
+      side,row,shift,1,2,3,…           -> a design grid of that garment
+
+    Nothing else counts. A grid's position columns must be whole
+    numbers, so a file that merely begins side,row cannot be mistaken
+    for one.
+    """
+    body = str(text)
+    if body.startswith("﻿"):
+        body = body[1:]
+    first = ""
+    for line in re.split(r"\r?\n", body):
+        if _js_trim(line):
+            first = line
+            break
+    cols = [_js_trim(c).lower() for c in first.split(",")]
+    if len(cols) < 2 or cols[0] != "side" or cols[1] != "row":
+        return None
+    if all(column in cols for column in _MAP_HEADER):
+        return "map"
+    if (len(cols) > 3 and list(cols[:3]) == list(_GRID_HEADER)
+            and all(_GRID_COLUMN.match(c) for c in cols[3:])):
+        return "grid"
+    return None
+
+
+def conventional_name(name, text, item_hint=None, items=()) -> dict:
+    """What a picked file should be SAVED as: {"name", "read_as"} or
+    {"error"}.
+
+    A file whose name already says what it is keeps it. Anything else is
+    read by its header (sniff_csv_kind) and saved under the conventional
+    spelling, so everything downstream - the units, the show file, the
+    designers' simulator - still sees *_map.csv / *_color_NAME_grid.csv.
+
+    The garment is the one named up front (`item_hint`: a per-item "Add
+    CSV") or, failing that, the one in `items` whose model starts the
+    file name - longest match first, so AZ271SD1305_B beats AZ271SD1305.
+    With neither, the file is refused with a reason that says how to
+    name it rather than guessed at.
+
+    This is conductor/web/sim/model.js's SIM.look.conventionalName,
+    character for character; the goldens pin the two together.
+    """
+    composed = normalize_name(name)
+    bad = name_problem(composed)
+    if bad:
+        return {"error": bad}
+    if kind(composed) is not None:
+        return {"name": composed}
+    if not composed.lower().endswith(".csv"):
+        return {"error": refuse_reason(composed)}
+    sniffed = sniff_csv_kind(text)
+    if sniffed is None:
+        return {"error": NOT_A_CSV_BODY}
+    stem = _CSV_SUFFIX.sub("", composed)
+    matches = [key for key in items if key and
+               (stem == key or stem.lower().startswith(key.lower() + "_"))]
+    # Longest first, and a stable sort, so a tie keeps the caller's own
+    # order - JavaScript's Array.sort is stable too.
+    hit = sorted(matches, key=len, reverse=True)[0] if matches else None
+    item = item_hint or hit
+    if not item:
+        return {"error": NO_GARMENT}
+    if sniffed == "map":
+        return {"name": f"{item}_map.csv", "read_as": "map"}
+    # Strip the prefix of the garment the file is going TO when it
+    # carries one ("AZ271SD1305_B.csv" picked on AZ271SD1305 is design
+    # "B", not the whole file of item AZ271SD1305_B); otherwise the
+    # longest known model.
+    prefix = None
+    for known in (item_hint, hit):
+        if known and stem.lower().startswith(known.lower() + "_"):
+            prefix = known
+            break
+    if prefix is None and hit and hit.lower() == stem.lower():
+        prefix = hit
+    design = (_LEADING_UNDERSCORE.sub("", stem[len(prefix):])
+              if prefix else stem)
+    # Keep whatever a file name may keep - letters, digits, and the
+    # punctuation a 配色案名 actually uses ("柄・A", "（A）", "柄＋A").
+    design = _DESIGN_EDGE.sub("", _DESIGN_UNUSABLE.sub("-", design)) or "design"
+    # "_grid" / "_map" / "_color_" inside a design name would be read as
+    # the file-name grammar's own markers ("HW_grid_4" -> design "HW" for
+    # every file), so they are spelled with a dash inside the name.
+    design = re.sub(r"_grid", "-grid", design, flags=re.IGNORECASE)
+    design = re.sub(r"_map(?=$|[_-])", "-map", design, flags=re.IGNORECASE)
+    design = re.sub(r"_color_", "-color-", design, flags=re.IGNORECASE)
+    return {"name": f"{item}_color_{design}_grid.csv",
+            "read_as": "design " + design}
 
 
 def kind(name: str) -> "str | None":

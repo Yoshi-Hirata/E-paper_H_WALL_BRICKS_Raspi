@@ -364,6 +364,118 @@ NAME_CASES = [
 ]
 
 
+# Taking a picked file in (2026-09-27): the Mac-name repairs, the "-2"
+# numbering, the header sniff and the conventional name it leads to.
+# These lived in the simulator's designer-app.js alone until the
+# Conductor grew the same rules; every one of them decides what a
+# dropped file is SAVED as, so the two sides have to answer identically
+# or the same CSV becomes two different designs.
+_MAP_HEAD = "side,row,col,board_no,socket,label\n"
+_GRID_HEAD = "side,row,shift,1,2,3\n"
+_KNOWN = ["AZ271SD1305", "AZ271SD1305_B", "Look22"]
+INTAKE_CASES = [
+    {"op": "macSafeName", "name": "Look22_map.csv.txt"},
+    {"op": "macSafeName", "name": "Look22_map.CSV.TXT"},
+    {"op": "macSafeName", "name": "notes.txt"},
+    {"op": "macSafeName", "name": " Look22_map.csv "},
+    {"op": "macSafeName", "name": "Look22_柄・A_HW.csv"},
+    {"op": "isMacMetadata", "name": "._Look22_map.csv"},
+    {"op": "isMacMetadata", "name": ".DS_Store"},
+    {"op": "isMacMetadata", "name": "__MACOSX"},
+    {"op": "isMacMetadata", "name": "__MACOSX/Look22_map.csv"},
+    {"op": "isMacMetadata", "name": "folder/._Look22_map.csv"},
+    {"op": "isMacMetadata", "name": "Look22_map.csv"},
+    {"op": "isMacMetadata", "name": "_Look22_map.csv"},
+    {"op": "uniqueSaveName", "name": "Look22_color_p1_grid.csv", "taken": []},
+    {"op": "uniqueSaveName", "name": "Look22_color_p1_grid.csv",
+     "taken": ["Look22_color_p1_grid.csv"]},
+    {"op": "uniqueSaveName", "name": "Look22_color_p1_grid.csv",
+     "taken": ["Look22_color_p1_grid.csv", "Look22_color_p1-2_grid.csv"]},
+    {"op": "uniqueSaveName", "name": "Look22_1_HW.csv",
+     "taken": ["Look22_1_HW.csv"]},
+    {"op": "uniqueSaveName", "name": "Look22_map.csv",
+     "taken": ["Look22_map.csv"]},
+    {"op": "sniffCsvKind", "text": _MAP_HEAD + "front,1,1,17,1,017-01\n"},
+    {"op": "sniffCsvKind", "text": _GRID_HEAD + "front,1,0.5,0x03,0,0\n"},
+    # A BOM, blank lines before the header, and spaces around the names.
+    {"op": "sniffCsvKind", "text": "﻿\n\n  SIDE , Row , shift ,1,2,3\n"},
+    # A grid's position columns are whole numbers, so this is neither.
+    {"op": "sniffCsvKind", "text": "side,row,shift,a,b\n"},
+    {"op": "sniffCsvKind", "text": "side,row\n"},
+    {"op": "sniffCsvKind", "text": ""},
+    {"op": "sniffCsvKind", "text": "name,colour\n1,2\n"},
+    # A name that already says what it is keeps it, whatever is inside.
+    {"op": "conventionalName", "name": "Look22_map.csv", "text": _GRID_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    # ...and one that does not is read by its header and renamed.
+    {"op": "conventionalName", "name": "AZ271SD1305_1.csv",
+     "text": _GRID_HEAD, "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "AZ271SD1305_1.csv",
+     "text": _MAP_HEAD, "itemHint": None, "items": _KNOWN},
+    # The longest known garment wins: AZ271SD1305_B, not AZ271SD1305.
+    {"op": "conventionalName", "name": "AZ271SD1305_B_4.csv",
+     "text": _GRID_HEAD, "itemHint": None, "items": _KNOWN},
+    # Named up front (a garment's own Add CSV): the hint wins, and the
+    # prefix it carries is still stripped off the design name.
+    {"op": "conventionalName", "name": "AZ271SD1305_B.csv",
+     "text": _GRID_HEAD, "itemHint": "AZ271SD1305", "items": _KNOWN},
+    {"op": "conventionalName", "name": "whatever.csv", "text": _GRID_HEAD,
+     "itemHint": "Look22", "items": _KNOWN},
+    # The file IS the garment's name, with nothing after it.
+    {"op": "conventionalName", "name": "AZ271SD1305.csv", "text": _GRID_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    # Nothing to hang it on.
+    {"op": "conventionalName", "name": "whatever.csv", "text": _GRID_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "notes.csv", "text": "a,b\n",
+     "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "cover.png", "text": "",
+     "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "Look22_a:b.csv", "text": _GRID_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    # The markers of the file-name grammar are spelled with a dash
+    # inside a design name, or every file would be design "HW".
+    {"op": "conventionalName", "name": "Look22_HW_grid_4.csv",
+     "text": _GRID_HEAD, "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "Look22_a_map.csv",
+     "text": _GRID_HEAD, "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "Look22_a_color_b.csv",
+     "text": _GRID_HEAD, "itemHint": None, "items": _KNOWN},
+    # Japanese punctuation is ordinary punctuation and is kept; the
+    # edges the two languages trim differently are not (a U+FEFF at the
+    # end of a design name is trimmed by JS's trim() and not by
+    # Python's strip(), so both sides spell the class out).
+    {"op": "conventionalName", "name": "Look22_柄・A.csv", "text": _GRID_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "Look22_ A ﻿.csv", "text": _GRID_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "Look22_---.csv", "text": _GRID_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    # Full-width digits stay full-width (the 配線ナビ writes them).
+    {"op": "conventionalName", "name": "AZ271SD1305_１.csv",
+     "text": _GRID_HEAD, "itemHint": None, "items": _KNOWN},
+]
+
+
+def intake_cases() -> list:
+    cases = []
+    for case in INTAKE_CASES:
+        op = case["op"]
+        if op == "macSafeName":
+            expect = look.mac_safe_name(case["name"])
+        elif op == "isMacMetadata":
+            expect = look.is_mac_metadata(case["name"])
+        elif op == "uniqueSaveName":
+            expect = look.unique_save_name(case["name"], set(case["taken"]))
+        elif op == "sniffCsvKind":
+            expect = look.sniff_csv_kind(case["text"])
+        else:
+            expect = look.conventional_name(
+                case["name"], case["text"], case["itemHint"], case["items"])
+        cases.append(dict(case, kind="intake", expect=expect))
+    return cases
+
+
 def name_cases() -> list:
     cases = []
     for filename, items in NAME_CASES:
@@ -843,6 +955,7 @@ def build_goldens() -> dict:
     cases += clock_cases()
     cases += mmss_cases()
     cases += name_cases()
+    cases += intake_cases()
     cases += map_cases()
     cases += design_cases()
     cases += check_cases()

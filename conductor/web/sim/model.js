@@ -523,6 +523,33 @@
   // control character and nameProblem() refuses it before trimming.
   // conductor/look.py's _NAME_TRIM.
   const _NAME_TRIM = " ";
+  // ---- taking a picked file in: conductor/look.py's own constants ----
+  const NOT_A_CSV_NAME = "not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv "
+    + "(the wiring site writes _HW in capitals)";
+  const NOT_A_CSV_FILE = "not a .csv file";
+  const NOT_A_CSV_BODY = "neither a map (first line side,row,col,board_no,socket,…) "
+    + "nor a design grid (side,row,shift,1,2,…)";
+  const NO_GARMENT = "which garment? name it MODEL_…csv, or use that garment's own Add CSV";
+  const _MAP_HEADER = ["board_no", "socket"];
+  const _GRID_HEADER = ["side", "row", "shift"];
+  const _GRID_COLUMN = /^[0-9]+$/;          // [0-9], never \d - see _PATTERN_NO
+  // Where a "-2" goes: on the DESIGN name, never on the garment's. A
+  // *_map.csv matches neither, and that is the point - a garment has one
+  // wiring file, so a second one is refused rather than filed beside it.
+  const _DESIGN_NUMBER = /^(.*_color_)(.+?)(_grid.*\.csv)$/i;
+  const _HW_NUMBER = /^([^_]+_)(.+?)(_HW\.csv)$/i;
+  const _MAX_COPIES = 100;
+  // String.trim()'s own class, written out - Python's str.strip() is a
+  // DIFFERENT class (conductor/look.py's _JS_SPACE says which characters
+  // and why a design name trimmed by two rules is two designs).
+  const _JS_SPACE_CLASS = "\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a"
+    + "\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff";
+  const _JS_EDGE = new RegExp("^[" + _JS_SPACE_CLASS + "]+|["
+    + _JS_SPACE_CLASS + "]+$", "g");
+  const _DESIGN_EDGE = new RegExp("^[-_." + _JS_SPACE_CLASS + "]+|[-_."
+    + _JS_SPACE_CLASS + "]+$", "g");
+  // eslint-disable-next-line no-control-regex
+  const _DESIGN_UNUSABLE = /[\x00-\x1f\x7f-\x9f/\\／＼:*?"<>|]+/g;
   // geometry_problem()'s thresholds, verbatim from conductor/look.py.
   const _GEOM_MIN_SHORT_ROWS = 2;
   const _GEOM_SHORT_TENTHS = 1;
@@ -621,6 +648,89 @@
   function mapItem(filename) {
     const m = _MAP_NAME.exec(stemOf(normalizeName(filename)));
     return m ? m[1] : null;
+  }
+
+  // ---- taking a picked file in (conductor/look.py's own half) --------
+  // These five used to live in designer-app.js alone, so the Conductor
+  // had no rule to match and drew its own conclusions about the same
+  // dropped file. They are pure, so they belong here with the rest of
+  // look.py's port, and the goldens now pin them to it.
+  //
+  // What a Mac does to a file name on the way here (2026-09-25, a
+  // designer's Mac refused every CSV a Windows PC accepted): Safari
+  // appends ".txt" to a text/plain download and Finder hides the
+  // extension; HFS+/APFS hand names back decomposed; a zip Finder
+  // extracted carries "__MACOSX/._NAME.csv" twins and ".DS_Store".
+  function macSafeName(name) {
+    const text = nfcOf(name);
+    return /\.csv\.txt$/i.test(text) ? text.replace(/\.txt$/i, "") : text;
+  }
+  // Every path SEGMENT, not just the last: a folder drop hands the
+  // "__MACOSX/" over as part of the name.
+  function isMacMetadata(name) {
+    return nfcOf(name).split(/[\\/]/).some(
+      part => part.startsWith("._") || part === ".DS_Store"
+              || part.toUpperCase() === "__MACOSX");
+  }
+  // `taken` is only READ - the caller adds what it ends up using, so
+  // this answers the same question twice the same way (and matches
+  // conductor/look.py's unique_save_name, which cannot mutate a set it
+  // was handed either).
+  function uniqueSaveName(name, taken) {
+    if (!taken.has(name)) return name;
+    const m = _DESIGN_NUMBER.exec(name) || _HW_NUMBER.exec(name);
+    if (!m) return null;
+    for (let n = 2; n < _MAX_COPIES; n++) {
+      const candidate = `${m[1]}${m[2]}-${n}${m[3]}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return null;
+  }
+  function refuseReason(name) {
+    return /\.csv$/i.test(String(name)) ? NOT_A_CSV_NAME : NOT_A_CSV_FILE;
+  }
+  function jsTrim(text) {
+    // String.trim() is exactly this class; spelled out because Python's
+    // str.strip() is NOT (see conductor/look.py's _JS_SPACE).
+    return String(text).replace(_JS_EDGE, "");
+  }
+  function sniffCsvKind(text) {
+    let body = String(text);
+    if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
+    const first = body.split(/\r?\n/).find(l => jsTrim(l)) || "";
+    const cols = first.split(",").map(c => jsTrim(c).toLowerCase());
+    if (cols.length < 2 || cols[0] !== "side" || cols[1] !== "row") return null;
+    if (_MAP_HEADER.every(c => cols.indexOf(c) !== -1)) return "map";
+    if (cols.length > 3 && _GRID_HEADER.every((c, i) => cols[i] === c)
+        && cols.slice(3).every(c => _GRID_COLUMN.test(c))) return "grid";
+    return null;
+  }
+  function conventionalName(name, text, itemHint, items) {
+    const composed = normalizeName(name);
+    const bad = nameProblem(composed);
+    if (bad) return { error: bad };
+    if (kind(composed) !== null) return { name: composed };
+    if (!/\.csv$/i.test(composed)) return { error: refuseReason(composed) };
+    const sniffed = sniffCsvKind(text);
+    if (!sniffed) return { error: NOT_A_CSV_BODY };
+    const stem = composed.replace(/\.csv$/i, "");
+    const hit = (items || []).filter(
+      k => k && (stem === k || stem.toLowerCase().startsWith(k.toLowerCase() + "_")))
+      .sort((a, b) => b.length - a.length)[0] || null;
+    const item = itemHint || hit;
+    if (!item) return { error: NO_GARMENT };
+    if (sniffed === "map") return { name: `${item}_map.csv`, read_as: "map" };
+    const prefix = [itemHint, hit].filter(Boolean).find(
+      k => stem.toLowerCase().startsWith(k.toLowerCase() + "_"))
+      || (hit && hit.toLowerCase() === stem.toLowerCase() ? hit : null);
+    let design = prefix ? stem.slice(prefix.length).replace(/^_/, "") : stem;
+    // eslint-disable-next-line no-control-regex
+    design = design.replace(_DESIGN_UNUSABLE, "-").replace(_DESIGN_EDGE, "") || "design";
+    design = design.replace(/_grid/gi, "-grid")
+                   .replace(/_map(?=$|[_-])/gi, "-map")
+                   .replace(/_color_/gi, "-color-");
+    return { name: `${item}_color_${design}_grid.csv`,
+             read_as: "design " + design };
   }
 
   function nameParts(filename, items) {
@@ -1004,6 +1114,9 @@
     defaultShift, kind, nameParts, mapItem, normalizeName, nameProblem,
     parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,
+    macSafeName, isMacMetadata, uniqueSaveName, refuseReason,
+    sniffCsvKind, conventionalName,
+    NOT_A_CSV_NAME, NOT_A_CSV_FILE, NOT_A_CSV_BODY, NO_GARMENT,
   };
 
   // ============================================================
