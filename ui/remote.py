@@ -645,6 +645,18 @@ class RemoteSession:
                 "late_ms": late_ms,
                 "verify": dict(self.verify) if self.verify else None,
                 "boards": runner.reported_boards, "live": list(runner.live),
+                # Which board list the unit is actually working to, and
+                # what it still probes. The 2026-09-26 failure was
+                # invisible from the Conductor - the pictures WERE
+                # written; what was wrong was the unit's own idea of
+                # which sockets exist (radxa-04 kept probing 17-22 all
+                # show). `absent` is part of the list in force, so the
+                # PC compares `boards` + `absent` against the show's own
+                # board ids; `group_count` is the number the frames
+                # carry (ui/runner.py's _group_count()).
+                "boards_source": runner.boards_source,
+                "absent": sorted(runner.absent_snapshot()),
+                "group_count": runner.group_count,
                 "no_sweep": sorted(runner.no_sweep),
                 "standby_ready": bool(runner.standby_ready),
                 "burn": burn,

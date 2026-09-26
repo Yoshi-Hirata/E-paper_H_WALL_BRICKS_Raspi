@@ -270,6 +270,22 @@ class UnitLink:
                 "label": status.get("label"),
                 "boards": len(status.get("boards", [])),
                 "live": len(status.get("live", [])),
+                # The board list the unit is really working to, passed
+                # through as it comes: the ids it counts as its own, the
+                # ones it is still probing, where the list came from
+                # ("show" / "explore" / "fixed") and the group_count its
+                # frames carry. The tile compares this against the ids
+                # the show gives that unit - 2026-09-26 went wrong
+                # inside the unit's own bookkeeping while every picture
+                # was written, so nothing on the page said a word.
+                # Absent from an agent too old to report them.
+                "board_ids": list(status.get("boards", [])),
+                "absent": list(status.get("absent", [])),
+                "boards_source": status.get("boards_source"),
+                "group_count": status.get("group_count"),
+                # How long the unit says it has been up, so the tile can
+                # see a restart that happened after the Upload.
+                "uptime_s": status.get("uptime_s"),
                 "saved": len(status.get("saved", [])),
                 "failed": status.get("failed", []),
                 "prepare_s": status.get("prepare_s"),
@@ -306,6 +322,13 @@ class Fleet:
         # The show: what each unit was given, and the run's T0 on the
         # PC's clock ({"t0", "state": running|holding, "held_at"}).
         self.shows: "dict[str, dict]" = {}
+        # When this conductor last wrote a show to each unit (its own
+        # clock). The unit's `uptime_s` beside it is what says the unit
+        # has restarted since - which, until the show file's list is
+        # handed over again, is the state radxa-04 spent a whole
+        # rehearsal in. Empty after a conductor restart: nothing is
+        # claimed then, the page simply shows no mark.
+        self._uploaded_at: "dict[str, float]" = {}
         self.run: "dict | None" = None
         # Where START begins when nothing says otherwise - moved by SEEK
         # while there is no run, reset by every START and STOP.
@@ -483,7 +506,12 @@ class Fleet:
         return {"units": [self._unit_snapshot(link)
                           for link in self.links.values()],
                 "last_fire": self.last_fire, "run": run,
-                "shows": {unit: {"id": show["id"], "cues": len(show["cues"])}
+                # `boards`: the ids THIS show gives that unit
+                # (conductor/showfile.py writes them into the show file),
+                # which is what the tile holds the unit's own list up
+                # against.
+                "shows": {unit: {"id": show["id"], "cues": len(show["cues"]),
+                                 "boards": sorted(show.get("boards") or [])}
                           for unit, show in self.shows.items()},
                 "corrections": self.corrections[-5:],
                 "start_at": start_at,
@@ -499,9 +527,18 @@ class Fleet:
         is where the operator looks when THAT unit is the one holding
         the show up (review round 2, 2026-09-25)."""
         refused = self._refused.get(link.name)
+        at = self._uploaded_at.get(link.name)
         return dict(link.snapshot(),
                     refused=None if refused is None
                     else f"{refused[0]} refused: {refused[1]}",
+                    # How long ago this conductor wrote the show to this
+                    # unit, against which the unit's own uptime_s says
+                    # whether it has restarted since. None when this
+                    # conductor has not uploaded to it (a conductor
+                    # restarted mid-evening knows nothing about it and
+                    # the tile says nothing).
+                    uploaded_ago_s=(None if at is None
+                                    else round(self._clock() - at, 1)),
                     demos=self.demos_of(link.name))
 
     def _raw_burn(self, name: str):
@@ -639,6 +676,13 @@ class Fleet:
             status = link.post("/show/load", shows[link.name])
             return {"show": (status.get("show") or {}).get("id")}
         results = self._each(targets, action)
+        # Only the units that really took it: one that refused is still
+        # holding whatever it held, and dating this upload on it would
+        # have the tile call every later restart of it "since Upload".
+        now = self._clock()
+        for name in targets:
+            if results.get(name, {}).get("ok"):
+                self._uploaded_at[name] = now
         if only is None:
             self.shows = dict(shows)
         else:

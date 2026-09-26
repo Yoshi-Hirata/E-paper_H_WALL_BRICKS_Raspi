@@ -404,6 +404,54 @@ def test_standby_and_release_hand_the_unit_over_and_back():
     runner.stop()
 
 
+# ---- which board list the unit is working to ----
+#
+# The 2026-09-26 failure was invisible from the Conductor: every picture
+# was written, and what was wrong was the unit's own idea of which
+# sockets exist (radxa-04 probed 17-22 all show). /status says it now.
+
+def test_status_says_which_board_list_is_in_force():
+    from ui.patterns import BY_KEY
+    from tests.test_ui_runner import Wall
+
+    # A unit started with --boards: its own list, no discovery.
+    session, runner, bus = make_session(boards=[1, 2, 3], verify_fire=False)
+    status = session.status()
+    assert status["boards_source"] == "fixed"
+    assert status["boards"] == [1, 2, 3] and status["absent"] == []
+    assert status["group_count"] == 3
+
+    # A show's list takes over while the show is on...
+    session.prepare("c1", {1: array(3), 2: array(4)})
+    assert wait_until(lambda: session.phase == READY)
+    status = session.status()
+    assert status["boards_source"] == "show"
+    assert status["boards"] == [1, 2] and status["group_count"] == 2
+
+    # ...and the unit's own comes back when the port does.
+    session.release()
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: "panels online" in " ".join(runner.log))
+    status = session.status()
+    assert status["boards_source"] == "fixed"
+    assert status["boards"] == [1, 2, 3] and status["group_count"] == 3
+    runner.stop()
+
+    # An exploring unit says so, and names what it is still probing -
+    # radxa-04's own state on the night: a 16-board garment, six empty
+    # sockets past it.
+    bus = Wall(set(range(1, 17)))
+    session, runner, _ = make_session(bus, boards=None, verify_fire=False)
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: "panels online" in " ".join(runner.log),
+                      timeout=20)
+    status = session.status()
+    assert status["boards_source"] == "explore"
+    assert status["boards"] == list(range(1, 17))
+    assert status["absent"] == list(range(17, 23))
+    runner.stop()
+
+
 # ---- the agent over HTTP ----
 
 @pytest.fixture
@@ -441,6 +489,21 @@ def test_status_names_the_unit_and_serves_the_clock(agent):
     assert before <= status["clock"]["mono"] <= after
     code, clock = call(agent, "/clock")
     assert code == 200 and set(clock) == {"mono", "wall"}
+
+
+def test_the_board_list_in_force_travels_over_http(agent):
+    agent, session, runner, bus = agent
+    status = call(agent, "/status")[1]
+    assert status["boards_source"] == "fixed"        # make_runner's own list
+    assert status["absent"] == [] and status["group_count"] == 20
+    assert isinstance(status["uptime_s"], int)
+    call(agent, "/prepare", {"cue": "c7", "dev_type": 3,
+                             "boards": {"1": array(3).hex(),
+                                        "2": array(4).hex()}})
+    assert wait_until(lambda: call(agent, "/status")[1]["phase"] == "ready")
+    status = call(agent, "/status")[1]
+    assert status["boards_source"] == "show" and status["boards"] == [1, 2]
+    assert status["group_count"] == 2
 
 
 def test_prepare_and_fire_over_http(agent):

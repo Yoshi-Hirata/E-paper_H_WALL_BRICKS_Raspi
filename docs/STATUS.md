@@ -91,6 +91,36 @@
   ゼロ・次キューは定刻(+50 ms 以内)・release で探索が戻る/全ペアが
   キャッシュの再 load でも一覧は効く/デモの復帰も自分の一覧を持ってくる
 
+**Conductor から見えるようにした(同日、3 コミット目。オペレーター要望)**。
+今回の不具合は **Conductor からはまったく見えなかった** ― 絵は全部書けていて、
+壊れていたのは機体の中の「基板一覧」という状態だけだったからである:
+
+- **`/status`(`ui/agent.py` ← `RemoteSession.status()`)** が、いま効いている
+  一覧を出す:**`boards_source`**(`"show"` / `"explore"` / `"fixed"` ―
+  `fixed` は `--boards` 付きで起動した機体)、`boards`、**`absent`**、
+  **`group_count`**。`absent` も一覧の一部なので、**PC 側は `boards` +
+  `absent` をショーの基板 id と突き合わせる**(探索中の機体は `boards` に
+  1-16 しか出さないが、叩いているのは 17-22 まで)
+- **`conductor/fleet.py`** がそのまま通す(`board_ids` / `absent` /
+  `boards_source` / `group_count` / `uptime_s`)。併せて
+  `snapshot()["shows"][unit]["boards"]`(そのショーがその機体に渡す基板 id)と
+  `uploaded_ago_s`(この Conductor がその機体に書いてからの秒数。機体が
+  受け取ったものだけ記録。Conductor 自体を再起動したら None = 何も言わない)
+- **Units タイル**に琥珀のしるしが 2 つ(`re-sent` / `not applied` と同じ族。
+  **一致していれば何も出ない**):
+  - Boards 行:`unit list 1-22 (exploring, 17-22 absent) ≠ show 1-16` ―
+    機体の一覧がこのショーのものと違うとき、または一致していても
+    `boards_source` が `show` でないとき。ツールチップは
+    「The unit is probing boards this show does not have; re-upload or
+    restart the unit.」
+  - Pictures 行:`restarted since Upload` ― 機体の `uptime_s` が
+    `uploaded_ago_s` より短いとき(丸め・ポーリングのぶれ用に 5 秒の余裕)
+- 比較は `conductor/web/index.html` の **`BOARDLIST`**(`<<< BOARDLIST >>>` で
+  囲った純粋関数。DOM も `fleet` も時計も触らない)。テストは
+  `tests/test_conductor_boards.py` ― テキスト検査と、ブロックを抜き出して
+  ヘッドレスで回す 7 ケース、それに **index.html 全体が構文として通ることの
+  確認**(ブラウザが無い環境では skip)
+
 **着弾確認は既定 OFF(`--verify-fire` で明示的に ON)― 2026-09-26 リハで誤再送**
 
 radxa-04 / 05 の本番想定リハで、着弾確認が 6 キュー中 5 キューを「未着弾」と

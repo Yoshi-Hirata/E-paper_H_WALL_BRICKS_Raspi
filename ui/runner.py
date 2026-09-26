@@ -250,6 +250,10 @@ class DemoRunner:
         # list only rules while the show does - see _apply_job_boards().
         self._own_explore = self.explore
         self._own_boards = list(self.boards)
+        # True while a show's own list is the one in force (`boards_source`
+        # says so in /status, and the PC's tile marks a unit whose list is
+        # not the show's).
+        self._boards_from_show = False
         self.interval = interval
         self.guard_delay = guard_delay
         self.slot = slot           # the LOCAL pattern loop's working slot
@@ -462,13 +466,16 @@ class DemoRunner:
         self.failures = 0
         self.error = None
         # Back on the unit's own menu (KEY2, or a release from the show
-        # PC): a show's board list ruled only while the show did, so an
-        # exploring unit explores again from its own list. A unit given
-        # an explicit --boards list keeps that list either way.
-        if self._own_explore and not self.explore:
-            self.explore = True
+        # PC): a show's board list ruled only while the show did, so the
+        # unit goes back to what it was started with - its own discovery,
+        # or the --boards list it was given.
+        if self._boards_from_show:
+            self._boards_from_show = False
+            self.explore = self._own_explore
             self.boards = list(self._own_boards)
-            self.emit("the show's board list is released, exploring again")
+            back = ("exploring again" if self.explore
+                    else f"back to boards {self._fmt_boards(self.boards)}")
+            self.emit(f"the show's board list is released, {back}")
         # live/absent survive across starts on purpose: the wall does not
         # change because a different pattern was picked, and re-sweeping
         # eighteen empty sockets would hold the first frame for half a
@@ -737,6 +744,24 @@ class DemoRunner:
         _apply_job_boards())."""
         return max(len(self.boards), max(self.boards))
 
+    @property
+    def group_count(self) -> int:
+        """What /status reports: the very number the frames carry."""
+        return self._group_count()
+
+    @property
+    def boards_source(self) -> str:
+        """Where the list in force came from, for /status and the PC's
+        tile: the show PC's own list ("show"), this unit's discovery
+        ("explore"), or the --boards it was started with ("fixed").
+
+        The rehearsal failure this exists for was invisible from the
+        Conductor: every picture was written, and what was wrong was
+        which sockets the unit believed in (radxa-04, 2026-09-26)."""
+        if self._boards_from_show:
+            return "show"
+        return "explore" if self.explore else "fixed"
+
     def _apply_job_boards(self, wanted: "list[int]") -> bool:
         """Adopt the show PC's board list as THE list; True if it changed.
 
@@ -767,6 +792,7 @@ class DemoRunner:
         self.live = [b for b in wanted if b in was_live]
         self.boards = wanted
         self.explore = False            # the show PC knows the garment
+        self._boards_from_show = True
         if changed:
             note = (f" ({self._fmt_boards(dropped)} dropped, not probed)"
                     if dropped else "")
