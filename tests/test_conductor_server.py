@@ -1263,15 +1263,17 @@ def test_music_upload_name_is_unquoted_before_it_is_saved(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{port}"
     try:
-        encoded = urllib.parse.quote("café.mp3")   # what encodeURIComponent sends
+        encoded = urllib.parse.quote("caf*é.mp3")  # what encodeURIComponent sends
         upload = urllib.request.Request(
             f"{base}/api/music", data=b"abcde",
             headers={"X-File-Name": encoded})
         with urllib.request.urlopen(upload, timeout=5) as response:
             body = json.loads(response.read())
-        # Unquoted first, so only the one accented letter is sanitised -
-        # not every byte of its percent-encoding as well.
-        assert body["music"]["name"] == "caf_.mp3"
+        # Unquoted first, so only the one character the workspace cannot
+        # keep is sanitised - not every byte of the accented letter's
+        # percent-encoding as well. The letter itself survives: a file
+        # name may hold letters and digits of any script (2026-09-26).
+        assert body["music"]["name"] == "caf_é.mp3"
     finally:
         server.shutdown()
         server.server_close()

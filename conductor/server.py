@@ -36,6 +36,7 @@ from dataclasses import replace
 import re
 import threading
 import time
+import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -75,7 +76,12 @@ _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # Parts of show.json that never reach a unit: the operator's own notes
 # about the show (see Workspace.revision).
 _REVISION_IGNORES = {"music", "labels"}
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
+# Letters and digits of ANY script, plus . - _ and a space. `\w` is
+# already Unicode-aware for str patterns (letters, digits, underscore of
+# every script), so a designer's own 配色案名 - "柄A", "夏_2" - reaches the
+# show PC spelled the way they typed it. Everything else (a path
+# separator above all) is folded to "_" by safe_name() below.
+_SAFE_NAME = re.compile(r"[^\w.\- ]", re.UNICODE)
 _MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
 _COPY_NO = re.compile(r"-\d+$")
 _LOOK_NO = re.compile(r"look\s*0*(\d+)", re.IGNORECASE)
@@ -86,6 +92,59 @@ _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 def _key(position) -> str:
     return "|".join(str(part) for part in position)
+
+
+def safe_name(name: str) -> str:
+    """The workspace's own spelling of a file name: NFKC, then anything
+    but a letter, a digit, ". - _" or a space folded to "_".
+
+    NFKC first (2026-09-26): a designer's bundle arrived with
+    "AZ271SD1305_color_１_HW_grid.csv" - the 配色案名 typed with FULL-WIDTH
+    digits (U+FF11), which every page on the designers' side accepts. Here
+    it used to be refused outright as an unusable file name, and each cue
+    that named it then read "design ... is not loaded". NFKC folds
+    full-width digits and letters onto their ASCII spelling and leaves
+    kana and kanji alone, so both sides now agree on one name.
+    conductor/web/sim/designer-app.js's nfkc() is the other half.
+    """
+    return _SAFE_NAME.sub("_", Path(nfkc_name(name)).name)
+
+
+def nfkc_name(name: str) -> str:
+    """Just the NFKC half of safe_name(), for the one caller that must
+    tell "the same name, respelled" from "a name with something in it
+    this workspace cannot keep" (import_bundle: the first is saved and
+    reported as a rename, the second refused rather than mangled)."""
+    return unicodedata.normalize("NFKC", str(name))
+
+
+def _rename_design_refs(show: dict, renamed: "dict[str, str]") -> dict:
+    """A copy of `show` with every design file name the import renamed
+    (safe_name(), above) rewritten wherever the timeline names one.
+
+    Two places name a design file: a cue's "design", and a key of
+    "transitions". A cue that names a file the bundle did not carry is
+    normalised too - it may well be pointing at one this workspace
+    already holds under its ASCII spelling - but never invented: the
+    reference is only rewritten when safe_name() actually changes it.
+    """
+    show = dict(show)
+    def rename(name):
+        if not isinstance(name, str):
+            return name
+        if name in renamed:
+            return renamed[name]
+        clean = nfkc_name(name)
+        return clean if clean != name and file_kind(clean) is not None else name
+    cues = show.get("cues")
+    if isinstance(cues, list):
+        show["cues"] = [dict(c, design=rename(c.get("design")))
+                        if isinstance(c, dict) and "design" in c else c
+                        for c in cues]
+    transitions = show.get("transitions")
+    if isinstance(transitions, dict):
+        show["transitions"] = {rename(k): v for k, v in transitions.items()}
+    return show
 
 
 def _known_items(maps: "dict[str, LookMap]") -> "list[str]":
@@ -583,7 +642,7 @@ class Workspace:
         every byte is down; the lock is taken for that swap and the
         commit, never for the streaming itself.
         """
-        safe = _SAFE_NAME.sub("_", Path(name or "music").name) or "music"
+        safe = safe_name(name or "music") or "music"
         self.music.mkdir(parents=True, exist_ok=True)
         part = self.music / f"{safe}.{os.getpid()}-{threading.get_ident()}.part"
         try:
@@ -828,24 +887,38 @@ class Workspace:
                              f"(got {len(files)})")
         to_save: "list[tuple[str, str]]" = []
         refused: "list[str]" = []
+        # The bundle's spelling -> this workspace's, for every name NFKC
+        # changes (a 配色案名 typed with full-width digits, 2026-09-26).
+        # The cues and transitions that name those files are rewritten to
+        # match below, or every one of them would read "design ... is not
+        # loaded" against a file that IS there under its ASCII spelling.
+        renamed: "dict[str, str]" = {}
         for name in sorted(files):
             text = files[name]
             if not isinstance(name, str) or not isinstance(text, str):
                 raise ValueError("bundle: files must be name -> text")
             try:
                 # The same rule /api/files applies through Workspace.save()
-                # - but checked here without ever calling it, so a bad
-                # name is refused outright instead of silently renamed.
-                safe = (_SAFE_NAME.search(name) is None
-                        and Path(name).name == name
-                        and self.kind(name) is not None)
+                # - but computed here without ever calling it, so a name
+                # this workspace cannot keep is still refused outright
+                # rather than silently mangled into some other file's
+                # name. Respelling it (NFKC) is the one change allowed,
+                # and it is reported: everything else must already be a
+                # usable name before it gets here.
+                clean = nfkc_name(name)
+                safe = (Path(name).name == name
+                        and Path(clean).name == clean
+                        and _SAFE_NAME.search(clean) is None
+                        and self.kind(clean) is not None)
             except (OSError, ValueError):     # e.g. an embedded NUL byte
                 safe = False
             if not safe:
                 refused.append(f"{name}: unusable file name")
                 continue
-            to_save.append((name, text))
-        show = dict(show)
+            if clean != name:
+                renamed[name] = clean
+            to_save.append((clean, text))
+        show = _rename_design_refs(show, renamed)
         # units: only a *populated* mapping counts as "the bundle brought
         # its own" - {"Look22": null} cleans to {}, same as no units key
         # at all, so it cannot wipe every other assignment the operator
@@ -876,6 +949,7 @@ class Workspace:
         cue_count, warnings = self._apply_show_changes(changes, cues)
         music = payload.get("music") or show.get("music")
         return {"ok": True, "saved": saved, "refused": refused,
+                "renamed": renamed,
                 "overwritten": overwritten, "cues": cue_count,
                 "warnings": warnings, "units_kept": units_kept,
                 "boards_kept": boards_kept,
@@ -890,7 +964,7 @@ class Workspace:
     kind = staticmethod(file_kind)
 
     def save(self, name: str, text: str) -> str:
-        name = _SAFE_NAME.sub("_", Path(name).name)
+        name = safe_name(name)
         if self.kind(name) is None:
             raise ValueError(f"{name}: not a *_map.csv, "
                              "*_color_NAME_grid.csv or *_HW.csv")

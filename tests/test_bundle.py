@@ -252,6 +252,76 @@ def test_bundle_refuses_unsafe_file_names_without_writing_anything(tmp_path):
     assert sorted(p.name for p in ws.files.glob("*.csv")) == [MAP_NAME]
 
 
+def test_a_full_width_digit_in_a_design_name_is_respelled_not_refused(tmp_path):
+    # 2026-09-26, from a real bundle: the designer typed the 配色案名 with
+    # FULL-WIDTH digits (U+FF11), which every page on their side accepts,
+    # and this import refused the file as an unusable name - so the cue
+    # that pointed at it read "design ... is not loaded" and the garment
+    # stayed dark. The file is now saved under its ASCII spelling and the
+    # cue and the transition that name it are rewritten to match.
+    wide = "Look22_color_１_HW_grid.csv"
+    ascii_name = "Look22_color_1_HW_grid.csv"
+    ws = Workspace(tmp_path / "ws")
+    bundle = make_bundle(
+        files={MAP_NAME: MAP, wide: GRID},
+        cues=[{"id": "c0", "item": "Look22", "at": 0.0, "design": wide}],
+        extra_show={"transitions": {wide: {"sequence": "top_down", "span_s": 2.0}}})
+    result = ws.import_bundle(bundle)
+    assert result["refused"] == []
+    assert sorted(result["saved"]) == [ascii_name, MAP_NAME]
+    assert result["renamed"] == {wide: ascii_name}
+    assert (ws.files / ascii_name).is_file()
+    state = ws.state()
+    cue = state["show"]["cues"][0]
+    assert cue["design"] == ascii_name and cue["problems"] == []
+    # And the garment really does have that design, with the transition
+    # the designer set on it - "is not loaded" was the whole symptom.
+    designs = item(state, "Look22")["designs"]
+    assert [d["name"] for d in designs] == [ascii_name]
+    assert designs[0]["transition"] == {"sequence": "top_down", "span_s": 2.0}
+
+
+def test_a_full_width_hw_name_and_a_japanese_design_name_both_round_trip(tmp_path):
+    # The site's own _HW.csv spelling with a full-width digit, and a
+    # 配色案名 in Japanese - which NFKC leaves exactly as typed, so it must
+    # NOT be renamed and must still resolve.
+    wide_hw = "Look22_４_HW.csv"
+    kana = "Look22_color_柄A_grid.csv"          # 柄A
+    ws = Workspace(tmp_path / "ws")
+    bundle = make_bundle(
+        files={MAP_NAME: MAP, wide_hw: GRID, kana: GRID},
+        cues=[{"id": "c0", "item": "Look22", "at": 0.0, "design": wide_hw},
+              {"id": "c1", "item": "Look22", "at": 120.0, "design": kana}])
+    result = ws.import_bundle(bundle)
+    assert result["refused"] == []
+    assert result["renamed"] == {wide_hw: "Look22_4_HW.csv"}
+    state = ws.state()
+    assert [c["design"] for c in state["show"]["cues"]] == \
+        ["Look22_4_HW.csv", kana]
+    assert all(c["problems"] == [] for c in state["show"]["cues"])
+    # The Designs list calls them by the name the designer typed.
+    assert sorted(d["label"] for d in item(state, "Look22")["designs"]) == \
+        ["4", "柄A"]
+
+
+def test_a_name_that_is_still_unusable_after_respelling_is_refused(tmp_path):
+    # Respelling is the ONE change an import may make to a file name.
+    # Anything else - a path, a control character - is refused outright,
+    # never quietly mangled into some other file's name.
+    ws = Workspace(tmp_path / "ws")
+    bundle = make_bundle(files={
+        MAP_NAME: MAP,
+        "bad\x00name_map.csv": "side,row\n",
+        "sub／x_map.csv": "side,row\n",   # a full-width slash NFKC folds
+    }, cues=[])
+    result = ws.import_bundle(bundle)
+    assert result["saved"] == [MAP_NAME]
+    assert result["renamed"] == {}
+    assert len(result["refused"]) == 2
+    assert all("unusable file name" in r for r in result["refused"])
+    assert sorted(p.name for p in ws.files.glob("*.csv")) == [MAP_NAME]
+
+
 def test_bundle_with_a_non_string_file_value_writes_nothing(tmp_path):
     ws = Workspace(tmp_path / "ws")
     bundle = make_bundle(files={MAP_NAME: MAP, GRID_NAME: 12345}, cues=[])

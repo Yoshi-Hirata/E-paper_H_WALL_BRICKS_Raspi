@@ -531,6 +531,59 @@ window.addEventListener("load", function () {
 </script>
 """
 
+# A designer's real bundle (2026-09-26) carried
+# "AZ271SD1305_color_１_HW_grid.csv" - the 配色案名 typed with FULL-WIDTH
+# digits (U+FF11). Nothing on this side minded; the show PC refused the
+# file as an unusable name and every cue that pointed at it read "design
+# … is not loaded". The page now NFKC-normalises a CSV's name the moment
+# it takes it in, so both sides spell it the same way. Driven through
+# SIM.app.classifyCsv(), the seam that decides what a dropped file is
+# saved as.
+_NFKC_PROBE = """
+<script>
+window.addEventListener("load", function () {
+  setTimeout(function () {
+    var grid = "side,row,shift,1\\nfront,0,0,0x01\\n";
+    var out = {};
+    try {
+      out.wide = SIM.app.classifyCsv("AZ271SD1301_color_\\uFF11_HW_grid.csv", grid);
+      out.hw = SIM.app.classifyCsv("AZ271SD1301_\\uFF14_HW.csv", grid);
+      out.kana = SIM.app.classifyCsv("AZ271SD1301_color_\\u67C4A_grid.csv", grid);
+      out.sniffed = SIM.app.classifyCsv("AZ271SD1301_\\uFF15.csv", grid);
+    } catch (e) { out.error = String(e); }
+    var pre = document.createElement("pre");
+    pre.id = "nfkc-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }, 300);
+});
+</script>
+"""
+
+
+def test_a_full_width_design_name_is_saved_under_its_ascii_spelling(tmp_path):
+    _require_browser(tmp_path)
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    page = tmp_path / "nfkc.html"
+    page.write_text(DIST.read_text(encoding="utf-8")
+                    .replace("</body>", _NFKC_PROBE + "</body>", 1),
+                    encoding="utf-8")
+    url = "file:///" + str(page.resolve()).replace("\\", "/")
+    dom = _dump_dom(url, tmp_path)
+    match = re.search(r'<pre id="nfkc-out">(.*?)</pre>', dom or "", re.S)
+    assert match, f"no #nfkc-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    got = json.loads(unescape(match.group(1)))
+    assert got.get("error") is None, got
+    assert got["wide"]["name"] == "AZ271SD1301_color_1_HW_grid.csv"
+    assert got["hw"]["name"] == "AZ271SD1301_4_HW.csv"
+    # Japanese is left exactly as the designer typed it: NFKC folds
+    # full-width digits and letters, never kana or kanji.
+    assert got["kana"]["name"] == "AZ271SD1301_color_柄A_grid.csv"
+    # And the derived-name path (a file the page has to read to classify)
+    # normalises before it builds the design name.
+    assert got["sniffed"]["name"] == "AZ271SD1301_color_5_grid.csv"
+
+
 GEOMETRY_SENTENCE = (
     "AZ271SD1301_1_HW.csv covers rows 0-18 (front) and 0-18 (back) but this "
     "garment's wiring has rows 0-33 (front) and 0-34 (back) with 30 columns - "

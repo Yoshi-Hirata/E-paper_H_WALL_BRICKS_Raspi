@@ -4406,8 +4406,20 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     if (cols[2] === "shift" && cols.length > 3 && cols.slice(3).every(c => /^\d+$/.test(c))) return "grid";
     return null;
   }
+  // NFKC, not NFC (2026-09-26): a designer's bundle arrived carrying
+  // "AZ271SD1305_color_１_HW_grid.csv" - the 配色案名 typed with FULL-WIDTH
+  // digits (U+FF11). Both \p{N} here and the site's own pages are perfectly
+  // happy with those, so the name survived every filter on this side and
+  // only fell over on the show PC, where the Conductor refused it as an
+  // unusable file name and every cue that pointed at it then read "design
+  // … is not loaded". NFKC folds full-width digits and letters to ASCII
+  // (and leaves kana and kanji alone), so a name that means "design 1"
+  // is spelt "1" from here on, the same way conductor/server.py spells it.
+  function nfkc(s) {
+    try { return String(s).normalize("NFKC"); } catch { return String(s); }
+  }
   function conventionalName(name, text, itemHint) {
-    const n = String(name);
+    const n = nfkc(name);
     if (globalThis.SIM.look.kind(n) !== null) return { name: n };
     if (!/\.csv$/i.test(n)) return { error: refuseReason(n) };
     const kind = sniffCsvKind(text);
@@ -4499,7 +4511,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   // *_color_NAME_grid.csv is refused, because there is nothing to rename it
   // to. Returns null for "cannot belong to any item".
   function renameOntoItem(itemKey, name) {
-    const raw = String(name);
+    const raw = nfkc(name);        // full-width digits -> ASCII, as above
     // _.+_HW last, so a *_map.csv or a conventional *_color_NAME_grid.csv
     // is still read as itself: AZ271SD1301_1_HW.csv picked on another
     // garment becomes <item>_1_HW.csv.
