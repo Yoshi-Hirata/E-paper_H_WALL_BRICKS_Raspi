@@ -43,11 +43,20 @@
   const APPEND_GAP_S = (globalThis.SIM && globalThis.SIM.timeline
                         && globalThis.SIM.timeline.GAP_AFTER_REFRESH_S) || 1.0;
 
-  // The model's own default refresh, read off SIM.timeline rather than typed
-  // again here (the same reason APPEND_GAP_S is): an empty project must open
-  // on the number the Conductor would give a new show.
-  const DEFAULT_REFRESH_S = (globalThis.SIM && globalThis.SIM.timeline
-                             && globalThis.SIM.timeline.REFRESH_S) || 8.0;
+  // The model's own two refresh numbers, read off SIM.timeline rather than
+  // typed again here (the same reason APPEND_GAP_S is; model.js is always
+  // loaded before this file, so there is no fallback to drift): the default
+  // MODELLED refresh an empty project opens on - the one the Conductor would
+  // give a new show - and one panel's physical repaint.
+  const DEFAULT_REFRESH_S = globalThis.SIM.timeline.REFRESH_S;
+  const PANEL_REPAINT_S = globalThis.SIM.timeline.PANEL_REPAINT_S;
+  // What "Default refresh time" means, in the words the EDIT CUE row uses -
+  // the number covers the transition too, so a designer does not add the
+  // sweep on top of it in their head.
+  const REFRESH_HELP = "Command to finished picture, the transition's sweep"
+    + ` included: ${DEFAULT_REFRESH_S.toFixed(1)} s is a ${PANEL_REPAINT_S.toFixed(1)} s`
+    + " panel repaint with a 1 s sweep already inside it. Only a sweep longer"
+    + " than this pushes a design's Complete out.";
   function freshProject() {
     return { files: {}, show: { duration: 600, refresh_s: DEFAULT_REFRESH_S, cues: [], transitions: {}, labels: {}, boards: {}, music: null } };
   }
@@ -718,9 +727,7 @@
     const span = Math.max(0, Number(cue.span) || 0);
     // Never longer than the whole refresh this cue declares - model.js's
     // panelRepaintOf().
-    const panel = Math.min((globalThis.SIM && globalThis.SIM.timeline
-                            && globalThis.SIM.timeline.PANEL_REPAINT_S) || 7.0,
-                           refr.value);
+    const panel = Math.min(PANEL_REPAINT_S, refr.value);
     if (panel + span > refr.value) {
       return `${panel.toFixed(1)} s panel repaint + ${span.toFixed(1)} s sweep`;
     }
@@ -934,7 +941,7 @@
   function minIntervalTable() {
     const rows = Object.entries(state.show.min_interval || {}).filter(([, v]) => v !== null && v !== undefined);
     if (!rows.length) return "";
-    return `<div class="card"><h2>SHORTEST INTERVAL PER ITEM</h2><table><tbody>
+    return `<div class="card"><h2>SHORTEST INTERVAL PER ITEM (THIS SHOW)</h2><table><tbody>
       ${rows.map(([k, v]) => `<tr><td>${esc(unitLabel(k))}</td><td>${v.toFixed(1)} s</td></tr>`).join("")}
       </tbody></table></div>`;
   }
@@ -999,7 +1006,7 @@
     const items = trackItems();
     root.innerHTML = `<div class="toolbar">
         <div class="group"><span>Show length</span>${mmssField("show-duration", state.show.duration)}</div>
-        <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}"> s</div>
+        <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}" title="${esc(REFRESH_HELP)}"> s</div>
         <div class="group"><button id="save-project">Save project…</button><label class="filebtn" tabindex="0" role="button">Open project…<input id="open-project" type="file" accept=".json"></label></div>
         ${musicControl()}
       </div>

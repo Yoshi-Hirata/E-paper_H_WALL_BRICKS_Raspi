@@ -1448,6 +1448,12 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   // operator: 8 s for both a swept and an all-at-once cue). This is what
   // show.refresh_s and a cue's refresh_s set.
   const REFRESH_S = 8.0;
+  // What a show/project authored BEFORE the refresh became effect-inclusive
+  // was drawn against: a saved project (or a show.json - see server.py's
+  // _load_show) that names no refresh_s at all is one of those, and keeps the
+  // timing it was made with rather than being moved silently to today's
+  // longer default. A NEW project opens on REFRESH_S.
+  const LEGACY_REFRESH_S = 7.0;
   const REFRESH_RANGE_S = [1.0, 60.0];
   const GAP_AFTER_REFRESH_S = 1.0;
   // Pre-burn conductor (main, 2026-09-25+): every picture is written to
@@ -1542,12 +1548,27 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     return pyMax2(PANEL_REPAINT_S, effectiveRefresh(cue, refresh));
   }
 
+  // min_interval() for one unit AS THIS SHOW USES IT: the longest any of its
+  // pictures actually takes, plus the gap. A unit with no cues has nothing to
+  // measure and reports the default floor.
+  function minIntervalOf(unitCues, boards, refresh, gap) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    if (gap === undefined) gap = GAP_AFTER_REFRESH_S;
+    if (!unitCues || !unitCues.length) return minInterval(boards, refresh, gap);
+    let longest = completeS(unitCues[0], refresh);
+    unitCues.forEach(c => { longest = pyMax2(longest, completeS(c, refresh)); });
+    return longest + gap;
+  }
+
   function times(cue, refresh) {
     if (refresh === undefined) refresh = REFRESH_S;
     const at = Number(cue.at);
-    const eff = effectiveRefresh(cue, refresh);
-    const sent = at > 0 ? fmt.round(at, 3) : fmt.round(-eff, 3);
-    const complete = fmt.round(sent + completeS(cue, refresh), 3);
+    // The preset is sent one whole completeS() before 0:00, not one refresh -
+    // a preset that sweeps takes PANEL_REPAINT_S + span, and a refresh's
+    // worth of head start left a 5 s sweep still drawing at 0:04.
+    const paint = completeS(cue, refresh);
+    const sent = at > 0 ? fmt.round(at, 3) : fmt.round(-paint, 3);
+    const complete = fmt.round(sent + paint, 3);
     return [sent, complete];
   }
 
@@ -1720,7 +1741,10 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       moments.forEach(sent => {
         const group = momentCues[sent];
         if (previousSent !== null) {
-          const spacing = sent - previousSent;
+          // Rounded like every other instant here: 10.3 - 1.3 is
+          // 8.999999999999998, which used to fail a 9.0 s floor and say so in
+          // words that read as a contradiction.
+          const spacing = fmt.round(sent - previousSent, 3);
           // Every picture is already burned into its slot at Upload
           // time: a running send is one broadcast trigger, nothing is
           // written - so the only floor left is the director's gap
@@ -1765,11 +1789,13 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   }
 
   const timeline = {
-    REFRESH_S, PANEL_REPAINT_S, REFRESH_RANGE_S, GAP_AFTER_REFRESH_S,
+    REFRESH_S, LEGACY_REFRESH_S, PANEL_REPAINT_S, REFRESH_RANGE_S,
+    GAP_AFTER_REFRESH_S,
     SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S,
     parseClock, formatClock, cleanRefresh, effectiveRefresh, completeS,
     panelRepaintOf, panelRefresh, spanOf,
-    sweeps, clean, resolve, applyTransitions, times, ends, minInterval, validate,
+    sweeps, clean, resolve, applyTransitions, times, ends, minInterval,
+    minIntervalOf, validate,
   };
 
   globalThis.SIM = Object.assign(globalThis.SIM || {}, { fmt, mmss, look, sequence: sequenceApi, timeline });
@@ -2067,7 +2093,12 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       return num;
     }
     const duration = numberOr("duration", DEFAULT_DURATION_S);
-    const refresh = numberOr("refresh_s", REFRESH_S);
+    // A project that names NO refresh time was saved before the refresh became
+    // effect-inclusive (2026-09-26), so it keeps the 7.0 s it was drawn
+    // against - conductor/server.py's _load_show() reads a show.json without
+    // the key the same way. A new project is given REFRESH_S by
+    // designer-app.js's freshProject(), so this is the old-file path only.
+    const refresh = numberOr("refresh_s", timeline.LEGACY_REFRESH_S);
 
     const cues = timeline.clean(show.cues);
     timeline.applyTransitions(cues, transitions);
@@ -2086,13 +2117,26 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     });
 
     const unitBoards = Object.create(null);
+    const unitOfItem = Object.create(null);
     Object.keys(facts).forEach(key => {
       const fact = facts[key];
       const name = fact.unit || `(${fact.item})`;
       unitBoards[name] = (unitBoards[name] || 0) + fact.boards;
+      unitOfItem[key] = name;
+    });
+    // The floor THIS show needs on each unit, not the default one (a unit
+    // carrying a 7 s sweep needs 15 s between sends) - conductor/server.py's
+    // state() computes the same thing the same way.
+    const unitCues = Object.create(null);
+    Object.keys(unitBoards).forEach(u => { unitCues[u] = []; });
+    cues.forEach(cue => {
+      const name = unitOfItem[cue.item.toLowerCase()];
+      if (name !== undefined) unitCues[name].push(cue);
     });
     const minInterval = {};
-    Object.keys(unitBoards).forEach(u => { minInterval[u] = timeline.minInterval(unitBoards[u], refresh); });
+    Object.keys(unitBoards).forEach(u => {
+      minInterval[u] = timeline.minIntervalOf(unitCues[u], unitBoards[u], refresh);
+    });
 
     return {
       // refresh_default / panel_repaint_s: the model's two refresh numbers,
@@ -2100,6 +2144,7 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       // state() sends the same two).
       show: { duration, refresh_s: refresh, refresh_default: REFRESH_S,
               panel_repaint_s: timeline.PANEL_REPAINT_S,
+              gap_s: timeline.GAP_AFTER_REFRESH_S,
               cues, warnings, min_interval: minInterval },
       units: [],
       items: ordered,
@@ -2347,10 +2392,17 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   // and an all-at-once cue settles at the repaint, one second inside its own
   // 8 s budget - which is what the hardware does.
   function panelRepaintFor(cue, showRefreshS) {
-    const panel = (globalThis.SIM && globalThis.SIM.timeline
-                   && globalThis.SIM.timeline.PANEL_REPAINT_S) || 7.0;
-    return Math.min(panel, refreshOfFor(cue, showRefreshS).value);
+    return Math.min(SIM.timeline.PANEL_REPAINT_S,
+                    refreshOfFor(cue, showRefreshS).value);
   }
+  // A scale's jitter is a LATE START, so it has to come out of that scale's
+  // own repaint or the scale finishes after the cue does: at Complete
+  // wornAt() drops the finished design in wholesale, and a scale still a
+  // third of a second from settling snapped instead of arriving (review,
+  // 2026-09-26 - the first probe for this ran with flicker:false, which has
+  // no jitter, and missed it). Never more than half the repaint either, so a
+  // compressed show (a 0.3 s refresh on the bench) keeps a visible flicker.
+  function startJitter(raw, repaint) { return Math.min(raw, repaint / 2); }
   function applySweptColors(item, cue, design, t, out, palette, showRefreshS) {
     const sweep = sweepOf(cue);
     // panelRepaintFor(), never a hard-coded number (adversarial review,
@@ -2365,9 +2417,11 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       const key = `${s[0]}|${s[1]}|${s[2]}`;
       const targetCode = design.colors[key];
       if (targetCode === undefined) return;
-      const tau = t - (cue.sent + model.delay[n] + model.jitter[n]);
+      const jitter = startJitter(model.jitter[n], repaint);
+      const tau = t - (cue.sent + model.delay[n] + jitter);
       if (tau < 0) return;
-      out[key] = tau >= repaint ? targetCode : refreshPhaseColor(n, tau, tau / repaint, targetCode, palette);
+      const own = repaint - jitter;          // ends at delay + repaint, never later
+      out[key] = tau >= own ? targetCode : refreshPhaseColor(n, tau, tau / own, targetCode, palette);
     });
   }
   function applyFlatColors(item, cue, design, t, out, showRefreshS) {
@@ -2414,7 +2468,7 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     flicker: {
       JITTER_MAX, REFRESH_TINT, REFRESH_PHASE_A, REFRESH_PALETTE, REFRESH_PHASE_C, TINT_STEPS,
       hash32, refreshPhaseColor, refreshModelFor, refreshOfFor, panelRepaintFor,
-      wornAt, clearCaches,
+      startJitter, wornAt, clearCaches,
     },
   });
 })();
@@ -3137,11 +3191,20 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   const APPEND_GAP_S = (globalThis.SIM && globalThis.SIM.timeline
                         && globalThis.SIM.timeline.GAP_AFTER_REFRESH_S) || 1.0;
 
-  // The model's own default refresh, read off SIM.timeline rather than typed
-  // again here (the same reason APPEND_GAP_S is): an empty project must open
-  // on the number the Conductor would give a new show.
-  const DEFAULT_REFRESH_S = (globalThis.SIM && globalThis.SIM.timeline
-                             && globalThis.SIM.timeline.REFRESH_S) || 8.0;
+  // The model's own two refresh numbers, read off SIM.timeline rather than
+  // typed again here (the same reason APPEND_GAP_S is; model.js is always
+  // loaded before this file, so there is no fallback to drift): the default
+  // MODELLED refresh an empty project opens on - the one the Conductor would
+  // give a new show - and one panel's physical repaint.
+  const DEFAULT_REFRESH_S = globalThis.SIM.timeline.REFRESH_S;
+  const PANEL_REPAINT_S = globalThis.SIM.timeline.PANEL_REPAINT_S;
+  // What "Default refresh time" means, in the words the EDIT CUE row uses -
+  // the number covers the transition too, so a designer does not add the
+  // sweep on top of it in their head.
+  const REFRESH_HELP = "Command to finished picture, the transition's sweep"
+    + ` included: ${DEFAULT_REFRESH_S.toFixed(1)} s is a ${PANEL_REPAINT_S.toFixed(1)} s`
+    + " panel repaint with a 1 s sweep already inside it. Only a sweep longer"
+    + " than this pushes a design's Complete out.";
   function freshProject() {
     return { files: {}, show: { duration: 600, refresh_s: DEFAULT_REFRESH_S, cues: [], transitions: {}, labels: {}, boards: {}, music: null } };
   }
@@ -3812,9 +3875,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     const span = Math.max(0, Number(cue.span) || 0);
     // Never longer than the whole refresh this cue declares - model.js's
     // panelRepaintOf().
-    const panel = Math.min((globalThis.SIM && globalThis.SIM.timeline
-                            && globalThis.SIM.timeline.PANEL_REPAINT_S) || 7.0,
-                           refr.value);
+    const panel = Math.min(PANEL_REPAINT_S, refr.value);
     if (panel + span > refr.value) {
       return `${panel.toFixed(1)} s panel repaint + ${span.toFixed(1)} s sweep`;
     }
@@ -4028,7 +4089,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   function minIntervalTable() {
     const rows = Object.entries(state.show.min_interval || {}).filter(([, v]) => v !== null && v !== undefined);
     if (!rows.length) return "";
-    return `<div class="card"><h2>SHORTEST INTERVAL PER ITEM</h2><table><tbody>
+    return `<div class="card"><h2>SHORTEST INTERVAL PER ITEM (THIS SHOW)</h2><table><tbody>
       ${rows.map(([k, v]) => `<tr><td>${esc(unitLabel(k))}</td><td>${v.toFixed(1)} s</td></tr>`).join("")}
       </tbody></table></div>`;
   }
@@ -4093,7 +4154,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     const items = trackItems();
     root.innerHTML = `<div class="toolbar">
         <div class="group"><span>Show length</span>${mmssField("show-duration", state.show.duration)}</div>
-        <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}"> s</div>
+        <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}" title="${esc(REFRESH_HELP)}"> s</div>
         <div class="group"><button id="save-project">Save project…</button><label class="filebtn" tabindex="0" role="button">Open project…<input id="open-project" type="file" accept=".json"></label></div>
         ${musicControl()}
       </div>

@@ -830,14 +830,15 @@ const seqLabel = id => state.sequences.find(s => s.id === id)?.label || id;
 // from the design's default or the cue's own override. Defensive against a
 // server that does not compile it yet.
 const sweepOf = cue => cue.sweep || { sequence: "natural", span_s: 0, source: "design" };
-// conductor/timeline.py's two refresh numbers, straight off the state so no
-// refresh time is ever typed into this page: REFRESH_S, the current default
+// conductor/timeline.py's two refresh numbers, straight off the state so that
+// NO refresh time is ever typed into this page: REFRESH_S, the current default
 // MODELLED refresh of a cue (the sweep's effect included), and
 // PANEL_REPAINT_S, one board's physical repaint - what a sweep's real end is
-// measured from. The literals are only a fallback for a server too old to
-// send them.
-const defaultRefreshS = () => state.show?.refresh_default ?? 8.0;
-const panelRepaintS = () => state.show?.panel_repaint_s ?? 7.0;
+// measured from. No literal fallback on purpose (review, 2026-09-26): a
+// fallback is a second copy of the constant, and this page is only ever served
+// by the conductor/server.py that sends both in state()["show"].
+const defaultRefreshS = () => state.show.refresh_default;
+const panelRepaintS = () => state.show.panel_repaint_s;
 // The cue's effective refresh time: its own override (`refresh_s`, stored),
 // or the show's default. Defensive against a server that has not landed
 // `refresh`/`refresh_source` yet - only `refresh_s` is guaranteed then.
@@ -995,6 +996,14 @@ function refreshPhaseColor(n, tau, frac, targetCode) {
 function panelRepaintFor(cue) {
   return Math.min(panelRepaintS(), refreshOf(cue).value);
 }
+// A scale's jitter is a LATE START, so it has to come out of that scale's
+// own repaint or the scale finishes after the cue does: at Complete
+// wornAt() drops the finished design in wholesale, and a scale still a
+// third of a second from settling snapped instead of arriving (review,
+// 2026-09-26 - the first probe for this ran with flicker:false, which has
+// no jitter, and missed it). Never more than half the repaint either, so a
+// compressed show (a 0.3 s refresh on the bench) keeps a visible flicker.
+function startJitter(raw, repaint) { return Math.min(raw, repaint / 2); }
 function applySweptColors(item, cue, design, t, out) {
   const sweep = sweepOf(cue);
   const repaint = panelRepaintFor(cue);
@@ -1003,9 +1012,11 @@ function applySweptColors(item, cue, design, t, out) {
     const key = `${s[0]}|${s[1]}|${s[2]}`;
     const targetCode = design.colors[key];
     if (targetCode === undefined) return;                    // partial cue: this scale is untouched
-    const tau = t - (cue.sent + model.delay[n] + model.jitter[n]);
+    const jitter = startJitter(model.jitter[n], repaint);
+    const tau = t - (cue.sent + model.delay[n] + jitter);
     if (tau < 0) return;                                      // not started yet: keep showing the old colour
-    out[key] = tau >= repaint ? targetCode : refreshPhaseColor(n, tau, tau / repaint, targetCode);
+    const own = repaint - jitter;          // ends at delay + repaint, never later
+    out[key] = tau >= own ? targetCode : refreshPhaseColor(n, tau, tau / own, targetCode);
   });
 }
 // The old, flat simulator: a scale simply cuts to its target once its own
@@ -1276,7 +1287,7 @@ function renderTimeline() {
             const endInfo = it ? endOf(it, c) : { value: state.show.duration };
             return `<tr class="pick ${c.id === ui.cue ? "hl" : ""}" data-cue="${c.id}">
             <td><b>${c.at <= 0 ? "preset" : clock(c.at)}</b></td>
-            <td>${c.at <= 0 ? clock(0) : clock(c.complete)}</td>
+            <td>${clock(c.complete)}</td>
             <td>${clock(endInfo.value)}</td>
             <td>${esc(itemFull(it) || c.item)}</td>
             <td>${esc(it?.unit || "-")}</td>
@@ -1285,9 +1296,22 @@ function renderTimeline() {
             <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
             || `<tr><td class="meta" colspan="8">No cues yet</td></tr>`}
           </tbody></table>
-          <div class="meta" style="margin-top:6px">Shortest interval, one send to the next (every picture is already written into its slot at Upload; a send is just a trigger, whatever the unit's board count): ${(() => { const vals = Object.values(show.min_interval); if (!vals.length) return "—";
-            const need = vals[0], refresh = show.refresh_s, gap = need - refresh;
-            return `${need.toFixed(1)} s (${refresh.toFixed(1)} s refresh + ${gap.toFixed(1)} s gap)`; })()}</div>
+          <div class="meta" style="margin-top:6px">Shortest interval per unit in THIS show, one send to the next (every picture is already written into its slot at Upload; a send is just a trigger, whatever the unit's board count): ${(() => {
+            // Per unit: its slowest picture + the gap (state.show.min_interval,
+            // timeline.min_interval_of) - so a unit carrying a long sweep says
+            // what validate() will actually ask of it, not the default 9 s. One
+            // number when every unit agrees, otherwise the busiest unit named.
+            const rows = Object.entries(show.min_interval);
+            if (!rows.length) return "—";
+            const gap = show.gap_s;
+            const worst = rows.reduce((a, b) => (b[1] > a[1] ? b : a));
+            const same = rows.every(([, v]) => v === worst[1]);
+            const need = worst[1], paint = need - gap;
+            const why = paint === show.refresh_s
+              ? `${paint.toFixed(1)} s refresh + ${gap.toFixed(1)} s gap`
+              : `${paint.toFixed(1)} s to complete + ${gap.toFixed(1)} s gap`;
+            return `${need.toFixed(1)} s (${why})${same ? "" : ` on ${esc(worst[0])}`}`;
+          })()}</div>
         </div>
       </div>
       <div class="card" id="tl-editor-card">

@@ -128,10 +128,17 @@
   // and an all-at-once cue settles at the repaint, one second inside its own
   // 8 s budget - which is what the hardware does.
   function panelRepaintFor(cue, showRefreshS) {
-    const panel = (globalThis.SIM && globalThis.SIM.timeline
-                   && globalThis.SIM.timeline.PANEL_REPAINT_S) || 7.0;
-    return Math.min(panel, refreshOfFor(cue, showRefreshS).value);
+    return Math.min(SIM.timeline.PANEL_REPAINT_S,
+                    refreshOfFor(cue, showRefreshS).value);
   }
+  // A scale's jitter is a LATE START, so it has to come out of that scale's
+  // own repaint or the scale finishes after the cue does: at Complete
+  // wornAt() drops the finished design in wholesale, and a scale still a
+  // third of a second from settling snapped instead of arriving (review,
+  // 2026-09-26 - the first probe for this ran with flicker:false, which has
+  // no jitter, and missed it). Never more than half the repaint either, so a
+  // compressed show (a 0.3 s refresh on the bench) keeps a visible flicker.
+  function startJitter(raw, repaint) { return Math.min(raw, repaint / 2); }
   function applySweptColors(item, cue, design, t, out, palette, showRefreshS) {
     const sweep = sweepOf(cue);
     // panelRepaintFor(), never a hard-coded number (adversarial review,
@@ -146,9 +153,11 @@
       const key = `${s[0]}|${s[1]}|${s[2]}`;
       const targetCode = design.colors[key];
       if (targetCode === undefined) return;
-      const tau = t - (cue.sent + model.delay[n] + model.jitter[n]);
+      const jitter = startJitter(model.jitter[n], repaint);
+      const tau = t - (cue.sent + model.delay[n] + jitter);
       if (tau < 0) return;
-      out[key] = tau >= repaint ? targetCode : refreshPhaseColor(n, tau, tau / repaint, targetCode, palette);
+      const own = repaint - jitter;          // ends at delay + repaint, never later
+      out[key] = tau >= own ? targetCode : refreshPhaseColor(n, tau, tau / own, targetCode, palette);
     });
   }
   function applyFlatColors(item, cue, design, t, out, showRefreshS) {
@@ -195,7 +204,7 @@
     flicker: {
       JITTER_MAX, REFRESH_TINT, REFRESH_PHASE_A, REFRESH_PALETTE, REFRESH_PHASE_C, TINT_STEPS,
       hash32, refreshPhaseColor, refreshModelFor, refreshOfFor, panelRepaintFor,
-      wornAt, clearCaches,
+      startJitter, wornAt, clearCaches,
     },
   });
 })();
