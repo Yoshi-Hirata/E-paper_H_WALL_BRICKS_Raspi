@@ -16,9 +16,17 @@ Two halves:
 """
 from __future__ import annotations
 
+import http.server
+import io
 import json
+import math
 import re
+import socket
+import struct
+import subprocess
 import sys
+import threading
+import wave
 from html import unescape
 from pathlib import Path
 
@@ -29,7 +37,9 @@ INDEX_HTML = REPO / "conductor" / "web" / "index.html"
 
 sys.path.insert(0, str(REPO))
 
-from tests.test_designer_build import _dump_dom, _require_browser  # noqa: E402
+from conductor.server import Workspace  # noqa: E402
+from tests.test_designer_build import _dump_dom, _find_browser, _require_browser  # noqa: E402
+from tests.test_look import GRID, MAP  # noqa: E402
 
 PAGE = INDEX_HTML.read_text(encoding="utf-8")
 
@@ -48,7 +58,7 @@ def test_the_decision_layer_is_marked_off_for_the_tests():
     # Pure means pure: the block must not reach for the page, the fleet, the
     # audio element or a clock of its own - the caller hands all four in.
     # (Its comments name all four, which is why they are stripped first.)
-    code = "\n".join(re.sub(r"//.*", "", line) for line in source.splitlines())
+    code = _strip_comments(source)
     for forbidden in ("document.", "$(", "fleet", "player.", "performance.now(", "setTimeout"):
         assert forbidden not in code, f"the pure layer reaches for {forbidden!r}"
 
@@ -65,17 +75,51 @@ def test_the_show_panel_has_its_own_music_controls():
     assert "Music: click to join" in PAGE
 
 
+def _strip_comments(source):
+    """Line comments out. Every check below is about what the code does, and
+    these comments all quote the very things being looked for."""
+    return "\n".join(re.sub(r"//.*", "", line) for line in source.splitlines())
+
+
+def _function_body(name):
+    """The code of one top-level `function name(...) {...}`, comments removed,
+    found by counting braces - a regex to the next `\\n}` silently swallowed
+    the function after a one-line body, which made these checks pass on
+    functions they had never read."""
+    start = PAGE.index(f"function {name}(")
+    open_at = PAGE.index("{", start)
+    depth = 0
+    for i in range(open_at, len(PAGE)):
+        if PAGE[i] == "{":
+            depth += 1
+        elif PAGE[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return _strip_comments(PAGE[open_at:i + 1])
+    raise AssertionError(f"{name} is never closed")
+
+
 def test_the_preference_is_per_browser_and_survives_a_localstorage_that_throws():
     for fn in ("loadShowMusicPref", "saveShowMusicPref", "loadMusicVolumePref",
                "loadMusicMutedPref", "saveMusicAudioPrefs"):
-        body = re.search(r"function %s\(\) \{(.*?)\n\}" % fn, PAGE, re.S) \
-            or re.search(r"function %s\(\) \{(.*?)\}\n" % fn, PAGE, re.S)
-        assert body, f"{fn} is gone"
-        assert "try {" in body.group(1) and "catch" in body.group(1), \
-            f"{fn} does not guard localStorage"
+        body = _function_body(fn)
+        assert "localStorage" in body, f"{fn} does not touch localStorage at all"
+        assert "try {" in body and "catch" in body, f"{fn} does not guard localStorage"
     assert '"show.music"' in PAGE
     # Default ON: anything but an explicit "off" means the music plays.
     assert 'localStorage.getItem("show.music") !== "off"' in PAGE
+
+
+def test_a_volume_that_was_never_stored_is_full_not_silent():
+    # Number(null) is 0, and 0 passes a plain 0..1 range check - which left a
+    # fresh browser with the show AND the preview silent and the slider at the
+    # far left (review finding). The behaviour itself is checked in the page,
+    # below; this pins the guard that has to come before the Number().
+    body = _function_body("loadMusicVolumePref")
+    guard = body.index("return 1")
+    assert guard < body.index("Number("), \
+        "loadMusicVolumePref reaches Number() before it has ruled out a missing value"
+    assert "raw === null" in body
 
 
 def test_the_timeline_transport_stands_down_while_a_show_owns_the_audio():
@@ -92,9 +136,64 @@ def test_the_timeline_transport_stands_down_while_a_show_owns_the_audio():
     assert "playerUrl && !showMusicOwns()" in PAGE
 
 
-def test_nothing_was_added_to_the_page_from_outside():
-    # No libraries: the whole feature is this page's own script.
-    assert "<script src=" not in PAGE and "<link rel=\"stylesheet\"" not in PAGE
+def test_the_page_still_asks_the_internet_for_nothing():
+    # The show PC has no internet on the night (CONDUCTOR_START §3: the
+    # network is the units' private router and nothing else), so "no new
+    # libraries" is not a style rule - a CDN script, stylesheet, font or
+    # image would simply never arrive. Every absolute http(s) reference is
+    # caught here, not just <script src=.
+    for pattern in (r'\bsrc\s*=\s*"https?:', r'\bhref\s*=\s*"https?:',
+                    r"@import", r'url\(\s*["\']?https?:', r'\bimport\s*\(\s*["\']https?:'):
+        hit = re.search(pattern, PAGE)
+        assert not hit, f"the page fetches from outside: {hit.group(0)!r}"
+
+
+def test_the_music_never_stops_a_timeline_preview_that_is_running():
+    # THE review BLOCKER: with a track loaded and no show running, the 250 ms
+    # tick planned "stopped" and applyMusicPlan dutifully paused the element -
+    # so ▶ Play died within a quarter of a second, every time. The guard is
+    # ui.playing (the preview owns the element then), NOT showMusicOwns():
+    # turning the music off DURING a show must still stop the show's audio,
+    # and showMusicOwns() would have let that through. Behaviour is checked
+    # in the page, below; this pins which guard it is.
+    body = _function_body("applyMusicPlan")
+    head = body[:body.index('p.action === "seek"')]
+    assert "if (ui.playing) return;" in head, \
+        "applyMusicPlan no longer stands down for a running Timeline preview"
+    assert "showMusicOwns()" not in head, \
+        "applyMusicPlan gates on showMusicOwns(), so turning the music off " \
+        "mid-show would leave the show's own audio playing"
+
+
+def test_the_fleet_is_polled_whenever_the_music_could_be_following_a_show():
+    # /api/fleet is what tells the page a run exists, so polling only once it
+    # already knows of one (showMusicOwns()) meant the Items tab - the tab the
+    # page opens on - never found out and the music never joined.
+    body = _function_body("musicWantsFleet")
+    assert "showMusic.on" in body and "playerUrl" in body
+    assert "fleet" not in body, "musicWantsFleet waits for the very thing it is meant to fetch"
+    poll = _function_body("pollFleet")
+    assert "musicWantsFleet()" in poll and "showMusicOwns()" not in poll
+
+
+def test_the_music_lets_go_of_the_element_once_the_show_has_run_out():
+    # A run that is past its duration is over as far as the music goes (the
+    # track stopped at the end), so ▶ Play must not still answer "THE SHOW is
+    # playing the music" while nothing is playing at all.
+    body = _function_body("showMusicOwns")
+    assert "fleetDuration()" in body and "musicShowTime()" in body, \
+        "showMusicOwns() owns the element for any run, ended or not"
+
+
+def test_only_one_conductor_tab_plays_the_track():
+    assert "BroadcastChannel" in PAGE, "nothing stops two tabs playing the track twice"
+    assert '"another tab"' in PAGE and "another Conductor tab is playing it" in PAGE
+    body = _function_body("otherTabHasMusic")
+    # The lease lapses, so a closed tab does not silence the others forever...
+    assert "MUSIC_LEASE_MS" in body
+    # ...and two tabs that start in the same breath settle it the same way in
+    # both, so exactly one gives way rather than both or neither.
+    assert "MUSIC_TAB_ID < showMusic.otherTabId" in body
 
 
 # ------------------------------------------------------- the browser half
@@ -103,7 +202,8 @@ def test_nothing_was_added_to_the_page_from_outside():
 def _case(**over):
     base = dict(on=True, hasTrack=True, runState="running", showTime=95.0,
                 duration=300.0, trackDuration=300.0, audioPaused=False,
-                audioTime=95.0, lag=0.0, blocked=False, nowMs=100000.0, lastSeekMs=0.0)
+                audioTime=95.0, lag=0.0, otherTab=False, blocked=False,
+                nowMs=100000.0, lastSeekMs=0.0)
     base.update(over)
     return base
 
@@ -152,6 +252,9 @@ CASES = {
     "toggled_off_already_silent": _case(on=False, audioPaused=True),
     "no_track": _case(hasTrack=False, audioPaused=True),
     "no_track_but_audio_running": _case(hasTrack=False),
+    # Another Conductor tab on this PC has the track.
+    "other_tab_has_it": _case(otherTab=True, audioPaused=True),
+    "other_tab_wins_the_tie": _case(otherTab=True),
 }
 
 _PROBE = """<!doctype html><meta charset="utf-8"><title>showmusic</title><body>
@@ -298,8 +401,342 @@ def test_the_toggle_off_means_silent_and_no_track_means_nothing_plays(plans):
     assert r["no_track_but_audio_running"]["state"] == "no track"
 
 
+def test_a_tab_that_does_not_have_the_track_stands_down_and_says_so(plans):
+    r = plans["results"]
+    assert r["other_tab_has_it"]["state"] == "another tab"
+    assert r["other_tab_has_it"]["action"] == "none"
+    # Two tabs that both started on the same START: the one that loses the tie
+    # does not merely refrain from starting, it stops.
+    assert r["other_tab_wins_the_tie"]["action"] == "stop"
+    assert r["other_tab_wins_the_tie"]["state"] == "another tab"
+
+
 def test_no_case_ever_asks_the_show_to_move(plans):
     # The fleet's clock is the master: the answer only ever moves the audio.
     for name, p in plans["results"].items():
         assert p["action"] in ("none", "play", "seek", "pause", "stop"), (name, p)
         assert set(p) == {"action", "at", "state", "join"}, (name, p)
+
+
+# ------------------------------------------------- the whole page, running
+#
+# The half above asks plan() questions. Everything the review actually caught
+# lived on the other side of it - in applyMusicPlan(), showMusicOwns(), the
+# poll condition and the volume preference - so this half boots the real
+# conductor/web/index.html in a headless browser against a small stand-in
+# server and watches what the page does.
+#
+# The stand-in rather than the real conductor: /api/state comes from a real
+# Workspace (so the page gets exactly the shape it ships against), but
+# /api/fleet has to say "a show just started" on cue, and building a fleet
+# with a live run for that would be testing the fleet, not the page. The
+# probe steers it through /test/fleet.
+
+def _free_port():
+    """A free port at or above 8800 - never 8765, which is the show PC's own
+    Conductor and may well be running while these tests are."""
+    for port in range(8800, 8900):
+        with socket.socket() as probe:
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise AssertionError("no free port in 8800-8899")
+
+
+def _wav(seconds=30, rate=8000):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        out.writeframes(b"".join(
+            struct.pack("<h", int(3000 * math.sin(2 * math.pi * 440 * n / rate)))
+            for n in range(rate * seconds)))
+    return buf.getvalue()
+
+
+_RUNS = {
+    "none": None,
+    "running": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 12.0},
+    # Past the end of a 600 s show: the run is still there (only STOP clears
+    # it) but the music is over and must let go of the element.
+    "ended": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 601.0},
+}
+
+
+class _Stand:
+    """index.html, a real /api/state, and an /api/fleet the probe steers."""
+
+    def __init__(self, tmp_path, probe):
+        ws = Workspace(tmp_path / "ws")
+        ws.save("Look22_map.csv", MAP)
+        ws.save("Look22_color_pattern01_grid.csv", GRID)
+        wav = _wav()
+        ws.save_music("track.wav", io.BytesIO(wav), len(wav))
+        state = ws.state()
+        timeline = ws.written_state()
+        page = INDEX_HTML.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1)
+        self.run = "none"
+        stand = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def _send(self, body, kind):
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _json(self, obj):
+                self._send(json.dumps(obj).encode("utf-8"), "application/json")
+
+            def do_POST(self):
+                self.do_GET()
+
+            def do_GET(self):
+                path = self.path.split("?")[0]
+                if path in ("/", "/index.html"):
+                    return self._send(page.encode("utf-8"), "text/html; charset=utf-8")
+                if path == "/api/state":
+                    return self._json(state)
+                if path == "/api/music/file":
+                    return self._send(wav, "audio/wav")
+                if path == "/api/fleet":
+                    return self._json({
+                        "units": [], "last_fire": None, "run": _RUNS[stand.run],
+                        "shows": {}, "corrections": [], "prepared": {},
+                        "start_at": 0.0, "show_duration": 600.0, "timeline": timeline})
+                if path == "/api/fleet/demos":
+                    return self._json({"units": {}, "offline": [], "failed": {}})
+                if path == "/test/fleet":
+                    stand.run = self.path.split("=")[-1]
+                    return self._json({"run": stand.run})
+                return self._json({})
+
+        self.port = _free_port()
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+        self.httpd.daemon_threads = True
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.port}/"
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+# One pass over the page, in order, writing everything it saw into #page-out.
+# The waits are the page's own heartbeats: the music ticks at 250 ms and the
+# fleet poll runs at 1 s, so nothing here waits less than twice either.
+_PAGE_PROBE = """
+<script>
+(function () {
+  var out = { error: null };
+  function publish() {
+    var pre = document.createElement("pre");
+    pre.id = "page-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function toastText() { return document.querySelector("#toast").textContent; }
+  function readout() { return (document.querySelector("#show-music-state") || {}).textContent; }
+  (async function () {
+    try {
+      // Boot: refresh() has to have landed before anything below means much.
+      // `state`/`fleet` are top-level `let`s, so they live in the global
+      // lexical scope this script shares with the page's - and are NOT
+      // properties of window, which is what an earlier draft looked for.
+      for (var i = 0; i < 200 && state === null; i++) await wait(50);
+      out.booted = state !== null && !!playerUrl;
+
+      // 1. A fresh profile has never stored a volume.
+      out.freshVolume = player.volume;
+      out.freshMuted = player.muted;
+      out.toggleDefaultsOn = showMusic.on;
+
+      // 2. The controls are really in THE SHOW card.
+      ui.tab = "fleet"; render();
+      await wait(400);
+      var card = document.querySelector("#content .card");
+      out.controls = ["show-music-on", "show-music-state", "show-music-join",
+                      "show-music-mute", "show-music-vol"].map(function (id) {
+        var el = document.querySelector("#" + id);
+        return { id: id, there: !!el, inShowCard: !!el && card.contains(el) };
+      });
+      out.volSlider = Number((document.querySelector("#show-music-vol") || {}).value);
+      out.readoutNoRun = readout();
+
+      // 3. THE BLOCKER: a Timeline preview, with a track loaded and no show
+      //    running, must survive the music tick (which plans "stopped" the
+      //    whole time). 1.5 s is six ticks, six chances to kill it.
+      ui.tab = "timeline"; render();
+      await wait(300);
+      startPlayback();
+      out.previewStarted = ui.playing;
+      await wait(1500);
+      out.previewAlive = { playing: ui.playing, paused: player.paused, toast: toastText() };
+      stopPlayback();
+      await wait(300);
+
+      // 4. The fleet poll. On the Items tab (where the page opens) nothing
+      //    used to be fetched at all, so a START was never noticed.
+      ui.tab = "items"; render();
+      showMusic.on = false; fleet = null;
+      await wait(2400);
+      out.fleetWhileMusicOff = fleet === null;
+      showMusic.on = true;
+      await wait(2400);
+      out.fleetWhileMusicOn = fleet !== null;
+
+      // 5. A show starts while the operator is on the Items tab.
+      //    Headless runs on virtual time, so the media clock never actually
+      //    advances and player.currentTime reads 0 however it is seeked -
+      //    what can be seen, and is the real claim, is where the page PUT
+      //    the element. Record every write to currentTime from here on.
+      var seeks = [];
+      // On HTMLMediaElement.prototype, not the Audio instance's immediate
+      // prototype (HTMLAudioElement.prototype), which does not carry it.
+      var ct = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "currentTime");
+      Object.defineProperty(player, "currentTime", {
+        configurable: true,
+        get: function () { return ct.get.call(player); },
+        set: function (v) { seeks.push(v); ct.set.call(player, v); }
+      });
+      await fetch("/test/fleet?run=running");
+      await wait(2600);
+      out.joined = { tab: ui.tab, state: showMusic.plan && showMusic.plan.state,
+                     paused: player.paused, owns: showMusicOwns(),
+                     seeks: seeks.slice(), showTime: musicShowTime() };
+
+      // 6. The show runs past its end: the music stops AND lets go, so the
+      //    Timeline's transport works again.
+      await fetch("/test/fleet?run=ended");
+      await wait(2600);
+      out.afterTheEnd = { state: showMusic.plan && showMusic.plan.state,
+                          paused: player.paused, owns: showMusicOwns() };
+      ui.tab = "timeline"; render();
+      document.querySelector("#toast").textContent = "";
+      await wait(300);
+      startPlayback();
+      await wait(600);
+      out.previewAfterTheEnd = { playing: ui.playing, toast: toastText() };
+
+      // 7. ...but while the show is live the transport is refused.
+      stopPlayback();
+      await fetch("/test/fleet?run=running");
+      await wait(1800);
+      document.querySelector("#toast").textContent = "";
+      startPlayback();
+      out.previewDuringTheShow = { playing: ui.playing, toast: toastText() };
+    } catch (e) { out.error = String((e && e.stack) || e); }
+    publish();
+  })();
+})();
+</script>
+"""
+
+
+def _dump_dom_with_audio(url, tmp_path):
+    """_dump_dom(), plus the two things a page that plays audio needs: leave
+    to start without a click, and enough virtual time for the probe's own
+    waits and the page's 1 s poll."""
+    browser = _find_browser()
+    args = [browser, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+            "--autoplay-policy=no-user-gesture-required", "--mute-audio",
+            f"--user-data-dir={tmp_path / 'user-data'}",
+            "--virtual-time-budget=90000", "--dump-dom", url]
+    return subprocess.run(args, capture_output=True, timeout=180).stdout.decode(
+        "utf-8", errors="replace")
+
+
+@pytest.fixture(scope="module")
+def page(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("musicpage")
+    _require_browser(tmp)
+    stand = _Stand(tmp, _PAGE_PROBE)
+    try:
+        dom = _dump_dom_with_audio(stand.url, tmp)
+    finally:
+        stand.close()
+    match = re.search(r'<pre id="page-out">(.*?)</pre>', dom or "", re.S)
+    assert match, f"no #page-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    data = json.loads(unescape(match.group(1)))
+    assert data.get("error") is None, data["error"]
+    assert data["booted"], "the page never loaded its state or its track"
+    return data
+
+
+def test_a_fresh_browser_gets_full_volume_and_the_music_on(page):
+    # Number(null) is 0 and 0 is a legal volume, which is how a brand new
+    # profile ended up with a silent show and the slider at the far left.
+    assert page["freshVolume"] == 1, "a fresh profile starts with the volume turned down"
+    assert page["freshMuted"] is False
+    assert page["toggleDefaultsOn"] is True
+    assert page["volSlider"] == 100, "the slider disagrees with the element"
+
+
+def test_the_music_controls_are_drawn_in_the_show_card(page):
+    for control in page["controls"]:
+        assert control["there"], f"{control['id']} was not drawn"
+        assert control["inShowCard"], f"{control['id']} is not in THE SHOW card"
+    assert page["readoutNoRun"] == "stopped", page["readoutNoRun"]
+
+
+def test_a_timeline_preview_survives_the_music_tick_when_no_show_is_running(page):
+    # The review BLOCKER, reproduced: press ▶ Play with a track loaded and no
+    # show, and it used to die inside 250 ms because the tick planned
+    # "stopped" and applyMusicPlan paused the shared element under it.
+    assert page["previewStarted"], "▶ Play did not start at all"
+    alive = page["previewAlive"]
+    assert alive["playing"] is True, \
+        f"the preview was killed by the music tick (toast: {alive['toast']!r})"
+    assert alive["paused"] is False, "the element was paused under the running preview"
+
+
+def test_the_fleet_is_only_polled_off_the_units_tab_when_the_music_wants_it(page):
+    # With the music off there is nothing to follow, so nothing is fetched...
+    assert page["fleetWhileMusicOff"] is True, \
+        "the Items tab polls /api/fleet even with the music switched off"
+    # ...and with it on the page keeps up with the fleet wherever the operator
+    # happens to be looking, which is what makes a START anywhere audible.
+    assert page["fleetWhileMusicOn"] is True, \
+        "the Items tab never learns a show exists, so the music can never join"
+
+
+def test_a_show_that_starts_while_the_operator_is_elsewhere_still_plays(page):
+    joined = page["joined"]
+    assert joined["tab"] == "items", "the probe drifted off the tab it was testing"
+    assert joined["state"] == "playing", joined
+    assert joined["paused"] is False, "the track never started"
+    assert joined["owns"] is True
+    # ...and it was put where the show is, not at 0:00 (the run says 0:12).
+    assert joined["seeks"], "the element was played without being placed at all"
+    assert joined["seeks"][0] == pytest.approx(joined["showTime"], abs=1.0), joined
+
+
+def test_the_transport_comes_back_once_the_show_has_run_out(page):
+    ended = page["afterTheEnd"]
+    assert ended["paused"] is True, "the track kept playing past the end of the show"
+    assert ended["state"] == "stopped", ended
+    assert ended["owns"] is False, "the music still owns the element after the show ended"
+    back = page["previewAfterTheEnd"]
+    assert back["playing"] is True, \
+        f"▶ Play is still refused after the show ended (toast: {back['toast']!r})"
+    assert back["toast"] == "", back["toast"]
+
+
+def test_the_transport_is_refused_while_the_show_is_live(page):
+    live = page["previewDuringTheShow"]
+    assert live["playing"] is False, "the preview started on top of the show's music"
+    assert live["toast"] == "THE SHOW is playing the music", live["toast"]
