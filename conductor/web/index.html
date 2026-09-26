@@ -216,6 +216,20 @@ input[type=range] { width: 100%; }
 .shownext b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
 .go button.hold { background: var(--warn); border-color: var(--warn); color: #fff; }
 .go button.stop:hover { border-color: var(--err); color: var(--err); }
+/* THE SHOW's own music row. The same green/red as the Timeline's ▶ Play /
+   ⏹ Stop, because it is the same audio - one <audio> element serves both. */
+.musicbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  margin-top: 8px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; font-size: 13px; }
+.musicbar label { display: flex; align-items: center; gap: 5px; }
+.musicbar .cap { font-weight: 600; letter-spacing: .06em; color: var(--dim); }
+.musicbar #show-music-state { font-variant-numeric: tabular-nums; min-width: 130px; color: var(--dim); }
+.musicbar #show-music-state.on { color: var(--ok); font-weight: 600; }
+.musicbar #show-music-state.off { color: var(--err); font-weight: 600; }
+.musicbar #show-music-join { background: var(--ok); border-color: var(--ok); color: var(--bg); font-weight: 600; }
+.musicbar #show-music-join:hover { filter: brightness(1.12); }
+.musicbar #show-music-mute.muted { background: var(--err); border-color: var(--err); color: var(--bg); font-weight: 600; }
+.musicbar #show-music-vol { width: 110px; }
 body.busy .go button, body.busy #show-seek-wrap input,
 body.busy .dlg button, body.busy .dlg input { opacity: .45; pointer-events: none; }
 body.busy #write-back { pointer-events: none; }
@@ -446,6 +460,29 @@ function refreshHintDismissed() {
 function dismissRefreshHint() {
   try { localStorage.setItem("tl.refreshHint", "dismissed"); } catch {}
 }
+// "Music with THE SHOW", and the volume/mute the two transports share. All
+// three are remembered per browser (a reload on a show night must not turn
+// the music back on, or back up, behind the operator's back) and all three
+// survive a localStorage that throws - a private window, or a profile with
+// site data blocked, must not take the page down with it.
+function loadShowMusicPref() { try { return localStorage.getItem("show.music") !== "off"; } catch { return true; } }
+function saveShowMusicPref() { try { localStorage.setItem("show.music", showMusic.on ? "on" : "off"); } catch {} }
+function loadMusicVolumePref() {
+  try {
+    const raw = localStorage.getItem("show.volume");
+    // Never stored (a fresh browser, a new profile, a cleared cache) means
+    // full volume - NOT Number(null), which is 0 and passes a 0..1 check
+    // happily, leaving the show and the preview both silent with the slider
+    // parked at the far left (review finding).
+    if (raw === null || raw === "") return 1;
+    const v = Number(raw);
+    return v >= 0 && v <= 1 ? v : 1;
+  } catch { return 1; }
+}
+function loadMusicMutedPref() { try { return localStorage.getItem("show.muted") === "1"; } catch { return false; } }
+function saveMusicAudioPrefs() {
+  try { localStorage.setItem("show.volume", String(player.volume)); localStorage.setItem("show.muted", player.muted ? "1" : "0"); } catch {}
+}
 // The unit's LCD font cannot draw Japanese (conductor/server.py's own DEMO_NAME_MESSAGE) -
 // kept in one place so the hint text and the maxlength can never drift apart.
 const DEMO_NAME_MAX = 14;
@@ -514,6 +551,10 @@ function syncPlayerSrc() {
   if (url) player.src = url;
   else { player.removeAttribute("src"); player.load(); }
   ui.playing = false;
+  // A different file is a different element as far as the sync layer is
+  // concerned: what the old one cost to seek says nothing about this one, and
+  // a refusal it collected belongs to the track that is gone.
+  showMusic.lag = 0; showMusic.lagPending = false; showMusic.blocked = false;
   renderTransport();
 }
 function fmtSize(bytes) {
@@ -1533,6 +1574,11 @@ function tick() {
 }
 function startPlayback() {
   if (ui.playing || ui.tab !== "timeline") return;
+  // One <audio> element, one owner: while THE SHOW is playing the track the
+  // preview stands down rather than fighting it for the same element (the
+  // safer of the two - a preview must never be able to yank the music the
+  // room is listening to).
+  if (showMusicOwns()) { toast(SHOW_OWNS_MUSIC_NOTE); return; }
   ui.playing = true;
   if (playerUrl) {
     player.currentTime = ui.playhead;
@@ -1551,6 +1597,10 @@ function pausePlayback() {
   renderTransport();
 }
 function stopPlayback(rerender = true) {
+  // Same rule as startPlayback(): ⏹ Stop rewinds the shared element to 0:00,
+  // which during a show would silence the room. The playhead is left alone
+  // too - there is nothing of the preview's to stop.
+  if (showMusicOwns()) { toast(SHOW_OWNS_MUSIC_NOTE); return; }
   ui.playing = false;
   player.pause();
   if (playerUrl) player.currentTime = 0;
@@ -1563,6 +1613,375 @@ function togglePlayback() { ui.playing ? pausePlayback() : startPlayback(); }
 // advances.
 player.addEventListener("ended", () => { if (ui.playing) haltPlaybackAt(player.currentTime); });
 player.addEventListener("seeked", () => { seeking = false; });
+
+// ---- THE SHOW's music -------------------------------------------------
+// 「THE SHOW の再生時も、Timeline と同様に音源を再生する」: START plays the
+// loaded track, from wherever the fleet says the show is, and keeps it there.
+//
+// The fleet's clock is the master and the audio is the follower - never the
+// other way round. Nothing in here ever moves the show; it only reads
+// /api/fleet's run position (the same number the big clock shows) and drags
+// the <audio> element onto it.
+//
+// It is the SAME <audio> element the Timeline transport uses (`player`), so
+// "never two players at once" is true by construction rather than by
+// agreement: while a show owns it the Timeline's Play/Stop are refused, and
+// starting the audio for a show pauses any preview that was running.
+//
+// <<< SHOWMUSIC: the pure decision layer (tests/test_conductor_music.py
+// lifts everything between these two markers out of this page and runs it on
+// its own in a headless browser - keep it free of the DOM, of `fleet`, of
+// `player` and of any clock of its own). >>>
+const SHOWMUSIC = (() => {
+  // Further than this from the show clock and the audio is re-seeked. 0.15 s
+  // is about the smallest gap an audience can hear against the panels.
+  const DRIFT_S = 0.15;
+  // ...but never more often than this. A browser that answers a seek slowly
+  // reads back its OLD currentTime for a moment, which looks exactly like
+  // fresh drift; without the rate limit that reading drives the next seek,
+  // and the next, and the track never settles (a re-seek storm).
+  const RESEEK_MS = 2000;
+  // A gap this big is not drift, it is a move: a START from an offset, a
+  // seek on the bar, a RESUME somewhere else. Those must land at once, so
+  // they get their own (much shorter) minimum spacing instead of waiting out
+  // RESEEK_MS - still spaced, so a slow seek cannot storm either.
+  const JUMP_S = 1.0;
+  const JUMP_MS = 300;
+
+  // plan(now) -> what the audio should do THIS tick.
+  //
+  // `now` is a plain snapshot, taken by the caller:
+  //   on        - the "Music with THE SHOW" toggle
+  //   hasTrack  - a track is loaded (state.music)
+  //   runState  - "running" | "holding" | null, from /api/fleet's run
+  //   showTime  - the show position in seconds (may be negative during the
+  //               START lead, and may run past the end)
+  //   duration  - the show's length, 0 when it is not known yet
+  //   trackDuration - the loaded track's own length, 0 while unknown
+  //   lag       - how far behind the mark this element lands when it is told
+  //               where to go (measured by the caller; 0 until it knows)
+  //   audioPaused, audioTime - the <audio> element as it is right now
+  //   otherTab  - another Conductor tab on this PC is playing the track
+  //   claimPending - this tab already said it is taking the track, and the
+  //               tick it waits to see that unchallenged has passed
+  //   blocked   - the last play() was refused for want of a gesture
+  //   nowMs, lastSeekMs - performance.now(), and when the audio was last
+  //               moved by this layer
+  //
+  // The answer is {action, at, state, join}:
+  //   action "none" | "claim" | "play" (at) | "seek" (at) | "pause" | "stop"
+  //          - "pause" keeps the position, "stop" rewinds to 0, and "claim"
+  //            makes no sound at all: it tells the other tabs first
+  //   state  the word for the readout: "no track" | "off" | "another tab" |
+  //          "stopped" | "track ended" | "paused" | "playing" | "blocked"
+  //   join   show the "click to join" button (autoplay was refused)
+  function plan(now) {
+    const idle = state => ({ action: now.audioPaused ? "none" : "stop", at: null, state, join: false });
+    if (!now.hasTrack) return idle("no track");
+    if (!now.on) return idle("off");                    // toggled off means silent, always
+    // Another Conductor tab on this PC already has the track. Two players a
+    // tenth of a second apart sound like a fault, so this one stands down
+    // and says where the sound is coming from.
+    if (now.otherTab) return idle("another tab");
+    if (now.runState === "holding")                     // HOLD keeps the position
+      return { action: now.audioPaused ? "none" : "pause", at: null, state: "paused", join: false };
+    if (now.runState !== "running") return idle("stopped");   // no run at all: STOP, or never started
+    if (now.duration > 0 && now.showTime >= now.duration) return idle("stopped");   // the show is over
+    // A track shorter than the show. Past its end there is nothing left to
+    // play: stop and say so, rather than starting it again every tick at a
+    // position the audio can never reach (which is what an "ended" element
+    // asked to play at 4:00 of a 3:30 track does).
+    if (now.trackDuration > 0 && now.showTime >= now.trackDuration) return idle("track ended");
+    // The START lead: the fleet counts down to t0 with a negative position.
+    // Nothing plays yet - the track begins when the show does.
+    if (now.showTime < 0)
+      return { action: now.audioPaused ? "none" : "pause", at: null, state: "paused", join: false };
+    // Autoplay refused and no gesture since: say so and touch nothing. Never
+    // retried on a timer - a rejected play() per tick is console spam and
+    // still would not work.
+    if (now.blocked) return { action: "none", at: null, state: "blocked", join: true };
+    // Where to aim. Not the show time itself: between being told where to go
+    // and the first sample leaving the speakers a browser spends anything
+    // from 0.05 to 0.2 s, and it never makes that up - aimed at the show time
+    // the track plays that far behind the fleet for the rest of the night,
+    // and re-seeking only buys the same head start again (the re-seek storm
+    // the rate limit exists to survive). The caller measures what this
+    // element actually costs; we aim that far ahead of the mark.
+    const aim = now.showTime - (now.lag || 0);
+    // Say so before making a sound, never after. A tab that announced its
+    // claim only once play() had been called left two tabs overlapping for a
+    // quarter of a second on a simultaneous START - audible, and exactly
+    // what the channel exists to prevent. So a tab about to start announces
+    // it ("claim") and waits one tick; unchallenged, it plays on the next.
+    // The price is 250 ms of join latency, which nobody in the room can hear
+    // against a show that is already running.
+    if (now.audioPaused)
+      return { action: now.claimPending ? "play" : "claim", at: aim, state: "playing", join: false };
+    const off = Math.abs(now.audioTime - now.showTime), since = now.nowMs - now.lastSeekMs;
+    if (off > JUMP_S ? since >= JUMP_MS : off > DRIFT_S && since >= RESEEK_MS)
+      return { action: "seek", at: aim, state: "playing", join: false };
+    return { action: "none", at: null, state: "playing", join: false };
+  }
+  return { plan, DRIFT_S, RESEEK_MS, JUMP_S, JUMP_MS };
+})();
+// <<< /SHOWMUSIC >>>
+
+const showMusic = {
+  on: loadShowMusicPref(),
+  blocked: false,        // the last play() was refused for want of a gesture
+  lastSeekAt: 0,         // performance.now() of the last move this layer made
+  lag: 0,                // see measureMusicLag(): what a move costs this element
+  lagPending: false,     // a move is settling; its cost has not been read yet
+  otherTabAt: 0,         // performance.now() of another tab's last claim (0 = none)
+  otherTabId: "",        // which tab that was
+  claimed: false,        // this tab is the one telling the others it has the track
+  claimPending: false,   // ...or is one tick away from it, having just said so
+  owned: false,          // showMusicOwns() last tick, to catch the moment it turns true
+  plan: null,            // the last plan, for the readout
+  pos: 0                 // the show position that plan was made for
+};
+// One Conductor, one track. Two tabs open on the same PC - the operator's
+// second window, left over from the rehearsal - would both play it a tenth
+// of a second apart, which sounds exactly like a fault. Whichever tab has
+// the track says so on a channel four times a second; a tab that hears a
+// claim it did not make stands down and says so on screen. When the claim
+// stops arriving (that tab was closed, or its show ended) the lease lapses
+// and whoever is left may play. Two Conductors on two PCs cannot hear each
+// other at all - that one is in CONDUCTOR_START §6.
+const MUSIC_TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+// Generous on purpose. A tab behind another window has its timers throttled
+// to about one a second, so its claim arrives far less often than the four
+// times a second a visible one manages - and a lease that lapsed under that
+// throttling would let the visible tab start playing too, which is the exact
+// thing this exists to prevent. Closing a tab cleanly does not wait this out:
+// pagehide releases the lease on the spot.
+const MUSIC_LEASE_MS = 3000;
+const musicBus = (() => {
+  try { return "BroadcastChannel" in self ? new BroadcastChannel("epaper-show-music") : null; }
+  catch { return null; }                 // no channel: the old behaviour, both play
+})();
+if (musicBus) musicBus.onmessage = e => {
+  const msg = e.data;
+  if (!msg || msg.id === MUSIC_TAB_ID) return;
+  if (msg.type === "playing") { showMusic.otherTabAt = performance.now(); showMusic.otherTabId = msg.id; }
+  else if (msg.type === "released" && msg.id === showMusic.otherTabId) showMusic.otherTabAt = 0;
+};
+function musicClaim(type) {
+  if (!musicBus) return;
+  try { musicBus.postMessage({ type, id: MUSIC_TAB_ID }); } catch {}
+}
+// Is another tab holding the track right now? Only while its claim is fresh -
+// and, when this tab has a claim of its own in the air (both started in the
+// same breath, on the same START), only if it wins the tie. Comparing the two
+// ids settles that the same way in both tabs, so exactly one gives way
+// instead of both of them or neither.
+//
+// The tie is on the CLAIM, not on "am I playing": with the claim now going
+// out a tick before any sound (see plan()'s "claim"), two tabs racing are
+// both still silent when they have to decide, and a test on player.paused
+// would have had them both stand down - a START that plays nothing at all.
+function otherTabHasMusic() {
+  if (!showMusic.otherTabAt || performance.now() - showMusic.otherTabAt > MUSIC_LEASE_MS) return false;
+  if (showMusic.claimed || showMusic.claimPending) return MUSIC_TAB_ID < showMusic.otherTabId;
+  return true;
+}
+// This tab is the one making the sound right now - as opposed to previewing
+// on the Timeline, or standing down for another tab.
+function musicIsPlayingHere() {
+  return !player.paused && !ui.playing && showMusic.on && !!playerUrl && !!fleet?.run;
+}
+// How far out the lag estimate is ever allowed to be. A seek that genuinely
+// landed somewhere else entirely must never be quietly accepted as "this
+// browser is just slow".
+const MAX_MUSIC_LAG_S = 0.4;
+player.volume = loadMusicVolumePref();
+player.muted = loadMusicMutedPref();
+// The live show position, straight off the fleet's clock: the last poll's
+// number carried forward with performance.now(), exactly as the big clock and
+// the seek bar do it. Deliberately NOT fleetShowPos(), which answers with the
+// operator's drag target while the seek bar is being dragged - the audio
+// follows where the show IS, and only jumps once the drag is committed.
+function musicShowTime() {
+  const run = fleet?.run;
+  if (!run) return 0;
+  if (run.state === "holding") return run.now;
+  return run.now + (performance.now() - fleet.at) / 1000;
+}
+// True while THE SHOW owns the one <audio> element: a LIVE run, a track, and
+// the toggle on. The Timeline's Play/Stop (and its scrub's own seeks) stand
+// down while this holds.
+//
+// "Live" is the point. A run whose position has passed the end of the show is
+// over as far as the music goes - the track stopped at `duration` - and
+// holding the element then answered ▶ Play with "THE SHOW is playing the
+// music" while nothing was playing at all (review finding). The run itself
+// stays on screen until STOP, as it always has; only the music lets go.
+function showMusicOwns() {
+  if (!showMusic.on || !playerUrl || !fleet?.run) return false;
+  const D = fleetDuration();
+  return !(D > 0 && musicShowTime() >= D);
+}
+// Whether the music could be following a show, which is a different question:
+// `fleet` is what tells this page a run exists at all, so waiting for
+// showMusicOwns() before polling for it would mean the page never finds out
+// (review finding - the Items tab never polls, so the music never joined).
+function musicWantsFleet() {
+  return !!(showMusic.on && playerUrl);
+}
+const SHOW_OWNS_MUSIC_NOTE = "THE SHOW is playing the music";
+function showMusicSnapshot() {
+  const run = fleet?.run || null;
+  return { on: showMusic.on, hasTrack: !!playerUrl, runState: run ? run.state : null,
+           showTime: musicShowTime(), duration: fleetDuration(),
+           trackDuration: Number.isFinite(player.duration) ? player.duration : 0,
+           audioPaused: player.paused, audioTime: player.currentTime, lag: showMusic.lag,
+           otherTab: otherTabHasMusic(), claimPending: showMusic.claimPending,
+           blocked: showMusic.blocked,
+           nowMs: performance.now(), lastSeekMs: showMusic.lastSeekAt };
+}
+// What a move costs THIS element, measured rather than guessed: about a
+// second after every play/seek - long enough to have settled - whatever is
+// left between the audio and the show clock is added to the estimate, and
+// the next move aims that far ahead. The estimate converges after one move
+// and then stays put, which is what keeps a browser with a slow seek from
+// being re-seeked every 2 s all night for a head start it can never make up.
+function measureMusicLag(now) {
+  if (!showMusic.lagPending || now.audioPaused || now.runState !== "running") return;
+  if (now.nowMs - showMusic.lastSeekAt < 800) return;
+  showMusic.lagPending = false;
+  const left = now.audioTime - now.showTime;
+  // Anything this big is not a start-up cost - the show itself moved while
+  // the audio was settling. Nothing to learn from it.
+  if (Math.abs(left) > SHOWMUSIC.JUMP_S) return;
+  showMusic.lag = Math.max(-MAX_MUSIC_LAG_S, Math.min(MAX_MUSIC_LAG_S, showMusic.lag + left));
+}
+function applyMusicPlan(p) {
+  if (p.action === "none") return;
+  // Not a sound: the word to the other tabs that this one is taking the
+  // track. plan() asks for it one tick before the play it precedes.
+  if (p.action === "claim") { showMusic.claimPending = true; musicClaim("playing"); return; }
+  if (p.action === "pause" || p.action === "stop") {
+    // The Timeline's preview owns the element whenever IT is playing, and
+    // "no show is running" is no reason at all to stop it - without this
+    // guard ▶ Play died within 250 ms of being pressed, every time, because
+    // the tick read "no run" as "silence, please" (review BLOCKER).
+    //
+    // ui.playing, not showMusicOwns(): the show's own audio always runs with
+    // ui.playing false, so this can only ever be the preview - and turning
+    // the music off DURING a show must still stop the show's audio, which
+    // showMusicOwns() would have let through.
+    if (ui.playing) return;
+    player.pause();
+    if (p.action === "stop" && playerUrl) { try { player.currentTime = 0; } catch {} }
+    renderTransport();          // ⏸/▶ must not be left reading the other one
+    return;
+  }
+  // play / seek: put the audio where the show is. Any Timeline preview left
+  // running goes first - one element, one owner.
+  if (ui.playing) pausePlayback();
+  try { player.currentTime = Math.max(0, p.at); } catch {}
+  showMusic.lastSeekAt = performance.now();
+  showMusic.lagPending = true;            // read what this move cost, a second from now
+  if (p.action === "seek") return;
+  const started = player.play();
+  if (started && started.catch) started.catch(() => {
+    // Autoplay without a gesture (a reload mid-show is the real case). Not a
+    // throw, not a console line, not a retry: the panel grows a "click to
+    // join" button and waits for the operator.
+    showMusic.blocked = true;
+    paintShowMusic();
+  });
+}
+// The 250 ms heartbeat. Its own interval, not showClockText()'s: the show
+// runs whichever tab is on screen, so the music must too.
+// A Timeline preview running when a show starts hands the element over there
+// and then - at the moment the run appears, not when the music finally
+// reaches for it. The START lead is what makes this its own step: during the
+// countdown plan() asks for silence, and applyMusicPlan's ui.playing guard
+// (rightly) refuses to act on that, so without this the preview played
+// straight through the countdown and was yanked at 0:00 (review finding).
+function handTheElementToTheShow() {
+  const owns = showMusicOwns();
+  if (owns && !showMusic.owned && ui.playing) { pausePlayback(); toast(SHOW_OWNS_MUSIC_NOTE); }
+  showMusic.owned = owns;
+}
+function showMusicTick() {
+  handTheElementToTheShow();
+  const now = showMusicSnapshot();
+  measureMusicLag(now);
+  now.lag = showMusic.lag;
+  // A run that ended, was stopped, or never started clears the refusal, so
+  // the next START gets its one honest attempt (and, if the operator has
+  // clicked anything at all by then, it succeeds).
+  if (now.runState !== "running") showMusic.blocked = false;
+  const p = SHOWMUSIC.plan(now);
+  showMusic.plan = p;
+  showMusic.pos = now.showTime;
+  const wasPending = showMusic.claimPending;
+  applyMusicPlan(p);
+  // A claim that did not become sound - another tab answered it, or the show
+  // moved on while it was in the air - is taken back at once rather than left
+  // for the others to wait out.
+  const gaveUp = wasPending && p.action !== "claim" && p.action !== "play";
+  if (p.action !== "claim") showMusic.claimPending = false;
+  // Tell the other tabs while this one has the track, and tell them once when
+  // it lets go, so the next one can take over on its very next tick instead
+  // of waiting out the lease. A Timeline preview claims nothing: this is
+  // about the show's music, not about what one operator is auditioning.
+  if (musicIsPlayingHere()) { showMusic.claimed = true; musicClaim("playing"); }
+  else if (showMusic.claimed || gaveUp) { showMusic.claimed = false; musicClaim("released"); }
+  paintShowMusic();
+}
+setInterval(showMusicTick, 250);
+// A closed or reloaded tab must not hold the lease for another three seconds
+// while the operator wonders why the other window has gone quiet.
+addEventListener("pagehide", () => { if (showMusic.claimed) musicClaim("released"); });
+// ...and neither must one that has merely gone behind another window with
+// nothing playing: hand the claim back now rather than make the visible tab
+// wait out a lease this one no longer wants. A tab that IS playing keeps it -
+// it is the one making the sound.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden || musicIsPlayingHere()) return;
+  if (showMusic.claimed || showMusic.claimPending) {
+    showMusic.claimed = false; showMusic.claimPending = false;
+    musicClaim("released");
+  }
+});
+// The controls in THE SHOW panel. Everything is always in the markup; the
+// 250 ms paint only changes text, classes and what is hidden - a button that
+// appears and disappears under the operator's cursor is worse than one that
+// greys out.
+function musicBlockHtml() {
+  return `<div class="musicbar" id="show-music-bar">
+    <span class="cap">MUSIC</span>
+    <label title="Play the show's music on this PC while THE SHOW runs, in step with the fleet's clock. Remembered in this browser.">
+      <input type="checkbox" id="show-music-on" ${showMusic.on ? "checked" : ""}> Music with THE SHOW</label>
+    <span id="show-music-state">—</span>
+    <button id="show-music-join" style="display:none" title="This browser will not start audio on its own after a reload - one click starts it at the show's position.">Music: click to join</button>
+    <button id="show-music-mute" title="Mute / unmute (the Timeline's preview uses the same audio)">Mute</button>
+    <label title="Volume for both THE SHOW and the Timeline's preview - it is one audio player">Volume
+      <input type="range" id="show-music-vol" min="0" max="100" step="1" value="${Math.round(player.volume * 100)}"></label>
+  </div>`;
+}
+function paintShowMusic() {
+  const box = $("#show-music-state");
+  if (!box) return;                                   // another tab is on screen
+  const p = showMusic.plan;
+  const word = !p ? "—"
+    : p.state === "playing" ? "playing " + clock(Math.max(0, showMusic.pos))
+    : p.state === "blocked" ? "blocked — click to join"
+    : p.state === "another tab" ? "another Conductor tab is playing it" : p.state;
+  box.textContent = word + (p && p.state === "playing" && player.muted ? " · muted" : "");
+  box.classList.toggle("on", !!p && p.state === "playing" && !player.muted);
+  box.classList.toggle("off", !!p && (p.state === "blocked" || p.state === "another tab"
+                                      || (p.state === "playing" && player.muted)));
+  const join = $("#show-music-join");
+  if (join) join.style.display = p && p.join ? "" : "none";
+  const mute = $("#show-music-mute");
+  if (mute) { mute.textContent = player.muted ? "Unmute" : "Mute"; mute.classList.toggle("muted", player.muted); }
+  const vol = $("#show-music-vol");
+  if (vol && document.activeElement !== vol) vol.value = Math.round(player.volume * 100);
+}
 const MAX_MUSIC = 64 * 1024 * 1024;
 async function uploadMusic(file) {
   if (!file) return;
@@ -2592,6 +3011,7 @@ function renderFleet() {
       </div>
       <div class="thumbs small" id="show-thumbs" style="margin-top:8px"></div>
       ${seekBlockHtml()}
+      ${musicBlockHtml()}
       <div class="go">
         <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"} title="${esc(UPLOAD_TITLE)}">① Upload</button>
         <button class="big" id="show-preset">② Show preset (the 0:00 look)</button>
@@ -2645,6 +3065,7 @@ function renderFleet() {
   renderThumbs(THUMBS.fleet, fleetShowPos());
   renderTiles();
   paintChips();
+  paintShowMusic();            // the bar is freshly built: fill it in now, not in 250 ms
   if (!demoListTried) refreshDemos();        // first time the Units tab is opened
 }
 let lastFleetThumbPos = null, lastFleetRunState = undefined;
@@ -2873,7 +3294,22 @@ async function fetchFleet() {
 let fleetTick = 0;
 async function pollFleet() {
   const chipsOnly = ui.tab === "timeline" && fleetTick % 5 === 0;
-  if (!document.hidden && (ui.tab === "fleet" || ui.writeOpen || chipsOnly)) {
+  // ...and every second, on any tab, whenever the music COULD be following a
+  // show (a track is loaded and the toggle is on). The audio follows the
+  // fleet's clock, so a START must be seen within a second wherever the
+  // operator happens to be looking, and so must the HOLD / STOP / seek after
+  // it. Deliberately not "is following": this poll is how the page learns a
+  // run exists in the first place.
+  // A tab that is PLAYING the show's music polls even from behind another
+  // window. Everything else still stands down when hidden - that rule is
+  // older than this feature and a good one - but the tab making the sound
+  // has to keep hearing STOP, HOLD and seeks: without this it played on off
+  // a frozen clock to the end of the track while the operator's visible tab,
+  // told that another tab had it, sat there in silence (review finding).
+  // Chrome exempts a page that is playing audio from intensive throttling,
+  // so the one poll a second keeps arriving.
+  const asleep = document.hidden && !musicIsPlayingHere();
+  if (!asleep && (ui.tab === "fleet" || ui.writeOpen || chipsOnly || musicWantsFleet())) {
     await fetchFleet();
     renderTiles();
     paintWrite();
@@ -2974,6 +3410,21 @@ document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
+  // "Music: click to join": the one gesture a browser wants before it will
+  // start audio after a reload. The tick is run here rather than waited for
+  // so the music comes in on the click instead of up to 250 ms later - but
+  // play() itself no longer happens inside this handler at all: the tick
+  // fired here only claims the track, and the play comes a tick later (see
+  // plan()'s "claim"). That is still allowed, because the click gives the
+  // document sticky activation - the gesture unlocks audio for the rest of
+  // the document's life, not just for the call stack it happened on.
+  if (e.target.id === "show-music-join") { showMusic.blocked = false; showMusicTick(); return; }
+  if (e.target.id === "show-music-mute") {
+    player.muted = !player.muted;
+    saveMusicAudioPrefs();
+    paintShowMusic();
+    return;
+  }
   if (e.target.id === "tl-simulator") { e.preventDefault(); downloadSimulator(); return; }
   if (e.target.id === "refresh-hint-hide") { dismissRefreshHint(); renderTimeline(); return; }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
@@ -3232,6 +3683,16 @@ document.addEventListener("change", async e => {
     paintWrite();
     return;
   }
+  if (id === "show-music-on") {
+    showMusic.on = e.target.checked;
+    saveShowMusicPref();
+    // Off means silent at once (not at the next tick), and the refusal is
+    // forgotten - ticking it back on during a running show is itself the
+    // gesture the browser was waiting for.
+    showMusic.blocked = false;
+    showMusicTick();
+    return;
+  }
   if (id === "show-manual") {
     ui.manual = e.target.checked;
     // Unticking must not leave a debounced commit alive to fire 350 ms later
@@ -3436,6 +3897,14 @@ function releaseSeekIfIdle() {
 }
 document.addEventListener("input", e => {
   if (e.target.id === "show-seek") { previewSeek(Number(e.target.value)); return; }
+  // Volume follows the thumb as it moves (on "change" the room would only
+  // hear it once the operator let go); it is the same element the Timeline's
+  // preview plays through, so there is one volume, not two.
+  if (e.target.id === "show-music-vol") {
+    const v = Number(e.target.value);
+    if (v >= 0 && v <= 100) { player.volume = v / 100; saveMusicAudioPrefs(); paintShowMusic(); }
+    return;
+  }
   if (e.target.id === "write-name") {
     // The field keeps whatever case was typed (CSS shows it upper-cased; the
     // value sent on Write is upper-cased then) - rewriting .value here on
@@ -3521,14 +3990,17 @@ document.addEventListener("pointermove", e => {
   scrubTo(t);
   // Seeking an <audio> element is not free - throttle it while dragging (a
   // "scrub preview", playing or not) and do the exact final seek on release.
+  // ...and not at all while THE SHOW owns the element: scrubbing the preview's
+  // playhead must never drag the music the room is listening to (the sync
+  // layer would only haul it back a tick later anyway).
   const now = performance.now();
-  if (playerUrl && now - phDrag.lastSeekAt >= 250) { phDrag.lastSeekAt = now; player.currentTime = t; }
+  if (playerUrl && !showMusicOwns() && now - phDrag.lastSeekAt >= 250) { phDrag.lastSeekAt = now; player.currentTime = t; }
 });
 document.addEventListener("pointerup", () => {
   if (!phDrag) return;
   phDrag = null;
   const t = ui.playhead;
-  if (playerUrl) player.currentTime = t;   // exact final seek; the "seeked" listener clears `seeking`
+  if (playerUrl && !showMusicOwns()) player.currentTime = t;   // exact final seek; the "seeked" listener clears `seeking`
   else {
     // No music: play (if running) from the dropped spot via the virtual
     // clock tick() reads - the old slider's own resume behaviour.
