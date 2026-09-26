@@ -95,27 +95,28 @@ def _key(position) -> str:
 
 
 def safe_name(name: str) -> str:
-    """The workspace's own spelling of a file name: NFKC, then anything
+    """The workspace's own spelling of a file name: NFC, then anything
     but a letter, a digit, ". - _" or a space folded to "_".
 
-    NFKC first (2026-09-26): a designer's bundle arrived with
-    "AZ271SD1305_color_１_HW_grid.csv" - the 配色案名 typed with FULL-WIDTH
-    digits (U+FF11), which every page on the designers' side accepts. Here
-    it used to be refused outright as an unusable file name, and each cue
-    that named it then read "design ... is not loaded". NFKC folds
-    full-width digits and letters onto their ASCII spelling and leaves
-    kana and kanji alone, so both sides now agree on one name.
-    conductor/web/sim/designer-app.js's nfkc() is the other half.
+    NFC, and deliberately NOT NFKC (2026-09-26, the operator's call): the
+    配線ナビ goes on writing 配色案名 with full-width characters, so
+    "AZ271SD1305_１_HW.csv" is the file's real name and is kept exactly as
+    it is - the earlier respelling to "_1_" would have made the show PC
+    disagree with the site about what the file is called. NFC is only
+    composition: a name a Mac hands over decomposed (NFD - "が" as か + ゛)
+    and the same name from Windows become one string, so they are one
+    file rather than two that look identical in a list.
+    conductor/web/sim/designer-app.js's nfc() is the other half.
     """
-    return _SAFE_NAME.sub("_", Path(nfkc_name(name)).name)
+    return _SAFE_NAME.sub("_", Path(nfc_name(name)).name)
 
 
-def nfkc_name(name: str) -> str:
-    """Just the NFKC half of safe_name(), for the one caller that must
-    tell "the same name, respelled" from "a name with something in it
+def nfc_name(name: str) -> str:
+    """Just the NFC half of safe_name(), for the one caller that must
+    tell "the same name, composed" from "a name with something in it
     this workspace cannot keep" (import_bundle: the first is saved and
     reported as a rename, the second refused rather than mangled)."""
-    return unicodedata.normalize("NFKC", str(name))
+    return unicodedata.normalize("NFC", str(name))
 
 
 def _rename_design_refs(show: dict, renamed: "dict[str, str]") -> dict:
@@ -124,9 +125,9 @@ def _rename_design_refs(show: dict, renamed: "dict[str, str]") -> dict:
 
     Two places name a design file: a cue's "design", and a key of
     "transitions". A cue that names a file the bundle did not carry is
-    normalised too - it may well be pointing at one this workspace
-    already holds under its ASCII spelling - but never invented: the
-    reference is only rewritten when safe_name() actually changes it.
+    composed too - it may well be pointing at one this workspace already
+    holds in NFC - but never invented: the reference is only rewritten
+    when NFC actually changes it AND the result is a real design name.
     """
     show = dict(show)
     def rename(name):
@@ -134,7 +135,7 @@ def _rename_design_refs(show: dict, renamed: "dict[str, str]") -> dict:
             return name
         if name in renamed:
             return renamed[name]
-        clean = nfkc_name(name)
+        clean = nfc_name(name)
         return clean if clean != name and file_kind(clean) is not None else name
     cues = show.get("cues")
     if isinstance(cues, list):
@@ -887,11 +888,13 @@ class Workspace:
                              f"(got {len(files)})")
         to_save: "list[tuple[str, str]]" = []
         refused: "list[str]" = []
-        # The bundle's spelling -> this workspace's, for every name NFKC
-        # changes (a 配色案名 typed with full-width digits, 2026-09-26).
-        # The cues and transitions that name those files are rewritten to
-        # match below, or every one of them would read "design ... is not
-        # loaded" against a file that IS there under its ASCII spelling.
+        # The bundle's spelling -> this workspace's, for every name NFC
+        # changes: a Japanese 配色案名 that arrives DECOMPOSED (a Mac hands
+        # file names over in NFD) is the same name as the composed one and
+        # must land on the same file. The cues and transitions that name
+        # those files are rewritten to match below, or every one of them
+        # would read "design ... is not loaded" against a file that IS
+        # there under its composed spelling.
         renamed: "dict[str, str]" = {}
         for name in sorted(files):
             text = files[name]
@@ -902,10 +905,10 @@ class Workspace:
                 # - but computed here without ever calling it, so a name
                 # this workspace cannot keep is still refused outright
                 # rather than silently mangled into some other file's
-                # name. Respelling it (NFKC) is the one change allowed,
-                # and it is reported: everything else must already be a
+                # name. Composing it (NFC) is the one change allowed, and
+                # it is reported: everything else must already be a
                 # usable name before it gets here.
-                clean = nfkc_name(name)
+                clean = nfc_name(name)
                 safe = (Path(name).name == name
                         and Path(clean).name == clean
                         and _SAFE_NAME.search(clean) is None
@@ -1049,8 +1052,14 @@ class Workspace:
                 # grows below with whatever the chosen designs sweep.
                 "refresh_s": float(show.get("refresh_s", timeline.REFRESH_S)),
                 "span_s": 0.0})
+            # showfile.unit_label(): the same fold the timeline's own cue
+            # labels get, for the same reason - this string is drawn on
+            # the unit's screen by a font with no CJK glyphs. The design's
+            # real name, full-width characters and all, stays in the
+            # workspace and on the Conductor's own screens.
             payload["label"] = (payload["label"] + " + " if payload["label"]
-                                else "") + f"{look_map.item} {name}"
+                                else "") + showfile.unit_label(
+                                    f"{look_map.item} {name}")
             payload["boards"].update({str(address): array.hex()
                                       for address, array in arrays.items()})
             # The design's own transition (Designs tab) sweeps a manual

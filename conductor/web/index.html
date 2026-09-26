@@ -1612,10 +1612,11 @@ async function loadBundleFile(file) {
       // console; the toast gets it too unless that would make the toast
       // itself unreadable, in which case the toast points at the console.
       const lines = [`Loaded ${file.name}: ` + bits.join(" · ")];
-      // Names the import had to respell (a 配色案名 typed with full-width
-      // digits): the cues that named them were rewritten to match, so this
-      // is a notice, not a problem - but the operator should see that the
-      // file on disk is not spelled the way the designer's list says.
+      // Names the import had to compose (a Japanese 配色案名 that arrived
+      // decomposed, as a Mac writes them): the cues that named them were
+      // rewritten to match, so this is a notice, not a problem - but the
+      // operator should see that the file on disk is not byte-for-byte
+      // the name in the designer's own list.
       const renamed = Object.entries(result.renamed || {});
       if (renamed.length) lines.push("Renamed: " + renamed.map(([a, b]) => `${a} → ${b}`).join(" · "));
       if (result.refused?.length) lines.push("Refused: " + result.refused.join(" · "));

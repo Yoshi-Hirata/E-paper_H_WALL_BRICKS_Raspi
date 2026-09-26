@@ -110,3 +110,47 @@ def test_a_custom_transition_at_span_zero_sweeps_nothing(tmp_path):
     assert problems == []
     for entry in shows["radxa-02"]["cues"]:
         assert all(set(t) == {NO_DELAY} for t in tables(entry).values())
+
+
+# ---- what the unit's own screen can draw ----
+
+def test_a_full_width_or_japanese_design_name_reaches_the_unit_as_ascii(tmp_path):
+    """The workspace keeps the 配色案名 exactly as the 配線ナビ writes it,
+    full-width characters and all - but the string the UNIT is handed is
+    drawn by ui/render.py with DejaVuSans, which has no CJK glyphs, so a
+    label it cannot draw comes out as a row of tofu boxes. showfile's
+    unit_label() folds at that boundary and nowhere else (2026-09-26)."""
+    wide = "Look20-Top_１_HW.csv"                     # 配色案名 "１"
+    kana = "Look20-Top_color_柄A_grid.csv"            # 配色案名 "柄A"
+    ws = workspace(tmp_path)
+    assert ws.save(wide, GRID) == wide               # kept, not respelled
+    assert ws.save(kana, GRID) == kana
+    ws.set_timeline(60, [cue("a", "Look20-Top", 0, wide),
+                         cue("b", "Look20-Top", 20, kana)], refresh=1.0)
+    shows, problems = ws.compile_show()
+    assert problems == []
+    labels = [c["label"] for c in shows["radxa-02"]["cues"]]
+    assert labels == ["Look20-Top 1", "Look20-Top ?A"]
+    # ...and the show the operator reads keeps the real names.
+    assert [c["design"] for c in ws.state()["show"]["cues"]] == [wide, kana]
+
+
+def test_the_unit_label_fold_is_only_about_what_can_be_drawn():
+    from conductor.showfile import unit_label
+    assert unit_label("Look22 1") == "Look22 1"       # ASCII is untouched
+    assert unit_label("Look22 １") == "Look22 1"      # full-width digit
+    assert unit_label("Look22 Ａ") == "Look22 A"      # full-width letter
+    assert unit_label("Look22 柄A") == "Look22 ?A"    # no CJK glyph to draw
+    assert unit_label("Look22 あいうえお") == "Look22 ?"   # one "?" per run
+    assert unit_label("Look22 柄A柄") == "Look22 ?A?"
+
+
+def test_a_manual_cue_label_is_folded_the_same_way(tmp_path):
+    # The Designs tab's Prepare sends its own payload (server.py's
+    # compile_units), not a show file - same screen, same fold.
+    kana = "Look20-Top_color_柄A_grid.csv"
+    ws = workspace(tmp_path)
+    ws.save(kana, GRID)
+    payloads, problems = ws.compile_units({"Look20-Top": kana}, "m")
+    assert problems == []
+    assert payloads["radxa-02"]["label"] == "Look20-Top ?A"

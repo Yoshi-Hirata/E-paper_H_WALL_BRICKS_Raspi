@@ -533,13 +533,13 @@ window.addEventListener("load", function () {
 
 # A designer's real bundle (2026-09-26) carried
 # "AZ271SD1305_color_１_HW_grid.csv" - the 配色案名 typed with FULL-WIDTH
-# digits (U+FF11). Nothing on this side minded; the show PC refused the
-# file as an unusable name and every cue that pointed at it read "design
-# … is not loaded". The page now NFKC-normalises a CSV's name the moment
-# it takes it in, so both sides spell it the same way. Driven through
-# SIM.app.classifyCsv(), the seam that decides what a dropped file is
-# saved as.
-_NFKC_PROBE = """
+# digits (U+FF11). The show PC refused the file as an unusable name and
+# every cue that pointed at it read "design … is not loaded". The 配線ナビ
+# goes on writing names that way, so BOTH sides now keep them: the page
+# composes a name (NFC) when it takes it in and folds nothing else.
+# Driven through SIM.app.classifyCsv(), the seam that decides what a
+# dropped file is saved as.
+_NAME_PROBE = """
 <script>
 window.addEventListener("load", function () {
   setTimeout(function () {
@@ -550,9 +550,12 @@ window.addEventListener("load", function () {
       out.hw = SIM.app.classifyCsv("AZ271SD1301_\\uFF14_HW.csv", grid);
       out.kana = SIM.app.classifyCsv("AZ271SD1301_color_\\u67C4A_grid.csv", grid);
       out.sniffed = SIM.app.classifyCsv("AZ271SD1301_\\uFF15.csv", grid);
+      // NFD, the way a Mac hands a file name over: カ + U+3099 + ラ.
+      out.decomposed = SIM.app.classifyCsv(
+        "AZ271SD1301_color_\\u30AB\\u3099\\u30E9_grid.csv", grid);
     } catch (e) { out.error = String(e); }
     var pre = document.createElement("pre");
-    pre.id = "nfkc-out";
+    pre.id = "namecheck-out";
     pre.textContent = JSON.stringify(out);
     document.body.appendChild(pre);
   }, 300);
@@ -561,27 +564,30 @@ window.addEventListener("load", function () {
 """
 
 
-def test_a_full_width_design_name_is_saved_under_its_ascii_spelling(tmp_path):
+def test_a_full_width_design_name_is_kept_exactly_as_the_site_writes_it(tmp_path):
     _require_browser(tmp_path)
     assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
-    page = tmp_path / "nfkc.html"
+    page = tmp_path / "names.html"
     page.write_text(DIST.read_text(encoding="utf-8")
-                    .replace("</body>", _NFKC_PROBE + "</body>", 1),
+                    .replace("</body>", _NAME_PROBE + "</body>", 1),
                     encoding="utf-8")
     url = "file:///" + str(page.resolve()).replace("\\", "/")
     dom = _dump_dom(url, tmp_path)
-    match = re.search(r'<pre id="nfkc-out">(.*?)</pre>', dom or "", re.S)
-    assert match, f"no #nfkc-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    match = re.search(r'<pre id="namecheck-out">(.*?)</pre>', dom or "", re.S)
+    assert match, f"no #namecheck-out in the dumped DOM:\n{(dom or '')[:3000]}"
     got = json.loads(unescape(match.group(1)))
     assert got.get("error") is None, got
-    assert got["wide"]["name"] == "AZ271SD1301_color_1_HW_grid.csv"
-    assert got["hw"]["name"] == "AZ271SD1301_4_HW.csv"
-    # Japanese is left exactly as the designer typed it: NFKC folds
-    # full-width digits and letters, never kana or kanji.
+    # Full-width digits and Japanese are kept exactly as typed - the page
+    # composes a name (NFC) and folds nothing else.
+    assert got["wide"]["name"] == "AZ271SD1301_color_１_HW_grid.csv"
+    assert got["hw"]["name"] == "AZ271SD1301_４_HW.csv"
     assert got["kana"]["name"] == "AZ271SD1301_color_柄A_grid.csv"
-    # And the derived-name path (a file the page has to read to classify)
-    # normalises before it builds the design name.
-    assert got["sniffed"]["name"] == "AZ271SD1301_color_5_grid.csv"
+    # The derived-name path (a file the page has to read to classify)
+    # keeps them too, rather than folding the design name it builds.
+    assert got["sniffed"]["name"] == "AZ271SD1301_color_５_grid.csv"
+    # ...and NFC really is applied: a decomposed name arrives composed,
+    # so a Mac's file and a Windows one are the same design.
+    assert got["decomposed"]["name"] == "AZ271SD1301_color_ガラ_grid.csv"
 
 
 GEOMETRY_SENTENCE = (

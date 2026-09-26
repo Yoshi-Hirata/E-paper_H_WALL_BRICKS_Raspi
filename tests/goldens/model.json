@@ -5520,6 +5520,62 @@
   },
   {
    "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "\uff11"
+    ]
+   },
+   "filename": "AZ271SD1305_\uff11_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "\uff11"
+    ]
+   },
+   "filename": "AZ271SD1305_\uff11_HW.csv",
+   "items": [
+    "AZ271SD1305"
+   ],
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "\u67c4A"
+    ]
+   },
+   "filename": "AZ271SD1305_color_\u67c4A_grid.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "\u590f_\uff12"
+    ]
+   },
+   "filename": "AZ271SD1305_\u590f_\uff12_HW.csv",
+   "items": [
+    "AZ271SD1305"
+   ],
+   "kind": "names"
+  },
+  {
+   "expect": {
     "kind": null,
     "parts": [
      null,

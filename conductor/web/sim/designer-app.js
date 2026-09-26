@@ -1344,7 +1344,7 @@
       <p>Clock positions (Start, End, Show length, the dock's go-to box) are typed as mm.ss - minutes and seconds, not a decimal fraction of a minute: <code>3.05</code> is 3 minutes 05 seconds; a single-digit second still counts as seconds, so <code>3.5</code> is also 3 minutes 05 seconds; <code>3.60</code> is not valid (there is no 60th second) and turns the field red. The badge and the live "3 min 05 s" readout next to every one of these fields are there so this never has to be memorised.</p>
       <p>Supported browsers: Safari 14.1 or later, or a recent Chrome or Edge. A private/incognito window may refuse to keep the autosaved copy at all (see the warning banner in the header when that happens) - use <b>Save project…</b> there instead of relying on autosave.</p>
       <h2>開き方</h2><p>このファイル（<code>az27ss-simulator.html</code> または <code>designer.html</code>）をダブルクリックするだけで開きます。インストールもサーバーも不要です。Windows は Edge か Chrome、macOS は Safari か Chrome を推奨します。</p>
-      <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。<b>Designs</b> タブの「DESIGNS OF THIS ITEM」にある「Add CSV」を使うと、選んだファイルはその1着だけに追加されます（別の型番の名前でも、その1着の名前で保存されます）。ただし<b>他の衣装のマップCSV（<code>*_map.csv</code>）は受け付けません</b>（配線図は柄と違って入れ替えられるものではないため）。その場合はヘッダーの「Add CSV」を使ってください。同じ名前のファイルは上書きされます。配線ナビの「HW 用 CSV」で書き出したファイル（<code>&lt;型番&gt;_&lt;配色案名&gt;_HW.csv</code>）はそのまま入れられます。デザインCSVは<b>その衣装の「今の」配線ナビ（配色）ページから書き出したもの</b>を使ってください。古いレイアウトのものを入れると、CHECK に「the design was made for another layout of …」と出ます。</p>
+      <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。<b>Designs</b> タブの「DESIGNS OF THIS ITEM」にある「Add CSV」を使うと、選んだファイルはその1着だけに追加されます（別の型番の名前でも、その1着の名前で保存されます）。ただし<b>他の衣装のマップCSV（<code>*_map.csv</code>）は受け付けません</b>（配線図は柄と違って入れ替えられるものではないため）。その場合はヘッダーの「Add CSV」を使ってください。同じ名前のファイルは上書きされます。配線ナビの「HW 用 CSV」で書き出したファイル（<code>&lt;型番&gt;_&lt;配色案名&gt;_HW.csv</code>）はそのまま入れられます。配色案名は全角でも日本語でもよく、打ったとおりに保たれます（断られるのはパス区切りと制御文字を含む名前だけ）。デザインCSVは<b>その衣装の「今の」配線ナビ（配色）ページから書き出したもの</b>を使ってください。古いレイアウトのものを入れると、CHECK に「the design was made for another layout of …」と出ます。</p>
       <h2>タイムライン（デザインを後ろに足していく）</h2><p>ショーは通常、${esc(clockShort(0))} から順に、次々と後ろへデザインを足していきます。方法は2つあります。①<b>トラックの好きな位置をクリック</b>すると、その時刻にデザインを置けます。空いている場所にポインタを重ねると、置かれる位置と「+ デザイン名 at m.ss」という薄い帯（プレビュー）が出るので、そのままクリックしてください。②トラック行の右端にある<b>「+」ボタン</b>を押すと、その衣装の<b>次のデザイン</b>（そのアイテムのデザイン一覧で、最後のキューの次にあるもの。最後まで行くと先頭に戻ります）を、直前のデザインの描画が終わった直後（complete の時刻＋1秒）に追加します。続けて押していけば、ローテーション全体をトラック上に並べられます。追加先がショーの終わりを超える場合は <b>Show length</b> が自動的に延長され、その旨が表示されます。<b>EDIT CUE</b> の<b>「＋ Add next design after this cue」</b>も同じ動作で、いま開いているキューの後ろに追加します。追加されたキューは必ず EDIT CUE に開かれます。</p>
       <p><b>「+」の2つの注意点。</b>まだ何も置いていないトラックで「+」を押すと、最初の1つは ${esc(clockShort(0))} に置かれます ―― これはそのアイテムの<b>プリセット</b>（ショー開始前に表示しておく絵）になります。ショー本編の最初のデザインは、もう一度「+」を押してください（1秒後に入ります）。また、デザインが1つしかないアイテムでは、ローテーションの行き先がないため同じデザインが繰り返し追加されます。</p>
       <h2>mm.ss の読み方</h2><p>開始・終了・ショー全体の長さなど「時刻」は分.秒（mm.ss）で入力します。例：<code>3.05</code> → 3分05秒。<code>3.5</code> のように秒が1桁でも「3分05秒」として読みます。<code>3.60</code> のように60秒以上は無効（赤色）になります。入力欄の横に読み方がそのまま表示されます（例：「3 min 05 s」）。</p>
@@ -1465,20 +1465,20 @@
     if (cols[2] === "shift" && cols.length > 3 && cols.slice(3).every(c => /^\d+$/.test(c))) return "grid";
     return null;
   }
-  // NFKC, not NFC (2026-09-26): a designer's bundle arrived carrying
-  // "AZ271SD1305_color_１_HW_grid.csv" - the 配色案名 typed with FULL-WIDTH
-  // digits (U+FF11). Both \p{N} here and the site's own pages are perfectly
-  // happy with those, so the name survived every filter on this side and
-  // only fell over on the show PC, where the Conductor refused it as an
-  // unusable file name and every cue that pointed at it then read "design
-  // … is not loaded". NFKC folds full-width digits and letters to ASCII
-  // (and leaves kana and kanji alone), so a name that means "design 1"
-  // is spelt "1" from here on, the same way conductor/server.py spells it.
-  function nfkc(s) {
-    try { return String(s).normalize("NFKC"); } catch { return String(s); }
+  // NFC, and deliberately NOT NFKC (2026-09-26, the operator's call): the
+  // 配線ナビ goes on writing 配色案名 with full-width characters, so
+  // "AZ271SD1305_１_HW.csv" IS the file's name and is kept exactly as it
+  // is - folding it to "_1_" here would only make this page disagree with
+  // the site and with the show PC about what the file is called. NFC is
+  // composition alone: a name a Mac hands over decomposed (NFD - "が" as
+  // か + ゛) and the same name typed on Windows become one string, so they
+  // are one design rather than two that look identical in the list.
+  // conductor/server.py's nfc_name() is the other half.
+  function nfc(s) {
+    try { return String(s).normalize("NFC"); } catch { return String(s); }
   }
   function conventionalName(name, text, itemHint) {
-    const n = nfkc(name);
+    const n = nfc(name);
     if (globalThis.SIM.look.kind(n) !== null) return { name: n };
     if (!/\.csv$/i.test(n)) return { error: refuseReason(n) };
     const kind = sniffCsvKind(text);
@@ -1570,7 +1570,7 @@
   // *_color_NAME_grid.csv is refused, because there is nothing to rename it
   // to. Returns null for "cannot belong to any item".
   function renameOntoItem(itemKey, name) {
-    const raw = nfkc(name);        // full-width digits -> ASCII, as above
+    const raw = nfc(name);         // composed, never width-folded (above)
     // _.+_HW last, so a *_map.csv or a conventional *_color_NAME_grid.csv
     // is still read as itself: AZ271SD1301_1_HW.csv picked on another
     // garment becomes <item>_1_HW.csv.

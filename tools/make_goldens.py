@@ -313,6 +313,13 @@ NAME_CASES = [
     ("AZ271SD1305_B_1_HW.csv", ["AZ271SD1305", "AZ271SD1305_B"]),
     ("AZ271SD1301_pattern03_HW.csv", None),
     ("AZ271SD1301_HW.csv", None),          # no 配色案名: not a grid
+    # The 配線ナビ writes 配色案名 with full-width characters and in
+    # Japanese, and both sides keep them exactly as typed (2026-09-26):
+    # nothing here folds width, so "１" is the design's name, not "1".
+    ("AZ271SD1305_１_HW.csv", None),
+    ("AZ271SD1305_１_HW.csv", ["AZ271SD1305"]),
+    ("AZ271SD1305_color_柄A_grid.csv", None),
+    ("AZ271SD1305_夏_２_HW.csv", ["AZ271SD1305"]),
     ("notes.csv", None),
     ("Sample_map.txt", None),
 ]
