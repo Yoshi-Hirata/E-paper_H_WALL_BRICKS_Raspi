@@ -98,11 +98,29 @@ SHOW_GAP_S = 0.15
 # 2026-08-14 double repaint, and an unconfirmed cue is reported instead.
 #
 # VERIFY_AFTER_S is measured from the moment the WITNESS board starts
-# repainting (its own sweep delay), so it lands inside that 0.7 s..end
-# deaf window. Re-measure both numbers if the panels or the firmware
-# change: docs/DEVELOPMENT.md section 6 says how.
-VERIFY_AFTER_S = 1.0
+# repainting (its own sweep delay), so it lands inside that deaf window.
+# 1.5 s, not 1.0: the same 2026-08-14 run has the SLOWER of the two
+# boards still answering at +1.2 s, so a second is not clear of the
+# onset on every board - and asking before a board has gone deaf is the
+# one reading that costs the wall a needless repaint. Anything up to the
+# repaint's own length (16 s) is equally safe on the other side.
+# Re-measure per board type before lowering it: docs/DEVELOPMENT.md
+# section 6 says how.
+VERIFY_AFTER_S = 1.5
 VERIFY_READ_S = 0.3       # the witness answers in ms or not at all
+# ...and the question is asked twice before silence is believed. The
+# link this exists for eats frames in BOTH directions: a get_version
+# that never reached the board reads exactly like a board that is deaf
+# and busy repainting, which would report the lost cue as landed - the
+# one outcome that must not be green. Two silences, 0.6 s in all.
+VERIFY_TRIES = 2
+# A sweep start further off than this is not waited for. The table is
+# 16-bit frames, so a corrupt entry (0xFFFE) reads as 655 s, and the
+# check would sit on the port for eleven minutes with no reprobe and no
+# guard STOP behind it. A cue that says how long its sweep is caps it at
+# that - a socket starting after the LAST scale is a broken table by
+# definition - and anything else at conductor/sequence.py's MAX_DELAY_S.
+VERIFY_MAX_DELAY_S = 30.0
 # WHICH board may be asked. Only one board of a garment is on the USB
 # cable - the RS-485 master, address 1 (ADDR_BUS_MASTER; the production
 # wall is ID:1 on USB, docs/SPECIFICATION.md 5.7, and every garment is
@@ -1258,27 +1276,48 @@ class DemoRunner:
                  if start is not None]
         if known:
             start, board = min(known)
+            span_s = getattr(session, "span_s", None)
+            cap = (float(span_s) + FRAME_S
+                   if isinstance(span_s, (int, float))
+                   else VERIFY_MAX_DELAY_S)
+            if not start <= cap:        # ...and a NaN cap fails it too
+                # A table nobody can have meant (see VERIFY_MAX_DELAY_S).
+                # Not checked rather than waited out: the worker owes the
+                # wall a guard STOP and a reprobe long before then.
+                return f"sweep start {start:.1f} s too late to check"
             return board, start
         if getattr(session, "span_s", None):
             return f"no sweep table known for slot {slot}"
         return candidates[0], 0.0
 
-    def _verify_wait(self, session, until: float) -> "str | None":
-        """Wait for the instant to ask; a reason to give up, or None.
+    def _yield_to(self, session, until: float,
+                  horizon: float = 0.0) -> "str | None":
+        """What outranks the landing check right now, or None.
 
-        The check owns the port for a second, and a cue owns it before
-        anything else: a trigger that falls at or before `until` takes
-        the window (the next broadcast is the answer to "did the last
-        one land" anyway). A cue armed for later does NOT - on a show
+        A cue owns the port before anything else: a trigger at or before
+        `until` takes the window (the next broadcast answers "did the
+        last one land" anyway). `horizon` is for the re-send only - a
+        repair is pointless when the next picture is about to replace it,
+        and a repair that starts less than a repaint before the next
+        trigger IS the 2026-08-14 double repaint, arrived at the long way
+        round. A cue armed beyond the horizon does not count: on a show
         the next cue is armed the moment this one applies, and yielding
-        to that would mean never checking anything.
+        to that would mean never checking, or never repairing, anything.
         """
+        if self._stop.is_set():
+            return "stopped"
+        due = session.due()
+        if due is not None and due[1] <= max(until,
+                                             time.monotonic() + horizon):
+            return f"cue {due[0]} is due"
+        return None
+
+    def _verify_wait(self, session, until: float) -> "str | None":
+        """Wait for the instant to ask; a reason to give up, or None."""
         while True:
-            if self._stop.is_set():
-                return "stopped"
-            due = session.due()
-            if due is not None and due[1] <= until:
-                return f"cue {due[0]} is due"
+            give_up = self._yield_to(session, until)
+            if give_up is not None:
+                return give_up
             left = until - time.monotonic()
             if left <= 0:
                 return None
@@ -1286,13 +1325,19 @@ class DemoRunner:
 
     def _ask_witness(self, bus, groups: int, board: int, dev_type: int,
                      cue_id: str) -> str:
-        """One short read-only question. "idle", "busy" or "deaf".
+        """A short read-only question. "idle", "busy" or "deaf".
 
         "idle" - the board answered, so it is listening, so it is not
         repainting, so the show frame never reached it. Any answer means
         that: production firmware refuses 0x02 with ACK_FAIL 0x0A
         (docs/SPECIFICATION.md 5.5), and a refusal is an answer. Only
         ACK_BUSY is read as "working", and silence as "deaf".
+
+        Asked VERIFY_TRIES times before silence is believed (the whole
+        window is verify_read x VERIFY_TRIES, 0.6 s by default). The link
+        this check exists for drops frames on the way OUT as well: a
+        question that never arrived looks exactly like a board too busy
+        to answer, and that reading would report the lost cue as landed.
 
         A frame from another board is a late answer to an earlier
         question (host/epaper/transport.py drops those, this is the
@@ -1301,7 +1346,7 @@ class DemoRunner:
         is a second repaint on the glass.
         """
         ack = bus.request(get_version(board, groups, dev_type=dev_type),
-                          retries=1, timeout=self.verify_read)
+                          retries=VERIFY_TRIES, timeout=self.verify_read)
         if ack is None:
             return "deaf"
         if ack.src != board:
@@ -1316,11 +1361,25 @@ class DemoRunner:
                         slot: int, dev_type: int, sent_at: float) -> None:
         """Check that the cue's broadcast landed; re-send it once if not.
 
-        At most two broadcasts per cue leave this method, ever: the one
-        _fire_at() already sent and, only against evidence that no board
-        took it, one more. Everything else is a log line.
+        At most two broadcasts per FIRE: the one _fire_at() already sent
+        and, only against evidence that no board took it, one more.
+        Everything else is a log line. A cue can be fired more than once
+        - ui/showplay.py re-arms the same cue id to heal a board that
+        joined late - and a heal of a cue this already confirmed is not
+        checked again (below), so the healed fire adds exactly one frame.
         """
         if not self.verify_fire:
+            return
+        landed = getattr(session, "verify", None) or {}
+        if (landed.get("cue") == cue_id
+                and landed.get("landed") in ("deaf", "busy")):
+            # The same cue broadcast again for a board that joined late
+            # (ui/showplay.py's heal): it was confirmed on the glass once
+            # already, and this frame is for a board that was not even
+            # there to be asked about. Checking again would only spend
+            # port time and risk a re-send nothing needs - so a heal adds
+            # exactly one broadcast, never two.
+            self.emit(f"cue {cue_id} landed already, not checked again")
             return
         chosen = self._witness(session, slot)
         if isinstance(chosen, str):
@@ -1364,6 +1423,22 @@ class DemoRunner:
                           f"(checked +{checked:.1f} s)")
                 self._record_verify(session, cue_id, "idle-after-resend",
                                     True, board)
+                return
+            # The ask itself took up to verify_read x VERIFY_TRIES, and a
+            # cue's own trigger owns the port ahead of any repair of the
+            # last one: without this second look a cue due just after the
+            # question would get its broadcast 0.05-0.3 s behind a
+            # re-send of the cue before it - two show frames in a row,
+            # which is the 2026-08-14 double repaint with extra steps -
+            # and a STOP in that window would still put a picture up.
+            refresh_s = getattr(session, "refresh_s", None)
+            give_up = self._yield_to(
+                session, time.monotonic(),
+                horizon=(float(refresh_s) if isinstance(refresh_s, (int, float))
+                         else GUARD_REFRESH_S))
+            if give_up is not None:
+                self.emit(f"cue {cue_id} verify skipped: {give_up}")
+                self._record_verify(session, cue_id, "skipped", resent, board)
                 return
             bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
             again = time.monotonic()

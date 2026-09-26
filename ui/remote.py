@@ -223,6 +223,10 @@ class RemoteSession:
             self.error = None
             self.saved, self.failed = [], []
             self.fire_at = self.fired_at = self.prepare_s = None
+            # Always forgotten here, even for the same cue id: a fresh
+            # /prepare is the operator sending the design again and
+            # wanting to know whether THAT one landed. (arm() is the
+            # other way round - see its heal note.)
             self.verify = None
             self.slot, self.dev_type = slot, dev_type
             self.span_s, self.refresh_s = span_s, refresh_s
@@ -242,7 +246,14 @@ class RemoteSession:
         do or report on).
 
         `span_s` / `refresh_s` are the cue's own, from the show file, and
-        only the guard STOP reads them (see prepare())."""
+        only the guard STOP reads them (see prepare()).
+
+        Re-arming the SAME cue id keeps the landing check's verdict: that
+        is ui/showplay.py's heal (the same cue broadcast again for a
+        board that joined late), and what the check already learned about
+        this cue on the glass is still true - the unit does not ask again
+        (ui/runner.py's _verify_landing()), and a "re-sent" the operator
+        can see does not blink away because a board joined."""
         if self.busy():
             raise RemoteError("unit is busy (firmware update, scan or reboot)")
         cue_id, slot = str(cue_id), int(slot)
@@ -251,11 +262,12 @@ class RemoteSession:
             self._refuse_if_imminent_locked(cue_id)
             self.active = True
             self.phase = READY
+            if cue_id != self.cue_id:
+                self.verify = None
             self.cue_id, self.label = cue_id, label
             self.error = None
             self.saved, self.failed = [], []
             self.fire_at = self.fired_at = self.prepare_s = None
-            self.verify = None
             self.slot, self.dev_type = slot, dev_type
             self.span_s, self.refresh_s = span_s, refresh_s
             self._job = None
@@ -492,8 +504,15 @@ class RemoteSession:
         """What the landing check found (see `self.verify`).
 
         `fired_at` and `late_ms` are deliberately left alone: they are
-        about the cue's first broadcast, and a re-send repairs that cue
-        rather than making a new, later one."""
+        about the cue's FIRST broadcast, and a re-send repairs that cue
+        rather than making a new, later one - "how late was the cue" must
+        not improve or worsen because the link needed a second copy.
+
+        The guard STOP is the opposite case and is NOT taken from here:
+        the picture really does start again at the re-send, so
+        ui/runner.py's _guard_after_fire() measures it from the LAST
+        broadcast. A guard timed from the first send would land a
+        re-sent cue's 0x17 inside its own sweep."""
         with self._lock:
             if cue_id != self.cue_id:
                 return              # a newer cue arrived meanwhile

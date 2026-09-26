@@ -49,7 +49,11 @@ class FakeBus:
         self.stray: "int | None" = None
         self.asked: "list[Frame]" = []      # only the 0x02 questions
         self.asked_at: "list[float]" = []
+        self.asked_tries: "list[int]" = []  # ...and how many tries each got
         self.sent_at: "list[float]" = []    # when each send() went out
+        # Called while a 0x02 is "in flight", for the tests that need
+        # something to happen between the question and the re-send.
+        self.on_ask = None
 
     @property
     def broadcasts(self) -> "list[Frame]":
@@ -63,6 +67,7 @@ class FakeBus:
     def request(self, frame, retries=3, timeout=None):
         self.requested.append(frame)
         if frame.cmd == GET_VERSION:
+            self.asked_tries.append(retries)
             return self._version_reply(frame)
         if self.nak_on is not None and frame.cmd == self.nak_on:
             return None
@@ -73,6 +78,8 @@ class FakeBus:
     def _version_reply(self, frame):
         self.asked.append(frame)
         self.asked_at.append(time.monotonic())
+        if self.on_ask is not None:
+            self.on_ask()
         if self.stray is not None:
             # A late answer to an EARLIER question, from another board.
             src, self.stray = self.stray, None
@@ -445,16 +452,26 @@ def test_a_re_sent_cue_still_reports_the_first_send_as_its_fire_time():
 
 
 def test_the_guard_stop_waits_for_the_re_sent_picture_not_the_first_one():
+    # The re-sent frame is when the picture actually starts drawing, so
+    # the guard 0x17 has to move with it - timed from the first send it
+    # would land inside the re-sent cue's own sweep, which is the one
+    # thing _guard_for() exists to prevent.
     bus = FakeBus(witness={1: ["idle", "deaf"]})
-    session, runner = fired_cue(bus, guard_delay=0.4)
+    session, runner = fired_cue(bus, guard_delay=0.4, verify_after=0.2)
     assert wait_until(lambda: session.verify is not None)
-    last_show = max(i for i, f in enumerate(bus.sent)
-                    if f.cmd == SHOW and f.dest == 0xFF)
+    shows = [i for i, f in enumerate(bus.sent)
+             if f.cmd == SHOW and f.dest == 0xFF]
+    assert len(shows) == 2
+    first, last = bus.sent_at[shows[0]], bus.sent_at[shows[1]]
+    assert last - first >= 0.2                      # the re-send's offset
     assert wait_until(lambda: any(f.cmd == GUARD and f.dest == 0xFF
-                                  for f in bus.sent[last_show:]), timeout=3)
-    guard = next(i for i in range(last_show, len(bus.sent))
+                                  for f in bus.sent[shows[1]:]), timeout=3)
+    guard = next(i for i in range(shows[1], len(bus.sent))
                  if bus.sent[i].cmd == GUARD and bus.sent[i].dest == 0xFF)
-    assert bus.sent_at[guard] - bus.sent_at[last_show] >= 0.35
+    # Measured from the LAST broadcast...
+    assert bus.sent_at[guard] - last >= 0.4 - 0.02
+    # ...which is the first send plus the whole re-send offset.
+    assert bus.sent_at[guard] - first >= 0.4 + (last - first) - 0.02
     runner.stop()
 
 
@@ -624,6 +641,148 @@ def test_the_check_can_be_switched_off():
     time.sleep(0.2)
     assert bus.asked == [] and len(bus.broadcasts) == 1
     assert session.verify is None
+    runner.stop()
+
+
+def test_the_default_deaf_window_clears_the_measured_onset():
+    # The 2026-08-14 run has the slower of the two boards still answering
+    # at +1.2 s. A default below that would ask a board that has taken
+    # the frame but not yet gone deaf - read as "idle", re-sent, two
+    # repaints. Lower it only with a fresh measurement per board type.
+    from ui.runner import VERIFY_AFTER_S, VERIFY_READ_S, VERIFY_TRIES
+
+    assert VERIFY_AFTER_S >= 1.2 + 0.3
+    assert VERIFY_READ_S * VERIFY_TRIES <= 0.7     # the whole ask window
+
+
+def test_the_witness_is_asked_twice_before_silence_is_believed():
+    # The link this check exists for drops frames outbound too: a
+    # question that never arrived looks exactly like a board deaf from
+    # repainting, and that reading reports a LOST cue as landed.
+    bus = FakeBus()
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert bus.asked_tries == [2]
+    runner.stop()
+
+
+def test_a_cue_about_to_fire_cancels_the_re_send():
+    # The question itself takes up to 0.6 s. A cue whose trigger lands in
+    # that window owns the port, and repairing the cue before it is
+    # pointless anyway - the next picture is about to replace it, and two
+    # show frames a fraction of a second apart is the 2026-08-14 double
+    # repaint by another route.
+    from ui.remote import RemoteSession
+
+    bus = FakeBus(witness={1: "idle"})
+    runner = make_runner(bus, boards=[1])
+    session = RemoteSession(runner)
+    bus.on_ask = lambda: (session.arm("c2", 3),
+                          session.fire("c2", time.monotonic() + 0.3))
+    session.arm("c1", 2)
+    assert wait_until(lambda: runner.live == [1])
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: len(bus.asked) == 1)
+    bus.on_ask = None
+    assert wait_until(lambda: [f.data[0] for f in bus.broadcasts] == [2, 3],
+                      timeout=3)
+    assert logged(runner, "cue c1 verify skipped: cue c2 is due")
+    runner.stop()
+    # One broadcast for c1 (never repaired), one for c2 - not three.
+    assert [f.data[0] for f in bus.broadcasts] == [2, 3]
+
+
+def test_a_cue_far_enough_off_does_not_cancel_the_re_send():
+    # ...and the other way round: a cue armed a minute out is not a
+    # reason to leave the garment on the wrong picture until then.
+    from ui.remote import RemoteSession
+
+    bus = FakeBus(witness={1: ["idle", "deaf"]})
+    runner = make_runner(bus, boards=[1])
+    session = RemoteSession(runner)
+    bus.on_ask = lambda: (session.arm("c2", 3),
+                          session.fire("c2", time.monotonic() + 60))
+    session.arm("c1", 2)
+    assert wait_until(lambda: runner.live == [1])
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: len(bus.asked) == 1)
+    bus.on_ask = None
+    assert wait_until(lambda: len(bus.broadcasts) == 2)
+    assert [f.data[0] for f in bus.broadcasts] == [2, 2]   # c1 repaired
+    assert logged(runner, "cue c1 not applied at @01")
+    runner.stop()
+
+
+def test_a_stop_while_the_question_is_in_flight_stops_the_re_send():
+    # KEY2 / /show/stop during the 0.6 s the question takes. Nothing may
+    # go on the glass after that.
+    from ui.remote import RemoteSession
+
+    bus = FakeBus(witness={1: "idle"})
+    runner = make_runner(bus, boards=[1])
+    session = RemoteSession(runner)
+    # The stop flag is what the worker sees first; runner.stop() itself
+    # cannot be called from inside the worker's own thread.
+    bus.on_ask = lambda: runner._stop.set()
+    session.arm("c1", 2)
+    assert wait_until(lambda: runner.live == [1])
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: not runner.running)
+    assert len(bus.broadcasts) == 1
+    assert logged(runner, "cue c1 verify skipped: stopped")
+    runner.stop()
+
+
+def test_a_sweep_start_beyond_the_cues_own_span_is_not_waited_for():
+    # The table is 16-bit frames: one corrupt entry reads as 655 s, and
+    # the check would sit on the port for eleven minutes with no reprobe
+    # and no guard STOP behind it.
+    bus = FakeBus(witness={1: "idle"})
+    session, runner = fired_cue(bus, boards=(1,), span_s=3.0,
+                                delays={1: sweep_table(65534)})
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify["landed"] == "skipped"
+    assert bus.asked == [] and len(bus.broadcasts) == 1
+    assert logged(runner, "cue c1 verify skipped: sweep start 655.3 s "
+                          "too late to check")
+    runner.stop()
+
+
+def test_a_sweep_start_beyond_the_ceiling_is_not_waited_for_either():
+    # No span given (an older conductor's /prepare): the ceiling is
+    # VERIFY_MAX_DELAY_S rather than the cue's own word for it.
+    from ui.runner import VERIFY_MAX_DELAY_S
+
+    bus = FakeBus(witness={1: "idle"})
+    session, runner = fired_cue(bus, boards=(1,),
+                                delays={1: sweep_table(4000)})   # 40 s
+    assert wait_until(lambda: session.verify is not None)
+    assert VERIFY_MAX_DELAY_S < 40.0
+    assert session.verify["landed"] == "skipped"
+    assert logged(runner, "cue c1 verify skipped: sweep start 40.0 s")
+    runner.stop()
+
+
+def test_a_healed_cue_is_not_checked_a_second_time():
+    # ui/showplay.py re-arms the SAME cue id to heal a board that joined
+    # late. That cue was already confirmed on the glass, and the healing
+    # broadcast is for a board that was not even there to be asked
+    # about: checking again would only spend port time and risk a
+    # re-send nothing needs. So a heal adds exactly one broadcast.
+    from ui.remote import FIRED
+
+    bus = FakeBus()
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify["landed"] == "deaf"
+    session.arm("c1", 19)                             # the heal: same cue id
+    assert session.verify["landed"] == "deaf"         # ...keeps the verdict
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: len(bus.broadcasts) == 2)
+    assert wait_until(lambda: logged(runner, "cue c1 landed already, "
+                                             "not checked again"))
+    time.sleep(0.2)
+    assert len(bus.asked) == 1 and len(bus.broadcasts) == 2
     runner.stop()
 
 
