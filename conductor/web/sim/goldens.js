@@ -5703,9 +5703,9 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     "kind": null,
     "normalized": "Look22_a:b_HW.csv",
     "parts": [
-     "Look22",
      null,
-     "a:b"
+     null,
+     "Look22_a:b_HW"
     ],
     "problem": "a file name cannot contain \":\" (Windows keeps it)"
    },
@@ -5733,9 +5733,9 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     "kind": null,
     "normalized": "Look22_a\uff0fb_HW.csv",
     "parts": [
-     "Look22",
      null,
-     "a\uff0fb"
+     null,
+     "Look22_a\uff0fb_HW"
     ],
     "problem": "a file name cannot contain \"\uff0f\" (a path separator)"
    },
@@ -5748,9 +5748,9 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     "kind": null,
     "normalized": "Look22_a\uff3cb_HW.csv",
     "parts": [
-     "Look22",
      null,
-     "a\uff3cb"
+     null,
+     "Look22_a\uff3cb_HW"
     ],
     "problem": "a file name cannot contain \"\uff3c\" (a path separator)"
    },
@@ -5763,9 +5763,9 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     "kind": null,
     "normalized": "Look22_a|b_HW.csv",
     "parts": [
-     "Look22",
      null,
-     "a|b"
+     null,
+     "Look22_a|b_HW"
     ],
     "problem": "a file name cannot contain \"|\" (Windows keeps it)"
    },
@@ -5800,6 +5800,186 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     "problem": null
    },
    "filename": "  Look22_1_HW.csv  ",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "\u0085Look22_1_HW.csv",
+    "parts": [
+     null,
+     null,
+     "\u0085Look22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "\u0085Look22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW.csv\u0085",
+    "parts": [
+     null,
+     null,
+     "Look22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "Look22_1_HW.csv\u0085",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "\u001cLook22_1_HW.csv",
+    "parts": [
+     null,
+     null,
+     "\u001cLook22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "\u001cLook22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW.csv\u001f",
+    "parts": [
+     null,
+     null,
+     "Look22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "Look22_1_HW.csv\u001f",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "\ufeffLook22_1_HW.csv",
+    "parts": [
+     "\ufeffLook22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "\ufeffLook22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "\u00a0Look22_1_HW.csv",
+    "parts": [
+     "\u00a0Look22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "\u00a0Look22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "\u2028Look22_1_HW.csv",
+    "parts": [
+     null,
+     null,
+     "\u2028Look22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "\u2028Look22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_1_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "\u3000Look22_1_HW.csv\u3000",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "\tLook22_1_HW.csv\n",
+    "parts": [
+     null,
+     null,
+     "\tLook22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "\tLook22_1_HW.csv\n",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW.csv.",
+    "parts": [
+     null,
+     null,
+     "Look22_1_HW.csv"
+    ],
+    "problem": "a file name cannot start or end with a dot"
+   },
+   "filename": "Look22_1_HW.csv.",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW.",
+    "parts": [
+     null,
+     null,
+     "Look22_1_HW"
+    ],
+    "problem": "a file name cannot start or end with a dot"
+   },
+   "filename": "Look22_1_HW.",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW",
+    "parts": [
+     "Look22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_1_HW",
    "items": null,
    "kind": "names"
   },

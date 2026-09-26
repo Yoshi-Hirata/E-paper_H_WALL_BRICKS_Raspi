@@ -1581,10 +1581,13 @@
   // to. Returns null for "cannot belong to any item".
   function renameOntoItem(itemKey, name) {
     const raw = nfc(name);         // composed, never width-folded (above)
-    // _.+_HW last, so a *_map.csv or a conventional *_color_NAME_grid.csv
-    // is still read as itself: AZ271SD1301_1_HW.csv picked on another
-    // garment becomes <item>_1_HW.csv.
-    const m = raw.match(/(_map|_color_.+grid|_.+_HW).*\.csv$/i);
+    // Two matches, not one alternation: _map and _color_…grid are read
+    // whatever their case, but _HW is the site's own button and is spelled
+    // in capitals (SIM.look.kind agrees). AZ271SD1301_1_HW.csv picked on
+    // another garment becomes <item>_1_HW.csv; "…_1_hw.csv" is not a
+    // design at all and must not be renamed as if it were.
+    const m = raw.match(/(_map|_color_.+grid).*\.csv$/i)
+           || raw.match(/_.+_HW.*\.csv$/);
     return m ? itemKey + raw.slice(m.index) : null;
   }
   async function addFilesToItemFromBlobs(itemKey, files) {
@@ -1765,8 +1768,9 @@
   // take the name and ignore it, so a dropped .xlsx and a mis-named CSV got
   // the same sentence, and the .xlsx one did not describe the problem).
   function refuseReason(name) {
-    return /\.csv$/i.test(String(name)) ? "not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv"
-                                        : "not a .csv file";
+    return /\.csv$/i.test(String(name))
+      ? "not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv (the wiring site writes _HW in capitals)"
+      : "not a .csv file";
   }
   // A refusal/rename list, short enough to read in a toast: a dropped folder
   // can hold a hundred files nobody wants named one by one.

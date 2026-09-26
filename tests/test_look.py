@@ -538,7 +538,7 @@ def test_a_decomposed_name_composes():
 @pytest.mark.parametrize("name,problem", [
     ("", "a file name cannot be empty"),
     ("   ", "a file name cannot be empty"),
-    ("bad\x00_map.csv", "a file name cannot contain a control character"),
+    ("bad\x00_map.csv", "a file name cannot contain a line break or a control character"),
     ("a/b_map.csv", 'a file name cannot contain "/" (a path separator)'),
     ("a\\b_map.csv", 'a file name cannot contain "\\" (a path separator)'),
     ("a／b_map.csv", 'a file name cannot contain "／" (a path separator)'),
@@ -556,6 +556,45 @@ def test_what_no_workspace_file_name_may_hold(name, problem):
 def test_outer_whitespace_is_trimmed_not_refused():
     assert look_mod.name_problem("  Look22_map.csv  ") is None
     assert look_mod.normalize_name("  Look22_map.csv  ") == "Look22_map.csv"
+
+
+# Only the ordinary space (and U+3000, which becomes one) is trimmed, and
+# the control-character check runs first - so none of these depends on
+# str.strip()/String.trim() agreeing, which they do not (review of
+# 3fd1a42: Python's strip() eats U+0085 and U+001C-U+001F, JS's trim()
+# eats U+FEFF, so each side used to accept a name the other refused).
+@pytest.mark.parametrize("char", ["", "", "", "\t", "\n",
+                                  " ", " "])
+def test_a_control_character_at_either_end_is_refused_not_trimmed(char):
+    for name in (char + "Look22_1_HW.csv", "Look22_1_HW.csv" + char):
+        assert look_mod.name_problem(name) == \
+            "a file name cannot contain a line break or a control character"
+        # kind() asks about the name as GIVEN, so it agrees with the above
+        # instead of asking about the already-trimmed one.
+        assert look_mod.kind(name) is None
+        # ...and a name that is no file of ours has no item and no design.
+        assert Design.name_parts(name)[:2] == (None, None)
+
+
+@pytest.mark.parametrize("char", ["﻿", " "])
+def test_the_other_edge_characters_are_kept_by_both_sides(char):
+    # Neither side trims these now. They stay part of the name, which is
+    # all that matters: the two agree.
+    name = char + "Look22_1_HW.csv"
+    assert look_mod.name_problem(name) is None
+    assert look_mod.normalize_name(name) == name
+
+
+def test_the_stem_rule_is_the_simulators_own():
+    # Path.stem drops a trailing dot on Windows and stemOf() never does,
+    # so the two used to print a different label for the same refused
+    # name (review of 3fd1a42).
+    assert look_mod.file_stem("Look22_1_HW.csv.") == "Look22_1_HW.csv"
+    assert look_mod.file_stem("Look22_1_HW.csv") == "Look22_1_HW"
+    assert look_mod.file_stem("Look22_1_HW") == "Look22_1_HW"
+    assert look_mod.file_stem("sub/Look22_map.csv") == "Look22_map"
+    assert look_mod.file_stem("sub\\Look22_map.csv") == "Look22_map"
+    assert look_mod.file_stem(".hidden") == ".hidden"
 
 
 # ---- a design drawn for another layout of the same garment ----

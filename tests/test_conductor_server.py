@@ -113,7 +113,7 @@ def test_grid_without_its_map_waits_as_an_orphan(tmp_path):
     assert state["orphans"][0]["name"] == "Look24_color_pattern01_grid.csv"
 
 
-def test_only_the_two_csv_kinds_are_accepted_and_names_are_tamed(tmp_path):
+def test_only_the_two_csv_kinds_are_accepted_and_a_path_is_refused(tmp_path):
     ws = Workspace(tmp_path)
     with pytest.raises(ValueError):
         ws.save("cables.csv", "x")
@@ -121,10 +121,23 @@ def test_only_the_two_csv_kinds_are_accepted_and_names_are_tamed(tmp_path):
         ws.save("Look22_map.txt", "x")
     with pytest.raises(ValueError):
         ws.assign("Look22", "radxa-99")
-    saved = ws.save("../../evil/Look22_map.csv", MAP)
-    assert saved == "Look22_map.csv"
+    # A name with a path in it is REFUSED, not quietly reduced to its
+    # basename (review of 3fd1a42): taking the basename let
+    # "sub/Look22_map.csv" become a file of this workspace through
+    # /api/files while the simulator and import_bundle both turned it
+    # away, and the error it did raise quoted the stripped name rather
+    # than what the caller sent.
+    for bad in ("../../evil/Look22_map.csv", "sub/Look22_map.csv",
+                "sub\\Look22_map.csv"):
+        with pytest.raises(ValueError) as caught:
+            ws.save(bad, MAP)
+        assert str(caught.value).startswith(bad + ": ")
+        assert "path separator" in str(caught.value)
+    assert list((tmp_path / "files").glob("*.csv")) == []
+    # The plain name still saves, and delete still takes a bare one.
+    assert ws.save("Look22_map.csv", MAP) == "Look22_map.csv"
     assert (tmp_path / "files" / "Look22_map.csv").is_file()
-    ws.delete("../files/Look22_map.csv")
+    ws.delete("Look22_map.csv")
     assert not (tmp_path / "files" / "Look22_map.csv").exists()
 
 

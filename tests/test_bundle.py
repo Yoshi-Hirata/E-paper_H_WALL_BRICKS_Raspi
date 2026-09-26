@@ -255,7 +255,7 @@ def test_bundle_refuses_unsafe_file_names_without_writing_anything(tmp_path):
     assert reasons["../x_map.csv"] == separator
     assert reasons["/etc/x_map.csv"] == separator
     assert reasons["bad\x00name_map.csv"] == \
-        "a file name cannot contain a control character"
+        "a file name cannot contain a line break or a control character"
     assert sorted(p.name for p in ws.files.glob("*.csv")) == [MAP_NAME]
 
 
@@ -397,7 +397,7 @@ def test_a_name_that_is_still_unusable_after_composing_is_refused(tmp_path):
     assert result["renamed"] == {}
     reasons = {r.split(": ", 1)[0]: r.split(": ", 1)[1] for r in result["refused"]}
     assert reasons == {
-        "bad\x00name_map.csv": "a file name cannot contain a control character",
+        "bad\x00name_map.csv": "a file name cannot contain a line break or a control character",
         "sub／x_map.csv": 'a file name cannot contain "／" (a path separator)',
         "a:b_map.csv": 'a file name cannot contain ":" (Windows keeps it)',
     }

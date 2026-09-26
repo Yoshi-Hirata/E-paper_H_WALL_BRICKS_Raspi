@@ -46,7 +46,7 @@ from .fleet import DEFAULT_LEAD_S, Fleet, default_units
 from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, default_shift, unit_board_ids)
 from .look import kind as file_kind
-from .look import map_item
+from .look import file_stem, map_item
 from .look import name_problem as look_name_problem
 from .look import normalize_name as look_normalize
 
@@ -108,19 +108,21 @@ def safe_music_name(name: str) -> str:
 
 def workspace_name(name: str) -> str:
     """A CSV's name as this workspace spells it - conductor/look.py's
-    shared rule, applied to the file's own basename so that a path in a
-    name is a dropped directory rather than a traversal.
+    shared rule, on the name the caller actually sent.
 
-    Raises ValueError naming the problem when the name is not usable. It
-    REFUSES rather than folds (review of a6b610b): the old substituting
-    version turned 柄・A, 柄　A and 柄＋A into one "柄_A", so three
-    designs quietly overwrote each other.
+    Raises ValueError quoting THAT name and the reason. It refuses rather
+    than folds (review of a6b610b): the old substituting version turned
+    柄・A, 柄　A and 柄＋A into one "柄_A", so three designs quietly
+    overwrote each other. And it does not take the basename first (review
+    of 3fd1a42): doing that dropped a directory in silence, so
+    "sub/AZ_1_HW.csv" became a file of this workspace on the /api/files
+    path while the simulator and import_bundle both refused it - and the
+    error it did raise quoted the stripped name, not what was sent.
     """
-    clean = look_normalize(Path(look_normalize(name)).name)
-    problem = look_name_problem(clean)
+    problem = look_name_problem(name)
     if problem:
         raise ValueError(f"{name}: {problem}")
-    return clean
+    return look_normalize(name)
 
 
 def _renamed_items(renamed: "dict[str, str]") -> "dict[str, str]":
@@ -137,7 +139,7 @@ def _renamed_items(renamed: "dict[str, str]") -> "dict[str, str]":
         # The OLD item comes off the raw name: map_item() normalises, so
         # asking it for both sides would return the same string twice and
         # find no rename at all.
-        was = _MAP_ITEM.match(Path(old).stem)
+        was = _MAP_ITEM.match(file_stem(old))
         old_item = was.group(1) if was else None
         new_item = map_item(new)
         if old_item and new_item and old_item != new_item:
@@ -967,7 +969,8 @@ class Workspace:
                     problem = "a bundle's file names may not hold a path"
                 if not problem and self.kind(clean) is None:
                     problem = ("not a *_map.csv, *_color_NAME_grid.csv "
-                               "or *_HW.csv")
+                               "or *_HW.csv (the wiring site writes _HW "
+                               "in capitals)")
             except (OSError, ValueError):     # e.g. an embedded NUL byte
                 problem = "unusable file name"
             if problem:
@@ -1040,7 +1043,8 @@ class Workspace:
         name = workspace_name(name)          # raises on an unusable name
         if self.kind(name) is None:
             raise ValueError(f"{name}: not a *_map.csv, "
-                             "*_color_NAME_grid.csv or *_HW.csv")
+                             "*_color_NAME_grid.csv or *_HW.csv (the "
+                             "wiring site writes _HW in capitals)")
         with self._lock:
             # open(), not Path.write_text(newline=...): that is 3.10+, and
             # the units' Python 3.9 should be able to run this too.

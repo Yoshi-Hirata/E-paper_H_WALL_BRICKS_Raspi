@@ -511,7 +511,17 @@
   const _NAME_SEPARATORS = "/\\／＼";
   const _NAME_RESERVED = ":*?\"<>|";
   // eslint-disable-next-line no-control-regex
-  const _NAME_CONTROL = /[\x00-\x1f\x7f-\x9f]/;
+  // U+2028/U+2029 with the ASCII line breaks: they are LINE TERMINATORS to
+  // a JS regex, so "." matches them in Python and not here, and _HW_NAME
+  // would read one name two ways (conductor/look.py's _NAME_CONTROL).
+  const _NAME_CONTROL = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
+  // Trimmed explicitly, and only the ordinary space - never String.trim():
+  // trim() and Python's str.strip() do not agree on the edges (strip() eats
+  // U+0085 and U+001C-U+001F, trim() eats U+FEFF), so each side used to
+  // accept a name the other refused. Every other whitespace character is a
+  // control character and nameProblem() refuses it before trimming.
+  // conductor/look.py's _NAME_TRIM.
+  const _NAME_TRIM = " ";
   // geometry_problem()'s thresholds, verbatim from conductor/look.py.
   const _GEOM_MIN_SHORT_ROWS = 2;
   const _GEOM_SHORT_TENTHS = 1;
@@ -527,18 +537,32 @@
   // conductor/look.py's normalize_name(): NFC, U+3000 as an ordinary
   // space, no leading or trailing whitespace. Never NFKC - the 配線ナビ
   // writes 配色案名 with full-width characters and those ARE the name.
+  function trimName(text) {
+    let from = 0, to = text.length;
+    while (from < to && _NAME_TRIM.indexOf(text.charAt(from)) !== -1) from += 1;
+    while (to > from && _NAME_TRIM.indexOf(text.charAt(to - 1)) !== -1) to -= 1;
+    return text.slice(from, to);
+  }
+
+  function nfcOf(name) {
+    const text = String(name);
+    try { return text.normalize("NFC"); } catch (e) { return text; }
+  }
+
   function normalizeName(name) {
-    let text = String(name);
-    try { text = text.normalize("NFC"); } catch (e) { /* no ICU: leave it */ }
-    return text.split(_IDEOGRAPHIC_SPACE).join(" ").trim();
+    return trimName(nfcOf(name).split(_IDEOGRAPHIC_SPACE).join(" "));
   }
 
   // conductor/look.py's name_problem(), same checks in the same order so
   // both sides refuse the same names and say the same thing about them.
+  // The control-character check runs BEFORE any trimming, or a control
+  // character at either end would be trimmed away by one side and refused
+  // by the other.
   function nameProblem(name) {
-    const text = normalizeName(name);
+    const raw = nfcOf(name);
+    if (_NAME_CONTROL.test(raw)) return "a file name cannot contain a line break or a control character";
+    const text = trimName(raw.split(_IDEOGRAPHIC_SPACE).join(" "));
     if (!text) return "a file name cannot be empty";
-    if (_NAME_CONTROL.test(text)) return "a file name cannot contain a control character";
     for (const char of text) {
       if (_NAME_SEPARATORS.indexOf(char) !== -1) {
         return `a file name cannot contain "${char}" (a path separator)`;
@@ -565,8 +589,10 @@
   }
 
   function kind(filename) {
+    // nameProblem() on the name as GIVEN (see conductor/look.py's kind()).
+    if (nameProblem(filename)) return null;
     const name = normalizeName(filename);
-    if (!/\.csv$/i.test(name) || nameProblem(name)) return null;
+    if (!/\.csv$/i.test(name)) return null;
     const stem = stemOf(name);
     if (_IS_GRID.test(stem)) return "grid";
     if (_IS_MAP.test(stem)) return "map";
@@ -598,6 +624,10 @@
 
   function nameParts(filename, items) {
     const stem = stemOf(normalizeName(filename));
+    // A name nameProblem() refuses has no item and no design - see
+    // conductor/look.py's name_parts() for why reading one anyway made
+    // the two sides disagree.
+    if (nameProblem(filename)) return [null, null, stem];
     const m = _GRID_NAME.exec(stem);
     let item, name;
     if (m) {

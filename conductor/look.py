@@ -165,7 +165,34 @@ _NAME_SEPARATORS = "/\\／＼"
 # (：＊？＂＜＞｜) are ordinary characters NTFS is perfectly happy with,
 # and a 配色案名 may well want "柄：A" or "（A）".
 _NAME_RESERVED = ':*?"<>|'
-_NAME_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# U+2028/U+2029 belong here with the ASCII line breaks, and not only
+# because a file name has no business holding one: they are LINE
+# TERMINATORS to a JavaScript regex, so "." matches them in Python and
+# does not in JS, and _HW_NAME would read the same name two ways (review
+# of 3fd1a42 - the names goldens caught it).
+_NAME_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+# Trimmed EXPLICITLY, and only the ordinary space - never str.strip() or
+# String.trim(). Those two do not agree on the edges: strip() eats U+0085
+# and U+001C-U+001F (it goes by str.isspace()), trim() eats U+FEFF and
+# strip() does not, so each side used to accept a name the other refused
+# (review of 3fd1a42). Every other whitespace character IS a control
+# character, and name_problem() refuses those outright before it trims -
+# a tab at the end of a name is a mistake worth reporting, not something
+# to tidy away. U+3000 is written as a space first, so it trims too.
+_NAME_TRIM = " "
+
+
+def file_stem(name) -> str:
+    """The name without its directory or its last extension.
+
+    Ours, not Path.stem: on Windows pathlib also strips trailing dots and
+    spaces ("x.csv." -> "x.csv"), which JavaScript never does, and the two
+    sides then disagreed about a refused name's own label (review of
+    3fd1a42). This is conductor/web/sim/model.js's stemOf(), exactly.
+    """
+    base = re.split(r"[\\/]", str(name))[-1]
+    dot = base.rfind(".")
+    return base[:dot] if dot > 0 else base
 
 
 def normalize_name(name) -> str:
@@ -178,20 +205,23 @@ def normalize_name(name) -> str:
     decomposed the same name as the one typed on Windows.
     """
     text = unicodedata.normalize("NFC", str(name))
-    return text.replace(_IDEOGRAPHIC_SPACE, " ").strip()
+    return text.replace(_IDEOGRAPHIC_SPACE, " ").strip(_NAME_TRIM)
 
 
 def name_problem(name) -> "str | None":
     """Why `name` cannot be a workspace file name, or None.
 
     The checks run in this order on both sides, so the two always give
-    the same reason for the same name.
+    the same reason for the same name. The control-character check comes
+    FIRST, before any trimming: a control character at either end must be
+    refused, not quietly trimmed away (see _NAME_TRIM).
     """
-    text = normalize_name(name)
+    raw = unicodedata.normalize("NFC", str(name))
+    if _NAME_CONTROL.search(raw):
+        return "a file name cannot contain a line break or a control character"
+    text = raw.replace(_IDEOGRAPHIC_SPACE, " ").strip(_NAME_TRIM)
     if not text:
         return "a file name cannot be empty"
-    if _NAME_CONTROL.search(text):
-        return "a file name cannot contain a control character"
     for char in text:
         if char in _NAME_SEPARATORS:
             return f'a file name cannot contain "{char}" (a path separator)'
@@ -211,10 +241,16 @@ def kind(name: str) -> "str | None":
     <item>_<配色案名>_HW.csv. A *_map.csv is always the map, whatever else
     the name says. A name name_problem() refuses is neither.
     """
-    text = normalize_name(name)
-    if not text.lower().endswith(".csv") or name_problem(text):
+    # name_problem() on the name as GIVEN, not on the normalised one: a
+    # control character at either end is refused, and asking about the
+    # trimmed name would have hidden the very thing being refused (review
+    # of 3fd1a42).
+    if name_problem(name):
         return None
-    stem = Path(text).stem
+    text = normalize_name(name)
+    if not text.lower().endswith(".csv"):
+        return None
+    stem = file_stem(text)
     if _IS_GRID.search(stem):
         return "grid"
     if _IS_MAP.search(stem):
@@ -226,7 +262,7 @@ def kind(name: str) -> "str | None":
 
 def map_item(name) -> "str | None":
     """The garment a *_map.csv belongs to, from the normalised name."""
-    match = _MAP_NAME.match(Path(normalize_name(name)).stem)
+    match = _MAP_NAME.match(file_stem(normalize_name(name)))
     return match.group(1) if match else None
 
 
@@ -497,8 +533,17 @@ class Design:
         `items` is the garments the caller already knows about, used only
         to split an <item>_<配色案名>_HW.csv whose design name has
         underscores of its own (see _split_hw).
+
+        A name name_problem() refuses has no item and no design, only its
+        own stem to be named by: it is not a file of this workspace, so
+        there is nothing to read out of it, and trying anyway had the two
+        sides disagree (U+2028 is a line terminator to a JavaScript regex
+        and an ordinary character to Python's, so "." took it here and not
+        there - review of 3fd1a42, caught by the names goldens).
         """
-        stem = Path(normalize_name(filename)).stem
+        stem = file_stem(normalize_name(filename))
+        if name_problem(filename):
+            return None, None, stem
         match = _GRID_NAME.match(stem)
         if match:
             item, name = match.group(1), match.group(2)

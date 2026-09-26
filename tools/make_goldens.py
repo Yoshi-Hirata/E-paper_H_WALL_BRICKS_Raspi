@@ -337,6 +337,24 @@ NAME_CASES = [
     ("Look22_a|b_HW.csv", None),
     (".Look22_map.csv", None),
     ("  Look22_1_HW.csv  ", None),                  # trimmed, then read
+    # The edges the two languages used to trim differently (review of
+    # 3fd1a42): Python's strip() eats U+0085 and U+001C-U+001F, JS's
+    # trim() eats U+FEFF, and neither may - a control character is
+    # refused, and anything else stays part of the name.
+    ("Look22_1_HW.csv", None),
+    ("Look22_1_HW.csv", None),
+    ("Look22_1_HW.csv", None),
+    ("Look22_1_HW.csv", None),
+    ("﻿Look22_1_HW.csv", None),
+    (" Look22_1_HW.csv", None),
+    (" Look22_1_HW.csv", None),
+    ("　Look22_1_HW.csv　", None),
+    ("\tLook22_1_HW.csv\n", None),
+    # A refused name still gets a label, and the two sides must agree on
+    # it: Path.stem drops a trailing dot on Windows and stemOf does not.
+    ("Look22_1_HW.csv.", None),
+    ("Look22_1_HW.", None),
+    ("Look22_1_HW", None),
     # The _HW grammar's own edges (review of a6b610b).
     ("my_notes_hw.csv", None),                      # lower case is not the button
     ("AZ271SD1301_map_HW.csv", None),               # both files at once: neither

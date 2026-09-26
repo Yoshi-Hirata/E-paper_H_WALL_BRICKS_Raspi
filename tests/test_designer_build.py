@@ -559,8 +559,18 @@ window.addEventListener("load", function () {
         .map(n => SIM.app.classifyCsv("AZ271SD1301_" + n + "_HW.csv", grid).name);
       // ...and the names this page must refuse because the Conductor does.
       out.refused = ["AZ271SD1301_a/b_HW.csv", "AZ271SD1301_a\\uFF0Fb_HW.csv",
-                     "AZ271SD1301_a:b_HW.csv", ".AZ271SD1301_map.csv"]
+                     "AZ271SD1301_a:b_HW.csv", ".AZ271SD1301_map.csv",
+                     // The edges String.trim() and str.strip() disagree
+                     // about: refused, never quietly trimmed.
+                     "\\u0085AZ271SD1301_1_HW.csv", "AZ271SD1301_1_HW.csv\\u001C",
+                     "\\u2028AZ271SD1301_1_HW.csv"]
         .map(n => SIM.app.classifyCsv(n, grid).error || null);
+      // A lower-case "_hw" is not the site's button: it must not be
+      // renamed onto a garment as if it were a design.
+      out.lowerHw = SIM.app.addFilesToItem("AZ271SD1301",
+        [{ name: "AZ271SD1301_1_hw.csv", text: grid }]);
+      out.upperHw = SIM.app.addFilesToItem("AZ271SD1301",
+        [{ name: "AZ271SD1301_9_HW.csv", text: grid }]);
     } catch (e) { out.error = String(e); }
     var pre = document.createElement("pre");
     pre.id = "namecheck-out";
@@ -604,12 +614,21 @@ def test_a_full_width_design_name_is_kept_exactly_as_the_site_writes_it(tmp_path
     # And this page refuses, with the Conductor's own words, exactly what
     # the Conductor refuses - a bundle it writes can never be turned away
     # on the show PC for a name it was happy to save (review of a6b610b).
+    control = "a file name cannot contain a line break or a control character"
     assert got["refused"] == [
         'a file name cannot contain "/" (a path separator)',
         'a file name cannot contain "／" (a path separator)',
         'a file name cannot contain ":" (Windows keeps it)',
         "a file name cannot start or end with a dot",
+        control, control, control,
     ]
+    # "_hw" in lower case is not the wiring site's button, so the page must
+    # not rename it onto the garment and leave the server to refuse it
+    # (review of 3fd1a42); "_HW" still works.
+    assert got["lowerHw"]["saved"] == []
+    assert len(got["lowerHw"]["refused"]) == 1
+    assert "in capitals" in got["lowerHw"]["refused"][0]["error"]
+    assert got["upperHw"]["saved"] == ["AZ271SD1301_9_HW.csv"]
 
 
 GEOMETRY_SENTENCE = (
