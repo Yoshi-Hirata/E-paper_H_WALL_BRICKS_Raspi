@@ -489,7 +489,10 @@ class App:
         screen has to pick it up too, or the LCD would sit on the menu
         while the garment plays, KEY2 would not stop it, and a `loop`
         demo would stop at its last cue. (restore() only ever comes back
-        LOADED or RUNNING, never HOLDING.)
+        LOADED or RUNNING, never HOLDING - but the player's own thread
+        runs between restore() and this App being built, so a lap whose
+        remainder had already expired can read ENDED by now. That one is
+        adopted too, and _track_demo() starts its next lap.)
 
         The slug names the menu row; a record written by the release
         before the slug existed has none, so the row whose stored show is
@@ -508,7 +511,8 @@ class App:
         """
         player = self.player
         if (player is None or not player.is_demo or player.show is None
-                or player.state != RUNNING):
+                or not player.restored_running
+                or player.state not in (RUNNING, ENDED)):
             return
         slug, show_id = player.demo_slug, player.show["id"]
         if not slug and self.demo_store is not None:
@@ -616,7 +620,10 @@ class App:
             (held, or mid-show with a T0 the PC has yet to confirm) -
             still the PC's picture, though the state reads LOADED.
             `restored_running` is never cleared, so it counts only while
-            it is still THIS show; load() and stop() drop the pairing
+            it is still THIS show and that show has not since STOPPED or
+            ENDED (a restored run that played itself out is finished, the
+            same as any other ENDED show); load() and stop() drop the
+            pairing outright
           - the pictures are being written right now: the conductor's
             own Upload is in flight, and KEY1 would cancel that burn
 
@@ -632,7 +639,8 @@ class App:
         if player.state in (RUNNING, HOLDING):
             return "PC show running - stop it on the PC"
         if (player.restored_running
-                and player.show.get("id") == player.restored_id):
+                and player.show.get("id") == player.restored_id
+                and player.state not in (STOPPED, ENDED)):
             return "PC show running - stop it on the PC"
         burn = (player.status() or {}).get("burn") or {}
         if burn.get("state") == "burning":

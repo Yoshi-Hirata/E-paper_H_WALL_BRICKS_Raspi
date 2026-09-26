@@ -893,10 +893,11 @@ def test_an_old_run_record_is_read_for_what_it_says_and_no_more(tmp_path):
 
 
 def test_a_run_record_naming_another_show_is_not_taken_as_a_demo(tmp_path):
-    # load() writes show.json and show-run.json in that order: a power cut
-    # between the two leaves a record that describes the show BEFORE this
-    # one. It says nothing about this show file, so it is not believed -
-    # a PC show, which the conductor may load over, rather than a demo it
+    # load() writes show-run.json and show.json in that order: a power cut
+    # between the two leaves a record that names the show being loaded
+    # beside the show.json of the one before it. It says nothing about
+    # the show file that is actually there, so it is not believed - a PC
+    # show, which the conductor may load over, rather than a demo it
     # would leave alone for ever.
     session, runner, bus = make_session()
     player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
@@ -1013,6 +1014,134 @@ def test_key1_is_refused_over_a_pc_show_restore_put_back_on_the_garment(tmp_path
         assert player2.restored_id is None
         app2.handle("key1")
         assert app2.screen is Screen.DEMO and player2.is_demo
+    finally:
+        player2.close()
+        runner2.stop()
+
+
+def test_a_restored_pc_show_that_played_itself_out_stops_winning_key1(tmp_path):
+    # N1: `restored_running` is never cleared, so a restored run that has
+    # since reached its end must not go on refusing KEY1 for ever - an
+    # ENDED show is finished, restored or not.
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    pc_show = make_show(sents=(-REFRESH, 0.3), duration=0.6)
+    try:
+        player.load(pc_show)
+        assert wait_burned(player)
+        player.run(time.monotonic() - 1.0)
+    finally:
+        player.close()
+        runner.stop()
+
+    app2, player2, runner2, _ = restarted_app(tmp_path)
+    try:
+        slug = DemoStore(tmp_path / "demos").save("DEMO PARIS", make_show())
+        app2.refresh_demos()
+        app2.select(f"demo:{slug}")
+        assert player2.restored_running                 # it came back mid-show
+        assert App._pc_show_wins(player2) == "PC show running - stop it on the PC"
+        # Ticking the App here would follow the session to REMOTE, which
+        # is a different question - this one is the guard's own.
+        assert wait_until(lambda: player2.state == ENDED, timeout=8)
+        assert player2.restored_id == pc_show["id"]     # still paired...
+        assert App._pc_show_wins(player2) is None       # ...but over
+        app2.handle("key1")
+        assert app2.screen is Screen.DEMO and player2.is_demo
+    finally:
+        player2.close()
+        runner2.stop()
+
+
+def test_a_run_record_the_disk_would_not_take_is_removed_not_left_stale(tmp_path):
+    # N2: the PC loads a different show and the run record cannot be
+    # written. Left alone, the DEMO's record would still be on disk
+    # beside the DEMO's show.json - a matched pair - and the unit would
+    # come back playing a demo the operator had just replaced. No record
+    # at all is the honest state: restore() bails and waits for the PC.
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        player.load(make_show(duration=30), demo=True, name="DEMO PARIS",
+                    slug="demo-paris")
+        assert wait_burned(player)
+        assert (tmp_path / "show-run.json").exists()
+        real_write = player._write
+
+        def no_record(name, payload):
+            if name == "show-run.json":
+                raise OSError("the card is full")
+            return real_write(name, payload)
+
+        player._write = no_record
+        player.load(dict(make_show(duration=30), id="pcshow9999"))
+        assert not (tmp_path / "show-run.json").exists()
+        assert "cannot save the show" in player.note
+        # show.json was never reached, so the demo's own copy is still
+        # there - and without a record nothing pairs the two.
+        assert json.loads((tmp_path / "show.json").read_text(
+            encoding="utf-8"))["id"] != "pcshow9999"
+    finally:
+        player.close()
+        runner.stop()
+
+    session2, runner2, _ = make_session()
+    reborn = ShowPlayer(session2, store=tmp_path, tick_s=0.02)
+    try:
+        reborn.restore()
+        assert reborn.show is None and reborn.status() is None
+        assert reborn.is_demo is False
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
+def test_a_lap_that_expired_before_the_app_was_built_is_still_adopted(
+        tmp_path, monkeypatch):
+    # N3: restore() only ever comes back LOADED or RUNNING, but the
+    # player's own thread runs before ui/main.py builds the App - a lap
+    # whose remainder had already gone can read ENDED by then, and
+    # skipping it would leave a looping demo stopped on its last cue.
+    monkeypatch.setattr(app_module, "LOOP_GAP_S", 0.2)
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    demo_show = make_show(sents=(-REFRESH, 0.3), duration=0.6)
+    try:
+        slug = demos.save("LOOPY", demo_show, loop=True)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert _pump(app, lambda: player.state == RUNNING, timeout=3)
+    finally:
+        player.close()
+        runner.stop()
+
+    # That lap was due to end while the unit was down.
+    record = tmp_path / "player" / "show-run.json"
+    run = json.loads(record.read_text(encoding="utf-8"))
+    run["t0_wall"] -= 5.0
+    record.write_text(json.dumps(run), encoding="utf-8")
+
+    session2, runner2, bus2 = make_session()
+    player2 = ShowPlayer(session2, store=tmp_path / "player", save_s=0.01,
+                         margin_s=0.1, grace_s=0.1, tick_s=0.02,
+                         setup_s=0.05, setup_board_s=0.0)
+    session2.on_release = player2.stop
+    try:
+        player2.restore()
+        assert player2.state == RUNNING and player2.restored_running
+        # The player runs the remainder out before the App is even built.
+        assert wait_until(lambda: player2.state == ENDED, timeout=8)
+        app2 = App(NullDisplay(), ScriptedInput(()), runner2, remote=session2,
+                   player=player2, demos=DemoStore(tmp_path / "demos"),
+                   host="radxa-03")
+        app2.show_status = player2.status
+        assert app2.screen is Screen.DEMO
+        assert app2._playing_demo == slug and app2._demo_loop is True
+        # ...and the next lap starts from the DEMO screen it was adopted
+        # onto, not from a menu nobody is looking at.
+        assert _pump(app2, lambda: player2.state == RUNNING, timeout=10)
+        assert saved_pairs(bus2) == set()               # a re-run, no re-burn
     finally:
         player2.close()
         runner2.stop()

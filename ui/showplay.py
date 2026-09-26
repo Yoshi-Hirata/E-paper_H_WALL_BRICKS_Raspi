@@ -613,21 +613,40 @@ class ShowPlayer:
             # a freshly loaded PC show that happens to carry the same id
             # (a demo written from the very show the PC is running), and
             # the unit would come back guarding a demo nobody started.
-            self._write("show-run.json", {
-                "show": self.show["id"] if self.show else None,
-                "state": self.state, "applied": self.applied,
-                # What the show IS, not just what it holds: a demo comes
-                # back as a demo after a restart (restore()), so the LCD
-                # owns it again and the PC keeps leaving it alone.
-                "demo": self.is_demo, "demo_name": self.demo_name,
-                "demo_slug": self.demo_slug, "demo_loop": self.demo_loop,
-                # T0 as wall time: what survives a reboot.
-                "t0_wall": (None if self.t0 is None else
-                            self._wall() + (self.t0 - self._clock()))})
+            try:
+                self._write("show-run.json", {
+                    "show": self.show["id"] if self.show else None,
+                    "state": self.state, "applied": self.applied,
+                    # What the show IS, not just what it holds: a demo
+                    # comes back as a demo after a restart (restore()),
+                    # so the LCD owns it again and the PC keeps leaving
+                    # it alone.
+                    "demo": self.is_demo, "demo_name": self.demo_name,
+                    "demo_slug": self.demo_slug, "demo_loop": self.demo_loop,
+                    # T0 as wall time: what survives a reboot.
+                    "t0_wall": (None if self.t0 is None else
+                                self._wall() + (self.t0 - self._clock()))})
+            except OSError:
+                # The record could not be replaced, so the one on disk is
+                # the PREVIOUS show's - and with show.json about to be
+                # replaced (or already holding that older show), a
+                # restart would read the two as a matched pair and
+                # restore, say, yesterday's demo over a PC load that has
+                # since happened. No record at all is the honest state:
+                # restore() bails on it and the unit comes up with
+                # nothing loaded, waiting for the PC.
+                self._forget_run_record()
+                raise
             if with_show and self.show is not None:
                 self._write("show.json", self.show)     # only when it changes
         except OSError as exc:
             self.note = f"cannot save the show: {exc}"
+
+    def _forget_run_record(self) -> None:
+        try:
+            (self.store / "show-run.json").unlink()
+        except OSError:
+            pass                # missing, or a disk that will not have it
 
     def restore(self) -> None:
         """At start-up: pick the show up again if it was running.
@@ -654,11 +673,12 @@ class ShowPlayer:
             self.state = LOADED
             # Only a run record that NAMES this show file says anything
             # about it. One that names another show is a load() that was
-            # cut in half (show.json written, show-run.json not yet), and
-            # its `demo` belongs to the show before this one - taken as a
-            # PC show, which is the safe way round: the conductor may
-            # then load over it, where a wrongly-restored demo would have
-            # it left alone for ever.
+            # cut in half (show-run.json written, show.json not yet): the
+            # record describes the show the unit was ASKED to load, while
+            # show.json still holds the one before it, and neither
+            # vouches for the other. Taken as a PC show, which is the
+            # safe way round: the conductor may then load over it, where
+            # a wrongly-restored demo would have it left alone for ever.
             named = run.get("show") == show.get("id")
             self.is_demo = bool(run.get("demo")) and named
             self.demo_name = run.get("demo_name", "") if self.is_demo else ""
