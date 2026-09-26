@@ -160,6 +160,33 @@ python -m conductor serve --open
      いったんショーから外れ、次の監視ポーリング(数秒)で自動的に戻る
    - 機体が「run refused: …」で断ったときは、その理由が **その機体のタイルにも**出る
      (Corrected automatically の行だけでなく)
+   - **音源(「THE SHOW」カードの MUSIC 行)**:**③ START でこの PC が曲を鳴らす**。
+     鳴り出す位置は**ショーの時計に合わせる**ので、`③ START FROM 1:00` のような途中開始でも
+     曲の 1:00 から始まる。**HOLD で止まり、RESUME で続きから、STOP で止まって先頭に戻る。
+     シークバーで動かせば曲も飛ぶ**(曲がショーより短ければ曲の終わりで止まり `track ended`)
+   - `Music with THE SHOW` のチェックを外せば音は出ない(このブラウザに記憶される)。
+     **Mute と Volume は Timeline のプレビューと共通** ― 音源は 1 つだけなので、ショー再生中に
+     Timeline の ▶ Play を押すと `THE SHOW is playing the music` と出て断られる
+   - **ショーの最中にページを開き直したときは、ブラウザが自分から音を出さない決まりなので、
+     MUSIC 行に緑の「Music: click to join」が出る。1 回押せばいまのショーの位置から鳴り出す**
+     (押すまで無音。ページはエラーにならない)
+   - **音を出す Conductor は 1 台・1 タブだけにする**。同じ PC で 2 つのタブを開いた場合は
+     片方だけが鳴り、もう片方は `another Conductor tab is playing it` と出て黙る。
+     **別々の PC で 2 台開くと両方鳴って 0.1〜0.3 秒ずれる**(互いを知る手段が無い) ―
+     音を出さない方は `Music with THE SHOW` のチェックを外すこと
+   - 右の表示が今の状態:
+
+     | 表示 | 意味 |
+     |---|---|
+     | `playing 1:23` | その位置を再生中(`· muted` が付いていれば消音中) |
+     | `paused` | HOLD 中、または START の待ち時間(0:00 前)。RESUME/開始で続く |
+     | `stopped` | ショーが走っていない、または終わった |
+     | `track ended` | 曲がショーより短く、曲の終わりまで来た |
+     | `blocked — click to join` | ブラウザが自動再生を断った。緑のボタンを 1 回押す |
+     | `no track` | 音源が未アップロード。Timeline タブの **Load music** で入れる |
+     | `off` | `Music with THE SHOW` のチェックが外れている |
+     | `another Conductor tab is playing it` | 同じ PC の別タブが鳴らしている |
+
 5. 終わったら黒いウィンドウを閉じる。機体は本体のメニューに戻る(Units タブの Release)
 6. **PC と機体のコードは必ず一緒に更新する**。古いページは機体の `cancelled` / `none` を
    `written` のように見せてしまう(焼き込みの状態は 2026-09-25 に増えた)。`git pull` は
