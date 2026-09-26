@@ -34,11 +34,23 @@ Units タブの **THE SHOW** カード、大時計の直下に **NEXT のヘッ�
 - 行 = LOOK・型番・機体 / NOW(縮小図 + `changing… 5 s left` の進捗)/ 遷移の矢印と span /
   NEXT(縮小図・時刻・その衣装だけの残り秒)/ `Fired late by` と着弾確認 / VITALS。
   **バッグ 3 点だけ折り畳み**、`Stage monitor` で同じボードを全画面・黒地に
+- **たたむ条件は「キューが 1 つも無いこと」が必須**(レビュー指摘)。名前だけで判定すると、
+  ファイル名が LookNN でない衣装(`AZ271SC6302_*`)は LOOK 番号が空のまま作られるので
+  **同期制御している衣装が丸ごと隠れる**。AZ271SG* / 型番の Bag / LOOK 番号なし は
+  そのうえでの補助条件
+- **STOP のあとは 0:00 のプリセットを映さない**(レビュー指摘)。run が消えると位置は
+  `start_at` に戻るが、パネルは最後に描いた絵を保持している ― 機体の `show.applied` が
+  「このショーは通った」と言っている間は NOW を `(whatever the panels kept)` とし、
+  縮小図を出さない
 - **`show_lag_ms` を新設(`conductor/fleet.py`)**。`lag = unit_t0 - (run_t0 + offset)`、
   **+ はその機体がこの PC より遅れている**。`_supervise()` が機体を直すときに使っている
   式そのもので、走っているショーがあるときだけ出る。
   **これまでタイルが出していた `sync_ms` は遅れではない** ― 往復時間の半分、つまり
-  誤差の幅(`±3 ms`)。混同しないよう fleet.py にその旨を書いた。
+  誤差の幅なので、`lag +4 ±3 ms` と並べて出す(幅の中の値は遅れではない)。
+  **T0 が動いた直後は 1 ポーリングぶん `None`**(`run["t0_set_at"]`、`_t0_moved()` が
+  START / SEEK / HOLD / RESUME / NEXT / STOP / adopt のすべてで押す) ― さもないと
+  30 秒シークした瞬間に全行が `-30000 ms` で赤くなる。
+  `boards` は **1 台に 2 着載っていても衣装ごとに数える**(`live_ids` を素通し)。
   `uptime_s`(下の基板一覧の項でタイルが使っているのと同じ値)は VITALS でも読み、
   10 分以内に立ち上がった機体は `restarted 3 min ago` と出る
   (絵を失った機体の説明になる)
@@ -47,9 +59,10 @@ Units タブの **THE SHOW** カード、大時計の直下に **NEXT のヘッ�
   THE SHOW カードとステージモニターの間を**移動**する(作り直さない)ので、
   縮小図のキャッシュもタブを移っても生き残る。縮小図は**デザインが変わったときだけ**
   描き直し、毎 tick は円の fill だけを書き換える(`updateThumbColors()` と同じやり方)
-- テスト: `tests/test_conductor_board.py` 31 本。`<<< SHOWBOARD >>>` で囲んだ純粋な判断層を
-  `tests/test_conductor_music.py` と同じやり方でヘッドレスに載せ、ページ全体も 4 衣装
-  (うちバッグ 2)・5 機体のスタンドインサーバーで動かしている(`CONDUCTOR_BROWSER_TESTS=1`)
+- テスト: `tests/test_conductor_board.py` 41 本。`<<< SHOWBOARD >>>` で囲んだ純粋な判断層を
+  `tests/test_conductor_music.py` と同じやり方でヘッドレスに載せ、ページ全体も 5 衣装
+  (うちバッグ 2)・5 機体のスタンドインサーバーで動かしている(`CONDUCTOR_BROWSER_TESTS=1`)。
+  `show_lag_ms` の符号と「T0 が動いた直後は空欄」は Python 側で直接固定している
 
 **ショー中は PC の基板一覧が絶対 ― 一覧の外はプローブしない(2026-09-27)**
 

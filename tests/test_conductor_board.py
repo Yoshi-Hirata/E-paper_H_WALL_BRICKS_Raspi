@@ -40,6 +40,7 @@ INDEX_HTML = REPO / "conductor" / "web" / "index.html"
 sys.path.insert(0, str(REPO))
 
 from conductor import timeline as tl  # noqa: E402
+from conductor.fleet import Fleet  # noqa: E402
 from conductor.server import Workspace  # noqa: E402
 from tests.test_designer_build import _dump_dom, _find_browser, _require_browser  # noqa: E402
 from tests.test_look import GRID, MAP  # noqa: E402
@@ -155,6 +156,113 @@ def test_the_board_asks_the_internet_for_nothing():
         assert forbidden not in board, f"the board pulls in {forbidden!r}"
 
 
+# ------------------------------------------- the lag the fleet measures
+
+class _Ticks:
+    """A PC clock the test moves by hand."""
+
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def _lag_fleet():
+    """A Fleet with one (unreachable) unit, wound up by hand to the state a
+    running show leaves it in: a clock measurement, a poll, an uploaded
+    show, and the unit reporting that show's T0 on its own clock."""
+    ticks = _Ticks()
+    fleet = Fleet({"radxa-01": "127.0.0.1:1"}, poll_s=2.0, clock=ticks)
+    fleet._may_adopt = False
+    link = fleet.links["radxa-01"]
+    link._samples.append((0.004, 500.0))     # 4 ms round trip, unit 500 s ahead
+    link.last_seen = ticks.t
+    fleet.shows["radxa-01"] = {"id": "S1", "cues": [], "duration": 120.0}
+    fleet.run = {"t0": 900.0, "state": "running", "held_at": None, "force": False}
+    _unit_at(link, 900.0 + 500.0)            # exactly where this PC says
+    return fleet, link, ticks
+
+
+def _unit_at(link, t0, show_id="S1", state="running"):
+    link.status = {"phase": "ready", "host": "radxa-01",
+                   "show": {"id": show_id, "state": state, "t0": t0,
+                            "applied": 1, "cues": 2, "demo": False}}
+
+
+def test_the_lag_is_the_units_own_t0_against_this_pcs():
+    fleet, link, _ = _lag_fleet()
+    assert fleet._show_lag_ms(link, fleet.run) == 0.0
+    # The unit's T0 is 48 ms LATER than this PC's, so it thinks the show
+    # started later and its position is 48 ms smaller: it is behind.
+    _unit_at(link, 900.0 + 500.0 + 0.048)
+    assert fleet._show_lag_ms(link, fleet.run) == pytest.approx(48.0)
+    _unit_at(link, 900.0 + 500.0 - 0.020)
+    assert fleet._show_lag_ms(link, fleet.run) == pytest.approx(-20.0)
+
+
+def test_there_is_no_lag_to_report_without_something_to_compare():
+    fleet, link, ticks = _lag_fleet()
+    assert fleet._show_lag_ms(link, None) is None, "no run"
+    held = dict(fleet.run, state="holding", held_at=ticks.t)
+    assert fleet._show_lag_ms(link, held) is None, "a hold carries a position, not a T0"
+    _unit_at(link, 1400.0, show_id="OTHER")
+    assert fleet._show_lag_ms(link, fleet.run) is None, "a unit on another show"
+    _unit_at(link, 1400.0, state="stopped")
+    assert fleet._show_lag_ms(link, fleet.run) is None, "a unit not running it"
+    _unit_at(link, 1400.0)
+    link.last_seen = ticks.t - 60          # gone quiet: STALE_S is 6 s
+    assert fleet._show_lag_ms(link, fleet.run) is None, "an offline unit"
+
+
+def test_a_seek_does_not_paint_every_row_red_until_the_units_have_answered():
+    # T0 moves here on the instant; what a unit reports is up to a poll
+    # old. Without this the whole board went red for a poll after every
+    # RESUME, SEEK and NEXT - "-30000 ms" after a 30 s hold - which is
+    # exactly when the operator is looking at it.
+    fleet, link, ticks = _lag_fleet()
+    assert fleet._show_lag_ms(link, fleet.run) == 0.0
+    with fleet._run_lock:                      # as seek()/resume()/next_cue() do
+        fleet.run["t0"] -= 30.0
+        fleet._t0_moved()
+    assert fleet.run["t0_set_at"] == ticks.t
+    assert fleet._show_lag_ms(link, fleet.run) is None, \
+        "the unit has not been polled on the new T0 yet"
+    # The poll right after the move is still not enough - it may have been
+    # answered before the unit took the new T0.
+    ticks.t += 0.5
+    link.last_seen = ticks.t
+    assert fleet._show_lag_ms(link, fleet.run) is None
+    # One whole poll later it is.
+    ticks.t += 2.0
+    link.last_seen = ticks.t
+    _unit_at(link, fleet.run["t0"] + 500.0 + 0.004)
+    assert fleet._show_lag_ms(link, fleet.run) == pytest.approx(4.0)
+
+
+def test_every_command_that_moves_t0_stamps_it():
+    # One helper, called under the lock by every one of them - checked here
+    # against the source, because a new command that forgot it would show up
+    # as a board that goes red for a poll and nothing else.
+    source = (REPO / "conductor" / "fleet.py").read_text(encoding="utf-8")
+    assert "def _t0_moved(self)" in source
+    assert source.count("self._run_gen += 1") == 1, \
+        "a T0 move bumps the generation without stamping the run"
+    assert source.count("self._t0_moved()") == 7, \
+        "start / seek / hold / resume / next / stop / adopt - one each"
+
+
+def test_a_hold_and_a_resume_both_stamp_the_run():
+    fleet, link, ticks = _lag_fleet()
+    fleet.shows.clear()                   # nothing to post to: no targets
+    ticks.t += 5.0
+    fleet.hold()
+    assert fleet.run["state"] == "holding" and fleet.run["t0_set_at"] == ticks.t
+    ticks.t += 5.0
+    fleet.resume()
+    assert fleet.run["state"] == "running" and fleet.run["t0_set_at"] == ticks.t
+
+
 def test_the_fleet_hands_over_a_real_lag_and_an_uptime():
     fleet_py = (REPO / "conductor" / "fleet.py").read_text(encoding="utf-8")
     assert "show_lag_ms=self._show_lag_ms(link, run)" in fleet_py
@@ -189,6 +297,20 @@ NAMES = {"p23": "LOOK 23 Tops", "c23": "LOOK 23 Tops",
 D = 120.0
 
 
+# Two garments on ONE Radxa - a top on boards 1-4 and its skirt on 5-8,
+# which is what the fleet's own "7 of 8 answering" cannot pin on either.
+TOPS, SKIRT = [1, 2, 3, 4], [5, 6, 7, 8]
+
+
+def _u(**kw):
+    """A unit as /api/fleet reports it, healthy unless said otherwise."""
+    u = {"name": "radxa-01", "online": True, "show_lag_ms": 4.0, "sync_ms": 3.0,
+         "rtt_ms": 6.0, "live": 8, "boards": 8, "live_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+         "late_ms": 8, "uptime_s": 7200}
+    u.update(kw)
+    return u
+
+
 CALLS = {
     # ---- which cue is next, per garment
     "row_before_anything": ["rowAt", L23, 10.0],
@@ -196,6 +318,7 @@ CALLS = {
     "row_after_its_last": ["rowAt", L23, 90.0],
     "row_at_the_very_instant": ["rowAt", L23, 30.0],
     "row_of_a_garment_with_two_changes": ["rowAt", L24, 40.0],
+    "row_with_no_cues": ["rowAt", [], 10.0],
     # ---- grouping and the flash
     "ahead_at_zero": ["ahead", ALL, 0.0],
     "ahead_past_the_first": ["ahead", ALL, 40.0],
@@ -214,43 +337,57 @@ CALLS = {
     "secs_part": ["secs", 11.2],
     "secs_last": ["secs", 0.3],
     "secs_past": ["secs", -4.0],
-    # ---- which items are bags
-    "bag_by_item": ["isBag", {"item": "AZ271SG1301", "look": "", "model": "AZ271SG1301"}],
-    "bag_by_model": ["isBag", {"item": "Look25", "look": "25", "model": "AZ271SG2301 Bag"}],
-    "bag_by_no_look": ["isBag", {"item": "Spare01", "look": "", "model": "AZ271SX0001"}],
-    "not_a_bag": ["isBag", {"item": "Look23", "look": "23", "model": "AZ271SB2303 (Tops)"}],
-    "not_a_bag_zero_look": ["isBag", {"item": "Look00", "look": "0", "model": "AZ271SB0000"}],
+    # ---- which items are bags. No cue fires it is the NECESSARY part;
+    #      the name is only the hint on top of that.
+    "bag_by_item": ["isBag", {"item": "AZ271SG1301", "look": "", "model": "AZ271SG1301", "cues": []}],
+    "bag_by_model": ["isBag", {"item": "Look25", "look": "25", "model": "AZ271SG2301 Bag", "cues": []}],
+    "bag_by_no_look": ["isBag", {"item": "Spare01", "look": "", "model": "AZ271SX0001", "cues": []}],
+    "not_a_bag": ["isBag", {"item": "Look23", "look": "23", "model": "AZ271SB2303 (Tops)", "cues": L23}],
+    "not_a_bag_zero_look": ["isBag", {"item": "Look00", "look": "0", "model": "AZ271SB0000", "cues": []}],
+    # A garment whose file is not LookNN has a blank LOOK until someone
+    # types one (conductor/server.py), and "Bag-strap Tops" says Bag - but
+    # the show changes both of them, so neither may be folded away.
+    "no_look_but_cued": ["isBag", {"item": "AZ271SC6302", "look": "", "model": "AZ271SC6302", "cues": L24}],
+    "bag_in_the_name_but_cued": ["isBag", {"item": "Look27", "look": "27",
+                                           "model": "AZ271SB2701 Bag-strap Tops", "cues": L23}],
+    # ...and an AZ271SG* that somehow does get a cue keeps a row of its own.
+    "az_bag_with_a_cue": ["isBag", {"item": "AZ271SG1301", "look": "", "model": "AZ271SG1301", "cues": L23}],
     # ---- the show's own phase
-    "phase_no_run": ["phase", None, 0.0, D],
-    "phase_running": ["phase", {"state": "running"}, 10.0, D],
-    "phase_holding": ["phase", {"state": "holding"}, 10.0, D],
-    "phase_ended": ["phase", {"state": "running"}, 121.0, D],
+    "phase_no_run": ["phase", None, 0.0, D, False],
+    "phase_after_a_stop": ["phase", None, 0.0, D, True],
+    "phase_running": ["phase", {"state": "running"}, 10.0, D, True],
+    "phase_holding": ["phase", {"state": "holding"}, 10.0, D, True],
+    "phase_ended": ["phase", {"state": "running"}, 121.0, D, True],
     # ---- the sweep arrows
     "arrow_top_down": ["arrow", "top_down"],
     "arrow_center": ["arrow", "center"],
     "arrow_natural": ["arrow", "natural"],
     "arrow_unknown": ["arrow", "something_else"],
-    # ---- a Radxa's vitals
-    "vitals_good": ["vitals", {"name": "radxa-01", "online": True, "show_lag_ms": 4.0,
-                               "rtt_ms": 6.0, "live": 12, "boards": 12, "late_ms": 8,
-                               "uptime_s": 7200}, 12],
-    "vitals_behind": ["vitals", {"name": "radxa-02", "online": True, "show_lag_ms": 480.0,
-                                 "rtt_ms": 6.0, "live": 12, "boards": 12, "late_ms": None,
-                                 "uptime_s": 7200}, 12],
-    "vitals_slow_path": ["vitals", {"name": "radxa-03", "online": True, "show_lag_ms": -12.0,
-                                    "rtt_ms": 240.0, "live": 12, "boards": 12,
-                                    "late_ms": None, "uptime_s": 7200}, 12],
-    "vitals_board_missing": ["vitals", {"name": "radxa-04", "online": True, "show_lag_ms": 2.0,
-                                        "rtt_ms": 6.0, "live": 11, "boards": 12,
-                                        "late_ms": None, "uptime_s": 7200}, 12],
-    "vitals_restarted": ["vitals", {"name": "radxa-05", "online": True, "show_lag_ms": 2.0,
-                                    "rtt_ms": 6.0, "live": 12, "boards": 12,
-                                    "late_ms": None, "uptime_s": 190}, 12],
-    "vitals_no_run_yet": ["vitals", {"name": "radxa-06", "online": True, "show_lag_ms": None,
-                                     "rtt_ms": 6.0, "live": 12, "boards": 12,
-                                     "late_ms": None, "uptime_s": 7200}, 12],
-    "vitals_offline": ["vitals", {"name": "radxa-07", "online": False}, 12],
-    "vitals_no_unit": ["vitals", None, 12],
+    # ---- a Radxa's vitals. TOPS and SKIRT are two garments on one unit,
+    #      which is the case the unit-wide counts cannot answer.
+    "vitals_good": ["vitals", _u(), TOPS],
+    "vitals_behind": ["vitals", _u(name="radxa-02", show_lag_ms=480.0), TOPS],
+    "vitals_slow_path": ["vitals", _u(name="radxa-03", show_lag_ms=-12.0, rtt_ms=240.0), TOPS],
+    # Board 2 of the top is not answering, out of a unit that is carrying
+    # eight boards in all - "7/8 answering" would have said nothing.
+    "vitals_board_missing": ["vitals", _u(name="radxa-04", live_ids=[1, 3, 4, 5, 6, 7, 8]), TOPS],
+    # ...and the skirt on that same unit is whole, so its row stays quiet.
+    "vitals_other_garment_is_fine": ["vitals", _u(name="radxa-04", live_ids=[1, 3, 4, 5, 6, 7, 8]), SKIRT],
+    "vitals_restarted": ["vitals", _u(name="radxa-05", uptime_s=190), TOPS],
+    "vitals_just_restarted": ["vitals", _u(name="radxa-05", uptime_s=20), TOPS],
+    "vitals_no_run_yet": ["vitals", _u(name="radxa-06", show_lag_ms=None), TOPS],
+    "vitals_offline": ["vitals", {"name": "radxa-07", "online": False}, TOPS],
+    "vitals_no_unit": ["vitals", None, TOPS],
+    # An agent too old to list which boards are answering: the unit-wide
+    # counts are all there is, and they only mean anything when this
+    # garment is everything the unit carries.
+    "vitals_old_agent_one_garment": ["vitals", _u(name="radxa-08", live_ids=None,
+                                                  live=3, boards=4), [1, 2, 3, 4]],
+    "vitals_old_agent_two_garments": ["vitals", _u(name="radxa-08", live_ids=None,
+                                                   live=7, boards=8), TOPS],
+    # ---- the board count on its own
+    "boards_all_there": ["boardsOf", _u(), TOPS],
+    "boards_one_gone": ["boardsOf", _u(live_ids=[1, 3, 4, 5, 6, 7, 8]), TOPS],
 }
 
 # The row texts, one per state the board has to be right in.
@@ -264,6 +401,12 @@ _ROW_TEXTS = {
     "text_holding": (L23, 20.0, "holding"),
     "text_ended": (L23, 121.0, "ended"),
     "text_seeked_back": (L24, 45.0, "running"),
+    # After a STOP the panels keep what they last drew, and nothing here
+    # knows what that was - the position has fallen back to start_at.
+    "text_kept": (L23, 0.0, "kept"),
+    # A garment no cue ever touches: "last design" would be a lie.
+    "text_no_cue_at_all": ([], 10.0, "running"),
+    "text_no_cue_at_all_loaded": ([], 0.0, "loaded"),
 }
 
 
@@ -317,6 +460,7 @@ def _heads():
         "head_second_change": one("running", 40.0),
         "head_nothing_ahead": one("running", 90.0),
         "head_loaded": one("loaded", 0.0),
+        "head_kept": one("kept", 0.0),
         "head_loaded_from_a_mark": one("loaded", 20.0, startAt=20.0),
         "head_holding": one("holding", 20.0),
         "head_holding_never_flashes": one("holding", 30.4),
@@ -428,6 +572,37 @@ def test_a_row_reads_right_in_every_state_of_the_show(board):
     assert seeked["when"] == "1:00" and seeked["count"] == 15
 
 
+def test_after_a_stop_the_board_does_not_claim_the_preset_is_back(board):
+    # STOP's own button says the panels keep their image; the run goes away
+    # and the position falls back to start_at, so recomputing the designs
+    # there put the 0:00 preset on the board for garments standing on stage
+    # in their last look.
+    kept = board["results"]["text_kept"]
+    assert kept["now"] == "(whatever the panels kept)", kept
+    assert kept["nowUnknown"] is True, "the page would still draw a thumbnail"
+    assert kept["changing"] == "", "nothing is changing when nothing is running"
+    # START is still what comes next, and from where.
+    assert kept["next"] == "scarlet" and kept["when"] == "0:30"
+    assert kept["count"] is None
+    head = board["results"]["head_kept"]
+    assert head["note"] == ("START runs from 0:00 — the panels keep what "
+                            "they are showing until it does"), head
+    assert head["count"] is None and head["fired"] is False
+    # ...and before any show has run, the preset IS what is on the glass.
+    assert board["results"]["text_loaded"]["nowUnknown"] is False
+
+
+def test_a_garment_no_cue_touches_says_so(board):
+    r = board["results"]
+    assert r["text_no_cue_at_all"]["next"] == "no cue — nothing changes it"
+    assert r["text_no_cue_at_all_loaded"]["next"] == "no cue — nothing changes it"
+    assert r["text_no_cue_at_all"]["now"] == "(as before the show)"
+    assert r["row_with_no_cues"]["none"] is True and r["row_before_anything"]["none"] is False
+    # "last design" is for a garment that has run OUT of cues, not one that
+    # never had any.
+    assert "last design" in r["text_after_its_last"]["next"]
+
+
 def test_cues_that_fire_together_are_one_entry_in_the_header(board):
     r = board["results"]
     groups = r["ahead_at_zero"]
@@ -491,18 +666,28 @@ def test_a_next_press_is_visible_in_the_header_during_its_lead(board):
 def test_the_phase_comes_off_the_run_and_the_position(board):
     r = board["results"]
     assert r["phase_no_run"] == "loaded"
+    assert r["phase_after_a_stop"] == "kept", \
+        "after a STOP the panels keep their picture - that is not 'loaded'"
     assert r["phase_running"] == "running"
     assert r["phase_holding"] == "holding"
     assert r["phase_ended"] == "ended"
 
 
-def test_the_three_bags_are_recognised_three_ways(board):
+def test_a_bag_is_a_garment_no_cue_fires_and_never_merely_a_name(board):
     r = board["results"]
-    assert r["bag_by_item"] is True, "an AZ271SG* item is a bag"
-    assert r["bag_by_model"] is True, "a model that says Bag is a bag"
-    assert r["bag_by_no_look"] is True, "a garment with no LOOK number is a bag"
+    assert r["bag_by_item"] is True, "an AZ271SG* item with no cue is a bag"
+    assert r["bag_by_model"] is True, "a model that says Bag, with no cue, is a bag"
+    assert r["bag_by_no_look"] is True, "no LOOK number and no cue is a bag"
     assert r["not_a_bag"] is False
     assert r["not_a_bag_zero_look"] is False, "LOOK 0 is a LOOK, not a missing one"
+    # The three the name alone would have folded away, silently, along with
+    # everything the show does to them.
+    assert r["no_look_but_cued"] is False, \
+        "a garment whose file is not LookNN has a blank LOOK - that is not a bag"
+    assert r["bag_in_the_name_but_cued"] is False, \
+        "\"Bag-strap Tops\" is a top"
+    assert r["az_bag_with_a_cue"] is False, \
+        "a bag the show actually changes needs a row like any other garment"
 
 
 def test_every_sweep_has_its_own_arrow(board):
@@ -521,28 +706,62 @@ def test_every_sweep_has_its_own_arrow(board):
 def test_a_radxas_vitals_read_in_one_line_and_colour_themselves(board):
     r = board["results"]
     good = r["vitals_good"]
-    assert good["text"] == "radxa-01 · lag +4 ms · rtt 6 ms · boards 12/12 · fired +8 ms", good
+    # The lag carries its own error bar: half a round trip is how well this
+    # unit's clock is known at all, and a lag inside it is not a lag.
+    assert good["text"] == "radxa-01 · lag +4 ±3 ms · rtt 6 ms · boards 4/4 · fired +8 ms", good
     assert good["tone"] == "" and good["offline"] is False
     # Red: too far from this PC's clock, or a board that is not answering.
     assert r["vitals_behind"]["tone"] == "red", r["vitals_behind"]
-    assert "lag +480 ms" in r["vitals_behind"]["text"]
-    assert r["vitals_board_missing"]["tone"] == "red"
-    assert r["vitals_board_missing"]["missing"] is True
-    assert "boards 11/12" in r["vitals_board_missing"]["text"]
+    assert "lag +480 ±3 ms" in r["vitals_behind"]["text"]
     # Amber: a slow path, but nothing actually wrong yet.
     assert r["vitals_slow_path"]["tone"] == "amber", r["vitals_slow_path"]
     # A restart is worth saying out loud - it is what explains a unit that
     # lost its pictures.
     assert "restarted 3 min ago" in r["vitals_restarted"]["text"]
+    assert "restarted just now" in r["vitals_just_restarted"]["text"]
     assert "restarted" not in r["vitals_good"]["text"]
     # Before a run there is no lag to report, and that is not a fault.
     assert "lag —" in r["vitals_no_run_yet"]["text"]
     assert r["vitals_no_run_yet"]["tone"] == ""
     # Offline, and not assigned at all.
-    assert r["vitals_offline"] == {"text": "radxa-07 · unit offline", "tone": "red",
-                                   "offline": True, "missing": False}
+    assert r["vitals_offline"]["text"] == "radxa-07 · unit offline"
+    assert r["vitals_offline"]["tone"] == "red" and r["vitals_offline"]["offline"] is True
     assert r["vitals_no_unit"]["text"] == "no unit assigned"
     assert r["vitals_no_unit"]["offline"] is True
+    # Every value that needs one carries its own tooltip, and the lag's
+    # says which way its sign runs - which "+48 ms" cannot say for itself.
+    lag = [p for p in good["parts"] if p["text"].startswith("lag ")]
+    assert len(lag) == 1 and "BEHIND this PC" in lag[0]["title"], lag
+    assert " · ".join(p["text"] for p in good["parts"]) == good["text"]
+
+
+def test_a_missing_board_is_counted_against_its_own_garment(board):
+    # A Radxa can carry a top (boards 1-4) and its skirt (5-8). Holding the
+    # unit's "7 of 8 answering" up against one garment's four boards read
+    # "7/4" and never went red at all.
+    r = board["results"]
+    assert r["boards_all_there"] == {"have": 4, "want": 4, "missing": False}
+    assert r["boards_one_gone"] == {"have": 3, "want": 4, "missing": True}
+    missing = r["vitals_board_missing"]
+    assert missing["tone"] == "red" and missing["missing"] is True
+    assert "boards 3/4" in missing["text"], missing["text"]
+    # ...and the other garment on that same unit is whole, so it stays quiet.
+    fine = r["vitals_other_garment_is_fine"]
+    assert fine["missing"] is False and fine["tone"] == ""
+    assert "boards 4/4" in fine["text"], fine["text"]
+
+
+def test_an_agent_too_old_to_list_its_boards_is_not_guessed_at(board):
+    r = board["results"]
+    # One garment, the whole unit: the old counts do compare, so a missing
+    # board is still caught.
+    old_one = r["vitals_old_agent_one_garment"]
+    assert "boards 3/4" in old_one["text"] and old_one["missing"] is True
+    # Two garments on the unit: the counts belong to neither of them, so
+    # the row says "?" rather than a number about somebody else.
+    old_two = r["vitals_old_agent_two_garments"]
+    assert old_two["missing"] is False and old_two["tone"] == "", old_two
+    assert "boards ?/4" in old_two["text"], old_two["text"]
 
 
 # ------------------------------------------------- the whole page, running
@@ -565,12 +784,21 @@ def _free_port():
     raise AssertionError("no free port in 8800-8899")
 
 
+# Every garment in the stand-in wears tests.test_look's MAP, whose three
+# boards are numbered 17, 18 and 20.
+MAP_BOARDS = [17, 18, 20]
+
+
 def _unit(name, **kw):
     u = {"name": name, "address": f"192.168.51.10{name[-1]}:8787",
          "online": True, "error": None, "rtt_ms": 6.0, "sync_ms": 3.0,
          "samples": 8, "uptime_s": 7200, "host": name, "commit": "abc1234",
-         "phase": "ready", "cue": None, "label": None, "boards": 4, "live": 4,
-         "saved": 4, "failed": [], "prepare_s": None, "late_ms": 6,
+         "phase": "ready", "cue": None, "label": None,
+         "boards": len(MAP_BOARDS), "live": len(MAP_BOARDS),
+         "live_ids": list(MAP_BOARDS), "board_ids": list(MAP_BOARDS),
+         "absent": [], "boards_source": "show", "group_count": 3,
+         "uploaded_ago_s": 30.0,
+         "saved": 3, "failed": [], "prepare_s": None, "late_ms": 6,
          "verify": None, "demo_count": 0, "unit_error": None, "log": ["ok"],
          "show": None, "refused": None, "demos": [], "show_lag_ms": 4.0}
     u.update(kw)
@@ -579,9 +807,17 @@ def _unit(name, **kw):
 
 _RUNS = {
     "none": None,
-    "running": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 20.0},
+    "running": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 5.0},
     "holding": {"t0": 0.0, "state": "holding", "held_at": 20.0, "force": False, "now": 20.0},
-    "ended": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 130.0},
+    "ended": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 190.0},
+}
+# A unit's own show, as it reads once the show has been through it: "stop"
+# is what /api/fleet says AFTER a STOP - no run, but units that applied
+# their cues, which is how the board knows the panels are not on the preset.
+_SHOWS = {
+    "none": None,
+    "ran": {"id": "S1", "state": "stopped", "applied": 2, "cues": 2,
+            "demo": False, "burn": {"state": "burned", "done": 6, "total": 6}},
 }
 
 
@@ -604,18 +840,30 @@ class _Stand:
                            ("Look26", "radxa-03"), ("Look25", "radxa-04"),
                            ("AZ271SG1301", "radxa-05")):
             ws.assign(item, unit)
-        ws.set_timeline(120, [
+        # The first cue is a whole minute in on purpose. The stand-in pins
+        # the run's position, but the page still carries it forward with
+        # performance.now() between polls - and under a headless browser's
+        # virtual time that gap is not a real second. A minute of headroom
+        # means the assertions below are about the board, not about how
+        # fast Chrome felt like running the clock.
+        ws.set_timeline(180, [
             {"id": "p23", "item": "Look23", "at": 0, "design": "Look23_color_ivory_grid.csv"},
             {"id": "p24", "item": "Look24", "at": 0, "design": "Look24_color_ivory_grid.csv"},
-            {"id": "c23", "item": "Look23", "at": 30, "design": "Look23_color_scarlet_grid.csv",
+            # Both garments change together at 1:00 (one cue in the header,
+            # two garments named), and the skirt again at 1:30 - which is
+            # what the "following" list has to show.
+            {"id": "c23", "item": "Look23", "at": 60, "design": "Look23_color_scarlet_grid.csv",
              "transition": "custom", "sequence": "top_down", "span_s": 1.0},
-            {"id": "c24", "item": "Look24", "at": 30, "design": "Look24_color_scarlet_grid.csv",
+            {"id": "c24", "item": "Look24", "at": 60, "design": "Look24_color_scarlet_grid.csv",
              "transition": "custom", "sequence": "center", "span_s": 1.0},
+            {"id": "d24", "item": "Look24", "at": 90, "design": "Look24_color_ivory_grid.csv",
+             "transition": "custom", "sequence": "left_right", "span_s": 2.0},
         ])
         state = ws.state()
         written = ws.written_state()
         page = INDEX_HTML.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1)
         self.run = "none"
+        self.unit_show = "none"
         stand = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -645,22 +893,27 @@ class _Stand:
                 if path == "/api/state":
                     return self._json(state)
                 if path == "/api/fleet":
+                    show = _SHOWS[stand.unit_show]
                     return self._json({
                         # radxa-02 is a third of a second behind this PC AND
                         # one board short - either on its own is red.
-                        "units": [_unit("radxa-01"),
-                                  _unit("radxa-02", show_lag_ms=330.0, live=2),
+                        "units": [_unit("radxa-01", show=show),
+                                  _unit("radxa-02", show_lag_ms=330.0, show=show,
+                                        live=2, live_ids=[17, 18], absent=[20]),
                                   _unit("radxa-03", online=False, error="no answer"),
-                                  _unit("radxa-04"), _unit("radxa-05")],
+                                  _unit("radxa-04", show=show), _unit("radxa-05", show=show)],
                         "last_fire": None, "run": _RUNS[stand.run],
                         "shows": {}, "corrections": [], "prepared": {},
-                        "start_at": 0.0, "show_duration": 120.0,
+                        "start_at": 0.0, "show_duration": 180.0,
                         "burn": {"burned": 0, "total": 0}, "timeline": written})
                 if path == "/api/fleet/demos":
                     return self._json({"units": {}, "offline": [], "failed": {}})
                 if path == "/test/fleet":
-                    stand.run = self.path.split("=")[-1]
-                    return self._json({"run": stand.run})
+                    args = dict(p.split("=", 1) for p in
+                                self.path.partition("?")[2].split("&") if "=" in p)
+                    stand.run = args.get("run", stand.run)
+                    stand.unit_show = args.get("show", stand.unit_show)
+                    return self._json({"run": stand.run, "show": stand.unit_show})
                 return self._json({})
 
         self.port = _free_port()
@@ -733,6 +986,9 @@ _PAGE_PROBE = """
                        arrow: first.querySelector("[data-arr] b").textContent,
                        state: first.querySelector("[data-state]").textContent.trim(),
                        vitals: first.querySelector("[data-vit]").textContent,
+                       lagTitle: [].map.call(first.querySelectorAll("[data-vit] span"),
+                                             function (s) { return s.title; })
+                                   .filter(function (t) { return /BEHIND/.test(t); })[0] || "",
                        thumbs: first.querySelectorAll(".nn-thumb svg").length };
       var all = board().querySelectorAll(".nn-row");
       out.vitals = [].map.call(all, function (r) {
@@ -748,6 +1004,22 @@ _PAGE_PROBE = """
       await fetch("/test/fleet?run=ended");
       await wait(1600);
       out.ended = { cap: text("[data-cap]"), note: text("[data-note]") };
+
+      // 4b. STOP: no run at all, but the units have applied their cues, so
+      //     the panels are NOT back on the 0:00 preset.
+      await fetch("/test/fleet?run=none&show=ran");
+      await wait(1600);
+      var kept = board().querySelector(".nn-row");
+      out.stopped = { note: text("[data-note]"),
+                      now: kept.querySelector("[data-now-name]").textContent,
+                      thumb: kept.querySelector("[data-now]").style.display,
+                      next: kept.querySelector("[data-next-name]").textContent };
+      await fetch("/test/fleet?show=none");
+      await wait(1600);
+      var fresh = board().querySelector(".nn-row");
+      out.neverRan = { note: text("[data-note]"),
+                       now: fresh.querySelector("[data-now-name]").textContent,
+                       thumb: fresh.querySelector("[data-now]").style.display };
       await fetch("/test/fleet?run=running");
       await wait(1600);
 
@@ -825,26 +1097,34 @@ def test_the_board_draws_one_row_per_garment_with_the_bags_collapsed(page):
 
 def test_before_start_the_board_says_where_start_begins(page):
     assert page["loadedNote"] == "START runs from 0:00", page["loadedNote"]
-    assert page["loadedTime"] == "0:30", "the first cue's time is not named"
+    assert page["loadedTime"] == "1:00", "the first cue's time is not named"
     assert page["loadedCount"] == "", "something counted down before START"
 
 
 def test_a_running_show_counts_the_next_cue_down_in_the_header(page):
+    # The run is pinned at 0:05 and the first cue is at 1:00, so the
+    # countdown is around 55 s however fast the browser ran its clock.
     h = page["running"]
-    assert h["cap"] == "NEXT" and h["time"] == "0:30", h
-    assert re.fullmatch(r"−1?\d s", h["count"]), h["count"]
+    assert h["cap"] == "NEXT" and h["time"] == "1:00", h
+    assert re.fullmatch(r"−\d\d? s", h["count"]), h["count"]
+    assert 40 <= int(h["count"][1:-2]) <= 55, h["count"]
     assert "LOOK 23 Tops" in h["what"] and "LOOK 24 Skirt" in h["what"], h
+    # ...and the cue after it, on the right.
+    assert page["running"]["follow"].startswith("1:30 · LOOK 24 Skirt · ivory"), \
+        page["running"]["follow"]
 
 
 def test_a_row_shows_both_thumbnails_the_arrow_and_its_units_vitals(page):
     r = page["firstRow"]
     assert "LOOK 23" in r["who"] and "radxa-01" in r["who"], r
     assert r["now"] == "ivory" and r["next"] == "scarlet", r
-    assert r["when"].startswith("0:30"), r["when"]
+    assert r["when"].startswith("1:00"), r["when"]
     assert r["arrow"] == "↓", "top_down is not drawn as an arrow down"
     assert r["thumbs"] == 2, "a row is missing its NOW or its NEXT thumbnail"
     assert "+6 ms" in r["state"], r["state"]
-    assert r["vitals"].startswith("radxa-01 · lag +4 ms · rtt 6 ms"), r["vitals"]
+    assert r["vitals"].startswith("radxa-01 · lag +4 ±3 ms · rtt 6 ms"), r["vitals"]
+    assert "boards 3/3" in r["vitals"], r["vitals"]
+    assert "BEHIND this PC" in r["lagTitle"], r["lagTitle"]
 
 
 def test_a_unit_that_is_behind_or_missing_a_board_or_offline_is_red(page):
@@ -853,7 +1133,7 @@ def test_a_unit_that_is_behind_or_missing_a_board_or_offline_is_red(page):
     assert "red" in v[1]["cls"], "a unit a third of a second behind is not red"
     # Its boards are counted against the GARMENT's own board list (three
     # boards in the map), not against whatever the unit happens to report.
-    assert "lag +330 ms" in v[1]["text"] and "boards 2/3" in v[1]["text"], v[1]
+    assert "lag +330 ±3 ms" in v[1]["text"] and "boards 2/3" in v[1]["text"], v[1]
     assert v[2]["off"] and "unit offline" in v[2]["text"], v[2]
 
 
@@ -862,6 +1142,23 @@ def test_hold_and_the_end_of_the_show_say_so_on_the_board(page):
     assert page["holding"]["note"].startswith("HELD at "), page["holding"]
     assert "after RESUME" in page["holding"]["note"]
     assert page["ended"]["cap"] == "SHOW ENDED", page["ended"]
+
+
+def test_after_a_stop_the_rows_do_not_put_the_preset_back_on_the_glass(page):
+    # No run, so the position falls back to start_at - and recomputing the
+    # designs there said "ivory" for garments standing on stage in whatever
+    # they last changed into, which is the opposite of what STOP's own
+    # button promises ("panels keep their image").
+    stopped = page["stopped"]
+    assert stopped["now"] == "(whatever the panels kept)", stopped
+    assert stopped["thumb"] == "none", "a design nobody chose was still drawn"
+    assert "the panels keep what they are showing" in stopped["note"], stopped["note"]
+    assert stopped["next"] == "scarlet", "START is still what comes next"
+    # ...and before any show has run, the preset IS on the glass.
+    fresh = page["neverRan"]
+    assert fresh["now"] == "ivory", fresh
+    assert fresh["thumb"] != "none"
+    assert fresh["note"] == "START runs from 0:00", fresh["note"]
 
 
 def test_the_stage_monitor_moves_the_one_board_and_gives_it_back(page):
