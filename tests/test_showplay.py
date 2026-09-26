@@ -24,7 +24,7 @@ from ui.showplay import (BURN_FILE, CLEAR_S_PER_BOARD, ENDED, HOLDING,
                          LOADED, RUNNING, SAVE_S_PER_BOARD, STOPPED,
                          ShowPlayer)
 from tests.test_ui_remote import SAVE, SHOW, make_session, wait_until
-from tests.test_ui_runner import FakeBus, make_runner
+from tests.test_ui_runner import FakeBus, Wall, make_runner
 
 REFRESH = 0.3
 
@@ -1512,3 +1512,224 @@ def test_status_always_carries_a_burn_dict_for_a_loaded_show(rig):
     assert wait_burned(player)
     player.stop()                        # STOP after the burn: still burned
     assert player.status()["burn"]["state"] == "burned"
+
+
+# ---- the show file's own board list reaches the unit without a burn ----
+#
+# radxa-04 (tops, 16 boards), 2026-09-26: it restarted mid-show, ran its
+# start-up standby's discovery (which found six empty sockets past the
+# garment and logged `board 17-22 absent, skipping`) and then resumed the
+# show - and restore() never re-burns, so no job ever carried the
+# garment's list. The unit spent the rest of the show probing those six
+# sockets every minute, 15 s a time. The show file knows the garment
+# (conductor/showfile.py's `boards`), so ShowPlayer hands the list over
+# on its own: ui/remote.py's set_boards().
+
+TOPS = list(range(1, 17))               # radxa-04's garment
+EMPTY_SOCKETS = set(range(17, 23))      # ...and what the explore looks at
+
+
+def make_tops_show(sents=(-REFRESH, 0.4, 6.0), duration=60.0,
+                   show_id="tops123456"):
+    """A 16-board show file, shaped the way conductor/showfile.py writes
+    one: its own `boards` list, and every cue carrying every address."""
+    cues = []
+    for n, sent in enumerate(sents):
+        color = (n % 3) + 1
+        cues.append({"id": f"q{n:02d}", "at": max(0.0, sent + REFRESH),
+                     "sent": sent, "label": f"Look26 P{n + 1:02d}",
+                     "slot": n + 1,
+                     "boards": {str(b): array(color) for b in TOPS},
+                     "state": {str(b): array(color) for b in TOPS}})
+    return {"id": show_id, "name": "tops", "unit": "radxa-04",
+            "dev_type": 3, "refresh_s": REFRESH, "duration": duration,
+            "boards": list(TOPS), "slot_capacity": 20, "cues": cues}
+
+
+def standby_discovery(runner, bus):
+    """The unit's own start-up standby, which explores the bus - and
+    leaves the six sockets past the garment in `absent`. The bus log is
+    cleared afterwards: what matters is what the SHOW sends."""
+    from ui.patterns import BY_KEY
+
+    runner.start(BY_KEY["solid"])
+    assert wait_until(lambda: "panels online" in " ".join(runner.log),
+                      timeout=20)
+    runner.stop()
+    assert runner.explore is True and runner.absent == EMPTY_SOCKETS
+    bus.log.clear()
+    bus.times.clear()
+
+
+def test_a_show_resumed_after_a_restart_brings_its_own_board_list(tmp_path):
+    session, runner, bus = make_session(boards=TOPS, verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    show = make_tops_show()
+    try:
+        player.load(show)
+        assert wait_burned(player)
+        t0 = time.monotonic() - 1.0
+        player.run(t0)             # a show already a second in: q01 is due
+        assert wait_until(lambda: player.applied == "q01")
+    finally:
+        player.close()                                  # the unit restarts
+        runner.stop()
+
+    session2, runner2, bus2 = make_session(Wall(set(TOPS)), boards=None,
+                                           verify_fire=False)
+    standby_discovery(runner2, bus2)
+    reborn = ShowPlayer(session2, store=tmp_path, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        reborn.restore()               # nothing is re-burned, ever
+        assert reborn.state == RUNNING and reborn.restored_running
+        assert wait_until(lambda: reborn.applied == "q01", timeout=10)
+        assert runner2.boards == TOPS and runner2.explore is False
+        assert runner2.absent == set()
+        assert any("boards 1-16 from the show (17-22 dropped, not probed)"
+                   in line for line in runner2.log)
+        # The cue still to come goes out on its own instant...
+        assert wait_until(lambda: reborn.applied == "q02", timeout=12)
+        assert 0 <= show_times(bus2)[-1] - (t0 + 6.0) < 0.05
+        # ...and not one frame of the whole show reached a socket the
+        # show does not name.
+        assert not [f for f in bus2.log if f.dest in EMPTY_SOCKETS]
+
+        # KEY2 still hands the unit back to its own discovery.
+        from ui.patterns import BY_KEY
+
+        session2.release()
+        seen = sum("panels online" in line for line in runner2.log)
+        runner2.start(BY_KEY["solid"])
+        assert wait_until(lambda: sum("panels online" in line
+                                      for line in runner2.log) > seen,
+                          timeout=20)
+        assert runner2.explore is True and runner2.absent == EMPTY_SOCKETS
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
+def test_a_load_whose_burn_is_all_cache_still_applies_the_board_list(tmp_path):
+    session, runner, bus = make_session(Wall(set(TOPS)), boards=None,
+                                        verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        standby_discovery(runner, bus)
+        show = make_tops_show()
+        player.load(show)
+        assert wait_burned(player)
+        assert runner.boards == TOPS and runner.absent == set()
+        # The burn that followed brought the same list; it is still the
+        # show file's, and /status still says so.
+        assert runner.boards_source == "show"
+
+        # The same show again: every (board, slot) is in the burn cache,
+        # so the burn writes nothing at all - and the list still stands.
+        bus.log.clear()
+        bus.times.clear()
+        player.load(show)
+        assert wait_burned(player)
+        assert not [f for f in bus.log if f.cmd == SAVE]
+        assert runner.boards == TOPS and runner.explore is False
+        assert not [f for f in bus.log if f.dest in EMPTY_SOCKETS]
+        # Said once, when the list actually changed - not on every load.
+        assert sum("from the show" in line for line in runner.log) == 1
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_start_after_a_key2_key1_detour_hands_the_list_over_again(tmp_path):
+    # The detour the review found: Upload, KEY2 (the PC lets go), KEY1
+    # (the unit plays its own pattern and explores again), then START.
+    # Only load() and restore() used to hand the list over, so the show
+    # ran on a unit that was back in radxa-04's state. Every start of
+    # driving goes through _send(), so that is where it belongs.
+    from ui.patterns import BY_KEY
+
+    session, runner, bus = make_session(Wall(set(TOPS)), boards=None,
+                                        verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        standby_discovery(runner, bus)
+        player.load(make_tops_show())
+        assert wait_burned(player)
+        assert runner.boards == TOPS and runner.boards_source == "show"
+
+        session.release()                       # KEY2: back to the MENU
+        assert runner.boards_source == "explore"
+        runner.start(BY_KEY["solid"])           # KEY1: its own pattern
+        assert wait_until(lambda: runner.absent == EMPTY_SOCKETS, timeout=20)
+        runner.stop()
+
+        bus.log.clear()
+        bus.times.clear()
+        player.run(time.monotonic() + 0.2)      # ...and the PC starts it
+        assert wait_until(lambda: player.applied == "q00", timeout=10)
+        assert runner.boards == TOPS and runner.boards_source == "show"
+        assert runner.absent == set() and runner.group_count == 16
+        assert not [f for f in bus.log if f.dest in EMPTY_SOCKETS]
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_the_show_files_own_list_wins_over_a_narrower_burn(tmp_path):
+    # The burn's board list is the union of its cues' boards, which is a
+    # subset of the garment by construction - applying it over the show
+    # file's own list would quietly drop boards the garment has (review,
+    # 2026-09-27).
+    session, runner, bus = make_session(Wall(set(TOPS)), boards=None,
+                                        verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        standby_discovery(runner, bus)
+        show = make_tops_show()
+        for cue in show["cues"]:                # only half the garment
+            for board in range(9, 17):
+                cue["boards"].pop(str(board))
+                cue["state"].pop(str(board))
+        player.load(show)
+        assert wait_burned(player)
+        assert runner.boards == TOPS            # the show file's own 1-16
+        assert runner.boards_source == "show" and runner.group_count == 16
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_restored_demo_brings_its_own_board_list(tmp_path):
+    session, runner, bus = make_session(boards=TOPS, verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.1,
+                        grace_s=0.1, tick_s=0.02, setup_s=0.05,
+                        setup_board_s=0.0)
+    try:
+        show = make_tops_show(sents=(-REFRESH, 5.0), duration=30,
+                              show_id="demo123456")
+        player.load(show, demo=True, name="DEMO PARIS", slug="demo-paris")
+        assert wait_burned(player)
+        player.run(time.monotonic() - 1.0)
+        assert wait_until(lambda: player.applied == "q00")
+    finally:
+        player.close()
+        runner.stop()
+
+    session2, runner2, bus2 = make_session(Wall(set(TOPS)), boards=None,
+                                           verify_fire=False)
+    standby_discovery(runner2, bus2)
+    reborn = ShowPlayer(session2, store=tmp_path, grace_s=0.1, tick_s=0.02)
+    try:
+        reborn.restore()
+        assert reborn.state == RUNNING and reborn.is_demo is True
+        assert wait_until(lambda: reborn.applied == "q00", timeout=5)
+        assert runner2.boards == TOPS and runner2.absent == set()
+        assert not [f for f in bus2.log if f.dest in EMPTY_SOCKETS]
+    finally:
+        reborn.close()
+        runner2.stop()
