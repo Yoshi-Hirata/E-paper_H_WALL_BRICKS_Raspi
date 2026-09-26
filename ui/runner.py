@@ -63,6 +63,9 @@ from .remote import READY          # ui/remote.py imports nothing of ours
 # and a dead board in the middle (16 of 21) does not end the search.
 # Until the first board answers it keeps going to 60: the dead ones may
 # be the low addresses (2026-09-22: 1-11 and 19-20 off, 12-18 and 21 on).
+# A list that arrives later (a show's burn, a /prepare) ends the
+# exploring for as long as it is in force, and nothing outside it is
+# touched again - see _apply_job_boards().
 MAX_BOARD_ID = 60
 DEFAULT_BOARDS = list(range(1, MAX_BOARD_ID + 1))
 EXPLORE_GAP = 6
@@ -242,6 +245,11 @@ class DemoRunner:
                  reprobe_interval: float = REPROBE_INTERVAL_S):
         self.explore = not boards            # no list given: find them
         self.boards = list(boards) if boards else list(DEFAULT_BOARDS)
+        # What this unit does on its own, restored by _start() when the
+        # show PC hands the port back (KEY2 / release): a job's board
+        # list only rules while the show does - see _apply_job_boards().
+        self._own_explore = self.explore
+        self._own_boards = list(self.boards)
         self.interval = interval
         self.guard_delay = guard_delay
         self.slot = slot           # the LOCAL pattern loop's working slot
@@ -453,6 +461,14 @@ class DemoRunner:
         self.caption = None
         self.failures = 0
         self.error = None
+        # Back on the unit's own menu (KEY2, or a release from the show
+        # PC): a show's board list ruled only while the show did, so an
+        # exploring unit explores again from its own list. A unit given
+        # an explicit --boards list keeps that list either way.
+        if self._own_explore and not self.explore:
+            self.explore = True
+            self.boards = list(self._own_boards)
+            self.emit("the show's board list is released, exploring again")
         # live/absent survive across starts on purpose: the wall does not
         # change because a different pattern was picked, and re-sweeping
         # eighteen empty sockets would hold the first frame for half a
@@ -714,6 +730,49 @@ class DemoRunner:
             return [b for b in self.boards if b <= self.expected]
         return list(self.boards)
 
+    def _group_count(self) -> int:
+        """The group_count every frame carries: the board list's length,
+        or its highest address when the list has gaps. It follows the
+        list, so a show's own list changes it too (see
+        _apply_job_boards())."""
+        return max(len(self.boards), max(self.boards))
+
+    def _apply_job_boards(self, wanted: "list[int]") -> bool:
+        """Adopt the show PC's board list as THE list; True if it changed.
+
+        The PC knows the garment, so while its list is in force nothing
+        outside it is live, absent or explored: a socket the show does
+        not name is not probed at all. radxa-04, 2026-09-26 rehearsals -
+        it came up in STANDBY, its discovery logged "board 17-22 absent,
+        skipping" (the explore looks EXPLORE_GAP past the last live
+        board), and those six stayed in `absent` once the show's own
+        list of 1-16 arrived. _reprobe() then spent ~15 s of every
+        minute (six serial timeouts) probing sockets the show knew were
+        empty, and the cues whose trigger fell inside one of those
+        probes went out +492 / +246 / +73 ms late. Traffic to boards
+        that do not exist is bus noise inside a show.
+
+        What is already known about a listed socket stays known: a board
+        the standby sweep found empty gets one probe in the setup below,
+        not three (29 s for 15 empty sockets on the bench, 2026-09-21).
+        """
+        wanted = sorted(wanted)
+        keep = set(wanted)
+        known = set(self.boards) | set(self.live) | set(self.absent)
+        dropped = sorted(known - keep)
+        changed = wanted != sorted(self.boards) or bool(dropped)
+        was_live = set(self.live)
+        with self._lock:
+            self.absent = {b for b in self.absent if b in keep}
+        self.live = [b for b in wanted if b in was_live]
+        self.boards = wanted
+        self.explore = False            # the show PC knows the garment
+        if changed:
+            note = (f" ({self._fmt_boards(dropped)} dropped, not probed)"
+                    if dropped else "")
+            self.emit(f"boards {self._fmt_boards(wanted)} from the show{note}")
+        return changed
+
     def _reprobe(self, bus, groups: int) -> bool:
         """Give absent boards a quick chance to join; True if any did.
 
@@ -721,7 +780,15 @@ class DemoRunner:
         into it: one short probe per board per interval, so eighteen
         empty sockets cost about nine seconds a minute and a board that
         appears is drawing within a cycle.
+
+        Only boards on the list, ever: while a show's list is in force
+        that is the show's list, and a socket outside it is not probed
+        even if it once answered (see _apply_job_boards()).
         """
+        stray = self.absent - set(self.boards)
+        if stray:
+            with self._lock:
+                self.absent -= stray
         if not self.absent or time.monotonic() < self._next_reprobe:
             return False
         self._next_reprobe = time.monotonic() + self.reprobe_interval
@@ -1608,7 +1675,7 @@ class DemoRunner:
                 with self._open_bus(port) as bus:
                     self.emit(f"port {port}")
                     needs_setup = True
-                    groups = max(len(self.boards), max(self.boards))
+                    groups = self._group_count()
                     while not self._stop.is_set():
                         # A job's own board list is applied BEFORE setup
                         # runs, so the very first prepare() (still holding
@@ -1622,21 +1689,9 @@ class DemoRunner:
                             # inside the probing left owed.
                             guard_due = self._guard_owed = None
                             wanted = sorted(job["boards"])
-                            if wanted != sorted(self.boards):
-                                # Another garment, another board list - but
-                                # what is already known about a socket stays
-                                # known: a board the standby sweep found
-                                # empty gets one probe here, not three
-                                # (29 s for 15 empty sockets on the bench,
-                                # 2026-09-21).
-                                self.absent = {b for b in wanted
-                                               if b in self.absent}
-                                self.live = [b for b in self.live
-                                             if b in wanted]
-                                self.boards = wanted
-                                self.explore = False    # the show PC knows
-                                groups = max(len(self.boards), max(self.boards))
+                            if self._apply_job_boards(wanted):
                                 needs_setup = True
+                            groups = self._group_count()
                             if needs_setup:
                                 if not self._setup(bus, groups):
                                     session.failed_with(self.error
@@ -1666,15 +1721,10 @@ class DemoRunner:
                             guard_due = self._guard_owed = None
                             wanted = sorted({b for cue in burn_job["cues"]
                                             for b in cue["boards"]})
-                            if wanted and wanted != sorted(self.boards):
-                                self.absent = {b for b in wanted
-                                               if b in self.absent}
-                                self.live = [b for b in self.live
-                                             if b in wanted]
-                                self.boards = wanted
-                                self.explore = False
-                                groups = max(len(self.boards), max(self.boards))
-                                needs_setup = True
+                            if wanted:
+                                if self._apply_job_boards(wanted):
+                                    needs_setup = True
+                                groups = self._group_count()
                             if needs_setup:
                                 if not self._setup(bus, groups):
                                     if self.error != "no boards answering":
@@ -1804,7 +1854,7 @@ class DemoRunner:
 
     def _run(self) -> None:
         rng = random.Random(self._seed)
-        groups = max(len(self.boards), max(self.boards))
+        groups = self._group_count()
         while not self._stop.is_set():
             port = self.port or find_port()
             if not port:
