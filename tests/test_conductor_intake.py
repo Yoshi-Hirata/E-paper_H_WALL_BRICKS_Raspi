@@ -84,10 +84,13 @@ def _free_port() -> int:
 class _Stand:
     """index.html, a real Workspace behind /api/files and /api/state."""
 
-    def __init__(self, tmp_path, probe):
+    def __init__(self, tmp_path, probe, designs=1):
         self.ws = Workspace(tmp_path / "ws")
         self.ws.save("Look22_map.csv", MAP)
-        self.ws.save("Look22_color_pattern01_grid.csv", GRID)
+        for n in range(1, designs + 1):
+            self.ws.save(f"Look22_color_pattern0{n}_grid.csv", GRID)
+        # A second garment, with a map and no design of its own: the one
+        # case where placing a cue has to be refused rather than guessed.
         self.ws.save("Skirt_map.csv", SKIRT_MAP)
         page = PAGE.replace("</body>", probe + "</body>", 1)
         workspace = self.ws
@@ -110,13 +113,18 @@ class _Stand:
                 self._send(json.dumps(obj).encode("utf-8"), "application/json")
 
             def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}")
                 if self.path == "/api/files":
-                    length = int(self.headers.get("Content-Length") or 0)
-                    body = json.loads(self.rfile.read(length) or b"{}")
                     item = body.get("item")
                     return self._json(workspace.intake(
                         body.get("files") or [],
                         str(item) if item else None))
+                if self.path == "/api/show":
+                    workspace.set_timeline(body.get("duration", 600),
+                                           body.get("cues", []),
+                                           body.get("refresh_s"))
+                    return self._json({"ok": True})
                 return self._json({})
 
             def do_GET(self):
