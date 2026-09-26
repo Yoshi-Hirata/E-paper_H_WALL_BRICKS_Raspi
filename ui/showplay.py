@@ -39,6 +39,17 @@ exact one by then if it can reach the unit at all. A restored T0 that
 lies in the future cannot be right - nothing starts a show more than a
 minute ahead - and is not run on.
 
+A standalone demo (ui/demos.py, load(demo=True)) is restored by those
+very same rules, as a demo: `demo`, `demo_name`, `demo_slug` and
+`demo_loop` are part of the run record on disk, so a unit that was
+playing one when the power went comes back playing it - what a showroom
+loop is for - and one that was merely loaded comes back LOADED, for the
+next KEY1. The PC sees it as a demo again either way (status.show.demo),
+which is what keeps the conductor's supervision from adopting it as its
+own. The run record is written BEFORE show.json (see _persist()), so a
+power cut inside a load() can lose the show file but never pair the
+previous show's record with the new one.
+
 The burn is a property of the LOADED SHOW, not of the session (review
 finding F1, 2026-09-25): status()["burn"] is never None for a loaded
 show, and its "state" is one of
@@ -185,11 +196,14 @@ class ShowPlayer:
         self.t0: "float | None" = None
         self.synced = False            # T0 came from the PC, not from disk
         # A show loaded with load(show, demo=True) - ui/demos.py's stored
-        # standalone shows, played from the unit's own menu. Only changes
-        # what restore() does after a reboot (see there); everything else
-        # about running one is identical to a PC-driven show.
+        # standalone shows, played from the unit's own menu. Running one
+        # is identical to running a PC-driven show; the flag is what the
+        # PC (status.show.demo) and the LCD read to know whose show this
+        # is, and restore() brings it back with the show (see there).
         self.is_demo = False
         self.demo_name = ""            # the name it was written under
+        self.demo_slug = ""            # ui/demos.py's slug: which row it is
+        self.demo_loop = False         # ...and whether it plays again
         self.applied: "str | None" = None      # cue id on the garment now
         self.dirty = False             # some board does not show `applied`
         self.note = ""
@@ -218,6 +232,14 @@ class ShowPlayer:
         # is still holding (real unit, 2026-09-25 - 16 s of probing and
         # then WHITE, mid-show, before the show came back).
         self.restored_running = False
+        # ...and WHICH show that was. ui/main.py reads restored_running
+        # once at start-up and nothing ever clears it, so the LCD's own
+        # "is the PC's show on the garment right now?" (ui/app.py's
+        # _pc_show_wins) pairs it with the id: a show restored onto the
+        # garment but sitting LOADED - held, or waiting for the PC to
+        # send a T0 - is still the PC's, and a demo must not paint over
+        # it. load() and stop() are the two ways it stops being true.
+        self.restored_id: "str | None" = None
         self._retry_at = 0.0
         self._not_before = 0.0
         # Bumped by every command. _send() runs without the lock (it may
@@ -234,7 +256,8 @@ class ShowPlayer:
 
     # ---- commands (from the agent) ----
 
-    def load(self, show: dict, demo: bool = False, name: str = "") -> None:
+    def load(self, show: dict, demo: bool = False, name: str = "",
+             slug: str = "", loop: bool = False) -> None:
         validate_show(show)
         if self.session.busy():
             # Refused before anything changes: the previous show (and its
@@ -270,8 +293,17 @@ class ShowPlayer:
             self.is_demo = bool(demo)
             # The name it was written under (ui/demos.py), not show["name"]
             # (the look's own name from the timeline) - the PC's Units
-            # tile labels a unit "demo: <name>" from /status.show.
+            # tile labels a unit "demo: <name>" from /status.show. The
+            # slug goes with it so that restore() can hand the LCD back
+            # the very menu row this came from (ui/app.py's KEY1-hold and
+            # its loop both work on the slug, not on the name).
             self.demo_name = str(name) if demo else ""
+            self.demo_slug = str(slug) if demo else ""
+            # Recorded with it, so that an adopted lap after a restart
+            # does not depend on the menu row still being there.
+            self.demo_loop = bool(loop) and demo
+            # Whatever restore() put on the garment, this show replaces.
+            self.restored_id = None
             self.state, self.t0, self.synced = LOADED, None, False
             self._forget_garment()
             self.note = ""
@@ -485,6 +517,10 @@ class ShowPlayer:
             if self.show is not None:
                 self.state = STOPPED
             self.t0 = None
+            # The PC (or KEY2) has let go: whatever restore() brought
+            # back is no longer something anyone is driving, so it stops
+            # holding a demo out of the menu (ui/app.py's _enter_demo).
+            self.restored_id = None
             self._persist()
         self.session.cancel_burn()   # give up on a burn still in flight
         self._wake.set()
@@ -568,20 +604,59 @@ class ShowPlayer:
             return
         try:
             self.store.mkdir(parents=True, exist_ok=True)
+            # The run record goes FIRST, even on a load. A power cut
+            # between the two files then leaves a record that names the
+            # NEW show beside the OLD show.json, which restore() reads as
+            # "this record says nothing about this show file" and takes
+            # as a plain PC show. The other order could leave the
+            # PREVIOUS show's record - `demo: true` and all - paired with
+            # a freshly loaded PC show that happens to carry the same id
+            # (a demo written from the very show the PC is running), and
+            # the unit would come back guarding a demo nobody started.
+            try:
+                self._write("show-run.json", {
+                    "show": self.show["id"] if self.show else None,
+                    "state": self.state, "applied": self.applied,
+                    # What the show IS, not just what it holds: a demo
+                    # comes back as a demo after a restart (restore()),
+                    # so the LCD owns it again and the PC keeps leaving
+                    # it alone.
+                    "demo": self.is_demo, "demo_name": self.demo_name,
+                    "demo_slug": self.demo_slug, "demo_loop": self.demo_loop,
+                    # T0 as wall time: what survives a reboot.
+                    "t0_wall": (None if self.t0 is None else
+                                self._wall() + (self.t0 - self._clock()))})
+            except OSError:
+                # The record could not be replaced, so the one on disk is
+                # the PREVIOUS show's - and with show.json about to be
+                # replaced (or already holding that older show), a
+                # restart would read the two as a matched pair and
+                # restore, say, yesterday's demo over a PC load that has
+                # since happened. No record at all is the honest state:
+                # restore() bails on it and the unit comes up with
+                # nothing loaded, waiting for the PC.
+                self._forget_run_record()
+                raise
             if with_show and self.show is not None:
                 self._write("show.json", self.show)     # only when it changes
-            self._write("show-run.json", {
-                "show": self.show["id"] if self.show else None,
-                "state": self.state, "applied": self.applied,
-                "demo": self.is_demo, "demo_name": self.demo_name,
-                # T0 as wall time: what survives a reboot.
-                "t0_wall": (None if self.t0 is None else
-                            self._wall() + (self.t0 - self._clock()))})
         except OSError as exc:
             self.note = f"cannot save the show: {exc}"
 
+    def _forget_run_record(self) -> None:
+        try:
+            (self.store / "show-run.json").unlink()
+        except OSError:
+            pass                # missing, or a disk that will not have it
+
     def restore(self) -> None:
-        """At start-up: pick the show up again if it was running."""
+        """At start-up: pick the show up again if it was running.
+
+        A standalone demo (load(demo=True)) comes back as a demo - the
+        flag, the name and the slug are all part of the run record - and
+        follows exactly the same rules from there, so the LCD can own it
+        again (ui/app.py adopts a resumed one onto the DEMO screen) and
+        the PC keeps leaving it alone.
+        """
         if self.store is None:
             return
         try:
@@ -596,28 +671,35 @@ class ShowPlayer:
         with self._lock:
             self.show = show
             self.state = LOADED
-            self.is_demo = bool(run.get("demo"))
+            # Only a run record that NAMES this show file says anything
+            # about it. One that names another show is a load() that was
+            # cut in half (show-run.json written, show.json not yet): the
+            # record describes the show the unit was ASKED to load, while
+            # show.json still holds the one before it, and neither
+            # vouches for the other. Taken as a PC show, which is the
+            # safe way round: the conductor may then load over it, where
+            # a wrongly-restored demo would have it left alone for ever.
+            named = run.get("show") == show.get("id")
+            self.is_demo = bool(run.get("demo")) and named
             self.demo_name = run.get("demo_name", "") if self.is_demo else ""
+            self.demo_slug = run.get("demo_slug", "") if self.is_demo else ""
+            self.demo_loop = bool(run.get("demo_loop")) and self.is_demo
             # The burn state comes back only from the record that names
             # this very show; anything else is "none" and run() refuses
             # until the PC uploads again (restore() never re-burns).
             self._burn_id, self._burn_saved = None, None
             self._burn_disk = self._read_burn_record(show)
             self._burn_none_why = "since this unit restarted"
-            if run.get("show") != show.get("id"):
+            if not named:
                 return
-            if self.is_demo:
-                # A demo is simpler and safer left alone: it restarts only
-                # when the operator presses KEY1 again, never on its own
-                # after a power cut (a PC-driven show still resumes below).
-                # Cleared to a plain LOADED show (not re-marked as a demo)
-                # so a *second* reboot, mid-SHOW this time, does not take
-                # this same branch again - a demo's show id is a content
-                # digest, so without this the PC would never see reason to
-                # reload it and the show would simply sit un-restored.
-                self.is_demo, self.demo_name = False, ""
-                self._persist()
-                return
+            # A demo comes back AS a demo (radxa-05, 2026-09-26: it used
+            # to come back as a plain PC show, and from then on KEY1 on
+            # every demo row was refused - "PC show loaded - use the PC" -
+            # until someone pressed STOP on the PC). It takes the very
+            # same path a PC-driven show takes from here: one that was
+            # RUNNING when the power went resumes on its own, which is
+            # what a showroom loop is for, and one that was merely loaded
+            # or stopped comes back LOADED, for KEY1 to start again.
             t0_wall = run.get("t0_wall")
             t0 = (None if t0_wall is None
                   else self._clock() + (t0_wall - self._wall()))
@@ -634,6 +716,7 @@ class ShowPlayer:
                 # Held, not running: nothing is going to move that
                 # picture, and it is a picture of this show.
                 self.restored_running = True
+                self.restored_id = show.get("id")
             if run.get("state") != RUNNING or t0_wall is None:
                 return
             if self._burn_disk is None:
@@ -649,6 +732,7 @@ class ShowPlayer:
             # Genuinely mid-show: keep the garment as it is, even if the
             # T0 below turns out to need the PC's help.
             self.restored_running = True
+            self.restored_id = show.get("id")
             if t0 - self._clock() > RESTORE_AHEAD_S:
                 # No RTC: the wall clock came up behind. Running on this T0
                 # would sit out the show waiting for a start that is past.
@@ -663,8 +747,9 @@ class ShowPlayer:
             cue = (behind[-1] if behind else show["cues"][0])["id"]
             # On the unit's own log and the PC's tile: this is the line
             # that says the white standby was skipped on purpose.
-            self.session.runner.emit(f"resumed the show after a restart: "
-                                     f"cue {cue}, no standby")
+            self.session.runner.emit(f"resumed the "
+                                     f"{'demo' if self.is_demo else 'show'} "
+                                     f"after a restart: cue {cue}, no standby")
         self._wake.set()
 
     # ---- the one rule ----
@@ -973,7 +1058,13 @@ class ShowPlayer:
                    # supervise()/_adopt() should leave one of these alone
                    # rather than mistake it for its own show; the Units
                    # tile labels a unit "demo: <name>" from demo_name.
+                   # True again after a restart that resumed one - which
+                   # is what keeps the conductor leaving it alone then
+                   # too (conductor/fleet.py's _playing_demo()).
                    "demo": self.is_demo, "demo_name": self.demo_name,
+                   # Which menu row it is: not used by the PC, but it is
+                   # how /status says the restored demo identity is whole.
+                   "demo_slug": self.demo_slug,
                    # "writing pictures n/N" (ui/remote.py's burn()) - what
                    # the PC gates START on and the LCD/Units tile show.
                    # Never None for a loaded show (module docstring).

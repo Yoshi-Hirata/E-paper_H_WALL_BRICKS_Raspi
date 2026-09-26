@@ -207,6 +207,44 @@ pipeline = 1。
     **`failed` の機体だけ**を通し、機体側もそれを「生きている基板の書き込み失敗」
     に限って受け付ける(不在の基板は元から許容)。`burning`・`cancelled`・`none`
     は force でも通らない - もう一度 Upload する
+- **再起動後の復帰とスタンドアロンデモ**(2026-09-26、radxa-05 の不具合から):
+  機体は読み込み済みのショーを `~/.epaper/show.json`(ショー本体)と
+  `show-run.json`(状態)に保存し、起動時に `ShowPlayer.restore()` で戻す。
+  `show-run.json` が持つのは **`show`(どのショーか)・`state`・`t0_wall`
+  (T0 を壁時計で)・`applied`(いまガーメントに出ている cue)** と、
+  **`demo`(true = LCD のメニューから始めたスタンドアロンデモ)・
+  `demo_name`(PC が付けた名前)・`demo_slug`(メニュー行の識別子)・
+  `demo_loop`(ループ再生か)**。**`show-run.json` を先に、`show.json` を
+  後に書く** ― 途中で電源が落ちても「前のショーの記録」が「新しく読み込んだ
+  同一 id のショー」と組になることが無いように(デモは PC のショーから
+  作られるので id が一致しうる)。**記録そのものが書けなかったとき
+  (SD カード満杯など)は古い記録を消す** ― 記録が無ければ `restore()` は
+  何も戻さず PC を待つが、古い記録を残すと「前のデモ」と「前の show.json」が
+  そろった組に見えてしまう
+  - デモは**デモとして**戻る。走っていた(`state: running`)なら、焼き込み
+    記録(`show-burn.json`)がそのショーを指していることを条件に**そのまま
+    走り直す** ― 再焼き込みはしない(絵はスロットに残っている)。ショールームの
+    ループが停電後に自分で戻るのはこのため。読み込んだだけ・停止していた
+    なら `loaded` のまま戻り、KEY1 でまた始められる
+  - `/status` の `show.demo` は復帰後も true なので、PC 側の監視
+    (`conductor/fleet.py` の `_playing_demo()`)は引き続き「触らない」。
+    止めるのは Units タブの STOP か機体の KEY2
+  - `demo` キーを持たない古い `show-run.json`、および `show` が
+    `show.json` と食い違う記録(load() の途中で電源が落ちた形)は
+    **PC のショー**として扱う ― 安全側:PC が上書きできるほうに倒す
+  - LCD 側のガード(`ui/app.py` の `_pc_show_wins()`):デモ行の KEY1 が
+    断られるのは **PC が本当にその機体を握っている 3 つの場合だけ**
+    (メニューに 5 秒の注記)――
+    ① ショーが running / holding(注記「PC show running - stop it on the
+    PC」)、② `restore()` がガーメントに戻したショーが待機中
+    (hold されていた、あるいは T0 を PC に確認してもらう途中。`state` は
+    `loaded` に見えるが絵は出ている。同じ注記)、
+    ③ 絵を書き込んでいる最中(`burn.state: burning` ― PC の Upload が
+    飛んでいる。注記「PC is writing pictures - wait」)。
+    それ以外の loaded / stopped / ended の PC ショーはデモで上書きしてよい。
+    **上書きした PC のショーは、オペレーターがもう一度 Upload するまで
+    戻らない** ― デモが走っているあいだ監視(`_supervise()`)は何もしないので、
+    自動では戻らない
 
 ## 4. 演出仕様
 

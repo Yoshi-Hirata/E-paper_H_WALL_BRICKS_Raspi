@@ -20,10 +20,10 @@ from ui.demos import MAX_DEMOS, DemoStore, slugify
 from ui.display import NullDisplay
 from ui.inputs import ScriptedInput
 from ui.remote import RemoteError
-from ui.showplay import ENDED, LOADED, RUNNING, STOPPED, ShowPlayer
+from ui.showplay import ENDED, HOLDING, LOADED, RUNNING, STOPPED, ShowPlayer
 
 from tests.test_showplay import (REFRESH, events, make_show, ordered_bus,
-                                 show_times, wait_burned)
+                                 saved_pairs, show_times, wait_burned)
 from tests.test_ui_remote import call, make_session, shows, wait_until
 
 ordered_bus = ordered_bus            # re-exported: keeps the autouse fixture
@@ -477,26 +477,47 @@ def test_key1_hold_restarts_the_playing_demo_not_a_row_the_cursor_clamped_onto(
         runner.stop()
 
 
-def test_key1_is_refused_while_a_pc_show_is_loaded(tmp_path):
+def test_key1_is_refused_only_while_the_pc_show_is_running_or_holding(tmp_path):
+    # radxa-05, 2026-09-26: the guard used to refuse for any PC show that
+    # was not STOPPED, so a unit whose restored demo had come back as a
+    # plain LOADED "PC show" answered KEY1 on every demo row with a note
+    # and nothing else. Only a show the PC is actually driving wins.
     session, runner, bus = make_session()
     app, player, demos = make_app(tmp_path, session, runner)
     try:
         pc_show = make_show(sents=(-REFRESH, 5.0), duration=30)
-        player.load(pc_show)                    # an "Upload", not a demo
         slug = demos.save("DEMO PARIS", make_show())
         app.refresh_demos()
         app.select(f"demo:{slug}")
 
+        player.load(pc_show)                    # an "Upload", not a demo
+        assert wait_burned(player)
+        player.run(time.monotonic() + 5)
+        assert player.state == RUNNING
         app.handle("key1")
         assert app.screen is Screen.MENU        # never entered DEMO
         assert player.show["id"] == pc_show["id"]   # not overwritten
         assert not player.is_demo
-        assert "PC show" in app._standby_status()
+        assert app._standby_status() == "PC show running - stop it on the PC"
+        # The note is readable: the operator looks at the wall, not at
+        # the 1.3" screen, so it stays up for 5 s rather than 3.
+        assert app._menu_note_until - time.monotonic() > 4.0
 
-        # Once the PC lets go (STOPPED), the row works normally again.
+        player.hold()                           # HOLDING is the PC's too
+        assert player.state == HOLDING
+        app.handle("key1")
+        assert app.screen is Screen.MENU and not player.is_demo
+
+        # ...but a PC show that is merely LOADED may be superseded: the
+        # PC's own next /show/load (or the conductor's _supervise(), on
+        # the id mismatch) puts it straight back.
         player.stop()
+        player.load(pc_show)
+        assert wait_burned(player)
+        assert player.state == LOADED
         app.handle("key1")
         assert app.screen is Screen.DEMO
+        assert player.is_demo and player.demo_slug == slug
     finally:
         player.close()
         runner.stop()
@@ -739,45 +760,586 @@ def test_a_pc_show_uploaded_over_an_ended_looping_demo_is_never_repainted(
         runner.stop()
 
 
-def test_restore_of_a_demo_clears_is_demo_and_never_auto_resumes(tmp_path):
+def test_restore_of_a_running_demo_brings_it_back_running_as_a_demo(tmp_path):
+    # radxa-05, 2026-09-26: the operator's standalone demo was playing
+    # when the unit restarted (a USB re-plug). It came back as a plain
+    # LOADED *PC* show - demo False - and from then on KEY1 on every demo
+    # row was refused. A demo is restored as a demo, and one that was
+    # running comes back running: that is what a showroom loop is for.
     session, runner, bus = make_session()
     player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.1,
                         grace_s=0.1, tick_s=0.02, setup_s=0.05,
                         setup_board_s=0.0)
     try:
         show = make_show(sents=(-REFRESH, 5.0), duration=30)
-        player.load(show, demo=True)
+        player.load(show, demo=True, name="DEMO PARIS", slug="demo-paris")
         assert wait_burned(player)
-        player.run(time.monotonic() + 0.2)
-        assert wait_until(lambda: player.state == RUNNING)
+        t0 = time.monotonic() - 1.0
+        player.run(t0)
+        assert wait_until(lambda: player.applied == "q00")
+        player.close()                                  # the USB re-plug
+
+        # What the PM verifies on the real unit, in show-run.json.
+        run = json.loads((tmp_path / "show-run.json").read_text(encoding="utf-8"))
+        assert run["demo"] is True and run["demo_name"] == "DEMO PARIS"
+        assert run["demo_slug"] == "demo-paris"
+        assert run["show"] == show["id"] and run["state"] == RUNNING
+
+        session2, runner2, bus2 = make_session()
+        reborn = ShowPlayer(session2, store=tmp_path, grace_s=0.1, tick_s=0.02)
+        try:
+            reborn.restore()
+            assert reborn.state == RUNNING and reborn.is_demo is True
+            assert reborn.demo_name == "DEMO PARIS"
+            assert reborn.demo_slug == "demo-paris"
+            assert reborn.restored_running          # ui/main.py: no standby
+            status = reborn.status()
+            assert status["demo"] is True and status["demo_name"] == "DEMO PARIS"
+            assert status["demo_slug"] == "demo-paris"
+            # The burn record names this very show, so nothing is written
+            # again - the trigger alone puts the garment right.
+            assert status["burn"] == {"done": 4, "total": 4, "failed": [],
+                                      "state": "burned"}
+            assert wait_until(lambda: reborn.applied == "q00", timeout=3)
+            assert saved_pairs(bus2) == set()
+            assert [e for e in events(bus2) if e[0] == "show"] == [("show", 1)]
+            assert any("resumed the demo after a restart" in line
+                       for line in runner2.recent(10))
+        finally:
+            reborn.close()
+            runner2.stop()
+    finally:
         player.close()
+        runner.stop()
+
+
+def test_restore_of_a_demo_that_was_only_loaded_comes_back_loaded(tmp_path):
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        show = make_show(sents=(-REFRESH, 5.0), duration=30)
+        player.load(show, demo=True, name="DEMO PARIS", slug="demo-paris")
+        assert wait_burned(player)
+        player.close()                                  # never run
+
+        session2, runner2, bus2 = make_session()
+        reborn = ShowPlayer(session2, store=tmp_path, tick_s=0.02)
+        try:
+            reborn.restore()
+            assert reborn.state == LOADED and reborn.is_demo is True
+            assert reborn.demo_slug == "demo-paris"
+            assert not reborn.restored_running    # nothing on the garment
+            assert reborn.t0 is None
+            time.sleep(0.2)
+            assert show_times(bus2) == []         # and nothing fires
+            # KEY1 is the way it starts again, and its burn is still good.
+            reborn.run(time.monotonic() + 0.2)
+            assert reborn.state == RUNNING and reborn.is_demo is True
+            assert saved_pairs(bus2) == set()     # never re-burned
+        finally:
+            reborn.close()
+            runner2.stop()
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_an_old_run_record_is_read_for_what_it_says_and_no_more(tmp_path):
+    """Backward compatibility, both shapes of an older `show-run.json`:
+    one written before demos existed (no `demo` key at all - a PC show,
+    whatever is in show.json), and one written by the release before this
+    fix (`demo` and `demo_name`, no `demo_slug` - still a demo, only the
+    LCD cannot tell WHICH row it was)."""
+    def reborn_from(record) -> "tuple[ShowPlayer, object]":
+        (tmp_path / "show-run.json").write_text(json.dumps(record),
+                                                encoding="utf-8")
+        session, runner, _ = make_session()
+        player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+        player.restore()
+        return player, runner
+
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        show = make_show(duration=30)
+        player.load(show, demo=True, name="DEMO PARIS", slug="demo-paris")
+        assert wait_burned(player)
+        player.close()
+        saved = json.loads((tmp_path / "show-run.json")
+                           .read_text(encoding="utf-8"))
+    finally:
+        player.close()
+        runner.stop()
+
+    older = {k: v for k, v in saved.items()
+             if k not in ("demo", "demo_name", "demo_slug")}
+    reborn, runner2 = reborn_from(older)
+    try:
+        assert reborn.state == LOADED
+        assert reborn.is_demo is False and reborn.demo_slug == ""
+        assert reborn.status()["demo"] is False
+    finally:
+        reborn.close()
+        runner2.stop()
+
+    previous = {k: v for k, v in saved.items() if k != "demo_slug"}
+    reborn, runner3 = reborn_from(previous)
+    try:
+        assert reborn.is_demo is True and reborn.demo_name == "DEMO PARIS"
+        assert reborn.demo_slug == ""       # nothing to hand the LCD back
+    finally:
+        reborn.close()
+        runner3.stop()
+
+
+def test_a_run_record_naming_another_show_is_not_taken_as_a_demo(tmp_path):
+    # load() writes show-run.json and show.json in that order: a power cut
+    # between the two leaves a record that names the show being loaded
+    # beside the show.json of the one before it. It says nothing about
+    # the show file that is actually there, so it is not believed - a PC
+    # show, which the conductor may load over, rather than a demo it
+    # would leave alone for ever.
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        show = make_show(duration=30)
+        player.load(show, demo=True, name="DEMO PARIS", slug="demo-paris")
+        assert wait_burned(player)
+        player.close()
+        run = json.loads((tmp_path / "show-run.json").read_text(encoding="utf-8"))
+        run["show"] = "another-show"
+        (tmp_path / "show-run.json").write_text(json.dumps(run), encoding="utf-8")
 
         session2, runner2, _ = make_session()
         reborn = ShowPlayer(session2, store=tmp_path, tick_s=0.02)
         try:
             reborn.restore()
-            assert reborn.state == LOADED and reborn.is_demo is False
-
-            run = json.loads((tmp_path / "show-run.json")
-                             .read_text(encoding="utf-8"))
-            assert run["demo"] is False
-
-            # A second reboot (now mid-nothing, since it never resumed)
-            # does not take the demo branch again either.
-            reborn.close()
-            session3, runner3, _ = make_session()
-            reborn2 = ShowPlayer(session3, store=tmp_path, tick_s=0.02)
-            try:
-                reborn2.restore()
-                assert reborn2.state == LOADED and reborn2.is_demo is False
-            finally:
-                reborn2.close()
-                runner3.stop()
+            assert reborn.state == LOADED
+            assert reborn.is_demo is False and reborn.demo_name == ""
         finally:
+            reborn.close()
             runner2.stop()
     finally:
         player.close()
         runner.stop()
+
+
+def test_the_conductor_still_sees_a_restored_demo_as_a_demo(tmp_path):
+    """conductor/fleet.py reads only the status fields, so a restored
+    demo has to LOOK like one: _playing_demo() is what keeps the fleet's
+    supervision (and _adopt()) from driving a show nobody asked it to."""
+    from conductor.fleet import Fleet      # the PC side, on the unit's JSON
+
+    class _Link:
+        def __init__(self, status):
+            self.status = status
+
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.1,
+                        grace_s=0.1, tick_s=0.02, setup_s=0.05,
+                        setup_board_s=0.0)
+    try:
+        show = make_show(sents=(-REFRESH, 5.0), duration=30)
+        player.load(show, demo=True, name="DEMO PARIS", slug="demo-paris")
+        assert wait_burned(player)
+        player.run(time.monotonic() - 1.0)
+        assert wait_until(lambda: player.state == RUNNING)
+        player.close()
+
+        session2, runner2, _ = make_session()
+        reborn = ShowPlayer(session2, store=tmp_path, grace_s=0.1, tick_s=0.02)
+        try:
+            reborn.restore()
+            link = _Link({"show": reborn.status()})
+            assert Fleet._playing_demo(link)
+            assert Fleet._demo_excuse(link) == "playing a demo - press STOP first"
+        finally:
+            reborn.close()
+            runner2.stop()
+    finally:
+        player.close()
+        runner.stop()
+
+
+def restarted_app(tmp_path, **app_kwargs):
+    """What ui/main.py does after a restart, in order: a new player on the
+    same store, restore(), and only then the App - which is why the App
+    has to adopt what the player brought back."""
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path / "player", save_s=0.01,
+                        margin_s=0.1, grace_s=0.1, tick_s=0.02,
+                        setup_s=0.05, setup_board_s=0.0)
+    session.on_release = player.stop
+    player.restore()
+    app = App(NullDisplay(), ScriptedInput(()), runner, remote=session,
+              player=player, demos=DemoStore(tmp_path / "demos"),
+              host="radxa-03", **app_kwargs)
+    app.show_status = player.status
+    return app, player, runner, bus
+
+
+def test_key1_is_refused_over_a_pc_show_restore_put_back_on_the_garment(tmp_path):
+    # Review 1: a PC show that was HOLDING when the unit restarted comes
+    # back LOADED - but its picture is on the garment (restored_running,
+    # which is why ui/main.py skips the standby white) and the PC is
+    # coming back for it. The state alone does not say so.
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    slug = demos.save("DEMO PARIS", make_show())
+    pc_show = make_show(sents=(-REFRESH, 5.0), duration=30)
+    try:
+        player.load(pc_show)
+        assert wait_burned(player)
+        player.run(time.monotonic() - 1.0)
+        assert wait_until(lambda: player.applied == "q00")
+        player.hold()
+    finally:
+        player.close()
+        runner.stop()
+
+    app2, player2, runner2, _ = restarted_app(tmp_path)
+    try:
+        assert player2.state == LOADED and player2.restored_running
+        assert player2.restored_id == pc_show["id"]
+        app2.select(f"demo:{slug}")
+        app2.handle("key1")
+        assert app2.screen is Screen.MENU           # never entered DEMO
+        assert not player2.is_demo
+        assert player2.show["id"] == pc_show["id"]  # not painted over
+        assert "PC show running" in app2._standby_status()
+
+        # STOP from the PC is what lets go of the garment; then the row
+        # works again, on the very same LOADED show.
+        player2.stop()
+        assert player2.restored_id is None
+        app2.handle("key1")
+        assert app2.screen is Screen.DEMO and player2.is_demo
+    finally:
+        player2.close()
+        runner2.stop()
+
+
+def test_a_restored_pc_show_that_played_itself_out_stops_winning_key1(tmp_path):
+    # N1: `restored_running` is never cleared, so a restored run that has
+    # since reached its end must not go on refusing KEY1 for ever - an
+    # ENDED show is finished, restored or not.
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    pc_show = make_show(sents=(-REFRESH, 0.3), duration=0.6)
+    try:
+        player.load(pc_show)
+        assert wait_burned(player)
+        player.run(time.monotonic() - 1.0)
+    finally:
+        player.close()
+        runner.stop()
+
+    app2, player2, runner2, _ = restarted_app(tmp_path)
+    try:
+        slug = DemoStore(tmp_path / "demos").save("DEMO PARIS", make_show())
+        app2.refresh_demos()
+        app2.select(f"demo:{slug}")
+        assert player2.restored_running                 # it came back mid-show
+        assert App._pc_show_wins(player2) == "PC show running - stop it on the PC"
+        # Ticking the App here would follow the session to REMOTE, which
+        # is a different question - this one is the guard's own.
+        assert wait_until(lambda: player2.state == ENDED, timeout=8)
+        assert player2.restored_id == pc_show["id"]     # still paired...
+        assert App._pc_show_wins(player2) is None       # ...but over
+        app2.handle("key1")
+        assert app2.screen is Screen.DEMO and player2.is_demo
+    finally:
+        player2.close()
+        runner2.stop()
+
+
+def test_a_run_record_the_disk_would_not_take_is_removed_not_left_stale(tmp_path):
+    # N2: the PC loads a different show and the run record cannot be
+    # written. Left alone, the DEMO's record would still be on disk
+    # beside the DEMO's show.json - a matched pair - and the unit would
+    # come back playing a demo the operator had just replaced. No record
+    # at all is the honest state: restore() bails and waits for the PC.
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    try:
+        player.load(make_show(duration=30), demo=True, name="DEMO PARIS",
+                    slug="demo-paris")
+        assert wait_burned(player)
+        assert (tmp_path / "show-run.json").exists()
+        real_write = player._write
+
+        def no_record(name, payload):
+            if name == "show-run.json":
+                raise OSError("the card is full")
+            return real_write(name, payload)
+
+        player._write = no_record
+        player.load(dict(make_show(duration=30), id="pcshow9999"))
+        assert not (tmp_path / "show-run.json").exists()
+        assert "cannot save the show" in player.note
+        # show.json was never reached, so the demo's own copy is still
+        # there - and without a record nothing pairs the two.
+        assert json.loads((tmp_path / "show.json").read_text(
+            encoding="utf-8"))["id"] != "pcshow9999"
+    finally:
+        player.close()
+        runner.stop()
+
+    session2, runner2, _ = make_session()
+    reborn = ShowPlayer(session2, store=tmp_path, tick_s=0.02)
+    try:
+        reborn.restore()
+        assert reborn.show is None and reborn.status() is None
+        assert reborn.is_demo is False
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
+def test_a_lap_that_expired_before_the_app_was_built_is_still_adopted(
+        tmp_path, monkeypatch):
+    # N3: restore() only ever comes back LOADED or RUNNING, but the
+    # player's own thread runs before ui/main.py builds the App - a lap
+    # whose remainder had already gone can read ENDED by then, and
+    # skipping it would leave a looping demo stopped on its last cue.
+    monkeypatch.setattr(app_module, "LOOP_GAP_S", 0.2)
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    demo_show = make_show(sents=(-REFRESH, 0.3), duration=0.6)
+    try:
+        slug = demos.save("LOOPY", demo_show, loop=True)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert _pump(app, lambda: player.state == RUNNING, timeout=3)
+    finally:
+        player.close()
+        runner.stop()
+
+    # That lap was due to end while the unit was down.
+    record = tmp_path / "player" / "show-run.json"
+    run = json.loads(record.read_text(encoding="utf-8"))
+    run["t0_wall"] -= 5.0
+    record.write_text(json.dumps(run), encoding="utf-8")
+
+    session2, runner2, bus2 = make_session()
+    player2 = ShowPlayer(session2, store=tmp_path / "player", save_s=0.01,
+                         margin_s=0.1, grace_s=0.1, tick_s=0.02,
+                         setup_s=0.05, setup_board_s=0.0)
+    session2.on_release = player2.stop
+    try:
+        player2.restore()
+        assert player2.state == RUNNING and player2.restored_running
+        # The player runs the remainder out before the App is even built.
+        assert wait_until(lambda: player2.state == ENDED, timeout=8)
+        app2 = App(NullDisplay(), ScriptedInput(()), runner2, remote=session2,
+                   player=player2, demos=DemoStore(tmp_path / "demos"),
+                   host="radxa-03")
+        app2.show_status = player2.status
+        assert app2.screen is Screen.DEMO
+        assert app2._playing_demo == slug and app2._demo_loop is True
+        # ...and the next lap starts from the DEMO screen it was adopted
+        # onto, not from a menu nobody is looking at.
+        assert _pump(app2, lambda: player2.state == RUNNING, timeout=10)
+        assert saved_pairs(bus2) == set()               # a re-run, no re-burn
+    finally:
+        player2.close()
+        runner2.stop()
+
+
+def test_key1_is_refused_while_the_pc_is_writing_its_pictures(tmp_path):
+    # Review 2: the conductor's Upload is in flight. KEY1 would cancel
+    # that burn (load() cancels whatever the session is writing), and the
+    # PC has no way to know its Upload was thrown away.
+    session, runner, bus = make_session(_SlowSaveBus())
+    app, player, demos = make_app(tmp_path, session, runner)
+    try:
+        slug = demos.save("DEMO PARIS", make_show())
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        pc_show = make_show(sents=tuple(n * 0.01 for n in range(18)),
+                            duration=5)
+        player.load(pc_show)
+        assert player.state == LOADED
+        assert player.status()["burn"]["state"] == "burning"
+
+        app.handle("key1")
+        assert app.screen is Screen.MENU
+        assert not player.is_demo and player.show["id"] == pc_show["id"]
+        assert "writing pictures" in app._standby_status()
+        assert player.status()["burn"]["state"] == "burning"   # not cancelled
+
+        # Once it settles, that same LOADED show may be superseded.
+        assert wait_burned(player, timeout=10)
+        app.handle("key1")
+        assert app.screen is Screen.DEMO and player.is_demo
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_record_from_before_the_slug_still_finds_its_row(tmp_path):
+    # Review 3: the release before this fix wrote `demo` and `demo_name`
+    # but no `demo_slug`. The row whose stored show is this very show is
+    # the way back to it (DemoStore.list() carries show_id) - without it
+    # the LCD would fall through to REMOTE and the loop would be lost.
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    demo_show = make_show(sents=(-REFRESH, 5.0), duration=30)
+    try:
+        slug = demos.save("LOOPY", demo_show, loop=True)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert _pump(app, lambda: player.state == RUNNING, timeout=3)
+    finally:
+        player.close()
+        runner.stop()
+
+    record = tmp_path / "player" / "show-run.json"
+    run = json.loads(record.read_text(encoding="utf-8"))
+    del run["demo_slug"], run["demo_loop"]          # the older shape
+    record.write_text(json.dumps(run), encoding="utf-8")
+
+    app2, player2, runner2, _ = restarted_app(tmp_path)
+    try:
+        assert player2.is_demo and not player2.demo_slug
+        assert app2.screen is Screen.DEMO
+        assert app2._playing_demo == slug           # found by show_id
+        assert app2._demo_loop is True              # ...and its loop flag
+        assert app2.patterns[app2.selected].key == f"demo:{slug}"
+    finally:
+        player2.close()
+        runner2.stop()
+
+
+def test_a_looping_demo_whose_row_was_deleted_still_loops_as_recorded(
+        tmp_path, monkeypatch):
+    # Review 4: `loop` is recorded with the demo, so an adopted lap does
+    # not depend on a menu row that may be gone (deleted from the PC
+    # while the unit was off).
+    monkeypatch.setattr(app_module, "LOOP_GAP_S", 0.2)
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    demo_show = make_show(sents=(-REFRESH, 0.3), duration=0.6)
+    try:
+        slug = demos.save("LOOPY", demo_show, loop=True)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert _pump(app, lambda: player.state == RUNNING, timeout=3)
+        assert json.loads((tmp_path / "player" / "show-run.json")
+                          .read_text(encoding="utf-8"))["demo_loop"] is True
+        demos.delete(slug)                          # gone from the PC
+    finally:
+        player.close()
+        runner.stop()
+
+    app2, player2, runner2, bus2 = restarted_app(tmp_path)
+    try:
+        assert app2.screen is Screen.DEMO
+        assert app2._playing_demo == slug
+        assert not any(isinstance(p, DemoRow) for p in app2.patterns)
+        assert app2._demo_loop is True      # the record, not the row
+        assert _pump(app2, lambda: player2.state == ENDED, timeout=8)
+        ended_t0 = player2.t0
+        assert _pump(app2, lambda: player2.state == RUNNING
+                     and player2.t0 != ended_t0, timeout=8)
+        assert saved_pairs(bus2) == set()           # a re-run, no re-burn
+    finally:
+        player2.close()
+        runner2.stop()
+
+
+def test_a_pc_load_cut_in_half_does_not_leave_the_demo_record_behind(tmp_path):
+    # Review 5: a demo written FROM the show the PC runs carries the very
+    # same id, so the run record is the only thing telling the two apart.
+    # _persist() writes it BEFORE show.json for exactly this reason: a
+    # power cut between the two can then only lose the show file (which
+    # still holds the same bytes), never leave the demo's record paired
+    # with the PC's fresh load.
+    session, runner, bus = make_session()
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02)
+    show = make_show(duration=30)
+    try:
+        player.load(show, demo=True, name="DEMO PARIS", slug="demo-paris")
+        assert wait_burned(player)
+        real_write = player._write
+
+        def cut_in_half(name, payload):
+            if name == "show.json":
+                raise OSError("the power went")
+            return real_write(name, payload)
+
+        player._write = cut_in_half
+        player.load(show)                   # the PC's own /show/load
+    finally:
+        player.close()
+        runner.stop()
+
+    session2, runner2, _ = make_session()
+    reborn = ShowPlayer(session2, store=tmp_path, tick_s=0.02)
+    try:
+        reborn.restore()
+        assert reborn.show["id"] == show["id"]
+        assert reborn.is_demo is False      # the PC's load is what stuck
+        assert reborn.demo_name == "" and reborn.demo_slug == ""
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
+def test_a_unit_that_restarted_mid_demo_gives_the_lcd_its_demo_back(
+        tmp_path, monkeypatch):
+    """ui/main.py restores the player and only then builds the App, so the
+    App has to adopt a demo that came back running - or the LCD would sit
+    on the menu while the garment plays, KEY2 would not stop it, and a
+    `loop` demo would stop at its last cue."""
+    monkeypatch.setattr(app_module, "LOOP_GAP_S", 0.2)
+    session, runner, bus = make_session()
+    app, player, demos = make_app(tmp_path, session, runner)
+    try:
+        demo_show = make_show(sents=(-REFRESH, 0.3), duration=0.6)
+        slug = demos.save("LOOPY", demo_show, loop=True)
+        app.refresh_demos()
+        app.select(f"demo:{slug}")
+        app.handle("key1")
+        assert _pump(app, lambda: player.status()["state"] == RUNNING,
+                     timeout=3)
+        assert app.screen is Screen.DEMO
+    finally:
+        player.close()
+        runner.stop()
+
+    # The restart: a new player on the same store, restore(), then the App.
+    app2, player2, runner2, bus2 = restarted_app(tmp_path)
+    try:
+        assert player2.is_demo and player2.state == RUNNING
+        # Adopted: the DEMO screen, its loop flag and name, and the slug
+        # KEY1-hold restarts from.
+        assert app2.screen is Screen.DEMO
+        assert app2._playing_demo == slug and app2._demo_loop is True
+        assert app2._demo_name == "LOOPY"
+        assert app2._demo_show_id == demo_show["id"]
+        # Nothing is burned again - the pictures are still in their slots.
+        assert saved_pairs(bus2) == set()
+        # It plays out the lap it was restored into...
+        assert _pump(app2, lambda: player2.state == ENDED, timeout=8)
+        fired = len(show_times(bus2))
+        assert fired >= 2
+        ended_t0 = player2.t0
+        # ...then loops on its own, as it did before the restart: a
+        # re-run on the same T0 arithmetic, never a re-burn.
+        assert _pump(app2, lambda: player2.state == RUNNING
+                     and player2.t0 != ended_t0, timeout=8)
+        assert _pump(app2, lambda: len(show_times(bus2)) > fired, timeout=8)
+        assert saved_pairs(bus2) == set()
+        # ...and KEY2 still ends it.
+        app2.handle("key2")
+        assert app2.screen is Screen.MENU and player2.state == STOPPED
+    finally:
+        player2.close()
+        runner2.stop()
 
 
 def test_a_foreign_json_file_in_the_store_is_skipped_not_fatal(tmp_path):
