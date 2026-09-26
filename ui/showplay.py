@@ -174,6 +174,35 @@ def validate_show(show: dict) -> None:
                               f"the standby)")
 
 
+def show_boards(show: dict) -> "list[int]":
+    """The garment this show was built for.
+
+    conductor/showfile.py writes the unit's own board list into the show
+    (`boards`), and every cue carries an entry for every one of those
+    addresses - so an older file with no list of its own is read from
+    its cues instead. This is what the unit is told to stop probing
+    outside of (ui/remote.py's set_boards()).
+    """
+    addresses = set()
+    for value in show.get("boards") or []:
+        try:
+            addresses.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    if addresses:
+        return sorted(addresses)
+    for cue in show.get("cues") or []:
+        if not isinstance(cue, dict):
+            continue
+        for key in ("state", "boards"):
+            for value in (cue.get(key) or {}):
+                try:
+                    addresses.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+    return sorted(addresses)
+
+
 class ShowPlayer:
     def __init__(self, session, store: "Path | None" = STORE,
                  clock=time.monotonic, wall=time.time,
@@ -316,6 +345,12 @@ class ShowPlayer:
             self._verify_seen = None
             self.note = ""
             self._persist(with_show=True)
+        # Which sockets this garment has, before anything is written and
+        # whatever the burn below turns out to be: a burn every pair of
+        # which the cache already holds writes nothing, and a demo's own
+        # list is no different from a PC show's (ui/remote.py's
+        # set_boards()).
+        self.session.set_boards(show_boards(show))
         # Burn every cue into its own slot now, ahead of the show itself -
         # RUNNING sends only a trigger per cue, never a write (see the
         # module docstring and ui/remote.py's RemoteSession.burn()). Runs
@@ -705,6 +740,15 @@ class ShowPlayer:
         with self._lock:
             self.show = show
             self.state = LOADED
+            # The garment's own board list, whatever state this show
+            # comes back in: it is this unit's show again, and nothing
+            # else will say so - restore() never re-burns, so no job
+            # carries the list (radxa-04, 2026-09-26: it came back
+            # mid-show and spent the rest of it probing the six empty
+            # sockets its standby discovery had found). The worker takes
+            # it when the first cue is armed (ui/remote.py's
+            # set_boards()).
+            self.session.set_boards(show_boards(show))
             # Only a run record that NAMES this show file says anything
             # about it. One that names another show is a load() that was
             # cut in half (show-run.json written, show.json not yet): the

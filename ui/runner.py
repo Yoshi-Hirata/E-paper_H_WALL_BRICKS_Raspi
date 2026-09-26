@@ -1677,6 +1677,23 @@ class DemoRunner:
                     needs_setup = True
                     groups = self._group_count()
                     while not self._stop.is_set():
+                        # Whatever the list is now - a job's, a show
+                        # file's, or what an exploring setup trimmed it
+                        # to - the group count follows it.
+                        groups = self._group_count()
+                        # The show file's own garment list, handed over
+                        # with no job to write (ui/remote.py's
+                        # set_boards(), called by ui/showplay.py). This
+                        # is the only thing that carries the list for a
+                        # show RESUMED after a restart: restore() never
+                        # re-burns, so no job ever comes. Applied here,
+                        # before the setup sweep and before any overdue
+                        # cue's fire, so both already follow it.
+                        listed = session.take_boards()
+                        if listed:
+                            if self._apply_job_boards(listed):
+                                needs_setup = True
+                            groups = self._group_count()
                         # A job's own board list is applied BEFORE setup
                         # runs, so the very first prepare() (still holding
                         # the runner's construction-time board list) does
@@ -1875,6 +1892,12 @@ class DemoRunner:
                     while not self._stop.is_set():
                         if not self._hold_while_paused():
                             break
+                        # Taken again every cycle: an exploring setup
+                        # trims the list to what the bus really carries
+                        # (1..60 down to 1..22, say), and the group count
+                        # has to follow it the way it follows a show's
+                        # own list (_group_count()).
+                        groups = self._group_count()
                         if needs_setup and not self._setup(bus, groups):
                             consecutive += 1
                         elif self._cycle(bus, groups, rng):

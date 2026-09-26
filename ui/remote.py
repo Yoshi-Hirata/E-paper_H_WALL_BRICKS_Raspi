@@ -173,6 +173,9 @@ class RemoteSession:
         self.glass_gen = 0
         self.verify_gen: int | None = None
         self._job: dict | None = None
+        # A garment's board list waiting for the worker, with no job to
+        # go with it - see set_boards().
+        self._boards: "list[int] | None" = None
 
         # A show's own burn (see the module docstring): None means
         # "nothing has ever been burned this session".
@@ -357,6 +360,9 @@ class RemoteSession:
             # to be left standing here despite what the commit said).
             self._forget_verify_locked()
             self._job = None
+            # ...and the show's board list with it: the unit's own
+            # discovery takes over (ui/runner.py's _start()).
+            self._boards = None
         self.runner.stop()
 
     # ---- called by the agent: burning a show's cues into their slots ----
@@ -498,6 +504,42 @@ class RemoteSession:
         with self._lock:
             job, self._job = self._job, None
             return job
+
+    def set_boards(self, boards) -> None:
+        """The garment's board list, with nothing to write.
+
+        A show file carries the list its unit was built for
+        (conductor/showfile.py's `boards`), and ui/showplay.py hands it
+        over whenever a show becomes this unit's current one. Normally a
+        job brings the same list along, but a show that is RESUMED after
+        a restart has no job at all - ShowPlayer.restore() never
+        re-burns, so nothing but this tells the runner which sockets
+        exist. radxa-04, 2026-09-26: it came back mid-show, kept the
+        standby discovery's 17-22 in `absent` and probed those six empty
+        sockets every minute for the rest of the show.
+
+        Queued, not applied here: the worker picks it up the way it
+        picks up a job (ui/runner.py's _run_remote()), so the list
+        arrives between two cues and never inside one. A unit that is
+        not on the show PC's port yet (restore() at start-up, before the
+        first arm()) applies it when the worker starts."""
+        wanted = sorted({int(b) for b in boards})
+        if not wanted:
+            return                      # a show with no boards says nothing
+        with self._lock:
+            self._boards = wanted
+        # Deliberately no wake(): there is nothing to hurry for (the
+        # worker reads this at the top of every pass, and the cue that
+        # matters wakes it itself), and a wake left standing here would
+        # be spent on the ARM_GRACE_S wait that lets an overdue cue's
+        # fire time arrive before the probing sweep - a restored show
+        # would go back to painting the wall after the sweep instead of
+        # before it (ui/runner.py's _run_remote()).
+
+    def take_boards(self) -> "list[int] | None":
+        with self._lock:
+            boards, self._boards = self._boards, None
+            return boards
 
     def prepared(self, cue_id: str, saved, failed, seconds: float) -> None:
         with self._lock:
