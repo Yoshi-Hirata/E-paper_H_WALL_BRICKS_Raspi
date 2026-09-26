@@ -230,7 +230,7 @@ class DemoRunner:
                  port_wait: float = 10.0,
                  show_repeats: int = SHOW_REPEATS,
                  show_gap: float = SHOW_GAP_S,
-                 verify_fire: bool = True,
+                 verify_fire: bool = False,
                  verify_after: float = VERIFY_AFTER_S,
                  verify_read: float = VERIFY_READ_S,
                  verify_witness: str = WITNESS_USB,

@@ -294,15 +294,19 @@ def main() -> int:
     ap.add_argument("--interval", type=float, default=60.0,
                     help="seconds between panel refreshes (default 60)")
     ap.add_argument("--guard-delay", type=float, default=12.0)
-    # The landing check (ui/runner.py's VERIFY_AFTER_S). On by default;
-    # the switch is here so an operator can take it off the wire at the
-    # venue without editing code, and so the deaf window it leans on can
-    # be re-measured on real panels by moving the second.
+    # The landing check (ui/runner.py's VERIFY_AFTER_S). OFF by default
+    # since the 2026-09-26 rehearsal: the current firmware answers 0x02
+    # while it repaints, so the check read every landed cue as lost and
+    # re-sent it - a double repaint on nearly every cue. It stays opt-in
+    # until the boards' behaviour during a repaint is measured again.
+    ap.add_argument("--verify-fire", action="store_true",
+                    help="check that a cue's show broadcast reached the "
+                         "boards (one read-only query after the cue, one "
+                         "re-send if the witness board answered) - only "
+                         "after the deaf window has been measured on the "
+                         "boards in use; off by default")
     ap.add_argument("--no-verify-fire", action="store_true",
-                    help="do not check that a cue's show broadcast reached "
-                         "the boards (the check is one read-only query a "
-                         "second after the cue, and one re-send if no board "
-                         "took it)")
+                    help="(kept for older service files) the default")
     ap.add_argument("--verify-after", type=float, default=VERIFY_AFTER_S,
                     help=f"seconds after a cue's broadcast (and after the "
                          f"witness board's own sweep start) before that "
@@ -361,7 +365,7 @@ def main() -> int:
     runner = DemoRunner(boards=args.boards, interval=args.interval,
                         guard_delay=args.guard_delay, slot=args.slot,
                         port=args.port,
-                        verify_fire=not args.no_verify_fire,
+                        verify_fire=args.verify_fire and not args.no_verify_fire,
                         verify_after=args.verify_after,
                         verify_witness=args.verify_witness)
 

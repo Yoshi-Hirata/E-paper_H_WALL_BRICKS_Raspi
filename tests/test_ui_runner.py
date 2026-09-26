@@ -137,10 +137,27 @@ def make_runner(bus, **kwargs):
     # window); here it waits long enough to be observable and no longer.
     kwargs.setdefault("verify_after", 0.05)
     kwargs.setdefault("verify_read", 0.01)
+    # The check is opt-in on a real unit (2026-09-26: the current firmware
+    # answers 0x02 mid-repaint, so it re-sent nearly every cue); the tests
+    # of the check itself turn it on here, the default is pinned below.
+    kwargs.setdefault("verify_fire", True)
     # The fake port has no device node, so standby would read every poll
     # as an unplug. Tests that care about that supply their own.
     kwargs.setdefault("link_token", lambda port: "up")
     return DemoRunner(open_bus=lambda port: bus, **kwargs)
+
+
+def test_the_landing_check_is_off_unless_a_unit_is_started_with_it():
+    """The 2026-09-26 rehearsal: board 1 answered the read-only query while
+    it was repainting, so every landed cue read as lost and was sent
+    again - a double repaint on nearly every cue, on both units. Until the
+    boards' behaviour during a repaint is measured again the check must
+    stay off unless the service is started with --verify-fire."""
+    plain = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake",
+                       boards=[1, 2], echo_log=False)
+    assert plain.verify_fire is False
+    assert make_runner(FakeBus()).verify_fire is True        # the tests opt in
+    assert make_runner(FakeBus(), verify_fire=False).verify_fire is False
 
 
 def test_runs_cycles_and_stops_cleanly():
