@@ -153,6 +153,23 @@ def test_goldens_cover_every_sequence_and_rule(golden):
                           "ranks", "timeline", "state"):
         assert expected_kind in kinds, f"no golden cases of kind {expected_kind!r}"
 
+    # The geometry sentence (2026-09-26) is the one check() problem a
+    # designer is meant to act on rather than read past, so it must be in
+    # the goldens - the browser self-test is what proves model.js words it
+    # identically, and it can only do that if the case is here. It must
+    # also LEAD its result: buried under a thousand "no colour for ..."
+    # lines it would be exactly as invisible as the messages it replaces.
+    results = [result for c in golden["cases"] if c["kind"] == "check"
+               for result in c["expect"]["results"]]
+    geometry = [p for result in results for p in result
+                if "made for another layout of" in p]
+    assert geometry, "no golden case for a design made for another layout"
+    assert all("配線ナビ" in p for p in geometry)   # 配線ナビ
+    for result in results:
+        hits = [i for i, p in enumerate(result) if "made for another layout of" in p]
+        assert hits in ([], [0]), \
+            "the geometry sentence must lead, not trail the per-scale problems"
+
     # The file-name grammar covers both spellings of a design file, the
     # site's own <model>_<配色案名>_HW.csv included.
     name_cases = [c for c in golden["cases"] if c["kind"] == "names"]

@@ -109,6 +109,17 @@ _MAP_COLUMNS = ("side", "row", "col", "board_no", "socket")
 _SHIFT_COLUMN = "shift"
 _EMPTY_CELLS = ("", "0")       # no hole here
 _UNDECIDED = "-"               # a hole, colour not chosen yet
+# A design exported from an OLDER layout of the same garment (the real
+# case of 2026-09-26: AZ271SD1301_1_HW.csv, 19 rows per side, loaded
+# against a map whose front runs to row 33 and back to row 34) used to
+# draw half the dress uncoloured while CHECK said only "a partial design"
+# and "the row shift differs on 14 rows" - both true, neither any use.
+# geometry_problem() below says what actually happened. Its trigger is the
+# GRID's own geometry - which rows it lists, how many position columns it
+# has - never how many cells are left blank or "-": a genuinely partial
+# cue still lists every row of the garment.
+_GEOM_MIN_SHORT_ROWS = 2       # one row short of the map is not a layout
+_GEOM_SHORT_TENTHS = 1         # ...nor is anything under a tenth of them
 
 
 
@@ -365,6 +376,9 @@ class Design:
     label: str = ""             # "P01", or the designer's name for it
     # Holes written "-": there is a scale, its colour is not decided.
     undecided: "set[tuple[str, int, int]]" = field(default_factory=set)
+    # The position columns of the header row, in file order - the grid's
+    # own width, which geometry_problem() compares with the map's.
+    cols: "list[int]" = field(default_factory=list)
 
     @classmethod
     def from_csv(cls, path, items=None) -> "Design":
@@ -457,7 +471,7 @@ class Design:
         if problems:
             raise LookError(problems)
         return cls(name=name, colors=colors, shifts=shifts, item=item,
-                   pattern=pattern, undecided=undecided)
+                   pattern=pattern, undecided=undecided, cols=list(cols))
 
     def shift(self, side: str, row: int) -> float:
         return self.shifts.get((side, row), default_shift(row))
@@ -481,6 +495,81 @@ def _pos(position) -> str:
     return f"{side} row {row} col {col}"
 
 
+def _rows_by_side(pairs) -> "dict[str, set]":
+    """(side, row) pairs -> {side: {rows}}, sides in first-seen order."""
+    out: "dict[str, set]" = {}
+    for side, row in pairs:
+        out.setdefault(side, set()).add(row)
+    return out
+
+
+def _and_list(parts: "list[str]") -> str:
+    if len(parts) < 2:
+        return parts[0] if parts else ""
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _rows_text(sides, rows_by_side) -> str:
+    parts = []
+    for side in sides:
+        rows = rows_by_side.get(side)
+        parts.append(f"{min(rows)}-{max(rows)} ({side})" if rows
+                     else f"none ({side})")
+    return _and_list(parts)
+
+
+def geometry_problem(look_map: LookMap, design: Design) -> "str | None":
+    """One sentence when the grid was drawn for a DIFFERENT layout of the
+    garment, or None.
+
+    Three signs, all of them about the shape of the grid rather than what
+    is written in its cells (see _GEOM_MIN_SHORT_ROWS above):
+
+      * it stops well below the map's top row on a side it does cover -
+        more than a tenth of that side's rows, and at least two rows, so
+        one missing hem row is never mistaken for an old layout;
+      * it has rows the map has no scale in at all (a side of its own, or
+        rows above the map's top);
+      * it is narrower than the garment, so the map's rightmost positions
+        have no column to take a colour from. Extra columns on the right
+        are NOT a sign: the site pads them (AZ271SD1307's own grid is 31
+        columns wide against a 30-column map) and an extra column with a
+        colour in it is already caught position by position.
+
+    A side the grid leaves out entirely stays a partial cue, not this.
+    """
+    if not look_map.scales or not design.shifts:
+        return None
+    map_rows = _rows_by_side((s.side, s.row) for s in look_map.scales)
+    design_rows = _rows_by_side(design.shifts)
+    map_cols = max(s.col for s in look_map.scales)
+    design_cols = max(design.cols) if design.cols else None
+    short = False
+    for side, rows in map_rows.items():
+        mine = design_rows.get(side)
+        if not mine:
+            continue
+        missing = max(rows) - max(mine)
+        span = max(rows) - min(rows) + 1
+        if missing >= _GEOM_MIN_SHORT_ROWS and missing * 10 > span * _GEOM_SHORT_TENTHS:
+            short = True
+    over = any(side not in map_rows or max(rows) > max(map_rows[side])
+               for side, rows in design_rows.items())
+    narrow = design_cols is not None and design_cols < map_cols
+    if not (short or over or narrow):
+        return None
+    sides = list(look_map.sides)
+    sides += [side for side in design_rows if side not in sides]
+    covers = _rows_text(sides, design_rows)
+    if narrow:
+        covers += f" with only {design_cols} columns"
+    return (f"{design.name} covers rows {covers} but this garment's wiring "
+            f"has rows {_rows_text(sides, map_rows)} with {map_cols} columns"
+            f" - the design was made for another layout of "
+            f"{look_map.item or look_map.name}; export it again from the "
+            f"current 配線ナビ (配色) page")
+
+
 def check(look_map: LookMap, design: Design, partial: bool = False
           ) -> "list[str]":
     """Problems that only show with both files side by side."""
@@ -489,6 +578,14 @@ def check(look_map: LookMap, design: Design, partial: bool = False
             and look_map.item.lower() != design.item.lower()):
         problems.append(f"{design.name} is for {design.item} but "
                         f"{look_map.name} is {look_map.item}")
+    else:
+        # Leading, and only when the two files agree on WHICH garment they
+        # are for: against another garment's map every row and column
+        # differs, and "made for another layout of X" would be the wrong
+        # story to tell about a file that was never meant for X at all.
+        geometry = geometry_problem(look_map, design)
+        if geometry:
+            problems.append(geometry)
     scales = look_map.by_position
     for position in sorted(set(design.colors) | design.undecided):
         if position not in scales:

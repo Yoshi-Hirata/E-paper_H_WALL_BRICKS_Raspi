@@ -507,6 +507,57 @@ def test_the_lean_page_has_no_built_in_track(tmp_path):
     assert match.group(1) == "null" and match.group(2) == "null"
 
 
+# The 2026-09-26 incident, end to end in a real browser: a design grid
+# exported from an OLDER layout of AZ271SD1301 (19 rows a side, against
+# the starter map's 34 front / 35 back) must say so in the Designs tab's
+# own CHECK card - the one screen where a designer meets check()'s
+# problems - and say it first, not under a thousand per-scale lines.
+_GEOMETRY_PROBE = """
+<script>
+window.addEventListener("load", function () {
+  setTimeout(function () {
+    var out = document.createElement("pre");
+    out.id = "geometrycheck-out";
+    try {
+      SIM.app.addFiles([{ name: "AZ271SD1301_1_HW.csv", text: %s }]);
+      SIM.app.show({ tab: "designs", item: "AZ271SD1301",
+                     design: "AZ271SD1301_1_HW.csv" });
+      out.setAttribute("data-first",
+        (document.querySelector("#content ul.problems li") || {}).textContent || "");
+    } catch (e) { out.setAttribute("data-first", "threw " + e); }
+    document.body.appendChild(out);
+  }, 300);
+});
+</script>
+"""
+
+GEOMETRY_SENTENCE = (
+    "AZ271SD1301_1_HW.csv covers rows 0-18 (front) and 0-18 (back) but this "
+    "garment's wiring has rows 0-33 (front) and 0-34 (back) with 30 columns - "
+    "the design was made for another layout of AZ271SD1301; export it again "
+    "from the current 配線ナビ (配色) page")
+
+
+def test_an_old_layout_grid_says_so_in_the_designs_check_card(tmp_path):
+    _require_browser(tmp_path)
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    grid = (REPO / "tests" / "fixtures" / "sim" / "AZ271SD1301_1_HW.csv") \
+        .read_text(encoding="utf-8")
+    probe = _GEOMETRY_PROBE % json.dumps(grid)
+    page = tmp_path / "geometry.html"
+    page.write_text(DIST.read_text(encoding="utf-8")
+                    .replace("</body>", probe + "</body>", 1), encoding="utf-8")
+    url = "file:///" + str(page.resolve()).replace("\\", "/")
+    dom = _dump_dom(url, tmp_path)
+    match = re.search(r'<pre id="geometrycheck-out" data-first="([^"]*)"', dom or "")
+    assert match, f"no #geometrycheck-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    first = unescape(match.group(1))
+    assert first == GEOMETRY_SENTENCE, f"CHECK card's first problem is {first!r}"
+    # ...and the page never renames a word of it on the way to the screen
+    # (the file name and 配線ナビ survive clean()).
+    assert "配線ナビ" in first and "AZ271SD1301_1_HW.csv" in first
+
+
 def test_banned_vocabulary_never_reaches_rendered_ui(tmp_path):
     # The dynamic half of the check above: runs the REAL built page
     # (dist/az27ss-simulator.html, the same artefact a designer double-

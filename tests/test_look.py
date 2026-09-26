@@ -476,6 +476,142 @@ def test_the_wiring_sites_own_hw_name_is_a_design_too():
         ("AZ271SD1301", 3, "P03")
 
 
+# ---- a design drawn for another layout of the same garment ----
+
+# The real map of AZ271SD1301 runs front rows 0-33, back rows 0-34, 30
+# columns (conductor/web/starter/AZ271SD1301_map.csv, 1482 scales). This is
+# that geometry in four lines: the corners are all geometry_problem() ever
+# looks at. tests/fixtures/sim/AZ271SD1301_map.csv is the same truncation
+# at full width, for the JS cross-check.
+OLD_LAYOUT_MAP = """side,row,col,board_no,socket,label
+front,0,1,1,1,001-01
+front,0,30,1,2,001-02
+front,33,10,1,3,001-03
+back,0,3,2,1,002-01
+back,0,28,2,2,002-02
+back,34,10,2,3,002-03
+"""
+
+
+WHOLE_GARMENT = {"front": 33, "back": 34}      # OLD_LAYOUT_MAP's own top rows
+
+
+def _old_layout_grid(top=18, width: int = 31) -> str:
+    """The 2026-09-26 file: rows 0..`top` a side (an int for both sides, or
+    a dict per side), `width` position columns, every cell 0x04 - the shape
+    of a grid exported from a layout of this garment that is gone."""
+    tops = top if isinstance(top, dict) else {"front": top, "back": top}
+    cols = list(range(1, width + 1))
+    lines = ["side,row,shift," + ",".join(str(c) for c in cols)]
+    for side, side_top in tops.items():
+        for row in range(side_top, -1, -1):
+            lines.append(f"{side},{row},{0.5 if row % 2 else 0.0},"
+                         + ",".join(["0x04"] * width))
+    return "\n".join(lines) + "\n"
+
+
+def _pair(map_text, grid_text, name="AZ271SD1301_1_HW.csv",
+          map_name="AZ271SD1301_map.csv", map_item="AZ271SD1301"):
+    item, pattern, _label = Design.name_parts(name)
+    return (LookMap.parse(io.StringIO(map_text), name=map_name, item=map_item),
+            Design.parse(io.StringIO(grid_text), name=name, item=item,
+                         pattern=pattern))
+
+
+def _geometry(map_text, grid_text, **kw):
+    """geometry_problem() on its own - the cell-by-cell problems of a
+    deliberately sparse fixture map would only get in the way here."""
+    return look_mod.geometry_problem(*_pair(map_text, grid_text, **kw))
+
+
+def test_a_grid_from_an_older_layout_says_so_first():
+    problem = _geometry(OLD_LAYOUT_MAP, _old_layout_grid())
+    assert problem == (
+        "AZ271SD1301_1_HW.csv covers rows 0-18 (front) and 0-18 (back) but "
+        "this garment's wiring has rows 0-33 (front) and 0-34 (back) with 30 "
+        "columns - the design was made for another layout of AZ271SD1301; "
+        "export it again from the current 配線ナビ "
+        "(配色) page")
+    # It LEADS check()'s list, both ways round: a partial cue is no excuse
+    # (the rows are simply not there), and as a full cue it still comes
+    # before every per-scale line rather than at the end of a thousand.
+    look_map, design = _pair(OLD_LAYOUT_MAP, _old_layout_grid())
+    for partial in (True, False):
+        assert check(look_map, design, partial=partial)[0] == problem
+    # None of the words the designers' page is not allowed to print.
+    assert not re.search(r"\b(unit|radxa|bus|board|dip|socket)s?\b", problem,
+                         re.IGNORECASE)
+
+
+def test_a_grid_that_covers_the_whole_garment_is_never_flagged():
+    # The same map, a grid that reaches both top rows: no geometry problem,
+    # whatever its cells say - even when every one of them is undecided.
+    whole = _old_layout_grid(top=WHOLE_GARMENT)
+    assert _geometry(OLD_LAYOUT_MAP, whole) is None
+    assert _geometry(OLD_LAYOUT_MAP, whole.replace("0x04", "-")) is None
+    # Nor when a real partial design leaves most of its cells blank.
+    assert _geometry(OLD_LAYOUT_MAP, whole.replace("0x04", "0")) is None
+    # Nor a row or two short of the top: a layout is not two rows (34 and
+    # 35 rows a side, so three is still under the tenth this needs).
+    assert _geometry(OLD_LAYOUT_MAP, _old_layout_grid(top=33)) is None
+    assert _geometry(OLD_LAYOUT_MAP, _old_layout_grid(top=32)) is None
+    assert _geometry(OLD_LAYOUT_MAP, _old_layout_grid(top=31)) is None
+    # Four short of a 34-row side is over the tenth, and is flagged.
+    assert _geometry(OLD_LAYOUT_MAP, _old_layout_grid(top=29)) is not None
+    # Nor a side the grid leaves out entirely - that IS a partial cue.
+    front_only = "\n".join(line for line in whole.splitlines()
+                           if not line.startswith("back,")) + "\n"
+    assert _geometry(OLD_LAYOUT_MAP, front_only) is None
+
+
+def test_the_grid_may_be_wider_than_the_garment_but_not_narrower():
+    # AZ271SD1307's own committed grid is 31 columns against a 30-column
+    # map: the site pads the right edge, and an extra column with a colour
+    # in it is already caught position by position.
+    assert _geometry(OLD_LAYOUT_MAP, _old_layout_grid(top=WHOLE_GARMENT, width=40)) is None
+    narrow = _geometry(OLD_LAYOUT_MAP, _old_layout_grid(top=WHOLE_GARMENT, width=24))
+    assert narrow is not None and "with only 24 columns" in narrow
+    assert "with 30 columns" in narrow
+
+
+def test_a_grid_with_rows_the_garment_does_not_have_is_flagged():
+    taller = _geometry(OLD_LAYOUT_MAP, _old_layout_grid(top=40))
+    assert taller is not None
+    assert "covers rows 0-40 (front) and 0-40 (back)" in taller
+
+
+def test_another_garments_grid_is_still_told_apart_from_an_old_layout():
+    # Against a map of a DIFFERENT garment every row and column differs,
+    # and "made for another layout of X" would be the wrong story about a
+    # file that was never meant for X - the item mismatch is the whole
+    # problem, and it stays the only one of the two that is reported.
+    look_map = LookMap.parse(io.StringIO(OLD_LAYOUT_MAP), name="m.csv",
+                             item="AZ271SD1306")
+    design = Design.parse(io.StringIO(_old_layout_grid()),
+                          name="AZ271SD1301_1_HW.csv", item="AZ271SD1301")
+    problems = check(look_map, design, partial=True)
+    assert "is for AZ271SD1301 but m.csv is AZ271SD1306" in problems[0]
+    assert not any("another layout" in p for p in problems)
+
+
+def test_the_starter_garments_own_designs_are_never_called_an_old_layout():
+    # The ten committed maps and their sample grids (conductor/web/starter):
+    # a false alarm here would make the simulator refuse the show's own
+    # data, which is the one thing this check must never do.
+    starter = Path(__file__).resolve().parents[1] / "conductor" / "web" / "starter"
+    maps = {m.item: m for m in
+            (LookMap.from_csv(p) for p in sorted(starter.glob("*_map.csv")))}
+    checked = 0
+    for path in sorted(starter.glob("*.csv")):
+        if look_mod.kind(path.name) != "grid":
+            continue
+        design = Design.from_csv(path, items=list(maps))
+        look_map = maps[design.item]
+        assert look_mod.geometry_problem(look_map, design) is None, path.name
+        checked += 1
+    assert checked >= 20
+
+
 # ---- tools/make_sample_grids.py: sample grids follow the map's own shift ----
 
 def test_sample_grid_rows_carry_the_maps_own_shift():

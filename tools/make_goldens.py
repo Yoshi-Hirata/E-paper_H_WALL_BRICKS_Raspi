@@ -160,6 +160,7 @@ def design_summary(d: Design) -> dict:
         "colors": {f"{s}|{r}|{c}": v for (s, r, c), v in d.colors.items()},
         "shifts": {f"{s}|{r}": v for (s, r), v in d.shifts.items()},
         "undecided": sorted(f"{s}|{r}|{c}" for (s, r, c) in d.undecided),
+        "cols": list(d.cols),
     }
 
 
@@ -280,15 +281,22 @@ def mmss_cases() -> list:
 # map / design / check cases
 # ============================================================
 
+# AZ271SD1301_map.csv here is a TRUNCATED copy of the real garment's map
+# (conductor/web/starter/AZ271SD1301_map.csv): only rows 0, 18 and the top
+# row of each side are kept, so the fixture stays small while the geometry
+# that matters - front rows 0-33, back rows 0-34, 30 columns - is exactly
+# the site's. AZ271SD1301_1_HW.csv is the 19-row grid of the 2026-09-26
+# incident, under the name the site's own "HW 用 CSV" button gives it.
 MAP_FIXTURES = ["Sample_map.csv", "SampleShift_map.csv", "Skirt_map.csv",
                 "BadHeader_map.csv", "DoubledColumn_map.csv",
                 "SocketRange_map.csv", "DupSocket_map.csv", "BadShift_map.csv",
                 "BlankShift_map.csv", "OneBoard_map.csv", "SingleScale_map.csv",
-                "Seq_map.csv", "CenterPlain_map.csv", "CenterShift_map.csv"]
+                "Seq_map.csv", "CenterPlain_map.csv", "CenterShift_map.csv",
+                "AZ271SD1301_map.csv"]
 
 DESIGN_FIXTURES = ["Sample_color_pattern01_grid.csv", "Skirt_color_pattern01_grid.csv",
                    "Sample_color_undecided_grid.csv", "Sample_color_zerowhite_grid.csv",
-                   "Sample_color_extracells_grid.csv"]
+                   "Sample_color_extracells_grid.csv", "AZ271SD1301_1_HW.csv"]
 
 # kind()/name_parts() on both spellings of a design file's name, the
 # _HW.csv one included (2026-09-26). `items` is the garments the caller
@@ -374,6 +382,12 @@ def check_cases() -> list:
         note="undecided colour: blocks a full cue, not a partial one")
     add("Sample_map.csv", "auto", "Sample_color_zerowhite_grid.csv", [False, True],
         note="0 typed for white is caught, not lost - even when partial")
+    # The 2026-09-26 incident: a grid exported from an older layout of the
+    # same garment. The geometry sentence leads BOTH calls - a partial cue
+    # is no more playable than a full one when half the rows do not exist -
+    # and the old partial/shift messages still follow it.
+    add("AZ271SD1301_map.csv", "auto", "AZ271SD1301_1_HW.csv", [False, True],
+        note="a design made for another layout of the same garment")
     return cases
 
 

@@ -65,6 +65,7 @@
     return {
       name: design.name, item: design.item, pattern: design.pattern, label: design.label,
       colors: design.colors, shifts: design.shifts, undecided: design.undecided.slice().sort(),
+      cols: design.cols,
     };
   }
 

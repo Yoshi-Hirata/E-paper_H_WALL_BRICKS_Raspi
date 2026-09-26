@@ -500,6 +500,9 @@
   // <item>_<配色案名>_HW.csv (conductor/look.py's _HW_NAME).
   const _HW_NAME = /^(.+?)_(.+)_HW$/i;
   const _HW_SUFFIX = "_HW";
+  // geometry_problem()'s thresholds, verbatim from conductor/look.py.
+  const _GEOM_MIN_SHORT_ROWS = 2;
+  const _GEOM_SHORT_TENTHS = 1;
 
   function defaultShift(row) { return row % 2 !== 0 ? 0.5 : 0; }
 
@@ -755,7 +758,8 @@
       }
     }
     if (problems.length) return { ok: false, problems };
-    return { ok: true, design: { name, item, pattern, label: "", colors, shifts, undecided } };
+    return { ok: true, design: { name, item, pattern, label: "", colors, shifts, undecided,
+                                 cols: cols.slice() } };
   }
 
   function designShiftAt(design, side, row) {
@@ -763,10 +767,74 @@
     return key in design.shifts ? design.shifts[key] : defaultShift(row);
   }
 
+  // conductor/look.py's _rows_by_side()/_and_list()/_rows_text(): sides in
+  // first-seen order, rows as a min-max range per side.
+  function rowsBySide(pairs) {
+    const out = new Map();
+    for (const [side, row] of pairs) {
+      if (!out.has(side)) out.set(side, new Set());
+      out.get(side).add(row);
+    }
+    return out;
+  }
+  function andList(parts) {
+    if (parts.length < 2) return parts.length ? parts[0] : "";
+    return parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+  }
+  function rowsText(sides, rowsMap) {
+    return andList(sides.map(side => {
+      const rows = rowsMap.get(side);
+      if (!rows || !rows.size) return `none (${side})`;
+      const list = Array.from(rows);
+      return `${Math.min.apply(null, list)}-${Math.max.apply(null, list)} (${side})`;
+    }));
+  }
+  // conductor/look.py's geometry_problem() - see its docstring for why the
+  // trigger is the grid's rows and width and never its empty cells.
+  function geometryProblem(map, design) {
+    if (!map.scales.length || !Object.keys(design.shifts).length) return null;
+    const mapRows = rowsBySide(map.scales.map(s => [s.side, s.row]));
+    const designRows = rowsBySide(Object.keys(design.shifts).map(k => {
+      const sep = k.indexOf("|");
+      return [k.slice(0, sep), Number(k.slice(sep + 1))];
+    }));
+    const mapCols = Math.max.apply(null, map.scales.map(s => s.col));
+    const designCols = design.cols && design.cols.length
+      ? Math.max.apply(null, design.cols) : null;
+    let short = false;
+    mapRows.forEach((rows, side) => {
+      const mine = designRows.get(side);
+      if (!mine || !mine.size) return;
+      const list = Array.from(rows);
+      const top = Math.max.apply(null, list);
+      const missing = top - Math.max.apply(null, Array.from(mine));
+      const span = top - Math.min.apply(null, list) + 1;
+      if (missing >= _GEOM_MIN_SHORT_ROWS && missing * 10 > span * _GEOM_SHORT_TENTHS) short = true;
+    });
+    let over = false;
+    designRows.forEach((rows, side) => {
+      const theirs = mapRows.get(side);
+      if (!theirs || Math.max.apply(null, Array.from(rows)) > Math.max.apply(null, Array.from(theirs))) over = true;
+    });
+    const narrow = designCols !== null && designCols < mapCols;
+    if (!(short || over || narrow)) return null;
+    const sides = map.sides.slice();
+    designRows.forEach((_rows, side) => { if (sides.indexOf(side) === -1) sides.push(side); });
+    let covers = rowsText(sides, designRows);
+    if (narrow) covers += ` with only ${designCols} columns`;
+    return `${design.name} covers rows ${covers} but this garment's wiring `
+      + `has rows ${rowsText(sides, mapRows)} with ${mapCols} columns`
+      + ` - the design was made for another layout of ${map.item || map.name};`
+      + ` export it again from the current 配線ナビ (配色) page`;
+  }
+
   function check(map, design, partial) {
     const problems = [];
     if (map.item && design.item && map.item.toLowerCase() !== design.item.toLowerCase()) {
       problems.push(`${design.name} is for ${design.item} but ${map.name} is ${map.item}`);
+    } else {
+      const geometry = geometryProblem(map, design);
+      if (geometry) problems.push(geometry);
     }
     const keySet = new Set(Object.keys(design.colors));
     design.undecided.forEach(k => keySet.add(k));
@@ -851,7 +919,7 @@
   const look = {
     PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS,
     defaultShift, kind, nameParts, mapItem,
-    parseMap, parseDesign, shiftAt, designShiftAt, check,
+    parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,
   };
 
