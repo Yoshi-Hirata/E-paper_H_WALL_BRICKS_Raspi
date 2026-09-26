@@ -3364,8 +3364,13 @@ document.addEventListener("click", async e => {
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
   // "Music: click to join": the one gesture a browser wants before it will
-  // start audio after a reload. Done here, inside the click, so play() counts
-  // as user-initiated - a tick 100 ms later would be refused all over again.
+  // start audio after a reload. The tick is run here rather than waited for
+  // so the music comes in on the click instead of up to 250 ms later - but
+  // play() itself no longer happens inside this handler at all: the tick
+  // fired here only claims the track, and the play comes a tick later (see
+  // plan()'s "claim"). That is still allowed, because the click gives the
+  // document sticky activation - the gesture unlocks audio for the rest of
+  // the document's life, not just for the call stack it happened on.
   if (e.target.id === "show-music-join") { showMusic.blocked = false; showMusicTick(); return; }
   if (e.target.id === "show-music-mute") {
     player.muted = !player.muted;

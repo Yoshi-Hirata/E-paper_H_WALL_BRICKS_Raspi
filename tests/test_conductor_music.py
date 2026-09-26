@@ -698,26 +698,48 @@ _PAGE_PROBE = """
       // 9. The claim goes out BEFORE the first sound, not after it. Both are
       //    timestamped: a tab that plays first and announces afterwards
       //    overlaps another tab for a tick.
+      //     Both are timestamped at the call site, in this page.
+      //
+      //     Nothing here waits on a BroadcastChannel actually delivering.
+      //     Two earlier drafts did - watching for the claim to come back
+      //     through a second channel object - and both were flaky at about
+      //     one run in six: a headless dump runs on virtual time, where the
+      //     250 ms between two ticks passes in well under a millisecond of
+      //     real time, and the browser's own IPC simply loses that race.
+      //     Delivery is Chrome's contract, not this page's; what this page
+      //     owes is the order, and the order is measured where it is decided.
       var claimAt = null, playAt = null;
-      var spy = new BroadcastChannel("epaper-show-music");
-      spy.onmessage = function (e) {
-        if (claimAt === null && e.data && e.data.type === "playing") claimAt = performance.now();
+      var realPost = musicBus.postMessage;
+      musicBus.postMessage = function (m) {
+        if (claimAt === null && m && m.type === "playing") claimAt = performance.now();
+        return realPost.apply(musicBus, arguments);
       };
       var realPlay = player.play;
       player.play = function () { if (playAt === null) playAt = performance.now(); return realPlay.apply(player, arguments); };
       await fetch("/test/fleet?run=running");
       await wait(2500);
       out.claimOrder = { claimAt: claimAt, playAt: playAt,
+                         gap: claimAt !== null && playAt !== null ? playAt - claimAt : null,
                          claimFirst: claimAt !== null && playAt !== null && claimAt <= playAt };
+      musicBus.postMessage = realPost;
       player.play = realPlay;
 
       // 10. A rival tab with a bigger id already has the track: this one
       //     stands down and never makes a sound at all.
+      //
+      //     The rival's claim is handed to the page's own channel handler
+      //     rather than posted on a second BroadcastChannel, for the reason
+      //     above: a posted message arrives when Chrome gets round to it,
+      //     which under virtual time may be after the ticks that were
+      //     supposed to see it. This is the same object, called with the
+      //     same shape the browser would deliver.
       await fetch("/test/fleet?run=none");
       await wait(2600);
       var plays = 0;
       player.play = function () { plays++; return realPlay.apply(player, arguments); };
-      var rivalClaim = function () { spy.postMessage({ type: "playing", id: MUSIC_TAB_ID + "z" }); };
+      var rivalClaim = function () {
+        musicBus.onmessage({ data: { type: "playing", id: MUSIC_TAB_ID + "z" } });
+      };
       var rival = setInterval(rivalClaim, 200);
       rivalClaim();
       await wait(600);                 // the rival's claim is in place first
@@ -731,7 +753,6 @@ _PAGE_PROBE = """
       ui.tab = "items"; render();
       clearInterval(rival);
       player.play = realPlay;
-      spy.close();
 
       // 11. A preview running when a show starts is handed over at the moment
       //     the run appears - during the START countdown, not at 0:00.
@@ -876,8 +897,13 @@ def test_the_claim_goes_out_before_the_first_sound(page):
     assert order["claimAt"] is not None, "nothing was announced on the channel at all"
     assert order["playAt"] is not None, "the track never started"
     assert order["claimFirst"], \
-        f"play() ran {order['playAt'] - order['claimAt']:.0f} ms before the claim - " \
-        "two tabs starting together would overlap for a tick"
+        f"play() ran {-order['gap']:.0f} ms before the claim - two tabs " \
+        "starting together would overlap for a tick"
+    # ...and a whole tick before it, not in the same breath: the point is to
+    # give another tab time to answer before any sound is made.
+    assert order["gap"] >= 200, \
+        f"the claim and the play were {order['gap']:.0f} ms apart - nothing " \
+        "could have answered in between"
 
 
 def test_a_tab_that_is_beaten_to_the_track_never_makes_a_sound(page):
