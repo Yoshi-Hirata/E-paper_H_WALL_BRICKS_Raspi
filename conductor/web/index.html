@@ -3636,6 +3636,12 @@ function paintBoard() {
   // their last look - STOP's own button says the panels keep their image.
   // A unit that has applied a cue of ITS OWN show (not a demo it is
   // playing) is the fleet's own record that the show has been through.
+  //
+  // Deliberately NOT compared against this workspace's show id: a unit
+  // still carrying the applied count of a PREVIOUS show, after a fresh
+  // Upload and before any START, reads "kept" - and that is the truth.
+  // The glass is holding that older show's last picture, which is
+  // exactly what this phase exists to stop the board denying.
   const ranBefore = (fleet?.units || []).some(u => u.show && !u.show.demo
     && ((Number(u.show.applied) || 0) > 0 || u.show.state === "ended"));
   const how = SHOWBOARD.phase(run, t, D, ranBefore);

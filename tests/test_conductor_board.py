@@ -215,29 +215,64 @@ def test_there_is_no_lag_to_report_without_something_to_compare():
     assert fleet._show_lag_ms(link, fleet.run) is None, "an offline unit"
 
 
-def test_a_seek_does_not_paint_every_row_red_until_the_units_have_answered():
+def test_a_seek_waits_for_the_unit_to_take_the_new_t0_not_merely_for_a_poll():
     # T0 moves here on the instant; what a unit reports is up to a poll
-    # old. Without this the whole board went red for a poll after every
+    # old. Without a gate the whole board went red for a poll after every
     # RESUME, SEEK and NEXT - "-30000 ms" after a 30 s hold - which is
     # exactly when the operator is looking at it.
+    #
+    # Waiting out a poll does not settle it either (re-review): the poll
+    # that follows the move is the one _supervise() computes its
+    # correction FROM, so a gate on the clock alone still admits one
+    # pre-correction status. The gate is the unit's own answer.
     fleet, link, ticks = _lag_fleet()
     assert fleet._show_lag_ms(link, fleet.run) == 0.0
+    before = link.status["show"]["t0"]
     with fleet._run_lock:                      # as seek()/resume()/next_cue() do
         fleet.run["t0"] -= 30.0
         fleet._t0_moved()
     assert fleet.run["t0_set_at"] == ticks.t
     assert fleet._show_lag_ms(link, fleet.run) is None, \
-        "the unit has not been polled on the new T0 yet"
-    # The poll right after the move is still not enough - it may have been
-    # answered before the unit took the new T0.
-    ticks.t += 0.5
-    link.last_seen = ticks.t
-    assert fleet._show_lag_ms(link, fleet.run) is None
-    # One whole poll later it is.
+        "the unit is still on the T0 it had before the seek"
+    # A whole poll later, still carrying the old T0 - the very status the
+    # correction is about to be computed from.
+    for _ in range(2):
+        ticks.t += 2.0
+        link.last_seen = ticks.t
+        _unit_at(link, before)
+        assert fleet._show_lag_ms(link, fleet.run) is None, \
+            "a clock cannot tell a pre-correction poll from a corrected one"
+    # It takes the new T0: from here the number means something again.
     ticks.t += 2.0
     link.last_seen = ticks.t
     _unit_at(link, fleet.run["t0"] + 500.0 + 0.004)
     assert fleet._show_lag_ms(link, fleet.run) == pytest.approx(4.0)
+    # ...and the gate stays open for this move, drift and all.
+    _unit_at(link, fleet.run["t0"] + 500.0 + 0.300)
+    assert fleet._show_lag_ms(link, fleet.run) == pytest.approx(300.0)
+
+
+def test_a_unit_that_took_the_new_t0_and_landed_badly_out_is_still_reported():
+    # A gate that only opened once the unit AGREED could never let a real
+    # lag through - and |lag| > 200 ms is the one thing the row reddens
+    # for. "Changed", not "close", is what opens it.
+    fleet, link, ticks = _lag_fleet()
+    with fleet._run_lock:
+        fleet.run["t0"] -= 30.0
+        fleet._t0_moved()
+    ticks.t += 2.0
+    link.last_seen = ticks.t
+    _unit_at(link, fleet.run["t0"] + 500.0 + 0.300)
+    assert fleet._show_lag_ms(link, fleet.run) == pytest.approx(300.0)
+
+
+def test_a_run_adopted_from_the_units_has_nothing_to_wait_for():
+    # _adopt() builds the run FROM the units' own T0, so their T0 does not
+    # change and never will - the gate opens on agreement instead.
+    fleet, link, ticks = _lag_fleet()
+    with fleet._run_lock:
+        fleet._t0_moved()
+    assert fleet._show_lag_ms(link, fleet.run) == 0.0
 
 
 def test_every_command_that_moves_t0_stamps_it():
