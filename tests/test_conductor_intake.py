@@ -30,7 +30,7 @@ sys.path.insert(0, str(REPO))
 
 from conductor.server import Workspace  # noqa: E402
 from tests.test_designer_build import _dump_dom, _require_browser  # noqa: E402
-from tests.test_look import GRID, MAP  # noqa: E402
+from tests.test_look import GRID, MAP, SKIRT_MAP  # noqa: E402
 
 PAGE = INDEX_HTML.read_text(encoding="utf-8")
 
@@ -88,6 +88,7 @@ class _Stand:
         self.ws = Workspace(tmp_path / "ws")
         self.ws.save("Look22_map.csv", MAP)
         self.ws.save("Look22_color_pattern01_grid.csv", GRID)
+        self.ws.save("Skirt_map.csv", SKIRT_MAP)
         page = PAGE.replace("</body>", probe + "</body>", 1)
         workspace = self.ws
 
@@ -112,7 +113,10 @@ class _Stand:
                 if self.path == "/api/files":
                     length = int(self.headers.get("Content-Length") or 0)
                     body = json.loads(self.rfile.read(length) or b"{}")
-                    return self._json(workspace.intake(body.get("files") or []))
+                    item = body.get("item")
+                    return self._json(workspace.intake(
+                        body.get("files") or [],
+                        str(item) if item else None))
                 return self._json({})
 
             def do_GET(self):
@@ -168,6 +172,14 @@ _PROBE = """
     return { name: name, text: function () { readNames.push(name); return Promise.resolve(text); } };
   }
   function toastNow() { return (document.querySelector("#toast") || {}).textContent || ""; }
+  function designsOf(key) {
+    var it = state.items.find(i => i.item === key);
+    return it ? it.designs.map(d => d.name) : null;
+  }
+  function scalesOf(key) {
+    var it = state.items.find(i => i.item === key);
+    return it && it.map ? it.map.scales.length : null;
+  }
   (async function () {
     try {
       await wait(400);
@@ -181,20 +193,20 @@ _PROBE = """
                     pick("Look22_color_fromsafari_grid.csv.txt", GRID)]);
       await wait(250);
       out.preflight = { read: readNames.slice(), toast: toastNow(),
-                        files: state.items[0].designs.map(d => d.name) };
+                        files: designsOf("Look22") };
 
       // 2. The same bytes again: "already there", not a second copy.
       readNames.length = 0;
       await upload([pick("Look22_color_pattern01_grid.csv", GRID)]);
       await wait(250);
       out.samePickedTwice = { toast: toastNow(),
-                              designs: state.items[0].designs.length };
+                              designs: designsOf("Look22").length };
 
       // 3. Different bytes under a name already here: numbered, and said.
       await upload([pick("Look22_color_pattern01_grid.csv", GRID.replace("0x03", "0x02"))]);
       await wait(250);
       out.numbered = { toast: toastNow(),
-                       designs: state.items[0].designs.map(d => d.name) };
+                       designs: designsOf("Look22") };
 
       // 4. A long refusal list is summarised, not spelled out.
       await upload(["a", "b", "c", "d", "e", "f"].map(n => pick(n + ".png", "x")));
@@ -220,7 +232,20 @@ _PROBE = """
       await upload(flat);
       await wait(250);
       out.folderDrop.toast = toastNow();
-      out.folderDrop.designs = state.items[0].designs.map(d => d.name);
+      out.folderDrop.designs = designsOf("Look22");
+
+      // 6. A garment's own "Add CSV": the server renames the file onto
+      //    that garment, and the toast says which garment it went to.
+      await uploadOwn(itemByKey("Look22"), [pick("Whatever_color_own_grid.csv", GRID)]);
+      await wait(250);
+      out.perItem = { toast: toastNow(), designs: designsOf("Look22") };
+
+      // 7. ...but never another garment's MAP, which would replace this
+      //    garment's wiring with another garment's.
+      await uploadOwn(itemByKey("Look22"), [pick("Skirt_map.csv", MAP)]);
+      await wait(250);
+      out.foreignMap = { toast: toastNow(), skirt: scalesOf("Skirt"),
+                         look22: scalesOf("Look22") };
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -282,3 +307,21 @@ def test_a_dropped_folder_is_walked_to_the_bottom(intake):
                                         "readme.txt"], folder
     assert "Look22_color_deep_grid.csv" in folder["designs"], folder
     assert "readme.txt" in folder["toast"], folder
+
+
+def test_a_garments_own_add_csv_says_which_garment_the_file_went_to(intake):
+    per = intake["perItem"]
+    assert "Look22_color_own_grid.csv" in per["designs"], per
+    assert "imported to" in per["toast"], per
+    assert "saved as" in per["toast"] and "→" in per["toast"], per
+
+
+def test_another_garments_map_is_refused_on_the_page_too(intake):
+    # The rename is the server's, so the refusal is too - but the
+    # operator has to SEE it, or the only hint is several hundred CHECK
+    # problems on a garment whose wiring has quietly been replaced.
+    foreign = intake["foreignMap"]
+    assert "another garment's map" in foreign["toast"], foreign
+    assert "refused" in foreign["toast"], foreign
+    # Neither garment's wiring moved (the two maps differ in size).
+    assert foreign["look22"] == 4 and foreign["skirt"] != 4, foreign

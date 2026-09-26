@@ -195,7 +195,7 @@ def test_goldens_cover_every_sequence_and_rule(golden):
     # the simulator applies is a rule the show PC will disagree with.
     intake_ops = {c["op"] for c in golden["cases"] if c["kind"] == "intake"}
     assert intake_ops == {"macSafeName", "isMacMetadata", "uniqueSaveName",
-                          "sniffCsvKind", "conventionalName"}
+                          "renameOntoItem", "sniffCsvKind", "conventionalName"}
     sniffed = [c["expect"] for c in golden["cases"]
                if c["kind"] == "intake" and c["op"] == "sniffCsvKind"]
     assert set(sniffed) == {"map", "grid", None}

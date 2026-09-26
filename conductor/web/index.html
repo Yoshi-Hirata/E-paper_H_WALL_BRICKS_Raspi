@@ -4133,21 +4133,15 @@ document.addEventListener("mouseover", e => {
 // Into one item: a file belongs to the item its name begins with, so two garments of the
 // same shape get the same names from the designer. Imported here, a file is renamed to
 // this item (Look22_color_pattern01_grid.csv -> Look22-2_color_pattern01_grid.csv).
+// The renaming is the SERVER's now (Workspace.intake's `item`), because
+// two of its rules cannot be applied here: numbering a name this garment
+// already holds needs to know what is on disk, and refusing another
+// garment's *_map.csv needs to know which garments exist. Renaming one
+// here used to replace this garment's wiring with another garment's,
+// throw the original away, and report it as a success - the hundreds of
+// CHECK problems that followed were the only hint.
 async function uploadOwn(item, fileList) {
-  const files = [], refused = [];
-  for (const f of fileList) {
-    // Two matches, not one alternation: _map and _color_…grid are read
-    // whatever their case, but _HW is the wiring site's own button and is
-    // spelled in capitals (conductor/look.py's _HW_NAME is case-
-    // sensitive). A single /i regex here renamed "…_1_hw.csv" onto the
-    // item and the server then refused it (review of 3fd1a42).
-    const rest = f.name.match(/(_map|_color_.+grid).*\.csv$/i)
-              || f.name.match(/_.+_HW.*\.csv$/);
-    if (rest) files.push({ name: item.item + f.name.slice(rest.index), text: await f.text() });
-    else refused.push(f.name);
-  }
-  const note = refused.length ? `Not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv (the wiring site writes _HW in capitals): ${refused.join(", ")}` : "";
-  if (files.length) upload(files, note); else toast(note);
+  await upload(fileList, "", item.item);
 }
 // A refusal/rename list short enough to read in a toast - the simulator's
 // briefly() (designer-app.js): a dropped folder can hold a hundred files,
@@ -4230,15 +4224,18 @@ async function filesFromDataTransfer(dt) {
 // numbered "-2" and says so, the same bytes again are "already there", and
 // a second wiring file is refused - all three are things the operator has
 // to see, not quietly different outcomes of the same drop.
-async function upload(fileList, note) {
+async function upload(fileList, note, item) {
   const parts = note ? [note] : [];
   const refusedHere = [];
   const files = await readPickedFiles(fileList, refusedHere);
-  const result = files.length ? await api("/api/files", { files }) : { saved: [] };
+  const result = files.length
+    ? await api("/api/files", item ? { files, item } : { files })
+    : { saved: [] };
   const renamed = Object.entries(result.renamed || {});
   const skipped = Object.entries(result.skipped || {});
   const refused = refusedHere.concat(result.refused || []);
-  if (result.saved?.length) parts.push(`${result.saved.length} file(s) imported`);
+  const onto = item ? " to " + (itemFull(itemByKey(item)) || item) : "";
+  if (result.saved?.length) parts.push(`${result.saved.length} file(s) imported${onto}`);
   if (renamed.length) parts.push("saved as " + briefly(renamed, ([from, to]) => `${from} → ${to}`));
   if (skipped.length) parts.push(`${skipped.length} already there: `
     + briefly(skipped, ([from, to]) => from === to ? from : `${from} (as ${to})`));

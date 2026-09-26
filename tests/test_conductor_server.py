@@ -728,6 +728,75 @@ def test_intake_reports_a_file_with_no_text_instead_of_throwing(workspace):
     assert result["saved"] == [] and len(result["refused"]) == 1
 
 
+def test_a_garments_own_add_csv_renames_a_design_onto_it(workspace):
+    # A design CSV belongs to the garment its name begins with, so two
+    # garments of the same shape come back from the designer under the
+    # same file names - added through ONE garment's Add CSV, a file is
+    # renamed onto it.
+    result = workspace.intake(_names([
+        ("AZ271SD1305_color_pattern07_grid.csv", GRID),
+        ("AZ271SD1305_9_HW.csv", GRID)]), item="Look22")
+    assert result["saved"] == ["Look22_color_pattern07_grid.csv",
+                               "Look22_9_HW.csv"]
+    assert result["renamed"] == {
+        "AZ271SD1305_color_pattern07_grid.csv":
+            "Look22_color_pattern07_grid.csv",
+        "AZ271SD1305_9_HW.csv": "Look22_9_HW.csv"}
+    # ...and the garment the file was NAMED after gets nothing.
+    assert not list(workspace.files.glob("AZ271SD1305*"))
+
+
+def test_another_garments_map_is_never_renamed_onto_this_one(workspace):
+    # The simulator's own adversarial review F1: renaming another
+    # garment's map onto this item replaced this garment's wiring with
+    # another garment's, threw the original away, and reported it as a
+    # success - the hundreds of CHECK problems that followed were the
+    # only hint.
+    workspace.save("Skirt_map.csv", SKIRT_MAP)
+    other = SKIRT_MAP
+    result = workspace.intake(_names([("Skirt_map.csv", other)]),
+                              item="Look22")
+    assert result["saved"] == []
+    assert "another garment's map" in result["refused"][0]
+    assert "Add CSV" in result["refused"][0]
+    assert (workspace.files / "Look22_map.csv").read_text(
+        encoding="utf-8") == MAP
+    # A map of a garment this workspace does NOT have is the ordinary
+    # rename case - and then runs into "a garment has one wiring file".
+    stranger = workspace.intake(_names([("Nobody_map.csv", SKIRT_MAP)]),
+                                item="Look22")
+    assert stranger["saved"] == []
+    assert "one wiring file" in stranger["refused"][0]
+
+
+def test_a_per_item_pick_is_numbered_rather_than_overwriting(workspace):
+    # 2026-09-26, "the 4th of 5 CSVs was overwritten": this is the very
+    # path it happened on.
+    result = workspace.intake(_names([
+        ("Whatever_color_pattern01_grid.csv", GRID.replace("0x03", "0x02"))]),
+        item="Look22")
+    assert result["saved"] == ["Look22_color_pattern01-2_grid.csv"]
+    assert (workspace.files / "Look22_color_pattern01_grid.csv").read_text(
+        encoding="utf-8") == GRID
+
+
+def test_a_per_item_pick_for_a_garment_that_is_not_here_takes_nothing(workspace):
+    result = workspace.intake(_names([("Look22_color_x_grid.csv", GRID)]),
+                              item="NoSuchLook")
+    assert result["saved"] == [] and len(result["refused"]) == 1
+    assert "no garment of that name" in result["refused"][0]
+
+
+def test_a_per_item_pick_sniffs_an_unnamed_csv_onto_that_garment(workspace):
+    # The whole point of the per-item button: a designer's file called
+    # anything at all still lands on the garment they pressed it on.
+    result = workspace.intake(_names([("summer.csv", GRID)]), item="Look22")
+    assert result["saved"] == ["Look22_color_summer_grid.csv"]
+    # A header that is neither is still refused, whatever it is called.
+    assert workspace.intake(_names([("summer2.csv", "a,b\n1,2\n")]),
+                            item="Look22")["saved"] == []
+
+
 def test_import_bundle_still_overwrites_and_reports_it(tmp_path):
     # The one path that DOES replace what it names, on purpose
     # (docs/SIMULATOR_FOR_DESIGNERS.md): a bundle is the designers'

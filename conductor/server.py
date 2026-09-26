@@ -48,11 +48,15 @@ from .look import (PALETTE, Design, LookError, LookMap, check,
 from .look import kind as file_kind
 from .look import file_stem, map_item
 from .look import NOT_A_CSV_NAME
+from .look import ANOTHER_GARMENTS_MAP as look_another_garments_map
+from .look import NO_SUCH_GARMENT as look_no_such_garment
 from .look import conventional_name as look_conventional_name
 from .look import is_mac_metadata as look_is_mac_metadata
 from .look import mac_safe_name as look_mac_safe_name
 from .look import name_problem as look_name_problem
 from .look import normalize_name as look_normalize
+from .look import refuse_reason as look_refuse_reason
+from .look import rename_onto_item as look_rename_onto_item
 from .look import unique_save_name as look_unique_save_name
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -1125,7 +1129,7 @@ class Workspace:
         except (OSError, UnicodeDecodeError):
             return None
 
-    def intake(self, entries) -> dict:
+    def intake(self, entries, item: "str | None" = None) -> dict:
         """Several picked files at once - the /api/files path.
 
         Nothing here ever lands on a file that is already in the
@@ -1144,6 +1148,16 @@ class Workspace:
             has one wiring file - so a second, different one is refused
             with what to do about it.
 
+        `item` is a garment's own "Add CSV": every file is renamed onto
+        that garment, because a design CSV belongs to the garment its
+        name begins with and two garments of the same shape come back
+        from the designer under the same file names. With ONE exception
+        - another garment's *_map.csv, which is not interchangeable the
+        way its designs are: renaming it onto this one would replace
+        this garment's wiring with another garment's, throw away the
+        original, and report it as a success (the simulator's own
+        adversarial review F1).
+
         Returns {"saved": [...], "renamed": {from: to}, "skipped":
         {from: the file already there}, "refused": ["name: why"]} - the
         page says all four out loud, so a file that was picked and did
@@ -1161,6 +1175,16 @@ class Workspace:
         renamed: "dict[str, str]" = {}
         skipped: "dict[str, str]" = {}
         refused: "list[str]" = []
+        if item is not None:
+            # Spelled the way the workspace spells it, so everything
+            # below compares one name with itself.
+            known = {name.lower(): name for name in items}
+            item = known.get(str(item).lower())
+            if item is None:
+                return {"saved": [], "renamed": {}, "skipped": {},
+                        "refused": [f"{(e or {}).get('name', '')}: "
+                                    f"{look_no_such_garment}"
+                                    for e in entries]}
         for entry in entries:
             raw = str((entry or {}).get("name", ""))
             text = (entry or {}).get("text")
@@ -1172,10 +1196,22 @@ class Workspace:
                                "the designers' CSVs")
                 continue
             resolved = look_conventional_name(look_mac_safe_name(raw), text,
-                                              None, items)
+                                              item, items)
             if "error" in resolved:
                 refused.append(f"{raw}: {resolved['error']}")
                 continue
+            if item is not None:
+                owner = (map_item(resolved["name"])
+                         if self.kind(resolved["name"]) == "map" else None)
+                if (owner and owner.lower() != item.lower()
+                        and owner.lower() in {i.lower() for i in items}):
+                    refused.append(f"{raw}: {look_another_garments_map}")
+                    continue
+                onto = look_rename_onto_item(item, resolved["name"])
+                if onto is None:
+                    refused.append(f"{raw}: {look_refuse_reason(resolved['name'])}")
+                    continue
+                resolved = dict(resolved, name=onto)
             try:
                 # The name conventional_name() built is still put through
                 # the shared rule: the garment half of it can come from a
@@ -2065,8 +2101,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._body()
             if self.path == "/api/files":
-                return self._json(
-                    self.workspace.intake(body.get("files") or []))
+                # `item` set: a garment's own "Add CSV" - see intake().
+                item = body.get("item")
+                return self._json(self.workspace.intake(
+                    body.get("files") or [],
+                    str(item) if item else None))
             if self.path == "/api/duplicate":
                 return self._json({"ok": True, "item":
                                    self.workspace.duplicate(body["item"])})

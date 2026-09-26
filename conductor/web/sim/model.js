@@ -550,6 +550,12 @@
     + _JS_SPACE_CLASS + "]+$", "g");
   // eslint-disable-next-line no-control-regex
   const _DESIGN_UNUSABLE = /[\x00-\x1f\x7f-\x9f/\\／＼:*?"<>|]+/g;
+  // Where one garment's file name ends and another's begins - see
+  // renameOntoItem(). The _HW one is case-SENSITIVE, like _HW_NAME.
+  const _ONTO_ITEM = /(_map|_color_.+grid).*\.csv$/i;
+  const _ONTO_ITEM_HW = /_.+_HW.*\.csv$/;
+  // A garment's MAP is not interchangeable the way its designs are.
+  const ANOTHER_GARMENTS_MAP = "another garment's map - use the header's Add CSV for it";
   // geometry_problem()'s thresholds, verbatim from conductor/look.py.
   const _GEOM_MIN_SHORT_ROWS = 2;
   const _GEOM_SHORT_TENTHS = 1;
@@ -688,6 +694,16 @@
   }
   function refuseReason(name) {
     return /\.csv$/i.test(String(name)) ? NOT_A_CSV_NAME : NOT_A_CSV_FILE;
+  }
+  // conductor/look.py's rename_onto_item(): a file added through ONE
+  // garment's own "Add CSV" is renamed onto it, because two garments of
+  // the same shape come back from the designer under the same names.
+  // Two matches, not one alternation - _HW is the site's own button and
+  // is spelled in capitals, so "…_1_hw.csv" is not a design at all.
+  function renameOntoItem(item, name) {
+    const raw = normalizeName(name);
+    const m = _ONTO_ITEM.exec(raw) || _ONTO_ITEM_HW.exec(raw);
+    return m ? item + raw.slice(m.index) : null;
   }
   function jsTrim(text) {
     // String.trim() is exactly this class; spelled out because Python's
@@ -1114,9 +1130,10 @@
     defaultShift, kind, nameParts, mapItem, normalizeName, nameProblem,
     parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,
-    macSafeName, isMacMetadata, uniqueSaveName, refuseReason,
+    macSafeName, isMacMetadata, uniqueSaveName, refuseReason, renameOntoItem,
     sniffCsvKind, conventionalName,
     NOT_A_CSV_NAME, NOT_A_CSV_FILE, NOT_A_CSV_BODY, NO_GARMENT,
+    ANOTHER_GARMENTS_MAP,
   };
 
   // ============================================================

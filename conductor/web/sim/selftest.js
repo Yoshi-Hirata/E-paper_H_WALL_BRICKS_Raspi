@@ -156,6 +156,7 @@
       if (c.op === "macSafeName") got = look.macSafeName(c.name);
       else if (c.op === "isMacMetadata") got = look.isMacMetadata(c.name);
       else if (c.op === "uniqueSaveName") got = look.uniqueSaveName(c.name, new Set(c.taken));
+      else if (c.op === "renameOntoItem") got = look.renameOntoItem(c.item, c.name);
       else if (c.op === "sniffCsvKind") got = look.sniffCsvKind(c.text);
       else if (c.op === "conventionalName") got = look.conventionalName(c.name, c.text, c.itemHint, c.items);
       else return `intake: unknown op ${c.op}`;

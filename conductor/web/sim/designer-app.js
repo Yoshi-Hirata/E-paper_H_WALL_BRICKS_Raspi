@@ -1545,17 +1545,12 @@
   // wrong prefix; a name that is neither a *_map.csv nor a
   // *_color_NAME_grid.csv is refused, because there is nothing to rename it
   // to. Returns null for "cannot belong to any item".
-  function renameOntoItem(itemKey, name) {
-    const raw = nfc(name);         // composed, never width-folded (above)
-    // Two matches, not one alternation: _map and _color_…grid are read
-    // whatever their case, but _HW is the site's own button and is spelled
-    // in capitals (SIM.look.kind agrees). AZ271SD1301_1_HW.csv picked on
-    // another garment becomes <item>_1_HW.csv; "…_1_hw.csv" is not a
-    // design at all and must not be renamed as if it were.
-    const m = raw.match(/(_map|_color_.+grid).*\.csv$/i)
-           || raw.match(/_.+_HW.*\.csv$/);
-    return m ? itemKey + raw.slice(m.index) : null;
-  }
+  // In model.js now (SIM.look.renameOntoItem), with
+  // conductor/look.py's rename_onto_item() as its other half: the
+  // Conductor renames a per-item pick on the SERVER, and both sides
+  // have to land on the same name.
+  const renameOntoItem = (itemKey, name) =>
+    globalThis.SIM.look.renameOntoItem(itemKey, name);
   async function addFilesToItemFromBlobs(itemKey, files) {
     const list = [], refused = [], became = [], skipped = [];
     // Nothing added through a garment's own Add CSV ever overwrites what the
@@ -1861,7 +1856,7 @@
         const ownerOfMap = globalThis.SIM.look.kind(raw) === "map" ? globalThis.SIM.look.mapItem(raw) : null;
         if (ownerOfMap && ownerOfMap.toLowerCase() !== itemKey.toLowerCase()
             && state.items.some(i => i.item.toLowerCase() === ownerOfMap.toLowerCase())) {
-          refused.push({ name: raw, error: "another garment's map - use the header's Add CSV for it" });
+          refused.push({ name: raw, error: globalThis.SIM.look.ANOTHER_GARMENTS_MAP });
           continue;
         }
         // Two picked files that would land on the same name (F3): the first

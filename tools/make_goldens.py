@@ -395,6 +395,20 @@ INTAKE_CASES = [
      "taken": ["Look22_1_HW.csv"]},
     {"op": "uniqueSaveName", "name": "Look22_map.csv",
      "taken": ["Look22_map.csv"]},
+    # A file added through ONE garment's own "Add CSV" is renamed onto
+    # it - the Conductor does this on the server now, so the two sides
+    # have to land on the same name.
+    {"op": "renameOntoItem", "item": "Look22",
+     "name": "AZ271SD1305_color_pattern01_grid.csv"},
+    {"op": "renameOntoItem", "item": "Look22", "name": "AZ271SD1305_map.csv"},
+    {"op": "renameOntoItem", "item": "Look22", "name": "AZ271SD1305_1_HW.csv"},
+    # Lower-case "_hw" is not the site's button, so there is nothing to
+    # rename: it must not become design "1" of Look22.
+    {"op": "renameOntoItem", "item": "Look22", "name": "AZ271SD1305_1_hw.csv"},
+    {"op": "renameOntoItem", "item": "Look22", "name": "notes.csv"},
+    {"op": "renameOntoItem", "item": "Look22", "name": "cover.png"},
+    {"op": "renameOntoItem", "item": "Look22",
+     "name": "  AZ271SD1305_色_map.csv  "},
     {"op": "sniffCsvKind", "text": _MAP_HEAD + "front,1,1,17,1,017-01\n"},
     {"op": "sniffCsvKind", "text": _GRID_HEAD + "front,1,0.5,0x03,0,0\n"},
     # A BOM, blank lines before the header, and spaces around the names.
@@ -467,6 +481,8 @@ def intake_cases() -> list:
             expect = look.is_mac_metadata(case["name"])
         elif op == "uniqueSaveName":
             expect = look.unique_save_name(case["name"], set(case["taken"]))
+        elif op == "renameOntoItem":
+            expect = look.rename_onto_item(case["item"], case["name"])
         elif op == "sniffCsvKind":
             expect = look.sniff_csv_kind(case["text"])
         else:

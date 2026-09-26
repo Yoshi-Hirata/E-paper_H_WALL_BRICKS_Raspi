@@ -286,6 +286,14 @@ _DESIGN_EDGE = re.compile(
 # own line, and the two must not drift.
 _DESIGN_UNUSABLE = re.compile("[\x00-\x1f\x7f-\x9f/\\\\／＼:*?\"<>|]+")
 _LEADING_UNDERSCORE = re.compile(r"^_")
+# Where one garment's file name ends and another garment's begins - see
+# rename_onto_item(). The _HW one is case-SENSITIVE for the same reason
+# _HW_NAME is.
+_ONTO_ITEM = re.compile(r"(_map|_color_.+grid).*\.csv$", re.IGNORECASE)
+_ONTO_ITEM_HW = re.compile(r"_.+_HW.*\.csv$")
+# A garment's MAP is not interchangeable the way its designs are.
+ANOTHER_GARMENTS_MAP = "another garment's map - use the header's Add CSV for it"
+NO_SUCH_GARMENT = "no garment of that name in this workspace"
 
 
 def _js_trim(text) -> str:
@@ -348,6 +356,26 @@ def refuse_reason(name) -> str:
     """Why a file nothing else could place is turned away."""
     return (NOT_A_CSV_NAME if str(name).lower().endswith(".csv")
             else NOT_A_CSV_FILE)
+
+
+def rename_onto_item(item: str, name) -> "str | None":
+    """`name` as a file of `item`, or None if it can be no file at all.
+
+    A design CSV belongs to the garment its name begins with, so two
+    garments of the same shape come back from the designer under the
+    same file names. Added through ONE garment's own "Add CSV", a file
+    is renamed onto it - Look22_color_pattern01_grid.csv becomes
+    <item>_color_pattern01_grid.csv - rather than refused for having
+    the wrong prefix.
+
+    Two matches, not one alternation: _map and _color_…grid are read
+    whatever their case, but _HW is the wiring site's own button and is
+    spelled in capitals (kind() agrees). "…_1_hw.csv" is not a design
+    at all and must not be renamed as if it were.
+    """
+    raw = normalize_name(name)
+    match = _ONTO_ITEM.search(raw) or _ONTO_ITEM_HW.search(raw)
+    return item + raw[match.start():] if match else None
 
 
 def sniff_csv_kind(text) -> "str | None":

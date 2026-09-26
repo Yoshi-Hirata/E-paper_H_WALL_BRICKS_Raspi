@@ -6169,6 +6169,55 @@
    ]
   },
   {
+   "expect": "Look22_color_pattern01_grid.csv",
+   "item": "Look22",
+   "kind": "intake",
+   "name": "AZ271SD1305_color_pattern01_grid.csv",
+   "op": "renameOntoItem"
+  },
+  {
+   "expect": "Look22_map.csv",
+   "item": "Look22",
+   "kind": "intake",
+   "name": "AZ271SD1305_map.csv",
+   "op": "renameOntoItem"
+  },
+  {
+   "expect": "Look22_1_HW.csv",
+   "item": "Look22",
+   "kind": "intake",
+   "name": "AZ271SD1305_1_HW.csv",
+   "op": "renameOntoItem"
+  },
+  {
+   "expect": null,
+   "item": "Look22",
+   "kind": "intake",
+   "name": "AZ271SD1305_1_hw.csv",
+   "op": "renameOntoItem"
+  },
+  {
+   "expect": null,
+   "item": "Look22",
+   "kind": "intake",
+   "name": "notes.csv",
+   "op": "renameOntoItem"
+  },
+  {
+   "expect": null,
+   "item": "Look22",
+   "kind": "intake",
+   "name": "cover.png",
+   "op": "renameOntoItem"
+  },
+  {
+   "expect": "Look22_map.csv",
+   "item": "Look22",
+   "kind": "intake",
+   "name": "  AZ271SD1305_\u8272_map.csv  ",
+   "op": "renameOntoItem"
+  },
+  {
    "expect": "map",
    "kind": "intake",
    "op": "sniffCsvKind",
