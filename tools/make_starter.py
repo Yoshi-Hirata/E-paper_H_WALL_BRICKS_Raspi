@@ -85,12 +85,22 @@ def read_normalised(path: Path) -> str:
     return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def build_files(source: Path) -> "dict[str, str]":
+def build_files(source: Path, adopt_new: bool = False) -> "dict[str, str]":
+    """The starter set is the CSVs already committed under conductor/web/starter
+    (refreshed from the operator's copies in `source`); a CSV that exists only
+    in `source` - an operator's experiment, say AZ271SB2303_color_black_grid.csv
+    made for a rehearsal - is NOT pulled in unless --adopt-new says so
+    (2026-09-26: two such files made --check fail on the operator's PC)."""
+    committed = {p.name for p in STARTER_DIR.glob("*.csv")} if STARTER_DIR.is_dir() else set()
     files = {}
     for path in sorted(source.glob("*.csv")):
         if kind(path.name) is None:
             print(f"make_starter: skipping {path.name} (not a *_map.csv or "
                   "*_color_NAME_grid.csv)", file=sys.stderr)
+            continue
+        if committed and path.name not in committed and not adopt_new:
+            print(f"make_starter: leaving {path.name} out - not part of the starter "
+                  "set (pass --adopt-new to add it)", file=sys.stderr)
             continue
         files[path.name] = read_normalised(path)
     return files
@@ -145,6 +155,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", type=Path, default=REPO / "showdata" / "files")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--adopt-new", action="store_true",
+                    help="also take CSVs that are not yet part of the committed starter set")
     args = ap.parse_args()
 
     if not args.source.is_dir():
@@ -152,7 +164,7 @@ def main():
               "(showdata/ is gitignored; ask for a copy of the wiring maps)", file=sys.stderr)
         return 0 if args.check else 1
 
-    files = build_files(args.source)
+    files = build_files(args.source, adopt_new=args.adopt_new)
     show = build_show(files)
     js_text = render_js(files, show)
 

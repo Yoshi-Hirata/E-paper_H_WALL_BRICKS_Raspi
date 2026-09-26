@@ -308,6 +308,9 @@ Raspberry Pi Zero 2 W ──USB CDC── 基板 ID:1 ──4芯(TTL UART)──
 | `python tools/make_starter.py` | `conductor/web/sim/starter.js`(`conductor/web/starter/*.csv` を JS の定数に固めたもの。初回起動時の既定データ) | `conductor/web/starter/*.csv` を足す/変えたとき |
 | `python tools/build_designer.py` | `dist/az27ss-simulator.html`(`conductor/web/designer.html` と `conductor/web/sim/*.css/*.js` を 1 個の HTML に inline したもの。**フラグなしが出荷版**(`goldens.js`/`selftest.js` 抜き、550 KB 前後) - コミットされている `dist/` はこれ。`--with-goldens` を付けると自己テスト付きの開発版(1.1 MB 前後、Python 側との答え合わせ用)が作れる。`--no-starter` で初期データ抜きのビルドも作れる) | `conductor/web/designer.html`・`conductor/web/sim/*` のいずれかを変えたとき(上の 2 つを先に作り直してから) |
 
+> `make_starter.py` は commit 済みの starter セット(conductor/web/starter/*.csv)だけを showdata から更新する。運用側が実験で足した CSV(例: `AZ271SB2303_color_black_grid.csv`)は取り込まず、starter に加えたいときだけ `--adopt-new` を付ける(2026-09-26)。
+
+
 #### ビルドの 2 系統(音源入り / 音源なし)
 
 `build_designer.py` の出力は 2 つあり、**コミットされるのは音源なしの
