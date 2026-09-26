@@ -94,6 +94,10 @@
     refreshModelCache.set(key, m);
     return m;
   }
+  // One scale's colour at τ seconds into its own repaint (0 <= τ < repaint):
+  // the phase table from plan_refresh_sim.md, expressed as a fraction of the
+  // repaint so a 16 s firmware scales the same as the 7 s one measured on
+  // video.
   function refreshPhaseColor(n, tau, frac, targetCode, palette) {
     const bucket = Math.floor(tau / 0.25);
     const h = hash32(n, bucket);
@@ -112,34 +116,59 @@
     if (cue.refresh !== undefined) return { value: cue.refresh, source: cue.refresh_source || (cue.refresh_s != null ? "cue" : "show") };
     return cue.refresh_s != null ? { value: cue.refresh_s, source: "cue" } : { value: showRefreshS, source: "show" };
   }
+  // ONE SCALE's own repaint - what the flicker below is phased over, and NOT
+  // the cue's refresh. Since 2026-09-26 a refresh is the whole change, the
+  // sweep INCLUDED (8 s = a 7 s panel repaint with a 1 s sweep inside it), so
+  // phasing a scale over the refresh made the last scale of a swept cue still
+  // mid-flicker at Complete, where wornAt() drops the whole design in at once
+  // and the preview snapped. A scale takes one PHYSICAL repaint, capped at the
+  // cue's own refresh exactly as conductor/timeline.py's panel_repaint_of()
+  // does (a show that declares a 1 s refresh must not be given a 7 s one), so
+  // the last scale of a swept cue now settles at delay + repaint = Complete,
+  // and an all-at-once cue settles at the repaint, one second inside its own
+  // 8 s budget - which is what the hardware does.
+  function panelRepaintFor(cue, showRefreshS) {
+    return Math.min(SIM.timeline.PANEL_REPAINT_S,
+                    refreshOfFor(cue, showRefreshS).value);
+  }
+  // A scale's jitter is a LATE START, so it has to come out of that scale's
+  // own repaint or the scale finishes after the cue does: at Complete
+  // wornAt() drops the finished design in wholesale, and a scale still a
+  // third of a second from settling snapped instead of arriving (review,
+  // 2026-09-26 - the first probe for this ran with flicker:false, which has
+  // no jitter, and missed it). Never more than half the repaint either, so a
+  // compressed show (a 0.3 s refresh on the bench) keeps a visible flicker.
+  function startJitter(raw, repaint) { return Math.min(raw, repaint / 2); }
   function applySweptColors(item, cue, design, t, out, palette, showRefreshS) {
     const sweep = sweepOf(cue);
-    // refreshOfFor(), not a second hard-coded fallback (adversarial review,
+    // panelRepaintFor(), never a hard-coded number (adversarial review,
     // 2026-09-25: this used to fall back to a bare "7" - a silent duplicate
-    // of timeline.js's own REFRESH_S default that would quietly drift the
-    // moment that constant ever changed, and wrong whenever the show's own
-    // default refresh isn't 7.0s in the first place, e.g. after Default
-    // refresh time is edited on the Timeline toolbar).
-    const refresh = refreshOfFor(cue, showRefreshS).value;
+    // of timeline.js's own default that would quietly drift the moment that
+    // constant ever changed, and wrong whenever the show's own refresh isn't
+    // 7.0s in the first place, e.g. after Default refresh time is edited on
+    // the Timeline toolbar).
+    const repaint = panelRepaintFor(cue, showRefreshS);
     const model = refreshModelFor(item, cue, sweep);
     item.map.scales.forEach((s, n) => {
       const key = `${s[0]}|${s[1]}|${s[2]}`;
       const targetCode = design.colors[key];
       if (targetCode === undefined) return;
-      const tau = t - (cue.sent + model.delay[n] + model.jitter[n]);
+      const jitter = startJitter(model.jitter[n], repaint);
+      const tau = t - (cue.sent + model.delay[n] + jitter);
       if (tau < 0) return;
-      out[key] = tau >= refresh ? targetCode : refreshPhaseColor(n, tau, tau / refresh, targetCode, palette);
+      const own = repaint - jitter;          // ends at delay + repaint, never later
+      out[key] = tau >= own ? targetCode : refreshPhaseColor(n, tau, tau / own, targetCode, palette);
     });
   }
   function applyFlatColors(item, cue, design, t, out, showRefreshS) {
     const sweep = sweepOf(cue);
-    const refresh = refreshOfFor(cue, showRefreshS).value;
+    const repaint = panelRepaintFor(cue, showRefreshS);
     const model = refreshModelFor(item, cue, sweep);
     item.map.scales.forEach((s, n) => {
       const key = `${s[0]}|${s[1]}|${s[2]}`;
       const targetCode = design.colors[key];
       if (targetCode === undefined) return;
-      if (t >= cue.sent + model.delay[n] + refresh) out[key] = targetCode;
+      if (t >= cue.sent + model.delay[n] + repaint) out[key] = targetCode;
     });
   }
   const designLabel = d => d.label || d.name;
@@ -174,7 +203,8 @@
   globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     flicker: {
       JITTER_MAX, REFRESH_TINT, REFRESH_PHASE_A, REFRESH_PALETTE, REFRESH_PHASE_C, TINT_STEPS,
-      hash32, refreshPhaseColor, refreshModelFor, refreshOfFor, wornAt, clearCaches,
+      hash32, refreshPhaseColor, refreshModelFor, refreshOfFor, panelRepaintFor,
+      startJitter, wornAt, clearCaches,
     },
   });
 })();

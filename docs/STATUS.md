@@ -18,6 +18,128 @@
 
 ## 2. 直近で完成したもの
 
+**refresh は「演出込みの所要時間」になった ― 既定 8 秒、1 台の最短間隔 9 秒
+(2026-09-26 オペレーター決定)**
+
+決定(原文):「T2B や Centre outward の演出込みの refresh および
+デフォルトの refresh 時間を 8 秒をとする。」
+
+つまり **1 つのキューの refresh = 送信から「絵が完成」までの秒数で、
+スイープ(上→下、図心から…)の時間を含む**。物理のリフレッシュは現行
+ファームで約 7 秒、本番のスイープの span は 1.0 秒なので、スイープ付きは
+実際に 7 + 1 = 8 秒で完成し、一斉(natural)は 7 秒で終わるがやはり
+8 秒として見積もる ― 演出の有無で間隔が変わらない。ディレクターの
+「完成から 1 秒」は据え置きなので、**1 台の最短間隔はどのキューでも 9 秒**
+(以前は natural 8 秒 / span 1 秒のスイープ 9 秒)。
+
+`conductor/timeline.py` で 2 つの量を分けた:
+
+- **`PANEL_REPAINT_S = 7.0`** ― 基板 1 枚の物理リフレッシュ(ファーム依存。
+  9.8 秒 → 16 秒 → 約 7 秒と動いてきた履歴はこちらの履歴)。スイープの
+  「本当の終わり」を測る基準
+- **`REFRESH_S = 8.0`** ― キューの**モデル上の** refresh(演出込み)。
+  `show.json` の `refresh_s` と各キューの `refresh_s` はこちらの量
+- **`complete_s(cue, refresh) = max(実効 refresh, panel + span)`**、
+  `panel = min(PANEL_REPAINT_S, 実効 refresh)`。refresh 8 / span 1 → 8 秒、
+  refresh 8 / span 7 → 14 秒、natural → 8 秒、旧 7 秒のショー + span 1 →
+  8 秒。`panel` に上限を付けたのは、**refresh を 1 秒に詰めたベンチ用ショー
+  (テストが流すもの)や将来の高速ファームに 7 秒の定数を被せない**ため ―
+  refresh はオペレーター自身のハードウェア申告なので、それより長い
+  リフレッシュはモデルしない
+- `min_interval = refresh + gap`(既定 9 秒)。`validate()` の 1 台ごとの
+  下限も `complete_s + gap` に揃えた(和ではなく max なので、span 0.5 秒の
+  キューが 9.5 秒ではなく 9 秒になる)
+- `conductor/web/sim/model.js` に同じ式を移植(`REFRESH_S = 8.0`,
+  `PANEL_REPAINT_S = 7.0`, `completeS`, `panelRepaintOf`)。ゴールデンに
+  `refresh8_*` / `legacy_refresh7_sweep_span1` を追加
+
+**機体が受け取る `refresh_s`**:`timeline.panel_refresh()` =
+`max(PANEL_REPAINT_S, そのキューの実効 refresh)`。既定では **8.0 秒**
+(モデル値と同じ)で、7.0 を送る案は採らなかった ― キュー個別の
+`refresh_s` は**もともと「遅いファームの基板」のためにある**(16 秒など)
+ので、一律 7 秒を送るとその基板のガード STOP がリフレッシュの途中に落ちる。
+床を `PANEL_REPAINT_S` にしてあるのは、refresh を 1 秒に詰めたショーでも
+ガードを物理リフレッシュの中に引き込まないため(ガードは安全網なので、
+モデル側の `panel_repaint_of()` と違って上限は付けない)。
+
+ガードの算術(`ui/runner.py` `_guard_for()`、`margin = guard_delay −
+GUARD_REFRESH_S` = 12 − 7 = 5 秒):
+
+| 機体に送る refresh_s | span | ガード | 絵の本当の完成 | 1 台の最短間隔 |
+|---|---|---|---|---|
+| 8.0(採用) | 1.0 | 14.0 秒 | 8.0 秒 | 9.0 秒 |
+| 7.0(不採用案) | 1.0 | 13.0 秒 | 8.0 秒 | 9.0 秒 |
+
+**「完成のあと」は両案とも満たす**が、**「次の送信より前」はどちらも
+満たせない** ― `guard_delay` の固定下限 12 秒だけで、旧 8 秒・新 9 秒の
+どちらの最短間隔も超えている(つまりこれは今回の変更で悪化したもの
+ではない)。そして**発火ごとにガードの期限は上書きされる**
+(`ui/runner.py`: 発火時に `guard_due = time.monotonic() +
+self._guard_for(session)`)ので、キューが続いているあいだ STOP は
+そもそも出ない ― 基板をメーカーのオートプレイから守っているのは
+次のキューのトリガー自身で、STOP は最後のキューのあとに出る。
+`tests/test_timeline.py::test_what_a_unit_is_told_keeps_its_guard_after_the_real_end`
+がこの算術を両側から固定している(`ui/` は変更していない)。
+
+**移行**:`refresh_s: 7.0` のままの `show.json` はそのまま動く(スイープ付きは
+max 規則で 8 秒、natural はオペレーターが設定を変えるまで 7 秒)。
+**自動で書き換えない**。Conductor の Timeline タブに
+`state.show.refresh_s < REFRESH_S` のときだけ出る一度きりの注記を足した
+(「The show's refresh is 7.0 s; the current default is 8.0 s (effect
+included) — set it in Default refresh time above.」Dismiss でこのブラウザ
+から消える、作業は止めない)。
+
+**プレビューのチラつきは「1 スケール分の物理リフレッシュ」で刻む**
+(`conductor/web/sim/flicker.js` と `index.html` の同じコード、
+`panelRepaintFor()` = `min(PANEL_REPAINT_S, そのキューの実効 refresh)` ―
+モデル側の `panel_repaint_of()` と同じ式)。refresh で刻んでいたので、
+span 1 秒のスイープだと**最後のスケールが Complete の時点でまだチラついて
+いて**、`wornAt()` がそこで完成形を一気に入れるためプレビューが
+「パチッ」と切り替わっていた。いまは最後のスケールが `delay + repaint`
+= ちょうど Complete で収まり、一斉のキューは 7 秒で収まって残り 1 秒は
+静止する(実機どおり)。2 つのコピーが文字単位で一致していることと、
+最後のスケールの終了時刻(一斉 7 秒 / span 1 → 8 秒 / span 7 → 14 秒、
+どれも Complete を超えない)をテストで固定した。
+
+レビューで出た詰め(同日):
+
+- **プリセットは「complete_s 1 本ぶん前」に送る**(以前は refresh 1 本ぶん前)。
+  span 5 秒のスイープ付きプリセットは 7 + 5 = 12 秒かかるので、refresh
+  (8 秒)だけ前に送ると 0:04 まで描き終わらず、画面の「complete at 0:00」と
+  食い違っていた。いまは `sent = −complete_s`、`complete` はぴったり 0:00
+- **送信間隔の比較を丸める**。`16.4 − 7.4` は浮動小数で 8.999999999999998
+  なので、ちょうど 9.0 秒あけたキューが
+  「only 9.0 s after … at least 9.0 s is needed」という矛盾した文言で
+  弾かれていた(`round(..., 3)`、両側)
+- **「Shortest interval per unit」はこのショーの実測**(`min_interval_of()`
+  = その機体のキューの `complete_s` の最大 + gap)。span 7 秒のキューを積んだ
+  機体は 15 秒と出る ― `validate()` が実際に要求する数字と同じ。キューが
+  無い機体は既定の 9 秒。gap は state の `gap_s` として渡す(合計から引き算で
+  復元していたのを止めた)
+- **`refresh_s` を持たない/`null` の `show.json` は「旧 7.0 秒」として読む**
+  (`LEGACY_REFRESH_S`)。黙って 8.0 秒に動かすと**注記も出ないまま**タイミングが
+  変わってしまう。`show.json` がまだ無いワークスペース(新しいショー)は 8.0 秒。
+  このバージョンが書く `show.json` は必ず `refresh_s` を書く(`_write_show()`)ので、
+  「キーが無い」= 旧バージョンが書いたもの、と判定できる
+- **チラつきのジッター(最大 0.35 秒)は「開始を遅らせる」ぶんをそのスケール自身の
+  書き換え時間から引く**。足すだけだと最後のスケールが Complete を最大 0.35 秒
+  過ぎて終わり、そこで `wornAt()` が完成形を入れるため「パチッ」が残っていた
+  (最初の検証は `flicker:false` ― ジッターの無い経路 ― で見ていて取り逃した)
+
+**本番のショーにすることは 1 つだけ**:Timeline タブの
+**Default refresh time を 8.0 にする**(`PUT /api/show` の `refresh_s`)。
+
+**着弾チェック(landing check)との兼ね合い**:再送は発火から約 1.5 秒後
+(`VERIFY_AFTER_S`)なので、修復された絵の完成は元の送信から
+1.5 + 8 = **約 9.5 秒後** ― 9 秒間隔だとディレクターの 1 秒の gap を食い、
+次のキューに約 0.5 秒食い込む。それを許すかどうかを決めているのは
+`ui/runner.py` の **`_repair_blocked()`**:
+`now + refresh_s + span_s − 次の発火時刻 > REPAIR_LATE_S`(2 秒)なら再送しない。
+機体が受け取る `refresh_s` は 8.0 秒なので、span 1 秒のキューなら
+1.5 + 8 + 1 − 9 = 1.5 秒 ≤ 2 秒で**再送される**(span 7 秒のキューは
+そもそも 15 秒間隔が要るので余裕がある)。間隔を詰める話をするときは
+この 2 秒の予算と合わせて読むこと。
+
 **THE SHOW の再生に音源を追従させた(2026-09-26)**
 
 オペレーターの要望「THE SHOW の再生時も、Timeline と同様に音源を再生する機能を実装」。

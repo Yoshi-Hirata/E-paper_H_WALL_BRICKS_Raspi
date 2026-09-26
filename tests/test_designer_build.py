@@ -99,6 +99,276 @@ def test_shared_constants_match_index_html():
             f"the sim modules have {sim_constants[name]}")
 
 
+# The flicker's timing functions exist twice - once in index.html for the
+# operator page, once in conductor/web/sim/flicker.js for the designers'
+# simulator - and the two must agree to the character, or the same show looks
+# different on the two screens. They are not byte-identical: flicker.js is the
+# parameterised copy (plan_designer_sim.md section 2.3), so what the page reads
+# off module-level globals travels down as arguments. Those substitutions are
+# the ONLY licensed difference, and they are listed here; anything else is
+# drift and fails.
+SHARED_FLICKER_FUNCTIONS = ["refreshModelFor", "refreshPhaseColor",
+                            "applySweptColors", "applyFlatColors",
+                            # wornAt's own "is this cue still in flight?" gate
+                            # is what decides when the flicker stops being
+                            # shown at all - the 2026-09-26 snap lived exactly
+                            # there, so it belongs in this list (review).
+                            "wornAt", "startJitter"]
+_FLICKER_PARAMETERISATION = [
+    ("refreshOfFor(cue, showRefreshS)", "refreshOf(cue)"),
+    ("panelRepaintFor(cue, showRefreshS)", "panelRepaintFor(cue)"),
+    ("applySweptColors(item, cue, design, t, out, palette, showRefreshS)",
+     "applySweptColors(item, cue, design, t, out)"),
+    ("applyFlatColors(item, cue, design, t, out, showRefreshS)",
+     "applyFlatColors(item, cue, design, t, out)"),
+    ("refreshPhaseColor(n, tau, frac, targetCode, palette)",
+     "refreshPhaseColor(n, tau, frac, targetCode)"),
+    ("refreshPhaseColor(n, tau, tau / own, targetCode, palette)",
+     "refreshPhaseColor(n, tau, tau / own, targetCode)"),
+    ("tintedHex(targetCode, w, palette)", "tintedHex(targetCode, w)"),
+    # wornAt: the page reads the cues/palette/refresh off `state`, the module
+    # takes them from its opts.
+    ("const cues = (opts && opts.cuesOf) ? opts.cuesOf(item) : []; "
+     "const palette = opts && opts.palette; "
+     "const showRefreshS = opts && opts.refreshS; ", ""),
+    ("for (const cue of cues)", "for (const cue of cuesOf(item))"),
+    ("applySweptColors(item, cue, design, t, colors, palette, showRefreshS)",
+     "applySweptColors(item, cue, design, t, colors)"),
+    ("applyFlatColors(item, cue, design, t, colors, showRefreshS)",
+     "applyFlatColors(item, cue, design, t, colors)"),
+]
+
+
+def _js_function(text: str, name: str, label: str) -> str:
+    """The source of `function name(...) {...}`, by balanced braces. Comments
+    are dropped and runs of whitespace collapsed first (a comment may
+    legitimately read differently on the two sides - the page's mentions
+    `state`, the module's does not - but the CODE may not), then the licensed
+    parameterisation is undone."""
+    start = text.find(f"function {name}(")
+    assert start >= 0, f"{label}: no function {name}()"
+    assert text.find(f"function {name}(", start + 1) < 0, \
+        f"{label}: function {name}() is defined more than once"
+    depth, i = 0, text.index("{", start)
+    for j in range(i, len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                body = text[start:j + 1]
+                break
+    else:
+        raise AssertionError(f"{label}: function {name}() is never closed")
+    body = re.sub(r"\s+", " ", re.sub(r"//[^\n]*", "", body)).strip()
+    for module_form, page_form in _FLICKER_PARAMETERISATION:
+        body = body.replace(module_form, page_form)
+    return body
+
+
+def test_the_flicker_timing_is_the_same_code_on_both_screens():
+    index_text = INDEX_HTML.read_text(encoding="utf-8")
+    flicker_text = (REPO / "conductor" / "web" / "sim" / "flicker.js").read_text(encoding="utf-8")
+    for name in SHARED_FLICKER_FUNCTIONS:
+        page = _js_function(index_text, name, "index.html")
+        module = _js_function(flicker_text, name, "sim/flicker.js")
+        assert page == module, (
+            f"{name}() has drifted between the two copies\n"
+            f"index.html:     {page}\nsim/flicker.js: {module}")
+    # panelRepaintFor() is the one that cannot be shared verbatim - each side
+    # reaches PANEL_REPAINT_S its own way (the page off the state the server
+    # sends, the module off SIM.timeline) - so what is pinned is that both
+    # take the SMALLER of that constant and the cue's own refresh, which is
+    # conductor/timeline.py's panel_repaint_of().
+    for text, label, source in ((index_text, "index.html", "panelRepaintS()"),
+                                (flicker_text, "sim/flicker.js",
+                                 "SIM.timeline.PANEL_REPAINT_S")):
+        body = _js_function(text, "panelRepaintFor", label)
+        assert "Math.min(" in body, \
+            f"{label}: panelRepaintFor() no longer takes the smaller of the two: {body}"
+        assert source in body, \
+            f"{label}: panelRepaintFor() no longer reads the panel repaint from " \
+            f"{source}: {body}"
+        assert "refreshOf(cue).value" in body, \
+            f"{label}: panelRepaintFor() no longer caps at the cue's own refresh: {body}"
+
+
+# A page of its own (model.js + flicker.js and nothing else): the flicker's
+# timing needs no app, no CSVs and no starter data, so a made-up 5-scale
+# garment answers the question in a fraction of a second.
+_FLICKER_TIMING_PROBE = """
+<script>
+(function () {
+  var out = { error: null, cases: [] };
+  function publish() {
+    var pre = document.createElement("pre");
+    pre.id = "flickertiming-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }
+  try {
+    var N = 5;
+    var scales = [], ranks = [], colors = {};
+    for (var i = 0; i < N; i++) {
+      scales.push(["front", i, 1]);
+      ranks.push(i);                        // one rank per row: the last is the sweep's end
+      colors["front|" + i + "|1"] = 1;
+    }
+    var design = { name: "d.csv", label: "D", colors: colors, shifts: null };
+    var item = { item: "Look22", map: { scales: scales },
+                 sequences: { top_down: ranks }, designs: [design] };
+    var palette = [{ name: "white", rgb: [255, 255, 255] },
+                   { name: "black", rgb: [0, 0, 0] }];
+
+    function run(name, showRefresh, spanS, cueRefresh) {
+      SIM.flicker.clearCaches();
+      var sweep = spanS > 0 ? { sequence: "top_down", span_s: spanS, source: "cue" }
+                            : { sequence: "natural", span_s: 0, source: "design" };
+      var cue = { id: name, item: "Look22", design: "d.csv", partial: false,
+                  at: 60, sent: 60, sweep: sweep, span: spanS,
+                  refresh_s: cueRefresh === undefined ? null : cueRefresh };
+      cue.refresh = cueRefresh === undefined ? showRefresh : cueRefresh;
+      var repaint = SIM.flicker.panelRepaintFor(cue, showRefresh);
+      var span = SIM.timeline.spanOf(cue);
+      cue.complete = cue.sent + SIM.timeline.completeS(cue, showRefresh);
+      var model = SIM.flicker.refreshModelFor(item, cue, sweep);
+      // The LAST scale to start is the last one to finish: its own repaint
+      // begins at the sweep delay and runs one repaint.
+      var lastDelay = 0;
+      for (var i = 0; i < N; i++) lastDelay = Math.max(lastDelay, model.delay[i]);
+      // BOTH paths: flicker:false is the flat cut (no jitter), flicker:true is
+      // the wave a designer actually watches - and the wave is where a jitter
+      // added to the start pushed a scale past Complete (review, 2026-09-26).
+      function optsFor(flicker) {
+        return { flicker: flicker, palette: palette, refreshS: showRefresh,
+                 cuesOf: function () { return [cue]; } };
+      }
+      function settledAt(t, flicker) {
+        var worn = SIM.flicker.wornAt(item, t, optsFor(flicker)).colors;
+        for (var k in colors) if (worn[k] !== colors[k]) return false;
+        return true;
+      }
+      var end = cue.sent + lastDelay + repaint;
+      // The instant each scale's PHASE WINDOW closes, jitter and all - the
+      // number the flicker is actually driven by. `wouldEnd` is what the same
+      // scale would reach if its jitter were simply added to the start (what
+      // this used to do), so the assertions can tell a fixed case from one
+      // that was never broken.
+      var phaseEnds = 0, wouldEnd = 0, maxJitter = 0;
+      for (var j = 0; j < N; j++) {
+        var jit = SIM.flicker.startJitter(model.jitter[j], repaint);
+        maxJitter = Math.max(maxJitter, model.jitter[j]);
+        phaseEnds = Math.max(phaseEnds, cue.sent + model.delay[j] + jit + (repaint - jit));
+        wouldEnd = Math.max(wouldEnd, cue.sent + model.delay[j] + model.jitter[j] + repaint);
+      }
+      out.cases.push({
+        name: name, repaint: repaint, span: span, maxJitter: maxJitter,
+        phaseEnds: phaseEnds, wouldEndWithJitterAdded: wouldEnd,
+        sent: cue.sent, complete: cue.complete, lastEnds: end,
+        settledJustBeforeTheEnd: settledAt(end - 0.01, false),
+        settledAtTheEnd: settledAt(end, false),
+        settledInsideTheBand: settledAt(cue.complete - 0.001, false),
+        flickerStillDrawingEarly: !settledAt(cue.sent + 0.05, true),
+        flickerSettledAtTheEnd: settledAt(end, true),
+        flickerSettledInsideTheBand: settledAt(cue.complete - 0.001, true)
+      });
+    }
+    run("natural", 8.0, 0);
+    run("sweep_span1", 8.0, 1.0);
+    run("sweep_span7", 8.0, 7.0);
+    run("legacy7_span1", 7.0, 1.0);
+    run("compressed1", 1.0, 0);
+    run("cue_own_16", 8.0, 1.0, 16.0);
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  publish();
+})();
+</script>
+"""
+
+
+@pytest.fixture(scope="module")
+def flicker_timing(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("flickertiming")
+    _require_browser(tmp)
+    sim = REPO / "conductor" / "web" / "sim"
+    scripts = "".join(f"<script>\n{(sim / n).read_text(encoding='utf-8')}\n</script>\n"
+                      for n in ("model.js", "flicker.js"))
+    page = tmp / "flicker.html"
+    page.write_text('<!doctype html>\n<html><head><meta charset="utf-8"></head>'
+                    f"<body>\n{scripts}{_FLICKER_TIMING_PROBE}</body></html>\n",
+                    encoding="utf-8")
+    dom = _dump_dom("file:///" + str(page.resolve()).replace("\\", "/"), tmp)
+    match = re.search(r'<pre id="flickertiming-out">(.*?)</pre>', dom or "", re.S)
+    assert match, f"no #flickertiming-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    data = json.loads(unescape(match.group(1)))
+    assert data.get("error") is None, data["error"]
+    return {case["name"]: case for case in data["cases"]}
+
+
+def test_a_scales_flicker_lasts_one_physical_repaint_not_the_whole_refresh(flicker_timing):
+    """2026-09-26: a refresh is the whole change, the sweep included (8 s = a
+    7 s panel repaint with a 1 s sweep inside it). A SCALE still takes one
+    physical repaint, so that is what the flicker is phased over - phasing it
+    over the refresh left the last scale of a swept cue mid-flicker at Complete,
+    where wornAt() drops the finished design in and the preview snapped."""
+    natural = flicker_timing["natural"]
+    assert natural["repaint"] == 7.0 and natural["complete"] == 68.0
+    # It ends one repaint in and the rest of the band is a settled picture -
+    # which is what the hardware does: 7 s of drawing inside an 8 s budget.
+    assert natural["lastEnds"] == 67.0
+    assert not natural["settledJustBeforeTheEnd"]
+    assert natural["settledAtTheEnd"] and natural["settledInsideTheBand"]
+
+    # A production sweep: the last scale starts at span and finishes one
+    # repaint later - exactly at Complete, never past it.
+    swept = flicker_timing["sweep_span1"]
+    assert swept["span"] == 1.0 and swept["repaint"] == 7.0
+    assert swept["lastEnds"] == swept["complete"] == 68.0
+    assert not swept["settledJustBeforeTheEnd"]
+    assert swept["settledAtTheEnd"]
+
+    # A sweep that genuinely runs past the refresh: 7 s repaint + 7 s sweep.
+    long_sweep = flicker_timing["sweep_span7"]
+    assert long_sweep["lastEnds"] == long_sweep["complete"] == 74.0
+
+    # A show still at the legacy 7.0 s refresh reaches the same 8 s Complete.
+    legacy = flicker_timing["legacy7_span1"]
+    assert legacy["repaint"] == 7.0
+    assert legacy["lastEnds"] == legacy["complete"] == 68.0
+
+    # A refresh set below one repaint (a bench run) is the operator's own
+    # statement about the panel - the 7 s constant is not put back on top.
+    assert flicker_timing["compressed1"]["repaint"] == 1.0
+    assert flicker_timing["compressed1"]["lastEnds"] == 61.0
+
+    # A cue on slower firmware keeps its own, longer repaint.
+    own = flicker_timing["cue_own_16"]
+    assert own["repaint"] == 7.0          # capped by PANEL_REPAINT_S, not 16
+    assert own["complete"] == 76.0        # ...but the cue still holds the band
+
+    # The invariant behind all of it, on BOTH paths: no scale is ever still
+    # drawing when the cue's picture is declared complete - which is the
+    # instant wornAt() stops showing the flicker and drops the finished design
+    # in, so a scale that had not arrived used to snap there. The flicker's
+    # per-scale jitter is a late START, and it comes out of that scale's own
+    # repaint for exactly this reason.
+    for name, case in flicker_timing.items():
+        assert case["lastEnds"] <= case["complete"], f"{name}: {case}"
+        assert case["phaseEnds"] <= case["complete"], f"{name}: {case}"
+        assert case["flickerStillDrawingEarly"], f"{name}: {case}"
+        assert case["flickerSettledAtTheEnd"], f"{name}: {case}"
+        assert case["flickerSettledInsideTheBand"], f"{name}: {case}"
+        # Every case really does carry jitter, so `phaseEnds` above is not
+        # passing for want of any to absorb...
+        assert case["maxJitter"] > 0, f"{name}: {case}"
+    # ...and in the cases whose Complete is the sweep's own end, adding that
+    # jitter to the start - what this used to do - would have pushed a scale
+    # past Complete, where wornAt() snaps it into place.
+    for name in ("sweep_span1", "sweep_span7", "legacy7_span1", "compressed1"):
+        case = flicker_timing[name]
+        assert case["wouldEndWithJitterAdded"] > case["complete"], f"{name}: {case}"
+
+
 def test_starter_is_current():
     if not (REPO / "showdata" / "files").is_dir():
         pytest.skip("showdata/ is gitignored and not present on this machine")

@@ -36,15 +36,29 @@
   // starting, when a design is APPENDED rather than placed by hand (the "+"
   // at the end of a track row, and EDIT CUE's "Add next design after this
   // cue"). Read off the model rather than typed again here: it is the SAME
-  // number validate() requires between two sends (need = refresh + sweep +
-  // gap, i.e. the previous cue's complete + gap), so an append that used its
+  // number validate() requires between two sends (need = the previous cue's
+  // complete + gap), so an append that used its
   // own idea of "a reasonable gap" would quietly place cues the model then
   // rejects.
   const APPEND_GAP_S = (globalThis.SIM && globalThis.SIM.timeline
                         && globalThis.SIM.timeline.GAP_AFTER_REFRESH_S) || 1.0;
 
+  // The model's own two refresh numbers, read off SIM.timeline rather than
+  // typed again here (the same reason APPEND_GAP_S is; model.js is always
+  // loaded before this file, so there is no fallback to drift): the default
+  // MODELLED refresh an empty project opens on - the one the Conductor would
+  // give a new show - and one panel's physical repaint.
+  const DEFAULT_REFRESH_S = globalThis.SIM.timeline.REFRESH_S;
+  const PANEL_REPAINT_S = globalThis.SIM.timeline.PANEL_REPAINT_S;
+  // What "Default refresh time" means, in the words the EDIT CUE row uses -
+  // the number covers the transition too, so a designer does not add the
+  // sweep on top of it in their head.
+  const REFRESH_HELP = "Command to finished picture, the transition's sweep"
+    + ` included: ${DEFAULT_REFRESH_S.toFixed(1)} s is a ${PANEL_REPAINT_S.toFixed(1)} s`
+    + " panel repaint with a 1 s sweep already inside it. Only a sweep longer"
+    + " than this pushes a design's Complete out.";
   function freshProject() {
-    return { files: {}, show: { duration: 600, refresh_s: 7.0, cues: [], transitions: {}, labels: {}, boards: {}, music: null } };
+    return { files: {}, show: { duration: 600, refresh_s: DEFAULT_REFRESH_S, cues: [], transitions: {}, labels: {}, boards: {}, music: null } };
   }
   function cloneStarter() {
     const s = globalThis.SIM.STARTER || { files: {}, show: {} };
@@ -705,9 +719,24 @@
     return i < 0 ? list[0] : list[(i + 1) % list.length];
   }
   function lastCueOf(item) { const cues = cuesOf(item); return cues[cues.length - 1] || null; }
+  // How a cue's Complete is arrived at, in the model's own terms (model.js's
+  // completeS): the modelled refresh - a production sweep is already budgeted
+  // inside it - unless the sweep genuinely finishes later, which is one panel
+  // repaint after its last scale started.
+  function completeWhy(cue, refr) {
+    const span = Math.max(0, Number(cue.span) || 0);
+    // Never longer than the whole refresh this cue declares - model.js's
+    // panelRepaintOf().
+    const panel = Math.min(PANEL_REPAINT_S, refr.value);
+    if (panel + span > refr.value) {
+      return `${panel.toFixed(1)} s panel repaint + ${span.toFixed(1)} s sweep`;
+    }
+    return `${refr.value.toFixed(1)} s refresh`
+      + (span > 0 ? ` (the ${span.toFixed(1)} s sweep fits inside it)` : "");
+  }
   // The earliest legal moment after `cue`: when its own picture has finished
-  // being drawn. That is cue.complete - start + its refresh + its sweep span,
-  // computed by the model (model.js's times(), the same number the CUES
+  // being drawn. That is cue.complete - start + its refresh, or a sweep that
+  // runs past it (model.js's completeS(), the same number the CUES
   // table's COMPLETE column and EDIT CUE's "Refresh completes at" print) -
   // plus APPEND_GAP_S, snapped to a whole second like every other cue edit
   // here.
@@ -793,7 +822,7 @@
         <div class="ctl"><label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-show" ${refr.source === "show" ? "checked" : ""}> show default (${state.show.refresh_s.toFixed(1)} s)</label>
           <label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-cue" ${refr.source === "cue" ? "checked" : ""}> this cue</label>
           <input type="text" id="cue-refresh" value="${refr.value.toFixed(1)}" ${refr.source === "cue" ? "" : "disabled"}> s</div>
-        <div class="why">How long this item's e-paper takes to redraw</div></div>
+        <div class="why">Command to finished picture, the transition's sweep included</div></div>
       <div class="cue-row"><div class="lbl">Transition</div>
         <div class="ctl" style="flex-direction:column;align-items:flex-start;gap:6px">
           <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-design" ${transitionMode === "design" ? "checked" : ""}> this design (all cues using it)
@@ -803,7 +832,7 @@
               `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(seqLabel(s))}</option>`).join("")}</select>
             <span ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}><input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" ${transitionMode !== "custom" ? "disabled" : ""}> s</span></label>
         </div><div class="why"></div></div>
-      <div class="cue-computed">Refresh completes at ${clockShort(cue.complete)} (Start + ${refr.value.toFixed(1)} s refresh${sweep.span_s > 0 ? ` + ${sweep.span_s.toFixed(1)} s sweep` : ""})</div>
+      <div class="cue-computed">Refresh completes at ${clockShort(cue.complete)} (Start + ${esc(completeWhy(cue, refr))})</div>
       <div class="cue-row"><div class="lbl">End</div><div class="ctl">${mmssField("cue-end", cue.end, { disabled: isLast })}</div>
         <div class="why">${isLast ? `Shown until the end of the show (${clockShort(state.show.duration)})` : "Shown until the next cue of this item starts"}</div></div>
       <div class="cue-design"><label>Design <select id="cue-design">${(item?.designs || []).map(d =>
@@ -912,7 +941,7 @@
   function minIntervalTable() {
     const rows = Object.entries(state.show.min_interval || {}).filter(([, v]) => v !== null && v !== undefined);
     if (!rows.length) return "";
-    return `<div class="card"><h2>SHORTEST INTERVAL PER ITEM</h2><table><tbody>
+    return `<div class="card"><h2>SHORTEST INTERVAL PER ITEM (THIS SHOW)</h2><table><tbody>
       ${rows.map(([k, v]) => `<tr><td>${esc(unitLabel(k))}</td><td>${v.toFixed(1)} s</td></tr>`).join("")}
       </tbody></table></div>`;
   }
@@ -977,7 +1006,7 @@
     const items = trackItems();
     root.innerHTML = `<div class="toolbar">
         <div class="group"><span>Show length</span>${mmssField("show-duration", state.show.duration)}</div>
-        <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}"> s</div>
+        <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}" title="${esc(REFRESH_HELP)}"> s</div>
         <div class="group"><button id="save-project">Save project…</button><label class="filebtn" tabindex="0" role="button">Open project…<input id="open-project" type="file" accept=".json"></label></div>
         ${musicControl()}
       </div>

@@ -9,7 +9,8 @@
  *                           items, since it never assigns units)
  *   conductor/sequence.py   SEQUENCES/LABELS/ranks/span_s
  *   conductor/timeline.py   clean/resolve/apply_transitions/times/ends/
- *                           effective_refresh/validate/min_interval/
+ *                           effective_refresh/complete_s/panel_repaint_of/
+ *                           panel_refresh/validate/min_interval/
  *                           parse_clock/format_clock
  * plus SIM.fmt (Python's float formatting, exact on the double's own
  * binary value) and SIM.mmss (the designer-facing mm.ss clock grammar,
@@ -1118,7 +1119,21 @@
   // SIM.timeline - port of conductor/timeline.py.
   // ============================================================
 
-  const REFRESH_S = 7.0;
+  // ONE BOARD's physical repaint, command to finished image (firmware-
+  // dependent: 9.8 s first boards, 16 s production boards, ~7 s on the
+  // latest). The sweep's real end is measured from it.
+  const PANEL_REPAINT_S = 7.0;
+  // The default MODELLED refresh of a cue - the seconds budgeted from a
+  // send to "picture complete", the sweep INCLUDED (2026-09-26, the
+  // operator: 8 s for both a swept and an all-at-once cue). This is what
+  // show.refresh_s and a cue's refresh_s set.
+  const REFRESH_S = 8.0;
+  // What a show/project authored BEFORE the refresh became effect-inclusive
+  // was drawn against: a saved project (or a show.json - see server.py's
+  // _load_show) that names no refresh_s at all is one of those, and keeps the
+  // timing it was made with rather than being moved silently to today's
+  // longer default. A NEW project opens on REFRESH_S.
+  const LEGACY_REFRESH_S = 7.0;
   const REFRESH_RANGE_S = [1.0, 60.0];
   const GAP_AFTER_REFRESH_S = 1.0;
   // Pre-burn conductor (main, 2026-09-25+): every picture is written to
@@ -1187,12 +1202,53 @@
     return typeof own === "number" && !Number.isNaN(own) ? own : refresh;
   }
 
+  // One board's repaint as THIS cue models it: PANEL_REPAINT_S, never
+  // longer than the whole refresh the cue declares (a show that says a
+  // refresh takes 1 s must not have a 7 s constant put back on top).
+  function panelRepaintOf(cue, refresh) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    return pyMin2(PANEL_REPAINT_S, effectiveRefresh(cue, refresh));
+  }
+
+  // Seconds from a send to the picture being complete: the modelled
+  // refresh already budgets a production sweep, so it only grows when a
+  // sweep genuinely finishes later (its last scale STARTS at span, so
+  // the picture is done one repaint after that).
+  function completeS(cue, refresh) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    return pyMax2(effectiveRefresh(cue, refresh),
+                  panelRepaintOf(cue, refresh) + spanOf(cue));
+  }
+
+  // What a UNIT is told a cue's refresh is (conductor/showfile.py): the
+  // cue's own refresh, never below one physical repaint, so its guard
+  // STOP cannot land inside the repaint or the sweep.
+  function panelRefresh(cue, refresh) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    return pyMax2(PANEL_REPAINT_S, effectiveRefresh(cue, refresh));
+  }
+
+  // min_interval() for one unit AS THIS SHOW USES IT: the longest any of its
+  // pictures actually takes, plus the gap. A unit with no cues has nothing to
+  // measure and reports the default floor.
+  function minIntervalOf(unitCues, boards, refresh, gap) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    if (gap === undefined) gap = GAP_AFTER_REFRESH_S;
+    if (!unitCues || !unitCues.length) return minInterval(boards, refresh, gap);
+    let longest = completeS(unitCues[0], refresh);
+    unitCues.forEach(c => { longest = pyMax2(longest, completeS(c, refresh)); });
+    return longest + gap;
+  }
+
   function times(cue, refresh) {
     if (refresh === undefined) refresh = REFRESH_S;
     const at = Number(cue.at);
-    const eff = effectiveRefresh(cue, refresh);
-    const sent = at > 0 ? fmt.round(at, 3) : fmt.round(-eff, 3);
-    const complete = fmt.round(sent + eff + spanOf(cue), 3);
+    // The preset is sent one whole completeS() before 0:00, not one refresh -
+    // a preset that sweeps takes PANEL_REPAINT_S + span, and a refresh's
+    // worth of head start left a 5 s sweep still drawing at 0:04.
+    const paint = completeS(cue, refresh);
+    const sent = at > 0 ? fmt.round(at, 3) : fmt.round(-paint, 3);
+    const complete = fmt.round(sent + paint, 3);
     return [sent, complete];
   }
 
@@ -1365,18 +1421,30 @@
       moments.forEach(sent => {
         const group = momentCues[sent];
         if (previousSent !== null) {
-          const spacing = sent - previousSent;
+          // Rounded like every other instant here: 10.3 - 1.3 is
+          // 8.999999999999998, which used to fail a 9.0 s floor and say so in
+          // words that read as a contradiction.
+          const spacing = fmt.round(sent - previousSent, 3);
           // Every picture is already burned into its slot at Upload
           // time: a running send is one broadcast trigger, nothing is
           // written - so the only floor left is the director's gap
-          // after the PREVIOUS send's own refresh (plus its sweep's
-          // span, if any of its cues had one), for every pair.
-          const beforeRefresh = Math.max(...previousGroup.map(c => effectiveRefresh(c, refresh)));
-          const beforeSpan = Math.max(...previousGroup.map(c => spanOf(c)));
-          const need = beforeRefresh + beforeSpan + gap;
+          // after the PREVIOUS send is complete - completeS() of the
+          // slowest cue in it, which is its refresh unless a sweep
+          // genuinely runs past that - for every pair.
+          // Python's max(iterable, key=...) keeps the FIRST maximum.
+          let slowest = previousGroup[0];
+          previousGroup.forEach(c => {
+            if (completeS(c, refresh) > completeS(slowest, refresh)) slowest = c;
+          });
+          const before = completeS(slowest, refresh);
+          const slowRefresh = effectiveRefresh(slowest, refresh);
+          const need = before + gap;
           if (spacing < need) {
-            let detail = `${fmt.fixed(beforeRefresh, 1)} s refresh`;
-            if (beforeSpan) detail += ` + ${fmt.fixed(beforeSpan, 1)} s sweep`;
+            // The sweep, not the refresh, is what the next send waits
+            // for: say so in its own terms.
+            let detail = before > slowRefresh
+              ? `${fmt.fixed(panelRepaintOf(slowest, refresh), 1)} s panel repaint + ${fmt.fixed(spanOf(slowest), 1)} s sweep`
+              : `${fmt.fixed(slowRefresh, 1)} s refresh`;
             detail += ` + ${fmt.fixed(gap, 1)} s gap`;
             group.forEach(cue => {
               const sameItem = previousGroup.some(prev => cue.item.toLowerCase() === prev.item.toLowerCase());
@@ -1401,10 +1469,13 @@
   }
 
   const timeline = {
-    REFRESH_S, REFRESH_RANGE_S, GAP_AFTER_REFRESH_S,
+    REFRESH_S, LEGACY_REFRESH_S, PANEL_REPAINT_S, REFRESH_RANGE_S,
+    GAP_AFTER_REFRESH_S,
     SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S,
-    parseClock, formatClock, cleanRefresh, effectiveRefresh, spanOf,
-    sweeps, clean, resolve, applyTransitions, times, ends, minInterval, validate,
+    parseClock, formatClock, cleanRefresh, effectiveRefresh, completeS,
+    panelRepaintOf, panelRefresh, spanOf,
+    sweeps, clean, resolve, applyTransitions, times, ends, minInterval,
+    minIntervalOf, validate,
   };
 
   globalThis.SIM = Object.assign(globalThis.SIM || {}, { fmt, mmss, look, sequence: sequenceApi, timeline });

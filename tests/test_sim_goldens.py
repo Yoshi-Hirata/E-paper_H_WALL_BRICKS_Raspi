@@ -101,6 +101,24 @@ def test_generator_ignores_showdata(tmp_path, monkeypatch):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_the_refresh_constants_match_conductor_timeline():
+    """The golden cases always pass a refresh time explicitly, so a drifted
+    DEFAULT in model.js would never show up there - and it is the number the
+    simulator gives a brand-new project (designer-app.js's freshProject()).
+    Both sides are checked here instead."""
+    from conductor import timeline                                # noqa: PLC0415
+
+    text = (SIM_DIR / "model.js").read_text(encoding="utf-8")
+    for name, expected in (("REFRESH_S", timeline.REFRESH_S),
+                           ("LEGACY_REFRESH_S", timeline.LEGACY_REFRESH_S),
+                           ("PANEL_REPAINT_S", timeline.PANEL_REPAINT_S),
+                           ("GAP_AFTER_REFRESH_S", timeline.GAP_AFTER_REFRESH_S)):
+        found = re.findall(rf"^  const {name} = ([0-9.]+);$", text, re.M)
+        assert found == [f"{expected}"], (
+            f"conductor/web/sim/model.js defines {name} as {found}, "
+            f"conductor/timeline.py has {expected}")
+
+
 def test_goldens_js_is_well_formed(golden):
     # read_bytes(), not read_text() (adversarial review round 2 - F8):
     # Path.read_text() does universal-newline translation, so "\r\n" not in

@@ -195,21 +195,24 @@ def test_timeline_is_stored_cleaned_and_returned_with_its_times(workspace):
          "align": "sideways"},
     ])
     show = workspace.state()["show"]
-    assert show["duration"] == 600 and show["refresh_s"] == 7
+    # A new show opens on the current default refresh, the effect included.
+    assert show["duration"] == 600 and show["refresh_s"] == 8
+    assert show["refresh_default"] == 8 and show["panel_repaint_s"] == 7
+    assert show["gap_s"] == 1.0
     assert [c["id"] for c in show["cues"]] == ["a", "b"]        # by time
     preset, second = show["cues"]
     assert "align" not in preset and "align" not in second     # cleaned away
-    assert (preset["sent"], preset["complete"]) == (-7, 0)
-    assert (second["sent"], second["complete"]) == (120, 127)  # "at" IS Start
-    assert preset["refresh"] == second["refresh"] == 7
+    assert (preset["sent"], preset["complete"]) == (-8, 0)
+    assert (second["sent"], second["complete"]) == (120, 128)  # "at" IS Start
+    assert preset["refresh"] == second["refresh"] == 8
     assert preset["refresh_source"] == second["refresh_source"] == "show"
     assert preset["end"] == 120 and preset["end_source"] == "next"
     assert second["end"] == 600 and second["end_source"] == "show"
     assert preset["problems"] == second["problems"] == []
     assert show["warnings"] == []
-    # 3 boards: refresh-bound - 7 s refresh + the director's 1 s gap is
+    # 3 boards: refresh-bound - the 8 s refresh + the director's 1 s gap is
     # more than writing 3 boards (3 x 0.22 s + 1 s margin) would need.
-    assert round(show["min_interval"]["(Look22)"], 2) == 8.0
+    assert round(show["min_interval"]["(Look22)"], 2) == 9.0
 
 
 def test_refresh_time_is_a_setting_of_the_show(workspace):
@@ -223,10 +226,38 @@ def test_refresh_time_is_a_setting_of_the_show(workspace):
     assert round(show["min_interval"]["(Look22)"], 2) == 17.0
     workspace.set_timeline(600, cues)                   # not given: kept
     assert workspace.state()["show"]["refresh_s"] == 16
-    assert workspace.undo() and workspace.state()["show"]["refresh_s"] == 7
+    assert workspace.undo() and workspace.state()["show"]["refresh_s"] == 8
     for bad in (0, 61, "fast"):
         with pytest.raises(ValueError):
             workspace.set_timeline(600, cues, refresh=bad)
+
+
+def test_the_shortest_interval_is_what_this_show_needs_on_that_unit(workspace):
+    """The readout is per unit and per SHOW: a unit carrying a 7 s sweep needs
+    15 s between sends, and saying 9 s while validate() rejects a cue 14 s
+    later reads as a contradiction (review, 2026-09-26)."""
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.assign("Look22", "radxa-01")
+    # No cues on it yet: the default floor, refresh + gap.
+    assert round(workspace.state()["show"]["min_interval"]["radxa-01"], 2) == 9.0
+    workspace.set_transition(grid, "top_down", 7.0)
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 60,
+                                  "design": grid}])
+    state = workspace.state()
+    cue = state["show"]["cues"][0]
+    assert cue["span"] == 7.0 and cue["complete"] == 74.0
+    assert round(state["show"]["min_interval"]["radxa-01"], 2) == 15.0
+    # ...and that IS the floor validate() applies to the next send.
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 60,
+                                  "design": grid},
+                                 {"id": "b", "item": "Look22", "at": 75,
+                                  "design": grid}])
+    assert workspace.state()["show"]["cues"][1]["problems"] == []
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 60,
+                                  "design": grid},
+                                 {"id": "b", "item": "Look22", "at": 74.9,
+                                  "design": grid}])
+    assert workspace.state()["show"]["cues"][1]["problems"]
 
 
 def test_timeline_survives_a_unit_assignment_and_back(workspace):
@@ -606,7 +637,9 @@ def test_the_show_file_carries_uint16_delay_tables_and_the_unit_of_ten_ms(worksp
     a, b, c = show["cues"]
     assert (b["sweep"]["sequence"], b["sweep"]["span_s"], b["span"]) == \
         ("top_down", 2.0, 2.0)                              # rows 1 and 0
-    assert (b["sent"], b["complete"]) == (60, 60 + 7 + 2)   # "at" IS Start
+    # "at" IS Start; the 2 s sweep runs past the 8 s refresh (7 s repaint
+    # + 2 s sweep = 9 s), so it is what Complete follows.
+    assert (b["sent"], b["complete"]) == (60, 60 + 7 + 2)
     assert a["span"] == 0 and a["problems"] == [] and b["problems"] == []
     assert workspace.state()["sequences"][0]["id"] == "natural"
     item22 = item(workspace.state(), "Look22")
@@ -619,7 +652,10 @@ def test_the_show_file_carries_uint16_delay_tables_and_the_unit_of_ten_ms(worksp
     cues = shows["radxa-01"]["cues"]
     # Every cue carries tables once one sweeps; the others say "no delay".
     assert [q["span"] for q in cues] == [0.0, 2.0, 0.0]
-    assert [q["refresh_s"] for q in cues] == [7.0, 7.0, 7.0]   # the show's own
+    # What a unit is told (timeline.panel_refresh): the show's own refresh,
+    # floored at one physical repaint, so its guard STOP cannot land inside
+    # a repaint or a sweep.
+    assert [q["refresh_s"] for q in cues] == [8.0, 8.0, 8.0]
     assert set(cues[0]["delays"]) == {"1", "2", "3"}
     assert struct.unpack(">64H", bytes.fromhex(cues[0]["delays"]["1"])) == (0xFFFF,) * 64
     swept = struct.unpack(">64H", bytes.fromhex(cues[1]["delays"]["1"]))   # board 17: sockets 1, 60
@@ -1114,6 +1150,81 @@ def test_import_keeps_what_the_file_does_not_mention(workspace):
     assert cues2 == 1 and warnings2 and "Nope" in warnings2[0]
 
 
+def test_a_show_saved_at_the_old_seven_second_refresh_keeps_working(workspace):
+    """2026-09-26: the default refresh became 8 s, the effect included. A
+    show.json still at 7.0 is never rewritten behind the operator's back -
+    it keeps its own value, a swept cue reaches 8 s by the max rule, and
+    the state carries the current default so the page can offer its hint."""
+    grid = "Look22_color_pattern01_grid.csv"
+    legacy = {"units": {"Look22": "radxa-01"}, "duration": 600,
+              "refresh_s": 7.0,
+              "transitions": {grid: {"sequence": "top_down", "span_s": 1.0}},
+              "cues": [{"id": "a", "item": "Look22", "at": 0, "design": grid},
+                       {"id": "b", "item": "Look22", "at": 60, "design": grid}]}
+    (workspace.root / "show.json").write_text(json.dumps(legacy),
+                                              encoding="utf-8")
+    show = workspace.state()["show"]
+    assert show["refresh_s"] == 7.0              # kept, not migrated
+    assert show["refresh_default"] == 8.0        # what the hint compares to
+    # A swept cue completes at 7 s repaint + 1 s sweep = 8 s...
+    second = show["cues"][1]
+    assert second["span"] == 1.0 and second["complete"] == 68.0
+    assert second["problems"] == []
+    # ...and the file on disk is untouched.
+    assert json.loads((workspace.root / "show.json")
+                      .read_text(encoding="utf-8"))["refresh_s"] == 7.0
+
+
+def test_a_show_file_that_names_no_refresh_time_is_a_legacy_one(workspace):
+    """A show.json from before 2026-09-26 may not name refresh_s at all, and a
+    couple of hand-made workspaces name it as null. Either way it was drawn
+    against the old 7.0 s: moving it silently to today's 8.0 s would change
+    the operator's timing AND hide the hint that offers the change (review)."""
+    grid = "Look22_color_pattern01_grid.csv"
+    for stored in ({}, {"refresh_s": None}):
+        legacy = dict({"units": {}, "duration": 600,
+                       "cues": [{"id": "a", "item": "Look22", "at": 60,
+                                 "design": grid}]}, **stored)
+        (workspace.root / "show.json").write_text(json.dumps(legacy),
+                                                  encoding="utf-8")
+        show = workspace.state()["show"]
+        assert show["refresh_s"] == 7.0, stored
+        assert show["cues"][0]["complete"] == 67.0, stored
+        # ...and it compiles, rather than raising on float(None).
+        assert isinstance(workspace.compile_show(), tuple)
+
+    # A workspace with NO show.json is a new show and opens on today's default.
+    (workspace.root / "show.json").unlink()
+    assert workspace.state()["show"]["refresh_s"] == 8.0
+    # ...and the first thing written names it, so this version never leaves a
+    # file the next load would mistake for a legacy one.
+    workspace.assign("Look22", "radxa-01")
+    assert json.loads((workspace.root / "show.json")
+                      .read_text(encoding="utf-8"))["refresh_s"] == 8.0
+    assert workspace.state()["show"]["refresh_s"] == 8.0
+
+
+def test_a_null_refresh_means_not_given_everywhere_it_can_be_written(workspace):
+    """`refresh_s: null` is what a hand-made file or a sparse PUT body carries.
+    It means "I am not setting it", the same as leaving the key out - never a
+    TypeError on float(None), and never today's default applied silently."""
+    grid = "Look22_color_pattern01_grid.csv"
+    cues = [{"id": "a", "item": "Look22", "at": 60, "design": grid}]
+    workspace.set_timeline(600, cues, refresh=12.0)
+    assert workspace.state()["show"]["refresh_s"] == 12.0
+    # PUT /api/show passes body.get("refresh_s") straight in.
+    workspace.set_timeline(300, cues, refresh=None)
+    assert workspace.state()["show"]["refresh_s"] == 12.0      # kept
+    assert workspace.state()["show"]["duration"] == 300
+    for bad in ("fast", 0, 61, {}):
+        with pytest.raises(ValueError):
+            workspace.set_timeline(600, cues, refresh=bad)
+    # ...and an imported show file that names it as null keeps what is here.
+    workspace.import_show({"format": "epaper-show", "version": 1,
+                           "refresh_s": None, "cues": cues})
+    assert workspace.state()["show"]["refresh_s"] == 12.0
+
+
 # ---- Start / End / a cue's own refresh time ----
 
 def test_old_cues_with_align_done_are_migrated_to_their_send_instant_once(workspace):
@@ -1155,7 +1266,7 @@ def test_state_says_end_and_refresh_of_every_cue(workspace):
     assert cues["b"]["end"] == 120 and cues["b"]["end_source"] == "next"
     assert cues["c"]["end"] == 600 and cues["c"]["end_source"] == "show"
     assert cues["b"]["refresh"] == 3.0 and cues["b"]["refresh_source"] == "cue"
-    assert cues["a"]["refresh"] == 7.0 and cues["a"]["refresh_source"] == "show"
+    assert cues["a"]["refresh"] == 8.0 and cues["a"]["refresh_source"] == "show"
 
 
 def test_export_import_round_trip_keeps_refresh_s(workspace):

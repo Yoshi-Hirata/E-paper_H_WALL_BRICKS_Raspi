@@ -12,9 +12,11 @@ arrays, board numbers to bus addresses, "complete at 2:00" to "send at
 in the order they are sent. `sent` is seconds from the start (the preset,
 loaded before START, has a negative one). `refresh_s` is the refresh
 this moment actually waits for - the slowest of the cues sharing it, a
-cue's own override or the show's default (conductor/timeline.py's
-effective_refresh()) - so a unit on different firmware still gets the
-right room before its next write.
+cue's own override or the show's default, never below one physical
+panel repaint (conductor/timeline.py's panel_refresh()) - so a unit on
+different firmware still gets the right room before its next write, and
+the guard STOP it places at `refresh_s + span + margin` (ui/runner.py
+`_guard_for()`) can never fall inside a repaint or a sweep.
 
 One unit cue is one broadcast, so items that share a unit (Look 20's top
 and skirt) and change at the same instant are one cue. Every cue writes
@@ -172,7 +174,11 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
             # Items sharing a moment (one broadcast) may want different
             # refresh times (different firmware): the unit waits for the
             # slowest one before it may write the next cue's boards.
-            "refresh_s": max(timeline.effective_refresh(c, refresh)
+            # timeline.panel_refresh() is what a unit is told - the
+            # cue's own refresh, floored at one physical repaint - so
+            # the guard STOP it computes from refresh_s + span can never
+            # land before the picture is really finished.
+            "refresh_s": max(timeline.panel_refresh(c, refresh)
                              for c in moments[sent]),
             "label": " + ".join(labels),
             "span": span,

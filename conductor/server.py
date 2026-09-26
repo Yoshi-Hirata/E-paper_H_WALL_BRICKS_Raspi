@@ -100,6 +100,12 @@ def _key(position) -> str:
     return "|".join(str(part) for part in position)
 
 
+def _is_number(value) -> bool:
+    """A real JSON number - not None, not a string, not True (which is an
+    int in Python and would pass as 1.0 s)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def safe_music_name(name: str) -> str:
     """A name for the music blob on disk. Not a CSV rule: see above."""
     return _SAFE_MUSIC_NAME.sub(
@@ -379,9 +385,29 @@ class Workspace:
 
     def _load_show(self) -> dict:
         try:
-            return json.loads(self._show_path.read_text(encoding="utf-8"))
+            show = json.loads(self._show_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            # No show.json at all: a NEW show, which opens on today's
+            # default refresh (every reader's own show.get(..., REFRESH_S)).
             return {}
+        if isinstance(show, dict) and not _is_number(show.get("refresh_s")):
+            # A show FILE that names no refresh time (or names it as null,
+            # as a couple of hand-made workspaces do) was written before
+            # the refresh became effect-inclusive, 2026-09-26: it keeps the
+            # LEGACY_REFRESH_S it was drawn against rather than silently
+            # moving to today's longer default, so the Timeline tab can
+            # OFFER the change instead of pretending it was made. Anything
+            # this version writes always names it - see _write_show().
+            show = dict(show, refresh_s=timeline.LEGACY_REFRESH_S)
+        return show
+
+    def _write_show(self, payload: dict) -> None:
+        """show.json, always naming its refresh time. The one write path for
+        the show (an edit, an undo, a redo), so a file this version leaves
+        behind is never mistaken for a pre-2026-09-26 one by _load_show()."""
+        if isinstance(payload, dict) and not _is_number(payload.get("refresh_s")):
+            payload = dict(payload, refresh_s=timeline.REFRESH_S)
+        self._write(self._show_path, payload)
 
     @property
     def _history_path(self) -> Path:
@@ -409,7 +435,7 @@ class Workspace:
         history = self._load_history()
         history["undo"] = (history["undo"] + [before])[-HISTORY_DEPTH:]
         history["redo"] = []
-        self._write(self._show_path, after)
+        self._write_show(after)
         self._write(self._history_path, history)
 
     def _step(self, take: str, give: str) -> bool:
@@ -420,7 +446,7 @@ class Workspace:
             current = self._load_show()
             restored = history[take].pop()
             history[give] = (history[give] + [current])[-HISTORY_DEPTH:]
-            self._write(self._show_path, restored)
+            self._write_show(restored)
             self._write(self._history_path, history)
             return True
 
@@ -461,7 +487,6 @@ class Workspace:
             return raw
         cleaned = timeline.clean([raw])[0]
         if raw.get("align", "done") == "done" and cleaned["at"] > 0:
-            eff = timeline.effective_refresh(cleaned, refresh)
             span = 0.0
             sweep = timeline.resolve(cleaned, transitions)
             if sweep["sequence"] != "natural":
@@ -469,7 +494,11 @@ class Workspace:
                 if look_map is not None:
                     span = sequence.span_s(look_map, sweep["sequence"],
                                            sweep["span_s"])
-            cleaned["at"] = max(0.0, round(cleaned["at"] - eff - span, 1))
+            # The same "send to picture complete" the timeline models
+            # (timeline.complete_s over a cue carrying this span), so the
+            # instant the old `align: done` meant is unchanged.
+            paint = timeline.complete_s(dict(cleaned, span=span), refresh)
+            cleaned["at"] = max(0.0, round(cleaned["at"] - paint, 1))
         return cleaned
 
     def _migrate_align(self, show: dict) -> dict:
@@ -810,7 +839,10 @@ class Workspace:
             if not 1 <= duration <= 6 * 3600:
                 raise ValueError("the show lasts between 1 s and 6 h")
             changes["duration"] = duration
-        if "refresh_s" in payload:
+        # An explicit null means "I am not setting it", the same as leaving the
+        # key out - set_timeline()'s own contract for `refresh`, and what a
+        # hand-made show file is likeliest to mean by it (review, 2026-09-26).
+        if payload.get("refresh_s") is not None:
             try:
                 refresh = round(float(payload["refresh_s"]), 1)
             except (TypeError, ValueError):
@@ -1476,13 +1508,39 @@ class Workspace:
             cue["end"], cue["end_source"] = cue_ends[cue["id"]]
             cue["problems"] = cue_problems[cue["id"]]
         unit_boards: "dict[str, int]" = {}
-        for fact in facts.values():
+        unit_of_item: "dict[str, str]" = {}
+        for key, fact in facts.items():
             name = fact["unit"] or f"({fact['item']})"
             unit_boards[name] = unit_boards.get(name, 0) + fact["boards"]
+            unit_of_item[key] = name
+        # The floor THIS show needs on each unit, not the default one: a unit
+        # carrying a 7 s sweep needs 15 s between sends, and telling the
+        # operator "9 s" while validate() rejects a cue 14 s later reads as a
+        # contradiction (review, 2026-09-26). A unit with no cues yet keeps
+        # the default.
+        unit_cues: "dict[str, list[dict]]" = {name: [] for name in unit_boards}
+        for cue in cues:
+            name = unit_of_item.get(cue["item"].lower())
+            if name is not None:
+                unit_cues[name].append(cue)
         return {"show": {"duration": duration, "refresh_s": refresh,
+                         # The current default, so the page never has a
+                         # refresh number of its own: it labels the "show
+                         # default" choice with refresh_s and offers the
+                         # hint to a show still set below this one.
+                         "refresh_default": timeline.REFRESH_S,
+                         "panel_repaint_s": timeline.PANEL_REPAINT_S,
+                         # The director's gap after a picture completes, so
+                         # the page can say what a min_interval is MADE of
+                         # instead of deriving it back out of the total
+                         # (which only worked while every interval was
+                         # refresh + gap - review, 2026-09-26).
+                         "gap_s": timeline.GAP_AFTER_REFRESH_S,
                          "cues": cues, "warnings": warnings,
-                         "min_interval": {unit: timeline.min_interval(n, refresh)
-                                          for unit, n in unit_boards.items()}},
+                         "min_interval": {
+                             unit: timeline.min_interval_of(
+                                 unit_cues[unit], n, refresh)
+                             for unit, n in unit_boards.items()}},
                 "history": {"undo": len(history["undo"]),
                             "redo": len(history["redo"])},
                 "units": UNITS, "items": ordered, "orphans": orphans,
