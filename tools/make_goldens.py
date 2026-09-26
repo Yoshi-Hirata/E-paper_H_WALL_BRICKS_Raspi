@@ -684,6 +684,26 @@ def timeline_cases() -> list:
     cases.append(_run_timeline_case(
         "legacy_refresh7_sweep_span1",
         [swept8_1, _cue("b", "Look22", 68.0, "p2")], sweep8, refresh=7.0))
+    # Two sends exactly 9.0 s apart on a fractional second: 16.4 - 7.4 is
+    # 8.999999999999998, which used to be rejected against a 9.0 s floor
+    # (review, 2026-09-26). Both sides must round the spacing the same way.
+    cases.append(_run_timeline_case(
+        "refresh8_floor_on_a_fraction",
+        [_cue("a", "Look22", 7.4, "p1"), _cue("b", "Look22", 16.4, "p2")],
+        sweep8, refresh=eight))
+    cases.append(_run_timeline_case(
+        "refresh8_floor_on_a_fraction_short",
+        [_cue("a", "Look22", 7.4, "p1"), _cue("b", "Look22", 16.3, "p2")],
+        sweep8, refresh=eight))
+    # A preset is sent one whole complete_s() early, so a sweeping one is
+    # complete AT 0:00 (sent -12 for a 7 s repaint + a 5 s sweep) instead
+    # of still drawing at 0:04.
+    preset_sweep = _cue("a", "Look22", 0, "g1.csv",
+                       sweep={"sequence": "top_down", "span_s": 5.0,
+                              "source": "cue"}, span=5.0)
+    cases.append(_run_timeline_case(
+        "refresh8_preset_that_sweeps",
+        [preset_sweep, _cue("b", "Look22", 60, "p2")], sweep8, refresh=eight))
 
     return cases
 

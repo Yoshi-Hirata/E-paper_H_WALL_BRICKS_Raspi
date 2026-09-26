@@ -282,7 +282,12 @@
       return num;
     }
     const duration = numberOr("duration", DEFAULT_DURATION_S);
-    const refresh = numberOr("refresh_s", REFRESH_S);
+    // A project that names NO refresh time was saved before the refresh became
+    // effect-inclusive (2026-09-26), so it keeps the 7.0 s it was drawn
+    // against - conductor/server.py's _load_show() reads a show.json without
+    // the key the same way. A new project is given REFRESH_S by
+    // designer-app.js's freshProject(), so this is the old-file path only.
+    const refresh = numberOr("refresh_s", timeline.LEGACY_REFRESH_S);
 
     const cues = timeline.clean(show.cues);
     timeline.applyTransitions(cues, transitions);
@@ -301,13 +306,26 @@
     });
 
     const unitBoards = Object.create(null);
+    const unitOfItem = Object.create(null);
     Object.keys(facts).forEach(key => {
       const fact = facts[key];
       const name = fact.unit || `(${fact.item})`;
       unitBoards[name] = (unitBoards[name] || 0) + fact.boards;
+      unitOfItem[key] = name;
+    });
+    // The floor THIS show needs on each unit, not the default one (a unit
+    // carrying a 7 s sweep needs 15 s between sends) - conductor/server.py's
+    // state() computes the same thing the same way.
+    const unitCues = Object.create(null);
+    Object.keys(unitBoards).forEach(u => { unitCues[u] = []; });
+    cues.forEach(cue => {
+      const name = unitOfItem[cue.item.toLowerCase()];
+      if (name !== undefined) unitCues[name].push(cue);
     });
     const minInterval = {};
-    Object.keys(unitBoards).forEach(u => { minInterval[u] = timeline.minInterval(unitBoards[u], refresh); });
+    Object.keys(unitBoards).forEach(u => {
+      minInterval[u] = timeline.minIntervalOf(unitCues[u], unitBoards[u], refresh);
+    });
 
     return {
       // refresh_default / panel_repaint_s: the model's two refresh numbers,
@@ -315,6 +333,7 @@
       // state() sends the same two).
       show: { duration, refresh_s: refresh, refresh_default: REFRESH_S,
               panel_repaint_s: timeline.PANEL_REPAINT_S,
+              gap_s: timeline.GAP_AFTER_REFRESH_S,
               cues, warnings, min_interval: minInterval },
       units: [],
       items: ordered,

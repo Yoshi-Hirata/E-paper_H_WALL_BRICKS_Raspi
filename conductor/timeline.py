@@ -94,6 +94,12 @@ PANEL_REPAINT_S = 7.0
 # rule below takes it as an argument. A unit on older firmware needs the
 # older, longer value - as a cue's own override, or the show's.
 REFRESH_S = 8.0
+# What a show authored BEFORE the refresh became effect-inclusive was drawn
+# against: conductor/server.py gives it to a show.json that names no
+# refresh_s (or names it as null), so such a file keeps the timing it was
+# made with and the page can offer today's longer default instead of
+# silently applying it. A NEW show (no show.json at all) gets REFRESH_S.
+LEGACY_REFRESH_S = 7.0
 REFRESH_RANGE_S = (1.0, 60.0)
 # The director's minimum from "picture complete" to the next send
 # (2026-09-24: "Reflesh が終わった後、1 秒後に次のデザインへの refresh に
@@ -220,6 +226,24 @@ def complete_s(cue: dict, refresh: float = REFRESH_S) -> float:
                panel_repaint_of(cue, refresh) + span_of(cue))
 
 
+def min_interval_of(unit_cues: "list[dict]", boards: int = 0,
+                    refresh: float = REFRESH_S,
+                    gap: float = GAP_AFTER_REFRESH_S) -> float:
+    """min_interval() for one unit AS THIS SHOW USES IT: the longest any of
+    its pictures actually takes, plus the gap - complete_s + gap, the same
+    floor validate() applies pair by pair. A unit with no cues yet has
+    nothing to measure, so it reports the default min_interval().
+
+    Needed because min_interval() alone is the default floor (9 s) and
+    would tell the operator "9 s" for a unit carrying a 7 s sweep, whose
+    real floor is 15 s - the very number validate() then rejects its cues
+    against (review, 2026-09-26).
+    """
+    if not unit_cues:
+        return min_interval(boards, refresh, gap)
+    return max(complete_s(c, refresh) for c in unit_cues) + gap
+
+
 def panel_refresh(cue: dict, refresh: float = REFRESH_S) -> float:
     """The `refresh_s` a UNIT is told for this cue (showfile.py).
 
@@ -246,18 +270,21 @@ def panel_refresh(cue: dict, refresh: float = REFRESH_S) -> float:
 def times(cue: dict, refresh: float = REFRESH_S) -> "tuple[float, float]":
     """(sent, complete) for a cue.
 
-    `at` IS sent, Start - except the preset (`at <= 0`), sent one
-    refresh before the show begins so it is already complete at 0:00.
-    Complete is sent + complete_s(), using the cue's own refresh when it
-    set one. Rounded to the millisecond: send instants
-    are compared and used as keys ("the same moment" is one broadcast,
-    showfile.py), and 10.3 - 7.3 is 3.000000000000001, not the 3.0 of a
-    cue starting at 3.
+    `at` IS sent, Start - except the preset (`at <= 0`), sent one whole
+    complete_s() before the show begins so it is already complete at
+    0:00. (Not one refresh: a preset that sweeps takes
+    PANEL_REPAINT_S + span, and sending it one refresh early left a 5 s
+    sweep still drawing at 0:04 while the page said "complete at 0:00" -
+    review, 2026-09-26.) Complete is sent + complete_s(), using the cue's
+    own refresh when it set one. Rounded to the millisecond: send
+    instants are compared and used as keys ("the same moment" is one
+    broadcast, showfile.py), and 10.3 - 7.3 is 3.000000000000001, not the
+    3.0 of a cue starting at 3.
     """
     at = float(cue["at"])
-    eff = effective_refresh(cue, refresh)
-    sent = round(at, 3) if at > 0 else round(-eff, 3)
-    complete = round(sent + complete_s(cue, refresh), 3)
+    paint = complete_s(cue, refresh)
+    sent = round(at, 3) if at > 0 else round(-paint, 3)
+    complete = round(sent + paint, 3)
     return sent, complete
 
 
@@ -453,7 +480,12 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
         for sent in moments:
             group = moment_cues[sent]
             if previous_sent is not None:
-                spacing = sent - previous_sent
+                # Rounded like every other instant here: 10.3 - 1.3 is
+                # 8.999999999999998, which used to fail a 9.0 s floor and
+                # say so in words that read as a contradiction - "only
+                # 9.0 s after the previous send; at least 9.0 s is
+                # needed" (review, 2026-09-26).
+                spacing = round(sent - previous_sent, 3)
                 # Every picture is already burned into its slot at
                 # Upload time (showfile.py): a running send is one
                 # broadcast trigger, nothing is written - so the only

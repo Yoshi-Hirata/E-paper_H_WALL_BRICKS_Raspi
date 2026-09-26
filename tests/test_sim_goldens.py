@@ -110,6 +110,7 @@ def test_the_refresh_constants_match_conductor_timeline():
 
     text = (SIM_DIR / "model.js").read_text(encoding="utf-8")
     for name, expected in (("REFRESH_S", timeline.REFRESH_S),
+                           ("LEGACY_REFRESH_S", timeline.LEGACY_REFRESH_S),
                            ("PANEL_REPAINT_S", timeline.PANEL_REPAINT_S),
                            ("GAP_AFTER_REFRESH_S", timeline.GAP_AFTER_REFRESH_S)):
         found = re.findall(rf"^  const {name} = ([0-9.]+);$", text, re.M)

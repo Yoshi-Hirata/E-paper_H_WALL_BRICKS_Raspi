@@ -198,6 +198,7 @@ def test_timeline_is_stored_cleaned_and_returned_with_its_times(workspace):
     # A new show opens on the current default refresh, the effect included.
     assert show["duration"] == 600 and show["refresh_s"] == 8
     assert show["refresh_default"] == 8 and show["panel_repaint_s"] == 7
+    assert show["gap_s"] == 1.0
     assert [c["id"] for c in show["cues"]] == ["a", "b"]        # by time
     preset, second = show["cues"]
     assert "align" not in preset and "align" not in second     # cleaned away
@@ -229,6 +230,34 @@ def test_refresh_time_is_a_setting_of_the_show(workspace):
     for bad in (0, 61, "fast"):
         with pytest.raises(ValueError):
             workspace.set_timeline(600, cues, refresh=bad)
+
+
+def test_the_shortest_interval_is_what_this_show_needs_on_that_unit(workspace):
+    """The readout is per unit and per SHOW: a unit carrying a 7 s sweep needs
+    15 s between sends, and saying 9 s while validate() rejects a cue 14 s
+    later reads as a contradiction (review, 2026-09-26)."""
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.assign("Look22", "radxa-01")
+    # No cues on it yet: the default floor, refresh + gap.
+    assert round(workspace.state()["show"]["min_interval"]["radxa-01"], 2) == 9.0
+    workspace.set_transition(grid, "top_down", 7.0)
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 60,
+                                  "design": grid}])
+    state = workspace.state()
+    cue = state["show"]["cues"][0]
+    assert cue["span"] == 7.0 and cue["complete"] == 74.0
+    assert round(state["show"]["min_interval"]["radxa-01"], 2) == 15.0
+    # ...and that IS the floor validate() applies to the next send.
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 60,
+                                  "design": grid},
+                                 {"id": "b", "item": "Look22", "at": 75,
+                                  "design": grid}])
+    assert workspace.state()["show"]["cues"][1]["problems"] == []
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 60,
+                                  "design": grid},
+                                 {"id": "b", "item": "Look22", "at": 74.9,
+                                  "design": grid}])
+    assert workspace.state()["show"]["cues"][1]["problems"]
 
 
 def test_timeline_survives_a_unit_assignment_and_back(workspace):
@@ -1144,6 +1173,56 @@ def test_a_show_saved_at_the_old_seven_second_refresh_keeps_working(workspace):
     # ...and the file on disk is untouched.
     assert json.loads((workspace.root / "show.json")
                       .read_text(encoding="utf-8"))["refresh_s"] == 7.0
+
+
+def test_a_show_file_that_names_no_refresh_time_is_a_legacy_one(workspace):
+    """A show.json from before 2026-09-26 may not name refresh_s at all, and a
+    couple of hand-made workspaces name it as null. Either way it was drawn
+    against the old 7.0 s: moving it silently to today's 8.0 s would change
+    the operator's timing AND hide the hint that offers the change (review)."""
+    grid = "Look22_color_pattern01_grid.csv"
+    for stored in ({}, {"refresh_s": None}):
+        legacy = dict({"units": {}, "duration": 600,
+                       "cues": [{"id": "a", "item": "Look22", "at": 60,
+                                 "design": grid}]}, **stored)
+        (workspace.root / "show.json").write_text(json.dumps(legacy),
+                                                  encoding="utf-8")
+        show = workspace.state()["show"]
+        assert show["refresh_s"] == 7.0, stored
+        assert show["cues"][0]["complete"] == 67.0, stored
+        # ...and it compiles, rather than raising on float(None).
+        assert isinstance(workspace.compile_show(), tuple)
+
+    # A workspace with NO show.json is a new show and opens on today's default.
+    (workspace.root / "show.json").unlink()
+    assert workspace.state()["show"]["refresh_s"] == 8.0
+    # ...and the first thing written names it, so this version never leaves a
+    # file the next load would mistake for a legacy one.
+    workspace.assign("Look22", "radxa-01")
+    assert json.loads((workspace.root / "show.json")
+                      .read_text(encoding="utf-8"))["refresh_s"] == 8.0
+    assert workspace.state()["show"]["refresh_s"] == 8.0
+
+
+def test_a_null_refresh_means_not_given_everywhere_it_can_be_written(workspace):
+    """`refresh_s: null` is what a hand-made file or a sparse PUT body carries.
+    It means "I am not setting it", the same as leaving the key out - never a
+    TypeError on float(None), and never today's default applied silently."""
+    grid = "Look22_color_pattern01_grid.csv"
+    cues = [{"id": "a", "item": "Look22", "at": 60, "design": grid}]
+    workspace.set_timeline(600, cues, refresh=12.0)
+    assert workspace.state()["show"]["refresh_s"] == 12.0
+    # PUT /api/show passes body.get("refresh_s") straight in.
+    workspace.set_timeline(300, cues, refresh=None)
+    assert workspace.state()["show"]["refresh_s"] == 12.0      # kept
+    assert workspace.state()["show"]["duration"] == 300
+    for bad in ("fast", 0, 61, {}):
+        with pytest.raises(ValueError):
+            workspace.set_timeline(600, cues, refresh=bad)
+    # ...and an imported show file that names it as null keeps what is here.
+    workspace.import_show({"format": "epaper-show", "version": 1,
+                           "refresh_s": None, "cues": cues})
+    assert workspace.state()["show"]["refresh_s"] == 12.0
 
 
 # ---- Start / End / a cue's own refresh time ----

@@ -13,11 +13,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.timeline import (MAX_CUES_PER_UNIT, PANEL_REPAINT_S, REFRESH_S,
-                                apply_transitions, clean, complete_s,
-                                effective_refresh, ends, format_clock,
-                                min_interval, panel_refresh, panel_repaint_of,
-                                parse_clock, resolve, times, validate)
+from conductor.timeline import (LEGACY_REFRESH_S, MAX_CUES_PER_UNIT,
+                                PANEL_REPAINT_S, REFRESH_S, apply_transitions,
+                                clean, complete_s, effective_refresh, ends,
+                                format_clock, min_interval, min_interval_of,
+                                panel_refresh, panel_repaint_of, parse_clock,
+                                resolve, times, validate)
 
 OK = {"full": True, "partial": True}
 ITEMS = {
@@ -52,6 +53,7 @@ def test_clock_both_ways():
     # a production cue uses), and the physical repaint it is built on.
     assert REFRESH_S == 8.0
     assert PANEL_REPAINT_S == 7.0      # latest firmware, reported 2026-09-21
+    assert LEGACY_REFRESH_S == 7.0     # what a show saved before it was drawn against
     with pytest.raises(ValueError):
         parse_clock("soon")
     # Hostile JSON (None, a dict) is the same "not a time", never a
@@ -106,6 +108,66 @@ def test_complete_is_the_refresh_unless_the_sweep_really_runs_longer():
     assert panel_repaint_of(natural, refresh=1.0) == 1.0
     assert complete_s(natural, refresh=1.0) == 1.0
     assert complete_s(dict(swept, span=2.0), refresh=1.0) == 3.0
+
+
+def test_the_preset_is_sent_one_whole_picture_before_the_show():
+    """A preset is "already on the garment at 0:00", so it is sent
+    complete_s() early - not one refresh early. A preset that sweeps takes
+    PANEL_REPAINT_S + span, and the refresh's worth of head start left a 5 s
+    sweep still drawing at 0:04 while the page said complete at 0:00
+    (review, 2026-09-26)."""
+    plain = cue("a", "Look22", 0, "p1")
+    assert times(plain) == (-8, 0)                      # the 8 s refresh
+    swept = cue("b", "Look22", 0, "g1.csv")
+    swept["sweep"] = {"sequence": "top_down", "span_s": 5.0, "source": "cue"}
+    swept["span"] = 5.0
+    assert complete_s(swept) == 12.0                    # 7 s repaint + 5 s sweep
+    assert times(swept) == (-12.0, 0.0)                 # ...and complete AT 0:00
+    # A sweep that fits inside the refresh is sent one refresh early, as before.
+    assert times(dict(swept, span=1.0)) == (-8.0, 0.0)
+    # A cue's own refresh still wins, preset or not.
+    assert times(cue("c", "Look22", 0, "p1", refresh_s=16.0)) == (-16, 0)
+
+
+def test_a_send_exactly_at_the_floor_is_not_rejected_by_float_arithmetic():
+    """10.3 - 1.3 is 8.999999999999998. That used to fail the 9.0 s floor and
+    say so in words that read as a contradiction - "only 9.0 s after the
+    previous send; at least 9.0 s is needed" (review, 2026-09-26)."""
+    items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
+                        "designs": {"p1": OK, "p2": OK}}}
+    first = cue("a", "Look22", 7.4, "p1")
+    exact = cue("b", "Look22", 16.4, "p2")              # 9.0 s later, exactly
+    assert 16.4 - 7.4 < 9.0                             # ...in float, anyway
+    assert validate([first, exact], items, 600)[0]["b"] == []
+    # 0.1 s short is still short, and says so.
+    short = cue("b", "Look22", 16.3, "p2")
+    found, _ = validate([first, short], items, 600)
+    assert found["b"] == [
+        "only 8.9 s after the previous send on radxa-01; at least 9.0 s "
+        "is needed (8.0 s refresh + 1.0 s gap)"]
+
+
+def test_min_interval_of_is_what_this_show_needs_on_one_unit():
+    """min_interval() is the DEFAULT floor (9 s). A unit carrying a long sweep
+    needs complete_s + gap, and telling the operator 9 s while validate()
+    rejects a cue 14 s later reads as a contradiction (review, 2026-09-26)."""
+    plain = cue("a", "Look22", 60, "p1")
+    assert min_interval_of([], 16) == min_interval(16) == 9.0     # nothing to measure
+    assert min_interval_of([plain], 16) == 9.0
+    swept = cue("b", "Look22", 60, "g1.csv")
+    swept["sweep"] = {"sequence": "top_down", "span_s": 7.0, "source": "cue"}
+    swept["span"] = 7.0
+    assert min_interval_of([swept], 16) == 15.0          # 7 + 7 + the 1 s gap
+    assert min_interval_of([plain, swept], 16) == 15.0   # the slowest of them
+    # It is exactly the floor validate() applies to that unit's own cues.
+    items = {"look22": {"item": "Look22", "unit": "radxa-01", "boards": 2,
+                        "designs": {"p1": OK, "g1.csv": OK}}}
+    after = cue("c", "Look22", 60 + 15, "p1")
+    assert validate([swept, after], items, 600)[0]["c"] == []
+    tight = cue("c", "Look22", 60 + 14.9, "p1")
+    assert validate([swept, tight], items, 600)[0]["c"]
+    # A legacy 7 s show keeps its own smaller default.
+    assert min_interval_of([], 16, refresh=7.0) == 8.0
 
 
 def test_a_cue_may_carry_its_own_refresh_time():
