@@ -1193,7 +1193,10 @@ class DemoRunner:
                         # then a second one right after adjusting it.
                         job = session.take_job()
                         if job is not None:
-                            guard_due = None    # the save's stops cover it
+                            # The save's own stops cover it - both the
+                            # guard this loop holds and one a fire from
+                            # inside the probing left owed.
+                            guard_due = self._guard_owed = None
                             wanted = sorted(job["boards"])
                             if wanted != sorted(self.boards):
                                 # Another garment, another board list - but
@@ -1236,7 +1239,7 @@ class DemoRunner:
                             # sweep below is what a wall with absent
                             # boards spends most of an Upload on.
                             burn_began = time.monotonic()
-                            guard_due = None
+                            guard_due = self._guard_owed = None
                             wanted = sorted({b for cue in burn_job["cues"]
                                             for b in cue["boards"]})
                             if wanted and wanted != sorted(self.boards):
@@ -1331,8 +1334,19 @@ class DemoRunner:
                             continue
                         now = time.monotonic()
                         if self._guard_owed is not None:
+                            # The LATEST fire's guard, not the earliest.
+                            # Both are absolute deadlines, and an older
+                            # fire's deadline is meaningless once a newer
+                            # cue has gone out: a unit restarting
+                            # mid-show fires its overdue cue before the
+                            # probing sweep (guard at t+15), the next cue
+                            # comes due inside that sweep and
+                            # _fire_before_probing() sends it (guard at
+                            # t+26), and taking the smaller of the two
+                            # put a broadcast 0x17 five seconds into the
+                            # second cue's own sweep (review, 2026-09-26).
                             guard_due = (self._guard_owed if guard_due is None
-                                         else min(guard_due, self._guard_owed))
+                                         else max(guard_due, self._guard_owed))
                             self._guard_owed = None
                         if guard_due is not None and now >= guard_due:
                             # As after every demo cycle: a shown slot runs

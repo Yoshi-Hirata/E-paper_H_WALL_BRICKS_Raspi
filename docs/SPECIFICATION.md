@@ -247,7 +247,9 @@ pipeline = 1。
 - そこで **キュー自身が所要時間を申告する**。`/prepare` のボディと機体の
   ショーファイルの各キューが `span_s`(スイープの span。ショーファイルでは
   既存の `span` キー)と `refresh_s` を持ち、機体は
-  **`発火時刻 + refresh_s + span_s + 余裕 5 秒`** でガードを送る
+  **`発火時刻 + refresh_s + span_s + 余裕`** でガードを送る。余裕は
+  `guard_delay − 7 秒`(既定の 12 秒なら 5 秒。`--guard-delay` を
+  変えるとこの余裕も一緒に動く)
   (`ui/runner.py` の `_guard_for()`)。span の上限をわざわざ縛る必要は
   ないのはこのため ― ガードのほうが span に追従する
 - **申告が無いボディ(古い Conductor、span を持たない古いショーファイル)は

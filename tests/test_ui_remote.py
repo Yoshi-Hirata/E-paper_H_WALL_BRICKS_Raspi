@@ -299,6 +299,45 @@ def test_a_swept_cue_holds_the_guard_stop_off_until_the_sweep_is_over():
     runner.stop()
 
 
+class StampedBus(FakeBus):
+    """A FakeBus that remembers WHEN each broadcast STOP went out."""
+
+    def __init__(self):
+        super().__init__()
+        self.broadcast_stops: list[float] = []
+
+    def send(self, frame):
+        if frame.cmd == STOP and frame.dest == 0xFF:
+            self.broadcast_stops.append(time.monotonic())
+        super().send(frame)
+
+
+def test_a_fire_from_inside_the_probing_sweep_owns_the_guard():
+    """The guard of the LATEST fire wins, not the earliest (review,
+    2026-09-26). A unit that restarted mid-show fires its overdue cue
+    BEFORE the probing sweep, and the next cue can come due inside that
+    sweep, where _fire_before_probing() sends it and leaves its guard
+    _guard_owed. Both are absolute deadlines; merging them with min()
+    kept the dead cue's earlier one and dropped a broadcast 0x17 into
+    the second cue's own sweep."""
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.05)
+    session = RemoteSession(runner)
+    # Armed and already overdue: fired before anything is probed.
+    session.arm("c1", 1, span_s=0.05, refresh_s=0.05)
+    session.fire("c1", time.monotonic() - 0.01)
+    assert wait_until(lambda: session.phase == FIRED and session.cue_id == "c1")
+    # The probing sweep _setup() now runs is where the next cue comes due.
+    session.arm("c2", 2, span_s=0.6, refresh_s=0.2)
+    session.fire("c2", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED and session.cue_id == "c2")
+    fired2 = session.fired_at
+    assert wait_until(lambda: any(t > fired2 for t in bus.broadcast_stops))
+    # c2's own refresh 0.2 + span 0.6 - not c1's guard, long overdue by now.
+    assert min(t for t in bus.broadcast_stops if t > fired2) >= fired2 + 0.78
+    runner.stop()
+
+
 def test_a_cue_with_no_sweep_keeps_the_flat_guard():
     session, runner, bus = make_session(guard_delay=0.15)
     session.prepare("c1", {1: array(1)}, span_s=0.0, refresh_s=0.05)
