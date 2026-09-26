@@ -199,11 +199,15 @@ def test_only_one_conductor_tab_plays_the_track():
 # ------------------------------------------------------- the browser half
 
 # Every case is `plan()`'s input; the expectations live in Python, below.
+#
+# claimPending defaults to True - "this tab has already told the others it is
+# taking the track" - because that is the state every case but the very first
+# tick of a start is in. The announcement itself gets its own cases.
 def _case(**over):
     base = dict(on=True, hasTrack=True, runState="running", showTime=95.0,
                 duration=300.0, trackDuration=300.0, audioPaused=False,
-                audioTime=95.0, lag=0.0, otherTab=False, blocked=False,
-                nowMs=100000.0, lastSeekMs=0.0)
+                audioTime=95.0, lag=0.0, otherTab=False, claimPending=True,
+                blocked=False, nowMs=100000.0, lastSeekMs=0.0)
     base.update(over)
     return base
 
@@ -255,6 +259,12 @@ CASES = {
     # Another Conductor tab on this PC has the track.
     "other_tab_has_it": _case(otherTab=True, audioPaused=True),
     "other_tab_wins_the_tie": _case(otherTab=True),
+    # The tick before any sound: say so first, play next time.
+    "announce_before_playing": _case(audioPaused=True, claimPending=False),
+    "play_once_the_claim_stood": _case(audioPaused=True, claimPending=True),
+    # Nothing but a start announces itself - a drift correction on a track
+    # this tab is already playing is not a new claim.
+    "a_correction_is_not_a_claim": _since(9000, audioTime=95.4, claimPending=False),
 }
 
 _PROBE = """<!doctype html><meta charset="utf-8"><title>showmusic</title><body>
@@ -411,10 +421,26 @@ def test_a_tab_that_does_not_have_the_track_stands_down_and_says_so(plans):
     assert r["other_tab_wins_the_tie"]["state"] == "another tab"
 
 
+def test_a_tab_says_it_is_taking_the_track_before_it_makes_a_sound(plans):
+    # Claiming only after play() had been called left two tabs that started on
+    # the same START overlapping for a tick - a quarter of a second of doubled
+    # audio, which is the very thing the channel is for.
+    first = plans["results"]["announce_before_playing"]
+    assert first["action"] == "claim", first
+    assert first["at"] == 95.0, "the announcement already knows where it will start"
+    assert first["state"] == "playing", "the readout should not flicker for one tick"
+    # Unchallenged a tick later, it plays - from the same place.
+    second = plans["results"]["play_once_the_claim_stood"]
+    assert second["action"] == "play" and second["at"] == 95.0, second
+    # A correction to a track already playing is not a start; it needs no
+    # announcement and must not be delayed by one.
+    assert plans["results"]["a_correction_is_not_a_claim"]["action"] == "seek"
+
+
 def test_no_case_ever_asks_the_show_to_move(plans):
     # The fleet's clock is the master: the answer only ever moves the audio.
     for name, p in plans["results"].items():
-        assert p["action"] in ("none", "play", "seek", "pause", "stop"), (name, p)
+        assert p["action"] in ("none", "claim", "play", "seek", "pause", "stop"), (name, p)
         assert set(p) == {"action", "at", "state", "join"}, (name, p)
 
 
@@ -460,6 +486,8 @@ def _wav(seconds=30, rate=8000):
 _RUNS = {
     "none": None,
     "running": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 12.0},
+    # The START lead: the fleet counts down to t0 with a negative position.
+    "lead": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": -4.0},
     # Past the end of a 600 s show: the run is still there (only STOP clears
     # it) but the music is over and must let go of the element.
     "ended": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 601.0},
@@ -550,7 +578,8 @@ _PAGE_PROBE = """
   }
   function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   function toastText() { return document.querySelector("#toast").textContent; }
-  function readout() { return (document.querySelector("#show-music-state") || {}).textContent; }
+  // "" when the Units tab is not on screen and the bar is not in the DOM.
+  function readout() { return (document.querySelector("#show-music-state") || {}).textContent || ""; }
   (async function () {
     try {
       // Boot: refresh() has to have landed before anything below means much.
@@ -639,6 +668,90 @@ _PAGE_PROBE = """
       document.querySelector("#toast").textContent = "";
       startPlayback();
       out.previewDuringTheShow = { playing: ui.playing, toast: toastText() };
+
+      // 8. A tab behind another window that is PLAYING must keep polling, or
+      //    it never hears STOP: it plays on off a frozen clock to the end of
+      //    the track while the visible tab, told another tab has it, sits in
+      //    silence. document.hidden is faked because a headless dump has no
+      //    windows to put in front of each other.
+      // Every phase from here starts from a known standstill rather than
+      // from whatever the one before it left behind: the fleet poll is 1 s
+      // and the tick 250 ms, so "it was already playing" is not something to
+      // assume across a phase boundary.
+      await fetch("/test/fleet?run=none");
+      await wait(2600);
+      await fetch("/test/fleet?run=running");
+      await wait(2600);
+      out.beforeHiding = { paused: player.paused, claimed: showMusic.claimed };
+      Object.defineProperty(document, "hidden", { configurable: true, get: function () { return true; } });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await wait(1200);
+      out.hiddenAndPlaying = { paused: player.paused, claimed: showMusic.claimed };
+      await fetch("/test/fleet?run=none");           // STOP, from the other tab
+      await wait(3000);
+      out.hiddenAfterStop = { paused: player.paused, claimed: showMusic.claimed,
+                              run: fleet && fleet.run };
+      Object.defineProperty(document, "hidden", { configurable: true, get: function () { return false; } });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await wait(600);
+
+      // 9. The claim goes out BEFORE the first sound, not after it. Both are
+      //    timestamped: a tab that plays first and announces afterwards
+      //    overlaps another tab for a tick.
+      var claimAt = null, playAt = null;
+      var spy = new BroadcastChannel("epaper-show-music");
+      spy.onmessage = function (e) {
+        if (claimAt === null && e.data && e.data.type === "playing") claimAt = performance.now();
+      };
+      var realPlay = player.play;
+      player.play = function () { if (playAt === null) playAt = performance.now(); return realPlay.apply(player, arguments); };
+      await fetch("/test/fleet?run=running");
+      await wait(2500);
+      out.claimOrder = { claimAt: claimAt, playAt: playAt,
+                         claimFirst: claimAt !== null && playAt !== null && claimAt <= playAt };
+      player.play = realPlay;
+
+      // 10. A rival tab with a bigger id already has the track: this one
+      //     stands down and never makes a sound at all.
+      await fetch("/test/fleet?run=none");
+      await wait(2600);
+      var plays = 0;
+      player.play = function () { plays++; return realPlay.apply(player, arguments); };
+      var rivalClaim = function () { spy.postMessage({ type: "playing", id: MUSIC_TAB_ID + "z" }); };
+      var rival = setInterval(rivalClaim, 200);
+      rivalClaim();
+      await wait(600);                 // the rival's claim is in place first
+      await fetch("/test/fleet?run=running");
+      await wait(2600);
+      ui.tab = "fleet"; render();               // so the readout is on screen to read
+      await wait(400);
+      out.beatenByARival = { plays: plays, paused: player.paused,
+                             state: showMusic.plan && showMusic.plan.state,
+                             readout: readout() };
+      ui.tab = "items"; render();
+      clearInterval(rival);
+      player.play = realPlay;
+      spy.close();
+
+      // 11. A preview running when a show starts is handed over at the moment
+      //     the run appears - during the START countdown, not at 0:00.
+      await fetch("/test/fleet?run=none");
+      await wait(2600);
+      ui.tab = "timeline"; render();
+      await wait(300);
+      startPlayback();
+      await wait(400);
+      out.previewBeforeTheStart = { playing: ui.playing, paused: player.paused };
+      await fetch("/test/fleet?run=lead");
+      await wait(1600);
+      out.previewAtTheLeadIn = { playing: ui.playing, paused: player.paused,
+                                 owns: showMusicOwns(),
+                                 state: showMusic.plan && showMusic.plan.state,
+                                 btn: (document.querySelector("#tp-play") || {}).textContent };
+      await fetch("/test/fleet?run=running");
+      await wait(2600);
+      out.afterTheLeadIn = { playing: ui.playing, paused: player.paused,
+                             state: showMusic.plan && showMusic.plan.state };
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -740,3 +853,58 @@ def test_the_transport_is_refused_while_the_show_is_live(page):
     live = page["previewDuringTheShow"]
     assert live["playing"] is False, "the preview started on top of the show's music"
     assert live["toast"] == "THE SHOW is playing the music", live["toast"]
+
+
+def test_the_tab_making_the_sound_keeps_listening_from_behind_a_window(page):
+    # A hidden tab used to stop polling (the rule for every other tab, and a
+    # good one) - so the one holding the track never heard STOP. It played on
+    # off a frozen clock to the end of the track while the operator's visible
+    # tab, told that another tab had it, sat there in silence.
+    assert page["beforeHiding"] == {"paused": False, "claimed": True}, page["beforeHiding"]
+    hidden = page["hiddenAndPlaying"]
+    assert hidden["paused"] is False, "going behind a window stopped the music"
+    assert hidden["claimed"] is True, "the playing tab gave up the track when hidden"
+    stopped = page["hiddenAfterStop"]
+    assert stopped["run"] is None, "the hidden tab never refreshed the fleet, so it never saw STOP"
+    assert stopped["paused"] is True, "STOP did not reach the hidden tab that was playing"
+    assert stopped["claimed"] is False, \
+        "the hidden tab is still telling the others it has a track it stopped playing"
+
+
+def test_the_claim_goes_out_before_the_first_sound(page):
+    order = page["claimOrder"]
+    assert order["claimAt"] is not None, "nothing was announced on the channel at all"
+    assert order["playAt"] is not None, "the track never started"
+    assert order["claimFirst"], \
+        f"play() ran {order['playAt'] - order['claimAt']:.0f} ms before the claim - " \
+        "two tabs starting together would overlap for a tick"
+
+
+def test_a_tab_that_is_beaten_to_the_track_never_makes_a_sound(page):
+    beaten = page["beatenByARival"]
+    assert beaten["plays"] == 0, \
+        "the tab played before it found out another one had the track"
+    assert beaten["paused"] is True
+    assert beaten["state"] == "another tab", beaten
+    assert beaten["readout"] == "another Conductor tab is playing it", beaten["readout"]
+
+
+def test_a_preview_is_handed_over_when_the_show_starts_not_when_it_reaches_zero(page):
+    # The START lead counts down with a negative position, during which the
+    # music wants silence - and applyMusicPlan's ui.playing guard (rightly)
+    # will not act on that. So the hand-over is its own step, at the moment
+    # the run appears; without it the preview played all through the
+    # countdown and was yanked at 0:00.
+    assert page["previewBeforeTheStart"] == {"playing": True, "paused": False}, \
+        page["previewBeforeTheStart"]
+    lead = page["previewAtTheLeadIn"]
+    assert lead["playing"] is False, "the preview played on through the START countdown"
+    assert lead["paused"] is True, "the element was still running during the countdown"
+    assert lead["owns"] is True, "the show does not own the element during its own lead-in"
+    assert lead["state"] == "paused", lead
+    assert lead["btn"] == "▶ Play", f"the transport still reads {lead['btn']!r}"
+    # ...and once the show is actually under way, the music comes in.
+    after = page["afterTheLeadIn"]
+    assert after["state"] == "playing", after
+    assert after["paused"] is False, "the show started but the track did not"
+    assert after["playing"] is False, "the preview came back from the dead"
