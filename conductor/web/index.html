@@ -3362,7 +3362,11 @@ const BOARDLIST = (() => {
     const mine = ranges(have);
     if (mine === want && source === "show") return null;
     const where = source === "explore" ? "exploring"
-      : source === "fixed" ? "its own --boards list" : "from another show";
+      : source === "fixed" ? "its own --boards list"
+      // A cue's or a burn's own boards, not a garment: a manual
+      // /prepare, or a show file whose cues named a board its own list
+      // does not have (which conductor/showfile.py cannot produce).
+      : source === "job" ? "a prepare/burn list" : "from another show";
     const absent = ranges(unit.absent || []);
     const aside = where + (absent ? `, ${absent} absent` : "");
     return {

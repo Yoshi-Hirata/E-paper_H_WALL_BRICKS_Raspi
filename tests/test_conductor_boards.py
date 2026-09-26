@@ -101,6 +101,10 @@ CASES = {
                                 group_count=3), TOPS),
     # A previous show's list still in force.
     "another_shows_list": (unit(board_ids=list(range(1, 13))), TOPS),
+    # One job's boards - a manual /prepare of a few, or a show file whose
+    # cues named a board its own list does not have.
+    "a_jobs_own_boards": (unit(boards_source="job", board_ids=[5],
+                               group_count=5), TOPS),
     # Nothing that can be judged honestly.
     "offline": (unit(online=False), TOPS),
     "no_show_on_the_unit": (unit(show=None), TOPS),
@@ -201,6 +205,8 @@ def test_a_unit_on_another_list_names_where_that_list_came_from(answers):
             == "unit list 1-3 (its own --boards list) ≠ show 1-16")
     assert (answers["notes"]["another_shows_list"]["text"]
             == "unit list 1-12 (from another show) ≠ show 1-16")
+    assert (answers["notes"]["a_jobs_own_boards"]["text"]
+            == "unit list 5 (a prepare/burn list) ≠ show 1-16")
 
 
 _PARSE_PROBE = """

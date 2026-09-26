@@ -257,6 +257,9 @@ class DemoRunner:
         # reports it, and the PC's tile marks a unit whose list is not
         # the show's.
         self._boards_given: "str | None" = None
+        # The group count the worker on the port is carrying, None when
+        # nobody is on it - see _take_groups().
+        self._groups: "int | None" = None
         self.interval = interval
         self.guard_delay = guard_delay
         self.slot = slot           # the LOCAL pattern loop's working slot
@@ -505,6 +508,9 @@ class DemoRunner:
         self.remote = None
         self.started_at = None
         self._elapsed_base = 0.0
+        # Nobody is sending frames any more, so /status goes back to
+        # reporting what the list in force would give (_take_groups()).
+        self._groups = None
 
     def pause(self) -> None:
         """Hold between cycles, keeping the timer and the pattern position.
@@ -737,10 +743,20 @@ class DemoRunner:
         _apply_job_boards())."""
         return max(len(self.boards), max(self.boards))
 
+    def _take_groups(self) -> int:
+        """The group count this worker carries from here on, remembered
+        so /status can report what is really on the wire rather than
+        what the list would give: an exploring worker keeps the count it
+        opened the port with while _setup() trims the list under it."""
+        self._groups = self._group_count()
+        return self._groups
+
     @property
     def group_count(self) -> int:
-        """What /status reports: the very number the frames carry."""
-        return self._group_count()
+        """What /status reports: the number the worker's frames are
+        actually carrying, or - with no worker on the port - what the
+        list in force would give the next one."""
+        return self._group_count() if self._groups is None else self._groups
 
     @property
     def boards_source(self) -> str:
@@ -1725,7 +1741,7 @@ class DemoRunner:
                 with self._open_bus(port) as bus:
                     self.emit(f"port {port}")
                     needs_setup = True
-                    groups = self._group_count()
+                    groups = self._take_groups()
                     while not self._stop.is_set():
                         # `groups` is taken again ONLY where the list is
                         # replaced (below), never per pass: an exploring
@@ -1748,7 +1764,7 @@ class DemoRunner:
                         if listed:
                             if self._apply_job_boards(listed, source="show"):
                                 needs_setup = True
-                            groups = self._group_count()
+                            groups = self._take_groups()
                         # A job's own board list is applied BEFORE setup
                         # runs, so the very first prepare() (still holding
                         # the runner's construction-time board list) does
@@ -1763,7 +1779,7 @@ class DemoRunner:
                             wanted = sorted(job["boards"])
                             if self._apply_job_boards(wanted):
                                 needs_setup = True
-                            groups = self._group_count()
+                            groups = self._take_groups()
                             if needs_setup:
                                 if not self._setup(bus, groups):
                                     session.failed_with(self.error
@@ -1815,7 +1831,7 @@ class DemoRunner:
                                 if outside or not from_show:
                                     if self._apply_job_boards(wanted):
                                         needs_setup = True
-                                    groups = self._group_count()
+                                    groups = self._take_groups()
                             if needs_setup:
                                 if not self._setup(bus, groups):
                                     if self.error != "no boards answering":
@@ -1945,7 +1961,7 @@ class DemoRunner:
 
     def _run(self) -> None:
         rng = random.Random(self._seed)
-        groups = self._group_count()
+        groups = self._take_groups()
         while not self._stop.is_set():
             port = self.port or find_port()
             if not port:
