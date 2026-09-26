@@ -972,6 +972,48 @@ def saved_pairs(bus):
     return {(f.dest, f.data[0]) for f in bus.log if f.cmd == SAVE}
 
 
+def test_a_cue_that_could_not_be_confirmed_survives_a_restart(rig):
+    """The unit checks whether its own broadcast reached the boards
+    (ui/runner.py's landing check). A cue it could not confirm is about a
+    garment that may STILL be wrong, so the red marker has to outlive the
+    process - it used to be held only in the session and a restart wiped
+    it while nothing on the wall had changed."""
+    player, session, runner, bus, store = rig
+    show = make_show(sents=(-REFRESH, 0.4, 5.0), duration=30)
+    player.load(show)
+    assert wait_burned(player)
+    t0 = time.monotonic() - 1.0
+    player.run(t0)
+    assert wait_until(lambda: player.applied == "q01")
+    # What the runner's check would have recorded for the cue on the
+    # glass: two broadcasts and the board still idle.
+    session.verified(session.cue_id, "idle-after-resend", resent=True,
+                     witness=1)
+    assert wait_until(lambda: (json.loads(
+        (store / "show-run.json").read_text(encoding="utf-8")
+    ).get("verify") or {}).get("landed") == "idle-after-resend")
+    player.close()                                          # "power cut"
+
+    session2, runner2, bus2 = make_session()
+    reborn = ShowPlayer(session2, store=store, save_s=0.01, margin_s=0.15,
+                        grace_s=0.3, tick_s=0.02, setup_s=0.5,
+                        setup_board_s=0.0)
+    try:
+        reborn.restore()
+        assert session2.status()["verify"] == {
+            "cue": session.cue_id, "landed": "idle-after-resend",
+            "resent": True, "witness": 1}
+        # ...and the next cue's own check replaces it, red or not.
+        assert wait_until(lambda: (session2.verify or {}).get("landed")
+                          != "idle-after-resend", timeout=8)
+        assert wait_until(lambda: (json.loads(
+            (store / "show-run.json").read_text(encoding="utf-8")
+        ).get("verify") or {}).get("landed") == "deaf")
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
 def test_a_restart_in_the_middle_of_the_burn_comes_back_unburned(tmp_path):
     session, runner, bus = make_session(SlowSaveBus())
     player = ShowPlayer(session, store=tmp_path, tick_s=0.02)

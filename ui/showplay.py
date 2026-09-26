@@ -213,6 +213,12 @@ class ShowPlayer:
         # later is what makes `dirty` true (see _check_dirty()).
         self._ever_ok: "set[int]" = set()
         self._counted: "str | None" = None     # session key already tallied
+        # The last landing check the unit did (ui/runner.py), as last
+        # written to the run record. A cue that could not be confirmed
+        # is about a garment that may still be showing the wrong
+        # picture, and that outlives this process - so it is persisted
+        # and restored, not only held in the session.
+        self._verify_seen: "dict | None" = None
         # The burn belongs to a show (module docstring): the session's
         # burn counts for the loaded show only while _burn_id names it;
         # _burn_disk is a finished burn read back by restore() (paired by
@@ -623,6 +629,11 @@ class ShowPlayer:
                     # it alone.
                     "demo": self.is_demo, "demo_name": self.demo_name,
                     "demo_slug": self.demo_slug, "demo_loop": self.demo_loop,
+                    # The unit's own verdict on the last cue it sent
+                    # (ui/remote.py's RemoteSession.verify). A restart
+                    # must not turn a red "not applied" into a blank
+                    # while the garment is still wrong.
+                    "verify": self._verify_seen,
                     # T0 as wall time: what survives a reboot.
                     "t0_wall": (None if self.t0 is None else
                                 self._wall() + (self.t0 - self._clock()))})
@@ -692,6 +703,14 @@ class ShowPlayer:
             self._burn_none_why = "since this unit restarted"
             if not named:
                 return
+            # What the unit last made of its own broadcast, back into the
+            # session so /status (and the PC's tile) says it again. Only
+            # from a record that names this very show: a verdict about
+            # another show's cue says nothing about this garment.
+            verify = run.get("verify")
+            if isinstance(verify, dict) and verify.get("landed"):
+                self._verify_seen = dict(verify)
+                self.session.verify = dict(verify)
             # A demo comes back AS a demo (radxa-05, 2026-09-26: it used
             # to come back as a plain PC show, and from then on KEY1 on
             # every demo row was refused - "PC show loaded - use the PC" -
@@ -898,10 +917,26 @@ class ShowPlayer:
             self.note = (f"board {named} joined late: "
                          f"re-arming {self.applied}")
 
+    def _note_verify(self) -> None:
+        """Keep the run record's copy of the landing check up to date.
+
+        The verdict arrives on the runner's thread, whenever the check
+        finishes; this is the tick that notices. Written only when it
+        changes - once per cue, and once more when the next cue's arm()
+        clears it - so the card costs nothing to keep honest.
+        """
+        verify = self.session.verify
+        if verify == self._verify_seen:
+            return
+        self._verify_seen = dict(verify) if verify else None
+        self._persist()
+
     def _plan(self) -> "tuple[float, tuple | None]":
         """(seconds until it is worth looking again, what to send now)."""
         with self._lock:
             self._tally()
+            if self.show is not None:
+                self._note_verify()
             if self.state != RUNNING or self.show is None or self.t0 is None:
                 return self.tick_s, None
             now_mono = self._clock()
