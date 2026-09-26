@@ -435,6 +435,17 @@ function loadDockCellsPref() {
 function saveDockCellsPref() {
   try { if (ui.dockCells) localStorage.setItem("tl.dockCells", String(ui.dockCells)); else localStorage.removeItem("tl.dockCells"); } catch {}
 }
+// A show saved before the refresh became effect-inclusive (2026-09-26) still
+// carries the old 7.0 s. It keeps working - the model makes a swept cue 8 s
+// by itself - so the page only says so once, on the Timeline tab, and the
+// operator's show.json is never rewritten behind their back. Dismissed for
+// good on this browser, like the dock's own preference.
+function refreshHintDismissed() {
+  try { return localStorage.getItem("tl.refreshHint") === "dismissed"; } catch { return false; }
+}
+function dismissRefreshHint() {
+  try { localStorage.setItem("tl.refreshHint", "dismissed"); } catch {}
+}
 // The unit's LCD font cannot draw Japanese (conductor/server.py's own DEMO_NAME_MESSAGE) -
 // kept in one place so the hint text and the maxlength can never drift apart.
 const DEMO_NAME_MAX = 14;
@@ -778,12 +789,35 @@ const seqLabel = id => state.sequences.find(s => s.id === id)?.label || id;
 // from the design's default or the cue's own override. Defensive against a
 // server that does not compile it yet.
 const sweepOf = cue => cue.sweep || { sequence: "natural", span_s: 0, source: "design" };
+// conductor/timeline.py's two refresh numbers, straight off the state so no
+// refresh time is ever typed into this page: REFRESH_S, the current default
+// MODELLED refresh of a cue (the sweep's effect included), and
+// PANEL_REPAINT_S, one board's physical repaint - what a sweep's real end is
+// measured from. The literals are only a fallback for a server too old to
+// send them.
+const defaultRefreshS = () => state.show?.refresh_default ?? 8.0;
+const panelRepaintS = () => state.show?.panel_repaint_s ?? 7.0;
 // The cue's effective refresh time: its own override (`refresh_s`, stored),
 // or the show's default. Defensive against a server that has not landed
 // `refresh`/`refresh_source` yet - only `refresh_s` is guaranteed then.
 function refreshOf(cue) {
   if (cue.refresh !== undefined) return { value: cue.refresh, source: cue.refresh_source || (cue.refresh_s != null ? "cue" : "show") };
   return cue.refresh_s != null ? { value: cue.refresh_s, source: "cue" } : { value: state.show.refresh_s, source: "show" };
+}
+// How a cue's Complete is arrived at, in the model's own terms
+// (conductor/timeline.py's complete_s): the modelled refresh - the sweep is
+// already budgeted inside it - unless the sweep genuinely finishes later,
+// which is one panel repaint after its last scale started.
+function completeWhy(cue, refr) {
+  const span = Math.max(0, Number(cue.span) || 0);
+  // Never longer than the whole refresh this cue declares - timeline.py's
+  // panel_repaint_of().
+  const panel = Math.min(panelRepaintS(), refr.value);
+  if (panel + span > refr.value) {
+    return `${panel.toFixed(1)} s panel repaint + ${span.toFixed(1)} s sweep`;
+  }
+  return `${refr.value.toFixed(1)} s refresh`
+    + (span > 0 ? ` (the ${span.toFixed(1)} s sweep fits inside it)` : "");
 }
 // The cue's effective End: the next cue's Start on the same item, or the
 // show's duration for the last cue. Defensive against a server that has not
@@ -993,6 +1027,13 @@ function renderCueEditor(cue, item) {
   const isLast = idxOnItem === cuesOnItem.length - 1;
   const endInfo = item ? endOf(item, cue) : { value: state.show.duration };
   const startWhy = isPreset ? "Preset: shown before START" : "Command sent — the e-paper starts refreshing";
+  // The refresh is the whole change, the effect included: a sweep (Top to
+  // bottom, Centre outward…) is already inside it, and only a sweep that
+  // runs longer than the refresh pushes Complete out (one panel repaint +
+  // the sweep's span). Said here because "how long the board takes to
+  // redraw" reads like the bare panel time and is no longer the number.
+  const refreshWhy = "Command to finished picture, the transition's sweep included"
+    + ` (a sweep longer than this ends at ${panelRepaintS().toFixed(1)} s panel repaint + its span)`;
   const endWhy = isLast ? `until the end of the show (${clock(state.show.duration)})` : "Shown until the next cue of this item starts (= that cue's Start)";
 
   return `<div class="cue-card">
@@ -1011,12 +1052,12 @@ function renderCueEditor(cue, item) {
     </div>
     <div class="cue-row">
       <div class="lbl">Refresh</div>
-      <div class="ctl" title="How long this board's e-paper takes to redraw">
+      <div class="ctl" title="${esc(refreshWhy)}">
         <label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-show" value="show" ${refr.source === "show" ? "checked" : ""}> show default (${state.show.refresh_s.toFixed(1)} s)</label>
         <label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-cue" value="cue" ${refr.source === "cue" ? "checked" : ""}> this cue</label>
         <input type="text" id="cue-refresh" value="${refr.value.toFixed(1)}" ${refr.source === "cue" ? "" : "disabled"}> s
       </div>
-      <div class="why">How long this board's e-paper takes to redraw</div>
+      <div class="why">${esc(refreshWhy)}</div>
     </div>
     <div class="cue-row">
       <div class="lbl">Transition</div>
@@ -1035,7 +1076,7 @@ function renderCueEditor(cue, item) {
       </div>
       <div class="why"></div>
     </div>
-    <div class="cue-computed">Picture complete at ${clock(cue.complete)} (Start + ${refr.value.toFixed(1)} s refresh${sweep.span_s > 0 ? ` + ${sweep.span_s.toFixed(1)} s sweep` : ""})</div>
+    <div class="cue-computed">Picture complete at ${clock(cue.complete)} (Start + ${esc(completeWhy(cue, refr))})</div>
     <div class="cue-row">
       <div class="lbl">End</div>
       <div class="ctl" title="${esc(endWhy)}"><input type="text" id="cue-end" value="${clock(endInfo.value)}" ${isLast ? "disabled" : ""}></div>
@@ -1138,7 +1179,7 @@ function renderTimeline() {
     <div class="toolbar">
       <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
       <div class="group"><span>Default refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
-        title="Seconds from the command to the finished image, used by every cue that does not set its own (about 7 s on the latest firmware, 16 s on older ones)"><span>s</span></div>
+        title="Seconds from the command to the finished picture, the transition's sweep included, used by every cue that does not set its own (${defaultRefreshS().toFixed(1)} s on the latest firmware: a ${panelRepaintS().toFixed(1)} s panel repaint with a 1 s sweep inside it; 16 s on older boards)"><span>s</span></div>
       <div class="group">
         <button class="primarybtn" id="tl-write" title="Put this timeline on the units: Upload it for a show this PC drives, or save it on the units as a demo they play from KEY1 without this PC. One dialog, both ways.">Write to units…</button>
       </div>
@@ -1151,6 +1192,12 @@ function renderTimeline() {
       <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
         hatched = refreshing · solid = held until End · Esc deselects</div>
     </div>
+    ${show.refresh_s < defaultRefreshS() && !refreshHintDismissed() ? `<div class="warn" style="display:flex;align-items:center;gap:10px">
+      <span>The show's refresh is ${show.refresh_s.toFixed(1)} s; the current default is ${defaultRefreshS().toFixed(1)} s
+        (effect included) — set it in Default refresh time above.</span>
+      <span style="flex:1"></span>
+      <button id="refresh-hint-hide" title="Hide this note on this browser">Dismiss</button>
+    </div>` : ""}
     <div id="tl-editing"${ui.simView ? ' style="display:none"' : ""}>
       <div class="tl-left">
         <div class="card">
@@ -2928,6 +2975,7 @@ document.addEventListener("click", async e => {
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
   if (e.target.id === "tl-simulator") { e.preventDefault(); downloadSimulator(); return; }
+  if (e.target.id === "refresh-hint-hide") { dismissRefreshHint(); renderTimeline(); return; }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
   if (e.target.id === "tl-dock-toggle") { ui.dock = ui.dock === "collapsed" ? "compact" : "collapsed"; saveDockPref(); renderTimeline(); return; }
   if (e.target.closest("#tl-editor-toggle")) { ui.editorOpen = !ui.editorOpen; renderTimeline(); return; }

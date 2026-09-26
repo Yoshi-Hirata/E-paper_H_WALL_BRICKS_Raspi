@@ -329,7 +329,8 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
  *                           items, since it never assigns units)
  *   conductor/sequence.py   SEQUENCES/LABELS/ranks/span_s
  *   conductor/timeline.py   clean/resolve/apply_transitions/times/ends/
- *                           effective_refresh/validate/min_interval/
+ *                           effective_refresh/complete_s/panel_repaint_of/
+ *                           panel_refresh/validate/min_interval/
  *                           parse_clock/format_clock
  * plus SIM.fmt (Python's float formatting, exact on the double's own
  * binary value) and SIM.mmss (the designer-facing mm.ss clock grammar,
@@ -1438,7 +1439,15 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   // SIM.timeline - port of conductor/timeline.py.
   // ============================================================
 
-  const REFRESH_S = 7.0;
+  // ONE BOARD's physical repaint, command to finished image (firmware-
+  // dependent: 9.8 s first boards, 16 s production boards, ~7 s on the
+  // latest). The sweep's real end is measured from it.
+  const PANEL_REPAINT_S = 7.0;
+  // The default MODELLED refresh of a cue - the seconds budgeted from a
+  // send to "picture complete", the sweep INCLUDED (2026-09-26, the
+  // operator: 8 s for both a swept and an all-at-once cue). This is what
+  // show.refresh_s and a cue's refresh_s set.
+  const REFRESH_S = 8.0;
   const REFRESH_RANGE_S = [1.0, 60.0];
   const GAP_AFTER_REFRESH_S = 1.0;
   // Pre-burn conductor (main, 2026-09-25+): every picture is written to
@@ -1507,12 +1516,38 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     return typeof own === "number" && !Number.isNaN(own) ? own : refresh;
   }
 
+  // One board's repaint as THIS cue models it: PANEL_REPAINT_S, never
+  // longer than the whole refresh the cue declares (a show that says a
+  // refresh takes 1 s must not have a 7 s constant put back on top).
+  function panelRepaintOf(cue, refresh) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    return pyMin2(PANEL_REPAINT_S, effectiveRefresh(cue, refresh));
+  }
+
+  // Seconds from a send to the picture being complete: the modelled
+  // refresh already budgets a production sweep, so it only grows when a
+  // sweep genuinely finishes later (its last scale STARTS at span, so
+  // the picture is done one repaint after that).
+  function completeS(cue, refresh) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    return pyMax2(effectiveRefresh(cue, refresh),
+                  panelRepaintOf(cue, refresh) + spanOf(cue));
+  }
+
+  // What a UNIT is told a cue's refresh is (conductor/showfile.py): the
+  // cue's own refresh, never below one physical repaint, so its guard
+  // STOP cannot land inside the repaint or the sweep.
+  function panelRefresh(cue, refresh) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    return pyMax2(PANEL_REPAINT_S, effectiveRefresh(cue, refresh));
+  }
+
   function times(cue, refresh) {
     if (refresh === undefined) refresh = REFRESH_S;
     const at = Number(cue.at);
     const eff = effectiveRefresh(cue, refresh);
     const sent = at > 0 ? fmt.round(at, 3) : fmt.round(-eff, 3);
-    const complete = fmt.round(sent + eff + spanOf(cue), 3);
+    const complete = fmt.round(sent + completeS(cue, refresh), 3);
     return [sent, complete];
   }
 
@@ -1689,14 +1724,23 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
           // Every picture is already burned into its slot at Upload
           // time: a running send is one broadcast trigger, nothing is
           // written - so the only floor left is the director's gap
-          // after the PREVIOUS send's own refresh (plus its sweep's
-          // span, if any of its cues had one), for every pair.
-          const beforeRefresh = Math.max(...previousGroup.map(c => effectiveRefresh(c, refresh)));
-          const beforeSpan = Math.max(...previousGroup.map(c => spanOf(c)));
-          const need = beforeRefresh + beforeSpan + gap;
+          // after the PREVIOUS send is complete - completeS() of the
+          // slowest cue in it, which is its refresh unless a sweep
+          // genuinely runs past that - for every pair.
+          // Python's max(iterable, key=...) keeps the FIRST maximum.
+          let slowest = previousGroup[0];
+          previousGroup.forEach(c => {
+            if (completeS(c, refresh) > completeS(slowest, refresh)) slowest = c;
+          });
+          const before = completeS(slowest, refresh);
+          const slowRefresh = effectiveRefresh(slowest, refresh);
+          const need = before + gap;
           if (spacing < need) {
-            let detail = `${fmt.fixed(beforeRefresh, 1)} s refresh`;
-            if (beforeSpan) detail += ` + ${fmt.fixed(beforeSpan, 1)} s sweep`;
+            // The sweep, not the refresh, is what the next send waits
+            // for: say so in its own terms.
+            let detail = before > slowRefresh
+              ? `${fmt.fixed(panelRepaintOf(slowest, refresh), 1)} s panel repaint + ${fmt.fixed(spanOf(slowest), 1)} s sweep`
+              : `${fmt.fixed(slowRefresh, 1)} s refresh`;
             detail += ` + ${fmt.fixed(gap, 1)} s gap`;
             group.forEach(cue => {
               const sameItem = previousGroup.some(prev => cue.item.toLowerCase() === prev.item.toLowerCase());
@@ -1721,9 +1765,10 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   }
 
   const timeline = {
-    REFRESH_S, REFRESH_RANGE_S, GAP_AFTER_REFRESH_S,
+    REFRESH_S, PANEL_REPAINT_S, REFRESH_RANGE_S, GAP_AFTER_REFRESH_S,
     SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S,
-    parseClock, formatClock, cleanRefresh, effectiveRefresh, spanOf,
+    parseClock, formatClock, cleanRefresh, effectiveRefresh, completeS,
+    panelRepaintOf, panelRefresh, spanOf,
     sweeps, clean, resolve, applyTransitions, times, ends, minInterval, validate,
   };
 
@@ -2050,7 +2095,12 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     Object.keys(unitBoards).forEach(u => { minInterval[u] = timeline.minInterval(unitBoards[u], refresh); });
 
     return {
-      show: { duration, refresh_s: refresh, cues, warnings, min_interval: minInterval },
+      // refresh_default / panel_repaint_s: the model's two refresh numbers,
+      // carried so a page never has one of its own (conductor/server.py's
+      // state() sends the same two).
+      show: { duration, refresh_s: refresh, refresh_default: REFRESH_S,
+              panel_repaint_s: timeline.PANEL_REPAINT_S,
+              cues, warnings, min_interval: minInterval },
       units: [],
       items: ordered,
       orphans,
@@ -3015,7 +3065,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
    }
   },
   "music": null,
-  "refresh_s": 7.0,
+  "refresh_s": 8.0,
   "transitions": {}
  }
 } });
@@ -3059,15 +3109,20 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   // starting, when a design is APPENDED rather than placed by hand (the "+"
   // at the end of a track row, and EDIT CUE's "Add next design after this
   // cue"). Read off the model rather than typed again here: it is the SAME
-  // number validate() requires between two sends (need = refresh + sweep +
-  // gap, i.e. the previous cue's complete + gap), so an append that used its
+  // number validate() requires between two sends (need = the previous cue's
+  // complete + gap), so an append that used its
   // own idea of "a reasonable gap" would quietly place cues the model then
   // rejects.
   const APPEND_GAP_S = (globalThis.SIM && globalThis.SIM.timeline
                         && globalThis.SIM.timeline.GAP_AFTER_REFRESH_S) || 1.0;
 
+  // The model's own default refresh, read off SIM.timeline rather than typed
+  // again here (the same reason APPEND_GAP_S is): an empty project must open
+  // on the number the Conductor would give a new show.
+  const DEFAULT_REFRESH_S = (globalThis.SIM && globalThis.SIM.timeline
+                             && globalThis.SIM.timeline.REFRESH_S) || 8.0;
   function freshProject() {
-    return { files: {}, show: { duration: 600, refresh_s: 7.0, cues: [], transitions: {}, labels: {}, boards: {}, music: null } };
+    return { files: {}, show: { duration: 600, refresh_s: DEFAULT_REFRESH_S, cues: [], transitions: {}, labels: {}, boards: {}, music: null } };
   }
   function cloneStarter() {
     const s = globalThis.SIM.STARTER || { files: {}, show: {} };
@@ -3728,9 +3783,26 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     return i < 0 ? list[0] : list[(i + 1) % list.length];
   }
   function lastCueOf(item) { const cues = cuesOf(item); return cues[cues.length - 1] || null; }
+  // How a cue's Complete is arrived at, in the model's own terms (model.js's
+  // completeS): the modelled refresh - a production sweep is already budgeted
+  // inside it - unless the sweep genuinely finishes later, which is one panel
+  // repaint after its last scale started.
+  function completeWhy(cue, refr) {
+    const span = Math.max(0, Number(cue.span) || 0);
+    // Never longer than the whole refresh this cue declares - model.js's
+    // panelRepaintOf().
+    const panel = Math.min((globalThis.SIM && globalThis.SIM.timeline
+                            && globalThis.SIM.timeline.PANEL_REPAINT_S) || 7.0,
+                           refr.value);
+    if (panel + span > refr.value) {
+      return `${panel.toFixed(1)} s panel repaint + ${span.toFixed(1)} s sweep`;
+    }
+    return `${refr.value.toFixed(1)} s refresh`
+      + (span > 0 ? ` (the ${span.toFixed(1)} s sweep fits inside it)` : "");
+  }
   // The earliest legal moment after `cue`: when its own picture has finished
-  // being drawn. That is cue.complete - start + its refresh + its sweep span,
-  // computed by the model (model.js's times(), the same number the CUES
+  // being drawn. That is cue.complete - start + its refresh, or a sweep that
+  // runs past it (model.js's completeS(), the same number the CUES
   // table's COMPLETE column and EDIT CUE's "Refresh completes at" print) -
   // plus APPEND_GAP_S, snapped to a whole second like every other cue edit
   // here.
@@ -3816,7 +3888,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
         <div class="ctl"><label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-show" ${refr.source === "show" ? "checked" : ""}> show default (${state.show.refresh_s.toFixed(1)} s)</label>
           <label class="rad"><input type="radio" name="cue-refresh-mode" id="cue-refresh-cue" ${refr.source === "cue" ? "checked" : ""}> this cue</label>
           <input type="text" id="cue-refresh" value="${refr.value.toFixed(1)}" ${refr.source === "cue" ? "" : "disabled"}> s</div>
-        <div class="why">How long this item's e-paper takes to redraw</div></div>
+        <div class="why">Command to finished picture, the transition's sweep included</div></div>
       <div class="cue-row"><div class="lbl">Transition</div>
         <div class="ctl" style="flex-direction:column;align-items:flex-start;gap:6px">
           <label class="rad"><input type="radio" name="cue-transition" id="cue-transition-design" ${transitionMode === "design" ? "checked" : ""}> this design (all cues using it)
@@ -3826,7 +3898,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
               `<option value="${s.id}" ${s.id === (cue.sequence || "natural") ? "selected" : ""}>${esc(seqLabel(s))}</option>`).join("")}</select>
             <span ${(cue.sequence || "natural") === "natural" ? 'style="display:none"' : ""}><input type="text" id="cue-span" value="${cue.span_s ?? 0}" size="4" ${transitionMode !== "custom" ? "disabled" : ""}> s</span></label>
         </div><div class="why"></div></div>
-      <div class="cue-computed">Refresh completes at ${clockShort(cue.complete)} (Start + ${refr.value.toFixed(1)} s refresh${sweep.span_s > 0 ? ` + ${sweep.span_s.toFixed(1)} s sweep` : ""})</div>
+      <div class="cue-computed">Refresh completes at ${clockShort(cue.complete)} (Start + ${esc(completeWhy(cue, refr))})</div>
       <div class="cue-row"><div class="lbl">End</div><div class="ctl">${mmssField("cue-end", cue.end, { disabled: isLast })}</div>
         <div class="why">${isLast ? `Shown until the end of the show (${clockShort(state.show.duration)})` : "Shown until the next cue of this item starts"}</div></div>
       <div class="cue-design"><label>Design <select id="cue-design">${(item?.designs || []).map(d =>

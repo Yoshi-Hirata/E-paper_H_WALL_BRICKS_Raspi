@@ -24,6 +24,9 @@ REPO = Path(__file__).resolve().parent.parent
 STARTER_DIR = REPO / "conductor" / "web" / "starter"
 STARTER_JS = REPO / "conductor" / "web" / "sim" / "starter.js"
 
+sys.path.insert(0, str(REPO))
+from conductor import timeline  # noqa: E402
+
 # The show line-up's own labels, copied from the production show.json (the
 # operator page's `labels` map) so a designer opening the simulator reads the
 # same "LOOK 23 · AZ271SD1305" the operator does - the starter used to write
@@ -54,7 +57,11 @@ STARTER_LABELS = {
 STARTER_LOOKS = {item: look for item, (look, _model) in STARTER_LABELS.items() if look}
 
 DEFAULT_DURATION_S = 600.0
-DEFAULT_REFRESH_S = 7.0
+# The model's own current default, never a number typed again here: a
+# starter project must open on the same refresh the Conductor would give a
+# new show (conductor/timeline.py REFRESH_S, 8.0 s effect-included since
+# 2026-09-26).
+DEFAULT_REFRESH_S = timeline.REFRESH_S
 
 
 def kind(name: str) -> "str | None":

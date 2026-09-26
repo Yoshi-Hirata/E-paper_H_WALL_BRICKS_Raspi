@@ -306,7 +306,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
    }
   },
   "music": null,
-  "refresh_s": 7.0,
+  "refresh_s": 8.0,
   "transitions": {}
  }
 } });
