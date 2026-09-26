@@ -13,7 +13,8 @@ e-paper begins refreshing. The one exception is the preset (`at <= 0`),
 shown before START - it is sent one refresh early, so it is already on
 the garment (complete at 0:00) when the show begins.
 
-**Complete** is Start + refresh + the sweep's span (server field
+**Complete** is Start + complete_s(), the cue's modelled refresh or the
+sweep's real end, whichever is later (server field
 `complete`); **End** is the next cue's Start on the same item, or the
 show's duration for the last one (ends() below; server fields
 `end`/`end_source`, merged into state()'s cues by conductor/server.py).
@@ -22,7 +23,11 @@ show's duration for the last one (ends() below; server fields
 (show.json's `refresh_s`); a number 1-60 (one decimal) overrides it for
 this cue alone - a board on older firmware, a different refresh mode.
 `cue["refresh"]` (server state) is the effective value actually used;
-`cue["refresh_source"]` says "show" or "cue".
+`cue["refresh_source"]` says "show" or "cue". A refresh time is the
+MODELLED one, the sweep's effect included (REFRESH_S below): the picture
+is complete one refresh after the send unless the sweep genuinely runs
+longer than that, which only the physical PANEL_REPAINT_S can say -
+hence complete_s() below, `max(refresh, panel_repaint_of + span)`.
 
 `transition` says whether the cue sweeps as its design does ("design",
 the default) or has its own sweep ("custom"). `sequence` and `span_s`
@@ -30,10 +35,12 @@ are always stored (so switching back and forth keeps both), but only
 used when `transition` is "custom" - see resolve() and
 apply_transitions() below, and conductor/sequence.py for what a
 sequence and a span mean. `span_s` is seconds from the command to the
-first scale to the command to the last one; a sweep makes the change
-last longer than one refresh, by that span. The resolved sweep and the
-seconds it actually adds (which needs the garment's map) come from the
-server, as cue["sweep"] and cue["span"].
+first scale to the command to the last one; the change is then finished
+one panel repaint after that, which only lengthens the cue when it runs
+past the modelled refresh (8 s covers the 1 s spans a production show
+uses). The resolved sweep and the seconds it actually adds (which needs
+the garment's map) come from the server, as cue["sweep"] and
+cue["span"].
 
 What one unit can do bounds the timeline. Every cue's picture is
 written into its own on-board slot (1-18; slot 0 is the standby white,
@@ -44,7 +51,7 @@ broadcast trigger (`show_single`) naming its slot. There is therefore
 only one bound left, the director's own: at least GAP_AFTER_REFRESH_S
 (1 s) between a picture finishing and the next refresh starting -
 
-    refresh + gap
+    complete_s + gap        (refresh + gap, 9 s, for a production cue)
 
 - for every pair of sends on one unit's bus, including the very first
 cue after the preset (nothing is written there either any more: the
@@ -68,13 +75,25 @@ import re
 
 from .sequence import MAX_DELAY_S, clean_sequence, clean_span
 
-# Full repaint, command to finished image. It has moved with every
-# firmware - 9.8 s (first boards), 16 s (production boards, 2026-08-14),
-# about 7 s on the latest firmware (reported 2026-09-21) - so this is
-# only the default: a show carries its own value (show.json refresh_s,
-# editable on the timeline page) and every rule below takes it as an
-# argument. A unit still on older firmware needs the older, longer value.
-REFRESH_S = 7.0
+# ONE BOARD's full repaint, command to finished image - the physical
+# number, which has moved with every firmware: 9.8 s (first boards), 16 s
+# (production boards, 2026-08-14), about 7 s on the latest firmware
+# (reported 2026-09-21). It is what the sweep's real end is measured
+# from (the last scale only STARTS at `span`, so the picture is finished
+# at PANEL_REPAINT_S + span) and it is NOT the show's setting.
+PANEL_REPAINT_S = 7.0
+# The default MODELLED refresh of a cue: the seconds the director budgets
+# from a send to "picture complete", the sweep's own time INCLUDED
+# (2026-09-26, the operator: 「T2B や Centre outward の演出込みの refresh
+# および デフォルトの refresh 時間を 8 秒をとする。」). A production sweep
+# spans 1.0 s over a 7 s repaint, so a swept cue really completes at 8 s;
+# an all-at-once cue completes at 7 s but is budgeted as 8 s all the same,
+# so one number covers both and the director's spacing does not change
+# with the effect. This is the quantity show.json's `refresh_s` (editable
+# on the Timeline tab) and a cue's own `refresh_s` override set, and every
+# rule below takes it as an argument. A unit on older firmware needs the
+# older, longer value - as a cue's own override, or the show's.
+REFRESH_S = 8.0
 REFRESH_RANGE_S = (1.0, 60.0)
 # The director's minimum from "picture complete" to the next send
 # (2026-09-24: "Reflesh が終わった後、1 秒後に次のデザインへの refresh に
@@ -126,10 +145,15 @@ def min_interval(boards: int, refresh: float = REFRESH_S,
     """Seconds one unit needs between the send times of two refreshes:
     the picture is already burned into its slot (Upload time), so a
     running send is one broadcast trigger - nothing is written - and
-    the only floor left is the director's own, refresh + gap. `boards`
-    is kept (unused) so callers built for the old, per-board write term
-    do not need to change; it may matter again if a future board count
-    changes how the trigger itself is addressed.
+    the only floor left is the director's own, refresh + gap (9 s with
+    the defaults, whatever the effect: the modelled refresh already
+    includes a production sweep). A cue whose sweep runs past its own
+    refresh needs more - complete_s() + gap, which is what validate()
+    applies cue by cue.
+
+    `boards` is kept (unused) so callers built for the old, per-board
+    write term do not need to change; it may matter again if a future
+    board count changes how the trigger itself is addressed.
 
     This is what conductor/server.py shows as the show's "shortest
     interval per unit". validate() below applies the same floor cue by
@@ -167,13 +191,65 @@ def effective_refresh(cue: dict, refresh: float = REFRESH_S) -> float:
     return float(own) if isinstance(own, (int, float)) else refresh
 
 
+def panel_repaint_of(cue: dict, refresh: float = REFRESH_S) -> float:
+    """One board's repaint as THIS cue models it.
+
+    PANEL_REPAINT_S, but never longer than the whole refresh the cue
+    declares: the refresh time is the operator's own statement about
+    their hardware, so a show that says a refresh takes 1 s (a bench
+    run, the compressed shows the tests drive) or a firmware that really
+    is faster than 7 s must not have a 7 s constant put back on top of
+    it. With the production numbers (refresh 8, panel 7) the cap never
+    bites; only a refresh set BELOW one repaint reaches it.
+    """
+    return min(PANEL_REPAINT_S, effective_refresh(cue, refresh))
+
+
+def complete_s(cue: dict, refresh: float = REFRESH_S) -> float:
+    """Seconds from a cue's send to its picture being complete.
+
+    The modelled refresh already budgets for a sweep (REFRESH_S = 8 s
+    covers the 7 s repaint plus the 1 s span a production cue uses), so
+    it is the answer for every ordinary cue, swept or not. A sweep only
+    lengthens a cue when it genuinely finishes later: its last scale
+    STARTS at `span`, so the picture is done one repaint after that -
+    hence the max. Refresh 8 / span 1 -> 8; refresh 8 / span 7 -> 14;
+    natural -> 8; a legacy show at refresh 7 with a 1 s sweep -> 8.
+    """
+    return max(effective_refresh(cue, refresh),
+               panel_repaint_of(cue, refresh) + span_of(cue))
+
+
+def panel_refresh(cue: dict, refresh: float = REFRESH_S) -> float:
+    """The `refresh_s` a UNIT is told for this cue (showfile.py).
+
+    A unit does not model anything: it uses this number to place its
+    guard STOP, at `refresh_s + span + margin` after the fire
+    (ui/runner.py `_guard_for()`), so the number has to be one the
+    picture is really finished within, together with the span the same
+    file carries. That is the cue's own refresh when it set one (the
+    override exists for a board on SLOWER firmware, whose repaint really
+    does take 16 s), never less than PANEL_REPAINT_S (a show whose
+    modelled refresh is set below one physical repaint - a legacy 7 s
+    show is exactly at it - must not pull the guard into the repaint).
+    With the defaults that is 8.0 s, and the guard lands at 8 + 1 + 5 =
+    14 s, well past the sweep's real end at 8.0 s.
+
+    Deliberately NOT capped the way panel_repaint_of() is: the cap is
+    there so the MODEL follows what the operator says about the panel,
+    while the guard is a safety net and a board really does take
+    PANEL_REPAINT_S however short a refresh the show declares.
+    """
+    return max(PANEL_REPAINT_S, effective_refresh(cue, refresh))
+
+
 def times(cue: dict, refresh: float = REFRESH_S) -> "tuple[float, float]":
     """(sent, complete) for a cue.
 
     `at` IS sent, Start - except the preset (`at <= 0`), sent one
     refresh before the show begins so it is already complete at 0:00.
-    Complete is sent + refresh + the sweep's span, using the cue's own
-    refresh when it set one. Rounded to the millisecond: send instants
+    Complete is sent + complete_s(), using the cue's own refresh when it
+    set one. Rounded to the millisecond: send instants
     are compared and used as keys ("the same moment" is one broadcast,
     showfile.py), and 10.3 - 7.3 is 3.000000000000001, not the 3.0 of a
     cue starting at 3.
@@ -181,7 +257,7 @@ def times(cue: dict, refresh: float = REFRESH_S) -> "tuple[float, float]":
     at = float(cue["at"])
     eff = effective_refresh(cue, refresh)
     sent = round(at, 3) if at > 0 else round(-eff, 3)
-    complete = round(sent + eff + span_of(cue), 3)
+    complete = round(sent + complete_s(cue, refresh), 3)
     return sent, complete
 
 
@@ -382,17 +458,24 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                 # Upload time (showfile.py): a running send is one
                 # broadcast trigger, nothing is written - so the only
                 # floor left is the director's gap after the PREVIOUS
-                # send's own refresh (plus its sweep's span, if any of
-                # its cues had one), for every pair, including the first
-                # send after the preset.
-                before_refresh = max(effective_refresh(c, refresh)
-                                     for c in previous_group)
-                before_span = max(span_of(c) for c in previous_group)
-                need = before_refresh + before_span + gap
+                # send is complete - complete_s() of the slowest cue in
+                # it, which is its refresh unless a sweep genuinely runs
+                # past that - for every pair, including the first send
+                # after the preset.
+                slowest = max(previous_group,
+                              key=lambda c: complete_s(c, refresh))
+                before = complete_s(slowest, refresh)
+                need = before + gap
                 if spacing < need:
-                    detail = f"{before_refresh:.1f} s refresh"
-                    if before_span:
-                        detail += f" + {before_span:.1f} s sweep"
+                    slow_refresh = effective_refresh(slowest, refresh)
+                    if before > slow_refresh:
+                        # The sweep, not the refresh, is what the next
+                        # send is waiting for: say so in its own terms.
+                        detail = (f"{panel_repaint_of(slowest, refresh):.1f} s "
+                                  f"panel repaint "
+                                  f"+ {span_of(slowest):.1f} s sweep")
+                    else:
+                        detail = f"{slow_refresh:.1f} s refresh"
                     detail += f" + {gap:.1f} s gap"
                     for cue in group:
                         same_item = any(cue["item"].lower()

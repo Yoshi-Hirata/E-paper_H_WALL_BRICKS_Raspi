@@ -13,10 +13,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.timeline import (MAX_CUES_PER_UNIT, REFRESH_S,
-                                apply_transitions, clean, effective_refresh,
-                                ends, format_clock, min_interval, parse_clock,
-                                resolve, times, validate)
+from conductor.timeline import (MAX_CUES_PER_UNIT, PANEL_REPAINT_S, REFRESH_S,
+                                apply_transitions, clean, complete_s,
+                                effective_refresh, ends, format_clock,
+                                min_interval, panel_refresh, panel_repaint_of,
+                                parse_clock, resolve, times, validate)
 
 OK = {"full": True, "partial": True}
 ITEMS = {
@@ -46,7 +47,11 @@ def test_clock_both_ways():
     assert parse_clock("1:03:05") == 3785
     assert parse_clock("185") == parse_clock(185) == 185
     assert format_clock(185) == "3:05" and format_clock(-16) == "-0:16"
-    assert REFRESH_S == 7.0            # latest firmware, reported 2026-09-21
+    # The MODELLED refresh, the effect included (2026-09-26, the operator:
+    # 8 s covers the ~7 s repaint of the latest firmware plus the 1 s sweep
+    # a production cue uses), and the physical repaint it is built on.
+    assert REFRESH_S == 8.0
+    assert PANEL_REPAINT_S == 7.0      # latest firmware, reported 2026-09-21
     with pytest.raises(ValueError):
         parse_clock("soon")
     # Hostile JSON (None, a dict) is the same "not a time", never a
@@ -58,16 +63,49 @@ def test_clock_both_ways():
 
 
 def test_start_is_the_send_instant_and_complete_adds_refresh_and_sweep():
-    assert times(cue("a", "Look22", "1:00", "p1")) == (60, 67)
+    # The modelled refresh is the whole change, the effect included.
+    assert times(cue("a", "Look22", "1:00", "p1")) == (60, 68)
     # 0:00 is the preset: sent one refresh before the show even begins,
     # so it is already complete when it starts.
-    assert times(cue("a", "Look22", 0, "p1")) == (-7, 0)
+    assert times(cue("a", "Look22", 0, "p1")) == (-8, 0)
     # A unit on older firmware: the show carries its own refresh time.
     assert times(cue("a", "Look22", "1:00", "p1"), refresh=16) == (60, 76)
     swept = cue("a", "Look22", 60, "g1.csv")
     swept["sweep"] = {"sequence": "top_down", "span_s": 4.0, "source": "cue"}
     swept["span"] = 4.0
-    assert times(swept, 7.0) == (60.0, 71.0)            # 7 s refresh + 4 s sweep
+    # 7 s repaint + 4 s sweep runs past the 8 s refresh, so it wins.
+    assert times(swept, 7.0) == (60.0, 71.0)
+    assert times(swept) == (60.0, 71.0)
+
+
+def test_complete_is_the_refresh_unless_the_sweep_really_runs_longer():
+    """The operator's 2026-09-26 decision: a cue's refresh is the seconds
+    from its send to "picture complete", the sweep INCLUDED - 8 s covers
+    the 7 s repaint plus the 1 s span a production cue uses. A sweep only
+    lengthens a cue when it genuinely finishes later."""
+    natural = cue("a", "Look22", 60, "p1")
+    assert complete_s(natural) == 8.0                   # budgeted as 8 s
+    swept = cue("b", "Look22", 60, "g1.csv")
+    swept["sweep"] = {"sequence": "top_down", "span_s": 1.0, "source": "cue"}
+    swept["span"] = 1.0
+    assert complete_s(swept) == 8.0                     # 7 + 1, inside the 8
+    assert times(swept) == (60.0, 68.0)
+    long_sweep = dict(swept, span=7.0)
+    assert complete_s(long_sweep) == 14.0               # 7 s repaint + 7 s sweep
+    assert times(long_sweep) == (60.0, 74.0)
+    # A cue's own refresh above panel + span wins outright.
+    own = dict(swept, refresh_s=12.0)
+    assert complete_s(own) == 12.0
+    # A legacy show still set to 7.0: a swept cue becomes 8 s by the max
+    # rule, a natural one stays 7 s until the operator changes the setting.
+    assert complete_s(swept, refresh=7.0) == 8.0
+    assert complete_s(natural, refresh=7.0) == 7.0
+    # A refresh set BELOW one physical repaint (a bench run, the
+    # compressed shows the tests drive) is the operator's own statement
+    # about the panel: the 7 s constant is not put back on top of it.
+    assert panel_repaint_of(natural, refresh=1.0) == 1.0
+    assert complete_s(natural, refresh=1.0) == 1.0
+    assert complete_s(dict(swept, span=2.0), refresh=1.0) == 3.0
 
 
 def test_a_cue_may_carry_its_own_refresh_time():
@@ -135,10 +173,13 @@ def test_min_interval_is_just_refresh_and_gap_whatever_the_board_count():
     # Every picture is burned into its slot at Upload time (showfile.py):
     # a running send is a broadcast trigger, nothing is written - so the
     # board count no longer bounds the spacing, only refresh + the 1 s gap.
-    assert min_interval(16) == pytest.approx(8.0)
-    assert min_interval(36) == pytest.approx(8.0)
-    assert min_interval(96) == pytest.approx(8.0)          # still 8.0: unaffected
+    # 9.0 s with the effect-inclusive refresh, whatever the cue does: a
+    # production sweep is already inside the 8 s (2026-09-26).
+    assert min_interval(16) == pytest.approx(9.0)
+    assert min_interval(36) == pytest.approx(9.0)
+    assert min_interval(96) == pytest.approx(9.0)          # still 9.0: unaffected
     assert min_interval(16, refresh=16) == pytest.approx(17.0)   # 16 + 1 s gap
+    assert min_interval(16, refresh=7.0) == pytest.approx(8.0)   # a legacy show
 
 
 def test_the_next_refresh_may_start_one_second_after_the_previous_is_complete():
@@ -245,7 +286,7 @@ def test_a_sweep_adds_its_span_before_the_gap():
     found, _ = validate([swept, tight], items, 600, 7.0)
     assert found["b"] == [
         "only 11.5 s after the previous send on radxa-01; at least 12.0 s "
-        "is needed (7.0 s refresh + 4.0 s sweep + 1.0 s gap)"]
+        "is needed (7.0 s panel repaint + 4.0 s sweep + 1.0 s gap)"]
 
 
 def test_a_plain_show_has_no_problems():
@@ -256,18 +297,18 @@ def test_a_plain_show_has_no_problems():
 
 
 def test_refreshes_on_one_unit_need_room():
-    # b's picture completes at 107 (7 s refresh); a send from 107 up to
-    # (but not past) 115 is "before the picture is complete", a separate
-    # rule (tested above) - this is about the room a bus needs AFTER that.
+    # b's picture completes at 108 (the 8 s modelled refresh); a send from
+    # 108 up to (but not past) 116 is "before the picture is complete", a
+    # separate rule (tested above) - this is about the room AFTER that.
     b = cue("b", "Look22", 100, "p2")
-    tight = cue("c", "Look22", 107.3, "p1")       # 7.3 s after send: too tight
+    tight = cue("c", "Look22", 108.3, "p1")       # 8.3 s after send: too tight
     found, _ = problems([b, tight])
     assert found["c"] == [
-        "only 7.3 s after the previous send on radxa-03; at least 8.0 s "
-        "is needed (7.0 s refresh + 1.0 s gap)"]
-    # 8 s apart (refresh + the 1 s gap) is enough room at a 7 s refresh -
-    # not at a 16 s one, where that same gap needs 17 s.
-    fine = cue("c", "Look22", 108, "p1")
+        "only 8.3 s after the previous send on radxa-03; at least 9.0 s "
+        "is needed (8.0 s refresh + 1.0 s gap)"]
+    # 9 s apart (refresh + the 1 s gap) is enough room at the 8 s default -
+    # not at a 16 s refresh, where that same gap needs 17 s.
+    fine = cue("c", "Look22", 109, "p1")
     assert problems([b, fine])[0]["c"] == []
     tight16 = cue("c", "Look22", 116.3, "p1")     # 16.3 s after send
     found, _ = validate([b, tight16], ITEMS, 600, refresh=16)
@@ -302,10 +343,10 @@ def test_items_sharing_a_unit_share_its_bus():
     assert found["a"] == found["b"] == []           # one refresh for both
     staggered = [cue("a", "Look20-Top", 53, "t1"),
                  cue("b", "Look20-Skirt", 59, "s1")]     # 6 s: short of the
-    found, _ = problems(staggered)                       # 8 s refresh+gap floor
+    found, _ = problems(staggered)                       # 9 s refresh+gap floor
     assert found["b"] == [
-        "only 6.0 s after the previous send on radxa-02; at least 8.0 s "
-        "is needed (7.0 s refresh + 1.0 s gap)"]
+        "only 6.0 s after the previous send on radxa-02; at least 9.0 s "
+        "is needed (8.0 s refresh + 1.0 s gap)"]
     # Another unit is another bus: no conflict with Look22 ten seconds on.
     found, _ = problems(same_moment + [cue("c", "Look22", 63, "p1")])
     assert found["c"] == []
@@ -324,7 +365,7 @@ def test_a_sweep_on_one_item_of_a_shared_unit_sets_the_room_for_both():
     found, _ = validate([top, skirt, next_top], ITEMS, 600, 7.0)
     assert found["c"] == [
         "only 12.0 s after the previous send on radxa-02; at least 13.0 s "
-        "is needed (7.0 s refresh + 5.0 s sweep + 1.0 s gap)"]
+        "is needed (7.0 s panel repaint + 5.0 s sweep + 1.0 s gap)"]
     next_top["at"] = 53 + 13
     found, _ = validate([top, skirt, next_top], ITEMS, 600, 7.0)
     assert found["c"] == []
@@ -454,3 +495,60 @@ def test_a_cue_inherits_its_designs_transition_and_may_override_it():
                                "source": "design"}
     assert cues[1]["sweep"] == {"sequence": "center", "span_s": 1.5,
                                "source": "cue"}
+
+
+def test_what_a_unit_is_told_keeps_its_guard_after_the_real_end():
+    """panel_refresh() is the `refresh_s` conductor/showfile.py puts in a
+    unit's show file, and the unit places its guard STOP (the broadcast
+    0x17 that stops a finished slot running into the factory autoplay) at
+    `refresh_s + span + margin` after the fire - ui/runner.py's
+    _guard_for(), margin = guard_delay - GUARD_REFRESH_S. The arithmetic
+    is repeated here so the two sides cannot drift apart silently.
+    """
+    import inspect
+
+    from ui.runner import GUARD_MAX_S, GUARD_REFRESH_S, DemoRunner
+
+    guard_delay = inspect.signature(DemoRunner.__init__) \
+        .parameters["guard_delay"].default
+    assert (guard_delay, GUARD_REFRESH_S) == (12.0, 7.0)
+    margin = max(0.0, guard_delay - GUARD_REFRESH_S)        # 5.0 s
+
+    def guard(refresh_s, span):                             # _guard_for()
+        return max(guard_delay, min(GUARD_MAX_S, refresh_s + span + margin))
+
+    natural = cue("a", "Look22", 60, "p1")
+    swept = cue("b", "Look22", 60, "g1.csv")
+    swept["sweep"] = {"sequence": "top_down", "span_s": 1.0, "source": "cue"}
+    swept["span"] = 1.0
+
+    # What the unit is told, with the show at the 8 s default: the cue's
+    # own refresh, floored at one physical repaint.
+    assert panel_refresh(natural) == panel_refresh(swept) == 8.0
+    # A legacy show (7.0 s) is exactly at the floor; a bench show below it
+    # is lifted to it, because a board really does take PANEL_REPAINT_S.
+    assert panel_refresh(natural, refresh=7.0) == 7.0
+    assert panel_refresh(natural, refresh=1.0) == PANEL_REPAINT_S
+    # ...and a board on older firmware keeps its own, longer value.
+    assert panel_refresh(cue("c", "Look22", 60, "p1", refresh_s=16.0)) == 16.0
+
+    # The guard must land AFTER the picture is really finished. A swept
+    # production cue is done at PANEL_REPAINT_S + 1 = 8 s; the guard is
+    # 14 s with what we send (8.0), 13 s if we sent the bare repaint, so
+    # neither can fall inside the sweep.
+    real_end = PANEL_REPAINT_S + 1.0
+    assert real_end == 8.0 == complete_s(swept)
+    assert guard(panel_refresh(swept), 1.0) == 14.0 > real_end
+    assert guard(PANEL_REPAINT_S, 1.0) == 13.0 > real_end
+    assert guard(panel_refresh(natural), 0.0) == 13.0 > PANEL_REPAINT_S
+
+    # It does NOT land before the next send at the new 9 s minimum - and
+    # cannot be made to: the flat guard_delay floor alone is 12 s, which
+    # already exceeded the old 8 s minimum too. Every fire RESETS the
+    # deadline (ui/runner.py: `guard_due = time.monotonic() +
+    # self._guard_for(session)` on each fire), so between two cues the
+    # STOP is simply never sent - the next cue's own trigger is what keeps
+    # the board off the factory autoplay, and the STOP goes out after the
+    # last cue of the run.
+    assert min_interval(16) == 9.0 < guard_delay
+    assert guard(PANEL_REPAINT_S, 1.0) > min_interval(16)
