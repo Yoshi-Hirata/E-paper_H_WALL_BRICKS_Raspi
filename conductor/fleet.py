@@ -263,8 +263,21 @@ class UnitLink:
                 "name": self.name, "address": self.address,
                 "online": self.online, "error": self.error,
                 "rtt_ms": None if self.rtt is None else round(self.rtt * 1000, 1),
+                # NOT a lag: half of the best round trip, i.e. the WIDTH of
+                # the error bar on this unit's clock ("+-3 ms"). The tile
+                # calls it "clock accuracy" for that reason. How far the
+                # unit's show clock actually is from this PC's is
+                # `show_lag_ms`, added by Fleet._unit_snapshot() - the raw
+                # `offset` cannot be it, since the two monotonic clocks
+                # count from two different boots and their difference is
+                # some arbitrary number of seconds.
                 "sync_ms": None if best is None else round(best[0] * 500, 1),
                 "samples": len(self._samples),
+                # Seconds since the agent started (ui/agent.py). The NOW ->
+                # NEXT board says "restarted 3 min ago" while this is small,
+                # which is the one thing that explains a unit that lost its
+                # pictures mid-show.
+                "uptime_s": status.get("uptime_s"),
                 "host": status.get("host"), "commit": status.get("commit"),
                 "phase": status.get("phase"), "cue": status.get("cue"),
                 "label": status.get("label"),
@@ -480,7 +493,7 @@ class Fleet:
         reporting = [b for b in reporting if b is not _NO_BURN_KEY]
         burned = sum(1 for b in reporting
                      if isinstance(b, dict) and b.get("state") == "burned")
-        return {"units": [self._unit_snapshot(link)
+        return {"units": [self._unit_snapshot(link, run)
                           for link in self.links.values()],
                 "last_fire": self.last_fire, "run": run,
                 "shows": {unit: {"id": show["id"], "cues": len(show["cues"])}
@@ -490,7 +503,7 @@ class Fleet:
                 "show_duration": duration if self.shows else None,
                 "burn": {"burned": burned, "total": len(reporting)}}
 
-    def _unit_snapshot(self, link) -> dict:
+    def _unit_snapshot(self, link, run: "dict | None" = None) -> dict:
         """The unit's tile, the demos it holds (the cache the poll loop
         keeps, so a tile costs no request - see demos_of()), plus the last
         thing it refused this conductor's supervision ("run refused: still
@@ -502,7 +515,45 @@ class Fleet:
         return dict(link.snapshot(),
                     refused=None if refused is None
                     else f"{refused[0]} refused: {refused[1]}",
+                    show_lag_ms=self._show_lag_ms(link, run),
                     demos=self.demos_of(link.name))
+
+    def _show_lag_ms(self, link, run: "dict | None") -> "float | None":
+        """How far this unit's show clock is behind this PC's, in ms -
+        the honest answer to "how late is that garment?".
+
+        The unit runs the show off a T0 in its OWN monotonic clock; this
+        PC's T0 translated into that clock is `run["t0"] + offset` (the
+        same arithmetic _supervise() corrects a unit with). Whatever is
+        left is the disagreement:
+
+            lag = unit_t0 - (run_t0 + offset)
+
+        A LATER T0 on the unit means it thinks the show started later
+        than this PC does, so its position is that much smaller: positive
+        = the unit is BEHIND this PC. Normally a millisecond or two, and
+        never more than T0_TOLERANCE_S for long, since _supervise() puts
+        a unit further out than that right.
+
+        None when there is nothing to compare: no run, no clock
+        measurement, an offline unit (its last status is however old the
+        silence is, and a number from then is worse than no number), a
+        unit not running this conductor's show (a demo, an old upload,
+        one that has not answered), or one on hold - held units carry the
+        position, not a T0.
+        """
+        if not run or run.get("state") != "running" or not link.online:
+            return None
+        offset = link.offset
+        show = self.shows.get(link.name)
+        unit = (link.status or {}).get("show")
+        if offset is None or show is None or not isinstance(unit, dict):
+            return None
+        if unit.get("id") != show["id"] or unit.get("t0") is None:
+            return None
+        if unit.get("state") not in ("running", "ended"):
+            return None
+        return round((unit["t0"] - (run["t0"] + offset)) * 1000, 1)
 
     def _raw_burn(self, name: str):
         """Whatever this unit currently reports as `status.show.burn`,
