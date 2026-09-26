@@ -5391,6 +5391,675 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   },
   {
    "expect": {
+    "kind": "map",
+    "normalized": "Sample_map.csv",
+    "parts": [
+     null,
+     null,
+     "Sample_map"
+    ],
+    "problem": null
+   },
+   "filename": "Sample_map.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Sample_color_pattern01_grid.csv",
+    "parts": [
+     "Sample",
+     1,
+     "P01"
+    ],
+    "problem": null
+   },
+   "filename": "Sample_color_pattern01_grid.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv",
+    "parts": [
+     "Look22",
+     null,
+     "ref_multicolor_redorange_s22"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1301_1_HW.csv",
+    "parts": [
+     "AZ271SD1301",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1301_summer_2_HW.csv",
+    "parts": [
+     "AZ271SD1301",
+     null,
+     "summer_2"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_summer_2_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1301_summer_2_HW.csv",
+    "parts": [
+     "AZ271SD1301",
+     null,
+     "summer_2"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_summer_2_HW.csv",
+   "items": [
+    "AZ271SD1301"
+   ],
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1305_B_1_HW.csv",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "B_1"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1305_B_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1305_B_1_HW.csv",
+    "parts": [
+     "AZ271SD1305_B",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1305_B_1_HW.csv",
+   "items": [
+    "AZ271SD1305",
+    "AZ271SD1305_B"
+   ],
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1301_pattern03_HW.csv",
+    "parts": [
+     "AZ271SD1301",
+     3,
+     "P03"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_pattern03_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "AZ271SD1301_HW.csv",
+    "parts": [
+     null,
+     null,
+     "AZ271SD1301_HW"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1305_\uff11_HW.csv",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "\uff11"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1305_\uff11_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1305_\uff11_HW.csv",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "\uff11"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1305_\uff11_HW.csv",
+   "items": [
+    "AZ271SD1305"
+   ],
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1305_color_\u67c4A_grid.csv",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "\u67c4A"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1305_color_\u67c4A_grid.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1305_\u590f_\uff12_HW.csv",
+    "parts": [
+     "AZ271SD1305",
+     null,
+     "\u590f_\uff12"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1305_\u590f_\uff12_HW.csv",
+   "items": [
+    "AZ271SD1305"
+   ],
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\u67c4\u30fbA_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\u67c4\u30fbA"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\u67c4\u30fbA_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\u67c4 A_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\u67c4 A"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\u67c4\u3000A_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\uff08A\uff09_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\uff08A\uff09"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\uff08A\uff09_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\u67c4\uff0bA_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\u67c4\uff0bA"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\u67c4\uff0bA_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\u304b\u309a_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\u304b\u309a"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\u304b\u309a_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_a\uff1ab_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "a\uff1ab"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_a\uff1ab_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a:b_HW.csv",
+    "parts": [
+     null,
+     null,
+     "Look22_a:b_HW"
+    ],
+    "problem": "a file name cannot contain \":\" (Windows keeps it)"
+   },
+   "filename": "Look22_a:b_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a/b_HW.csv",
+    "parts": [
+     null,
+     null,
+     "b_HW"
+    ],
+    "problem": "a file name cannot contain \"/\" (a path separator)"
+   },
+   "filename": "Look22_a/b_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a\uff0fb_HW.csv",
+    "parts": [
+     null,
+     null,
+     "Look22_a\uff0fb_HW"
+    ],
+    "problem": "a file name cannot contain \"\uff0f\" (a path separator)"
+   },
+   "filename": "Look22_a\uff0fb_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a\uff3cb_HW.csv",
+    "parts": [
+     null,
+     null,
+     "Look22_a\uff3cb_HW"
+    ],
+    "problem": "a file name cannot contain \"\uff3c\" (a path separator)"
+   },
+   "filename": "Look22_a\uff3cb_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a|b_HW.csv",
+    "parts": [
+     null,
+     null,
+     "Look22_a|b_HW"
+    ],
+    "problem": "a file name cannot contain \"|\" (Windows keeps it)"
+   },
+   "filename": "Look22_a|b_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": ".Look22_map.csv",
+    "parts": [
+     null,
+     null,
+     ".Look22_map"
+    ],
+    "problem": "a file name cannot start or end with a dot"
+   },
+   "filename": ".Look22_map.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_1_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "  Look22_1_HW.csv  ",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "\u0085Look22_1_HW.csv",
+    "parts": [
+     null,
+     null,
+     "\u0085Look22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "\u0085Look22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW.csv\u0085",
+    "parts": [
+     null,
+     null,
+     "Look22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "Look22_1_HW.csv\u0085",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "\u001cLook22_1_HW.csv",
+    "parts": [
+     null,
+     null,
+     "\u001cLook22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "\u001cLook22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW.csv\u001f",
+    "parts": [
+     null,
+     null,
+     "Look22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "Look22_1_HW.csv\u001f",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "\ufeffLook22_1_HW.csv",
+    "parts": [
+     "\ufeffLook22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "\ufeffLook22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "\u00a0Look22_1_HW.csv",
+    "parts": [
+     "\u00a0Look22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "\u00a0Look22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "\u2028Look22_1_HW.csv",
+    "parts": [
+     null,
+     null,
+     "\u2028Look22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "\u2028Look22_1_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_1_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "\u3000Look22_1_HW.csv\u3000",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "\tLook22_1_HW.csv\n",
+    "parts": [
+     null,
+     null,
+     "\tLook22_1_HW"
+    ],
+    "problem": "a file name cannot contain a line break or a control character"
+   },
+   "filename": "\tLook22_1_HW.csv\n",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW.csv.",
+    "parts": [
+     null,
+     null,
+     "Look22_1_HW.csv"
+    ],
+    "problem": "a file name cannot start or end with a dot"
+   },
+   "filename": "Look22_1_HW.csv.",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW.",
+    "parts": [
+     null,
+     null,
+     "Look22_1_HW"
+    ],
+    "problem": "a file name cannot start or end with a dot"
+   },
+   "filename": "Look22_1_HW.",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_1_HW",
+    "parts": [
+     "Look22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_1_HW",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "my_notes_hw.csv",
+    "parts": [
+     null,
+     null,
+     "my_notes_hw"
+    ],
+    "problem": null
+   },
+   "filename": "my_notes_hw.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "AZ271SD1301_map_HW.csv",
+    "parts": [
+     null,
+     null,
+     "AZ271SD1301_map_HW"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_map_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1301_pattern\uff11_HW.csv",
+    "parts": [
+     "AZ271SD1301",
+     null,
+     "pattern\uff11"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_pattern\uff11_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "notes.csv",
+    "parts": [
+     null,
+     null,
+     "notes"
+    ],
+    "problem": null
+   },
+   "filename": "notes.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Sample_map.txt",
+    "parts": [
+     null,
+     null,
+     "Sample_map"
+    ],
+    "problem": null
+   },
+   "filename": "Sample_map.txt",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
     "map": {
      "boardNos": [
       17,
@@ -6031,6 +6700,957 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   },
   {
    "expect": {
+    "map": {
+     "boardNos": [
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99,
+      100,
+      101,
+      102,
+      103,
+      104,
+      107,
+      108,
+      109,
+      110,
+      111,
+      114,
+      115,
+      116,
+      117,
+      118
+     ],
+     "item": "AZ271SD1301",
+     "name": "AZ271SD1301_map.csv",
+     "scales": [
+      [
+       "front",
+       18,
+       21,
+       92,
+       14,
+       "092-14"
+      ],
+      [
+       "front",
+       18,
+       22,
+       92,
+       15,
+       "092-15"
+      ],
+      [
+       "front",
+       33,
+       20,
+       92,
+       35,
+       "092-35"
+      ],
+      [
+       "front",
+       33,
+       18,
+       92,
+       37,
+       "092-37"
+      ],
+      [
+       "front",
+       33,
+       16,
+       92,
+       38,
+       "092-38"
+      ],
+      [
+       "front",
+       33,
+       21,
+       93,
+       35,
+       "093-35"
+      ],
+      [
+       "front",
+       33,
+       19,
+       93,
+       36,
+       "093-36"
+      ],
+      [
+       "front",
+       33,
+       17,
+       93,
+       37,
+       "093-37"
+      ],
+      [
+       "front",
+       18,
+       20,
+       93,
+       46,
+       "093-46"
+      ],
+      [
+       "front",
+       18,
+       16,
+       93,
+       50,
+       "093-50"
+      ],
+      [
+       "front",
+       18,
+       23,
+       94,
+       17,
+       "094-17"
+      ],
+      [
+       "front",
+       18,
+       19,
+       94,
+       48,
+       "094-48"
+      ],
+      [
+       "front",
+       18,
+       18,
+       94,
+       49,
+       "094-49"
+      ],
+      [
+       "front",
+       18,
+       17,
+       94,
+       50,
+       "094-50"
+      ],
+      [
+       "front",
+       18,
+       14,
+       95,
+       14,
+       "095-14"
+      ],
+      [
+       "front",
+       18,
+       10,
+       95,
+       49,
+       "095-49"
+      ],
+      [
+       "front",
+       18,
+       15,
+       96,
+       14,
+       "096-14"
+      ],
+      [
+       "front",
+       33,
+       15,
+       96,
+       24,
+       "096-24"
+      ],
+      [
+       "front",
+       33,
+       13,
+       96,
+       25,
+       "096-25"
+      ],
+      [
+       "front",
+       33,
+       12,
+       96,
+       26,
+       "096-26"
+      ],
+      [
+       "front",
+       33,
+       10,
+       96,
+       27,
+       "096-27"
+      ],
+      [
+       "front",
+       18,
+       8,
+       96,
+       46,
+       "096-46"
+      ],
+      [
+       "front",
+       18,
+       13,
+       97,
+       14,
+       "097-14"
+      ],
+      [
+       "front",
+       18,
+       12,
+       97,
+       15,
+       "097-15"
+      ],
+      [
+       "front",
+       33,
+       14,
+       97,
+       24,
+       "097-24"
+      ],
+      [
+       "front",
+       33,
+       11,
+       97,
+       27,
+       "097-27"
+      ],
+      [
+       "front",
+       18,
+       9,
+       97,
+       48,
+       "097-48"
+      ],
+      [
+       "front",
+       18,
+       11,
+       97,
+       50,
+       "097-50"
+      ],
+      [
+       "front",
+       0,
+       24,
+       98,
+       1,
+       "098-01"
+      ],
+      [
+       "front",
+       0,
+       25,
+       98,
+       2,
+       "098-02"
+      ],
+      [
+       "front",
+       0,
+       27,
+       98,
+       4,
+       "098-04"
+      ],
+      [
+       "front",
+       0,
+       28,
+       98,
+       5,
+       "098-05"
+      ],
+      [
+       "front",
+       0,
+       30,
+       98,
+       6,
+       "098-06"
+      ],
+      [
+       "front",
+       0,
+       23,
+       98,
+       59,
+       "098-59"
+      ],
+      [
+       "front",
+       0,
+       22,
+       98,
+       60,
+       "098-60"
+      ],
+      [
+       "front",
+       0,
+       26,
+       99,
+       4,
+       "099-04"
+      ],
+      [
+       "front",
+       0,
+       29,
+       99,
+       5,
+       "099-05"
+      ],
+      [
+       "front",
+       0,
+       21,
+       99,
+       60,
+       "099-60"
+      ],
+      [
+       "front",
+       0,
+       15,
+       100,
+       1,
+       "100-01"
+      ],
+      [
+       "front",
+       0,
+       17,
+       100,
+       3,
+       "100-03"
+      ],
+      [
+       "front",
+       0,
+       18,
+       100,
+       4,
+       "100-04"
+      ],
+      [
+       "front",
+       0,
+       14,
+       100,
+       60,
+       "100-60"
+      ],
+      [
+       "front",
+       0,
+       19,
+       101,
+       4,
+       "101-04"
+      ],
+      [
+       "front",
+       0,
+       12,
+       101,
+       59,
+       "101-59"
+      ],
+      [
+       "front",
+       0,
+       13,
+       101,
+       60,
+       "101-60"
+      ],
+      [
+       "front",
+       0,
+       16,
+       102,
+       2,
+       "102-02"
+      ],
+      [
+       "front",
+       0,
+       20,
+       102,
+       5,
+       "102-05"
+      ],
+      [
+       "front",
+       0,
+       7,
+       103,
+       2,
+       "103-02"
+      ],
+      [
+       "front",
+       0,
+       11,
+       103,
+       5,
+       "103-05"
+      ],
+      [
+       "front",
+       0,
+       2,
+       103,
+       58,
+       "103-58"
+      ],
+      [
+       "front",
+       0,
+       4,
+       103,
+       60,
+       "103-60"
+      ],
+      [
+       "front",
+       0,
+       6,
+       104,
+       1,
+       "104-01"
+      ],
+      [
+       "front",
+       0,
+       8,
+       104,
+       3,
+       "104-03"
+      ],
+      [
+       "front",
+       0,
+       9,
+       104,
+       4,
+       "104-04"
+      ],
+      [
+       "front",
+       0,
+       10,
+       104,
+       5,
+       "104-05"
+      ],
+      [
+       "front",
+       0,
+       1,
+       104,
+       57,
+       "104-57"
+      ],
+      [
+       "front",
+       0,
+       3,
+       104,
+       59,
+       "104-59"
+      ],
+      [
+       "front",
+       0,
+       5,
+       104,
+       60,
+       "104-60"
+      ],
+      [
+       "back",
+       18,
+       8,
+       107,
+       13,
+       "107-13"
+      ],
+      [
+       "back",
+       18,
+       10,
+       107,
+       14,
+       "107-14"
+      ],
+      [
+       "back",
+       34,
+       12,
+       107,
+       31,
+       "107-31"
+      ],
+      [
+       "back",
+       34,
+       13,
+       107,
+       33,
+       "107-33"
+      ],
+      [
+       "back",
+       34,
+       14,
+       107,
+       35,
+       "107-35"
+      ],
+      [
+       "back",
+       18,
+       15,
+       107,
+       51,
+       "107-51"
+      ],
+      [
+       "back",
+       18,
+       12,
+       107,
+       52,
+       "107-52"
+      ],
+      [
+       "back",
+       18,
+       11,
+       108,
+       13,
+       "108-13"
+      ],
+      [
+       "back",
+       18,
+       9,
+       108,
+       14,
+       "108-14"
+      ],
+      [
+       "back",
+       34,
+       10,
+       108,
+       27,
+       "108-27"
+      ],
+      [
+       "back",
+       34,
+       11,
+       108,
+       28,
+       "108-28"
+      ],
+      [
+       "back",
+       34,
+       15,
+       108,
+       35,
+       "108-35"
+      ],
+      [
+       "back",
+       18,
+       13,
+       108,
+       51,
+       "108-51"
+      ],
+      [
+       "back",
+       18,
+       14,
+       108,
+       52,
+       "108-52"
+      ],
+      [
+       "back",
+       0,
+       12,
+       109,
+       1,
+       "109-01"
+      ],
+      [
+       "back",
+       0,
+       11,
+       109,
+       2,
+       "109-02"
+      ],
+      [
+       "back",
+       0,
+       8,
+       109,
+       4,
+       "109-04"
+      ],
+      [
+       "back",
+       0,
+       5,
+       109,
+       5,
+       "109-05"
+      ],
+      [
+       "back",
+       0,
+       3,
+       109,
+       6,
+       "109-06"
+      ],
+      [
+       "back",
+       0,
+       15,
+       109,
+       59,
+       "109-59"
+      ],
+      [
+       "back",
+       0,
+       13,
+       109,
+       60,
+       "109-60"
+      ],
+      [
+       "back",
+       0,
+       7,
+       110,
+       4,
+       "110-04"
+      ],
+      [
+       "back",
+       0,
+       6,
+       110,
+       5,
+       "110-05"
+      ],
+      [
+       "back",
+       0,
+       14,
+       110,
+       60,
+       "110-60"
+      ],
+      [
+       "back",
+       0,
+       10,
+       111,
+       2,
+       "111-02"
+      ],
+      [
+       "back",
+       0,
+       9,
+       111,
+       3,
+       "111-03"
+      ],
+      [
+       "back",
+       0,
+       4,
+       111,
+       5,
+       "111-05"
+      ],
+      [
+       "back",
+       18,
+       19,
+       114,
+       12,
+       "114-12"
+      ],
+      [
+       "back",
+       18,
+       16,
+       114,
+       13,
+       "114-13"
+      ],
+      [
+       "back",
+       34,
+       17,
+       114,
+       27,
+       "114-27"
+      ],
+      [
+       "back",
+       34,
+       18,
+       114,
+       28,
+       "114-28"
+      ],
+      [
+       "back",
+       18,
+       23,
+       114,
+       50,
+       "114-50"
+      ],
+      [
+       "back",
+       18,
+       17,
+       115,
+       12,
+       "115-12"
+      ],
+      [
+       "back",
+       18,
+       18,
+       115,
+       13,
+       "115-13"
+      ],
+      [
+       "back",
+       34,
+       16,
+       115,
+       26,
+       "115-26"
+      ],
+      [
+       "back",
+       34,
+       19,
+       115,
+       31,
+       "115-31"
+      ],
+      [
+       "back",
+       34,
+       20,
+       115,
+       34,
+       "115-34"
+      ],
+      [
+       "back",
+       34,
+       21,
+       115,
+       35,
+       "115-35"
+      ],
+      [
+       "back",
+       18,
+       22,
+       115,
+       49,
+       "115-49"
+      ],
+      [
+       "back",
+       18,
+       21,
+       115,
+       50,
+       "115-50"
+      ],
+      [
+       "back",
+       18,
+       20,
+       115,
+       51,
+       "115-51"
+      ],
+      [
+       "back",
+       0,
+       21,
+       116,
+       1,
+       "116-01"
+      ],
+      [
+       "back",
+       0,
+       20,
+       116,
+       2,
+       "116-02"
+      ],
+      [
+       "back",
+       0,
+       19,
+       116,
+       3,
+       "116-03"
+      ],
+      [
+       "back",
+       0,
+       18,
+       116,
+       4,
+       "116-04"
+      ],
+      [
+       "back",
+       0,
+       16,
+       116,
+       5,
+       "116-05"
+      ],
+      [
+       "back",
+       0,
+       28,
+       116,
+       56,
+       "116-56"
+      ],
+      [
+       "back",
+       0,
+       27,
+       116,
+       58,
+       "116-58"
+      ],
+      [
+       "back",
+       0,
+       24,
+       116,
+       59,
+       "116-59"
+      ],
+      [
+       "back",
+       0,
+       22,
+       116,
+       60,
+       "116-60"
+      ],
+      [
+       "back",
+       0,
+       17,
+       117,
+       4,
+       "117-04"
+      ],
+      [
+       "back",
+       0,
+       26,
+       117,
+       57,
+       "117-57"
+      ],
+      [
+       "back",
+       0,
+       25,
+       117,
+       59,
+       "117-59"
+      ],
+      [
+       "back",
+       0,
+       23,
+       118,
+       60,
+       "118-60"
+      ]
+     ],
+     "shifts": {
+      "back|0": 0.5,
+      "back|18": 0.5,
+      "back|34": 0.5,
+      "front|0": 0.5,
+      "front|18": 0.5,
+      "front|33": 0.5
+     },
+     "sides": [
+      "front",
+      "back"
+     ],
+     "warnings": []
+    },
+    "ok": true
+   },
+   "fixture": "AZ271SD1301_map.csv",
+   "kind": "map",
+   "opts": {
+    "item": "AZ271SD1301",
+    "name": "AZ271SD1301_map.csv"
+   }
+  },
+  {
+   "expect": {
     "design": {
      "colors": {
       "back|0|2": 5,
@@ -6038,6 +7658,11 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
       "front|1|1": 3,
       "front|1|2": 0
      },
+     "cols": [
+      1,
+      2,
+      3
+     ],
      "item": "Sample",
      "label": "P01",
      "name": "Sample_color_pattern01_grid.csv",
@@ -6066,6 +7691,9 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
       "front|0|1": 11,
       "front|1|1": 10
      },
+     "cols": [
+      1
+     ],
      "item": "Skirt",
      "label": "P01",
      "name": "Skirt_color_pattern01_grid.csv",
@@ -6094,6 +7722,11 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
       "front|0|1": 15,
       "front|1|1": 3
      },
+     "cols": [
+      1,
+      2,
+      3
+     ],
      "item": "Sample",
      "label": "undecided",
      "name": "Sample_color_undecided_grid.csv",
@@ -6125,6 +7758,11 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
       "front|0|1": 15,
       "front|1|1": 3
      },
+     "cols": [
+      1,
+      2,
+      3
+     ],
      "item": "Sample",
      "label": "zerowhite",
      "name": "Sample_color_zerowhite_grid.csv",
@@ -6158,6 +7796,188 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    "opts": {
     "item": "Sample",
     "name": "Sample_color_extracells_grid.csv",
+    "pattern": null
+   }
+  },
+  {
+   "expect": {
+    "design": {
+     "colors": {
+      "back|0|10": 4,
+      "back|0|11": 4,
+      "back|0|12": 4,
+      "back|0|13": 4,
+      "back|0|14": 4,
+      "back|0|15": 4,
+      "back|0|16": 4,
+      "back|0|17": 4,
+      "back|0|18": 4,
+      "back|0|19": 4,
+      "back|0|20": 4,
+      "back|0|21": 4,
+      "back|0|22": 4,
+      "back|0|23": 4,
+      "back|0|24": 4,
+      "back|0|25": 4,
+      "back|0|26": 4,
+      "back|0|27": 4,
+      "back|0|28": 4,
+      "back|0|3": 4,
+      "back|0|4": 4,
+      "back|0|5": 4,
+      "back|0|6": 4,
+      "back|0|7": 4,
+      "back|0|8": 4,
+      "back|0|9": 4,
+      "back|18|10": 4,
+      "back|18|11": 4,
+      "back|18|12": 4,
+      "back|18|13": 4,
+      "back|18|14": 4,
+      "back|18|15": 4,
+      "back|18|16": 4,
+      "back|18|17": 4,
+      "back|18|18": 4,
+      "back|18|19": 4,
+      "back|18|20": 4,
+      "back|18|21": 4,
+      "back|18|22": 4,
+      "back|18|23": 4,
+      "back|18|8": 4,
+      "back|18|9": 4,
+      "front|0|1": 4,
+      "front|0|10": 4,
+      "front|0|11": 4,
+      "front|0|12": 4,
+      "front|0|13": 4,
+      "front|0|14": 4,
+      "front|0|15": 4,
+      "front|0|16": 4,
+      "front|0|17": 4,
+      "front|0|18": 4,
+      "front|0|19": 4,
+      "front|0|2": 4,
+      "front|0|20": 4,
+      "front|0|21": 4,
+      "front|0|22": 4,
+      "front|0|23": 4,
+      "front|0|24": 4,
+      "front|0|25": 4,
+      "front|0|26": 4,
+      "front|0|27": 4,
+      "front|0|28": 4,
+      "front|0|29": 4,
+      "front|0|3": 4,
+      "front|0|30": 4,
+      "front|0|4": 4,
+      "front|0|5": 4,
+      "front|0|6": 4,
+      "front|0|7": 4,
+      "front|0|8": 4,
+      "front|0|9": 4,
+      "front|18|10": 4,
+      "front|18|11": 4,
+      "front|18|12": 4,
+      "front|18|13": 4,
+      "front|18|14": 4,
+      "front|18|15": 4,
+      "front|18|16": 4,
+      "front|18|17": 4,
+      "front|18|18": 4,
+      "front|18|19": 4,
+      "front|18|20": 4,
+      "front|18|21": 4,
+      "front|18|22": 4,
+      "front|18|23": 4,
+      "front|18|8": 4,
+      "front|18|9": 4
+     },
+     "cols": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31
+     ],
+     "item": "AZ271SD1301",
+     "label": "1",
+     "name": "AZ271SD1301_1_HW.csv",
+     "pattern": null,
+     "shifts": {
+      "back|0": 0.5,
+      "back|1": 0.5,
+      "back|10": 0.0,
+      "back|11": 0.5,
+      "back|12": 0.0,
+      "back|13": 0.5,
+      "back|14": 0.0,
+      "back|15": 0.5,
+      "back|16": 0.0,
+      "back|17": 0.5,
+      "back|18": 0.5,
+      "back|2": 0.0,
+      "back|3": 0.5,
+      "back|4": 0.0,
+      "back|5": 0.5,
+      "back|6": 0.0,
+      "back|7": 0.5,
+      "back|8": 0.0,
+      "back|9": 0.5,
+      "front|0": 0.5,
+      "front|1": 0.5,
+      "front|10": 0.0,
+      "front|11": 0.5,
+      "front|12": 0.0,
+      "front|13": 0.5,
+      "front|14": 0.0,
+      "front|15": 0.5,
+      "front|16": 0.0,
+      "front|17": 0.5,
+      "front|18": 0.5,
+      "front|2": 0.0,
+      "front|3": 0.5,
+      "front|4": 0.0,
+      "front|5": 0.5,
+      "front|6": 0.0,
+      "front|7": 0.5,
+      "front|8": 0.0,
+      "front|9": 0.5
+     },
+     "undecided": []
+    },
+    "ok": true
+   },
+   "fixture": "AZ271SD1301_1_HW.csv",
+   "kind": "design",
+   "opts": {
+    "item": "AZ271SD1301",
+    "name": "AZ271SD1301_1_HW.csv",
     "pattern": null
    }
   },
@@ -6294,6 +8114,62 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     "name": "Sample_map.csv"
    },
    "note": "0 typed for white is caught, not lost - even when partial"
+  },
+  {
+   "calls": [
+    false,
+    true
+   ],
+   "designFixture": "AZ271SD1301_1_HW.csv",
+   "designOpts": {
+    "item": "AZ271SD1301",
+    "name": "AZ271SD1301_1_HW.csv",
+    "pattern": null
+   },
+   "expect": {
+    "results": [
+     [
+      "AZ271SD1301_1_HW.csv covers rows 0-18 (front) and 0-18 (back) but this garment's wiring has rows 0-33 (front) and 0-34 (back) with 30 columns - the design was made for another layout of AZ271SD1301; export it again from the current \u914d\u7dda\u30ca\u30d3 (\u914d\u8272) page",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 10 (board 108 socket 27) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 11 (board 108 socket 28) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 12 (board 107 socket 31) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 13 (board 107 socket 33) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 14 (board 107 socket 35) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 15 (board 108 socket 35) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 16 (board 115 socket 26) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 17 (board 114 socket 27) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 18 (board 114 socket 28) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 19 (board 115 socket 31) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 20 (board 115 socket 34) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for back row 34 col 21 (board 115 socket 35) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 10 (board 96 socket 27) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 11 (board 97 socket 27) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 12 (board 96 socket 26) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 13 (board 96 socket 25) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 14 (board 97 socket 24) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 15 (board 96 socket 24) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 16 (board 92 socket 38) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 17 (board 93 socket 37) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 18 (board 92 socket 37) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 19 (board 93 socket 36) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 20 (board 92 socket 35) - 0 means no hole, white is 0x00",
+      "AZ271SD1301_1_HW.csv: no colour for front row 33 col 21 (board 93 socket 35) - 0 means no hole, white is 0x00"
+     ],
+     [
+      "AZ271SD1301_1_HW.csv covers rows 0-18 (front) and 0-18 (back) but this garment's wiring has rows 0-33 (front) and 0-34 (back) with 30 columns - the design was made for another layout of AZ271SD1301; export it again from the current \u914d\u7dda\u30ca\u30d3 (\u914d\u8272) page"
+     ]
+    ],
+    "warningsAfter": [
+     "AZ271SD1301_1_HW.csv: the design's row shift differs from the map on 1 row"
+    ]
+   },
+   "kind": "check",
+   "mapFixture": "AZ271SD1301_map.csv",
+   "mapOpts": {
+    "item": "AZ271SD1301",
+    "name": "AZ271SD1301_map.csv"
+   },
+   "note": "a design made for another layout of the same garment"
   },
   {
    "expect": {
@@ -13343,6 +15219,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   }
  ],
  "fixtureText": {
+  "AZ271SD1301_1_HW.csv": "side,row,shift,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31\nfront,18,0.5,0,0,0,0,0,0,0,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0,0,0,0,0,0,0,0\nfront,17,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,16,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,15,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,14,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,13,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,12,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,11,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,10,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,9,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,8,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,7,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,6,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,5,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,4,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,3,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,2,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,1,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nfront,0,0.5,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0\nback,18,0.5,0,0,0,0,0,0,0,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0,0,0,0,0,0,0,0\nback,17,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,16,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,15,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,14,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,13,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,12,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,11,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,10,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,9,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,8,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,7,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,6,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,5,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,4,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,3,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,2,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,1,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\nback,0,0.5,0,0,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0,0,0\n",
+  "AZ271SD1301_map.csv": "side,row,col,board_no,socket,label,shift\nfront,18,21,92,14,092-14,0.5\nfront,18,22,92,15,092-15,0.5\nfront,33,20,92,35,092-35,0.5\nfront,33,18,92,37,092-37,0.5\nfront,33,16,92,38,092-38,0.5\nfront,33,21,93,35,093-35,0.5\nfront,33,19,93,36,093-36,0.5\nfront,33,17,93,37,093-37,0.5\nfront,18,20,93,46,093-46,0.5\nfront,18,16,93,50,093-50,0.5\nfront,18,23,94,17,094-17,0.5\nfront,18,19,94,48,094-48,0.5\nfront,18,18,94,49,094-49,0.5\nfront,18,17,94,50,094-50,0.5\nfront,18,14,95,14,095-14,0.5\nfront,18,10,95,49,095-49,0.5\nfront,18,15,96,14,096-14,0.5\nfront,33,15,96,24,096-24,0.5\nfront,33,13,96,25,096-25,0.5\nfront,33,12,96,26,096-26,0.5\nfront,33,10,96,27,096-27,0.5\nfront,18,8,96,46,096-46,0.5\nfront,18,13,97,14,097-14,0.5\nfront,18,12,97,15,097-15,0.5\nfront,33,14,97,24,097-24,0.5\nfront,33,11,97,27,097-27,0.5\nfront,18,9,97,48,097-48,0.5\nfront,18,11,97,50,097-50,0.5\nfront,0,24,98,1,098-01,0.5\nfront,0,25,98,2,098-02,0.5\nfront,0,27,98,4,098-04,0.5\nfront,0,28,98,5,098-05,0.5\nfront,0,30,98,6,098-06,0.5\nfront,0,23,98,59,098-59,0.5\nfront,0,22,98,60,098-60,0.5\nfront,0,26,99,4,099-04,0.5\nfront,0,29,99,5,099-05,0.5\nfront,0,21,99,60,099-60,0.5\nfront,0,15,100,1,100-01,0.5\nfront,0,17,100,3,100-03,0.5\nfront,0,18,100,4,100-04,0.5\nfront,0,14,100,60,100-60,0.5\nfront,0,19,101,4,101-04,0.5\nfront,0,12,101,59,101-59,0.5\nfront,0,13,101,60,101-60,0.5\nfront,0,16,102,2,102-02,0.5\nfront,0,20,102,5,102-05,0.5\nfront,0,7,103,2,103-02,0.5\nfront,0,11,103,5,103-05,0.5\nfront,0,2,103,58,103-58,0.5\nfront,0,4,103,60,103-60,0.5\nfront,0,6,104,1,104-01,0.5\nfront,0,8,104,3,104-03,0.5\nfront,0,9,104,4,104-04,0.5\nfront,0,10,104,5,104-05,0.5\nfront,0,1,104,57,104-57,0.5\nfront,0,3,104,59,104-59,0.5\nfront,0,5,104,60,104-60,0.5\nback,18,8,107,13,107-13,0.5\nback,18,10,107,14,107-14,0.5\nback,34,12,107,31,107-31,0.5\nback,34,13,107,33,107-33,0.5\nback,34,14,107,35,107-35,0.5\nback,18,15,107,51,107-51,0.5\nback,18,12,107,52,107-52,0.5\nback,18,11,108,13,108-13,0.5\nback,18,9,108,14,108-14,0.5\nback,34,10,108,27,108-27,0.5\nback,34,11,108,28,108-28,0.5\nback,34,15,108,35,108-35,0.5\nback,18,13,108,51,108-51,0.5\nback,18,14,108,52,108-52,0.5\nback,0,12,109,1,109-01,0.5\nback,0,11,109,2,109-02,0.5\nback,0,8,109,4,109-04,0.5\nback,0,5,109,5,109-05,0.5\nback,0,3,109,6,109-06,0.5\nback,0,15,109,59,109-59,0.5\nback,0,13,109,60,109-60,0.5\nback,0,7,110,4,110-04,0.5\nback,0,6,110,5,110-05,0.5\nback,0,14,110,60,110-60,0.5\nback,0,10,111,2,111-02,0.5\nback,0,9,111,3,111-03,0.5\nback,0,4,111,5,111-05,0.5\nback,18,19,114,12,114-12,0.5\nback,18,16,114,13,114-13,0.5\nback,34,17,114,27,114-27,0.5\nback,34,18,114,28,114-28,0.5\nback,18,23,114,50,114-50,0.5\nback,18,17,115,12,115-12,0.5\nback,18,18,115,13,115-13,0.5\nback,34,16,115,26,115-26,0.5\nback,34,19,115,31,115-31,0.5\nback,34,20,115,34,115-34,0.5\nback,34,21,115,35,115-35,0.5\nback,18,22,115,49,115-49,0.5\nback,18,21,115,50,115-50,0.5\nback,18,20,115,51,115-51,0.5\nback,0,21,116,1,116-01,0.5\nback,0,20,116,2,116-02,0.5\nback,0,19,116,3,116-03,0.5\nback,0,18,116,4,116-04,0.5\nback,0,16,116,5,116-05,0.5\nback,0,28,116,56,116-56,0.5\nback,0,27,116,58,116-58,0.5\nback,0,24,116,59,116-59,0.5\nback,0,22,116,60,116-60,0.5\nback,0,17,117,4,117-04,0.5\nback,0,26,117,57,117-57,0.5\nback,0,25,117,59,117-59,0.5\nback,0,23,118,60,118-60,0.5\n",
   "BadHeader_map.csv": "side,row,col\nfront,0,1\n",
   "BadShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,1,1,17,1,017-01,0\nfront,1,2,17,60,017-60,0\nfront,0,1,20,5,020-05,0.3\nback,0,2,18,12,018-12,0.5\n",
   "BlankShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,1,1,17,1,017-01,0\nfront,1,2,17,60,017-60,0\nfront,0,1,20,5,020-05,\nback,0,2,18,12,018-12,0.5\n",
@@ -13366,6 +15244,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   "SocketRange_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,17,1,\nback,6,6,17,61,\n"
  },
  "fixtures": {
+  "AZ271SD1301_1_HW.csv": "86e39c8e4ee7003e",
+  "AZ271SD1301_map.csv": "329eaa4817689dcc",
   "BadHeader_map.csv": "9df3c47dc984271c",
   "BadShift_map.csv": "0306f9463cae58f3",
   "BlankShift_map.csv": "4c4dd228b074edac",

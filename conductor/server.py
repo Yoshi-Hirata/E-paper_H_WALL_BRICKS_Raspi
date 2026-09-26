@@ -36,6 +36,7 @@ from dataclasses import replace
 import re
 import threading
 import time
+import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +45,10 @@ from . import sequence, showfile, timeline
 from .fleet import DEFAULT_LEAD_S, Fleet, default_units
 from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, default_shift, unit_board_ids)
+from .look import kind as file_kind
+from .look import file_stem, map_item
+from .look import name_problem as look_name_problem
+from .look import normalize_name as look_normalize
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 REPO_DIR = Path(__file__).resolve().parent.parent
@@ -74,12 +79,18 @@ _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # Parts of show.json that never reach a unit: the operator's own notes
 # about the show (see Workspace.revision).
 _REVISION_IGNORES = {"music", "labels"}
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
-_IS_MAP = re.compile(r"_map$", re.IGNORECASE)
-_IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
+# A CSV's name is conductor/look.py's business now (normalize_name /
+# name_problem, the same rule the designers' simulator applies): this one
+# is only for the MUSIC blob, which is a file on disk and nothing else -
+# no cue references it by name, so folding a stray character to "_" costs
+# nothing and saves a whole class of filesystem trouble.
+_SAFE_MUSIC_NAME = re.compile(r"[^\w.\- ]", re.UNICODE)
 _MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
-_COPY_NO = re.compile(r"-\d+$")
-_LOOK_NO = re.compile(r"look\s*0*(\d+)", re.IGNORECASE)
+_COPY_NO = re.compile(r"-[0-9]+$")
+# [0-9], never \d - see conductor/look.py's _PATTERN_NO: Python's \d takes
+# a full-width digit and JavaScript's does not, and conductor/web/sim's
+# LOOK_NO has to agree with this one.
+_LOOK_NO = re.compile(r"look\s*0*([0-9]+)", re.IGNORECASE)
 _MUSIC_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav",
                 ".ogg": "audio/ogg", ".m4a": "audio/mp4"}
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
@@ -87,6 +98,112 @@ _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 def _key(position) -> str:
     return "|".join(str(part) for part in position)
+
+
+def safe_music_name(name: str) -> str:
+    """A name for the music blob on disk. Not a CSV rule: see above."""
+    return _SAFE_MUSIC_NAME.sub(
+        "_", Path(unicodedata.normalize("NFC", str(name))).name)
+
+
+def workspace_name(name: str) -> str:
+    """A CSV's name as this workspace spells it - conductor/look.py's
+    shared rule, on the name the caller actually sent.
+
+    Raises ValueError quoting THAT name and the reason. It refuses rather
+    than folds (review of a6b610b): the old substituting version turned
+    柄・A, 柄　A and 柄＋A into one "柄_A", so three designs quietly
+    overwrote each other. And it does not take the basename first (review
+    of 3fd1a42): doing that dropped a directory in silence, so
+    "sub/AZ_1_HW.csv" became a file of this workspace on the /api/files
+    path while the simulator and import_bundle both refused it - and the
+    error it did raise quoted the stripped name, not what was sent.
+    """
+    problem = look_name_problem(name)
+    if problem:
+        raise ValueError(f"{name}: {problem}")
+    return look_normalize(name)
+
+
+def _renamed_items(renamed: "dict[str, str]") -> "dict[str, str]":
+    """The garment renames implied by the MAP renames in `renamed`.
+
+    A map's name carries the item: respelling AZ271SD1305_map.csv renames
+    the garment too, and the timeline names that garment in four more
+    places than the design references (review of a6b610b).
+    """
+    items: "dict[str, str]" = {}
+    for old, new in renamed.items():
+        if file_kind(new) != "map":
+            continue
+        # The OLD item comes off the raw name: map_item() normalises, so
+        # asking it for both sides would return the same string twice and
+        # find no rename at all.
+        was = _MAP_ITEM.match(file_stem(old))
+        old_item = was.group(1) if was else None
+        new_item = map_item(new)
+        if old_item and new_item and old_item != new_item:
+            items[old_item] = new_item
+    return items
+
+
+def _rename_design_refs(show: dict, renamed: "dict[str, str]") -> dict:
+    """A copy of `show` with every name the import respelled rewritten
+    wherever the timeline uses it.
+
+    Design files are named by a cue's "design" and by a key of
+    "transitions". A MAP's rename is a garment's rename, which the cues'
+    "item" and the "units"/"labels"/"boards" maps all key on. A name the
+    bundle did not carry is composed too - it may well be pointing at
+    something this workspace already holds in NFC - but never invented:
+    a design reference is only rewritten when NFC changes it AND the
+    result is a real design name.
+    """
+    show = dict(show)
+    items = _renamed_items(renamed)
+
+    def rename(name):
+        if not isinstance(name, str):
+            return name
+        if name in renamed:
+            return renamed[name]
+        clean = look_normalize(name)
+        return clean if clean != name and file_kind(clean) is not None else name
+
+    def rename_item(name):
+        if not isinstance(name, str):
+            return name
+        return items.get(name) or items.get(look_normalize(name)) or name
+
+    cues = show.get("cues")
+    if isinstance(cues, list):
+        fresh = []
+        for cue in cues:
+            if not isinstance(cue, dict):
+                fresh.append(cue)
+                continue
+            cue = dict(cue)
+            if "design" in cue:
+                cue["design"] = rename(cue["design"])
+            if "item" in cue:
+                cue["item"] = rename_item(cue["item"])
+            fresh.append(cue)
+        show["cues"] = fresh
+    transitions = show.get("transitions")
+    if isinstance(transitions, dict):
+        show["transitions"] = {rename(k): v for k, v in transitions.items()}
+    for key in ("units", "labels", "boards"):
+        value = show.get(key)
+        if isinstance(value, dict):
+            show[key] = {rename_item(k): v for k, v in value.items()}
+    return show
+
+
+def _known_items(maps: "dict[str, LookMap]") -> "list[str]":
+    """The garments this workspace already has a map for - what tells
+    Design.name_parts() where the item ends in an <item>_<name>_HW.csv
+    whose design name carries underscores of its own."""
+    return [m.item for m in maps.values() if m.item]
 
 
 def music_type(name: str) -> str:
@@ -577,7 +694,7 @@ class Workspace:
         every byte is down; the lock is taken for that swap and the
         commit, never for the streaming itself.
         """
-        safe = _SAFE_NAME.sub("_", Path(name or "music").name) or "music"
+        safe = safe_music_name(name or "music") or "music"
         self.music.mkdir(parents=True, exist_ok=True)
         part = self.music / f"{safe}.{os.getpid()}-{threading.get_ident()}.part"
         try:
@@ -822,24 +939,62 @@ class Workspace:
                              f"(got {len(files)})")
         to_save: "list[tuple[str, str]]" = []
         refused: "list[str]" = []
+        # The bundle's spelling -> this workspace's, for every name NFC
+        # changes: a Japanese 配色案名 that arrives DECOMPOSED (a Mac hands
+        # file names over in NFD) is the same name as the composed one and
+        # must land on the same file. The cues and transitions that name
+        # those files are rewritten to match below, or every one of them
+        # would read "design ... is not loaded" against a file that IS
+        # there under its composed spelling.
+        renamed: "dict[str, str]" = {}
+        claimed: "dict[str, str]" = {}     # saved name -> the spelling that took it
         for name in sorted(files):
             text = files[name]
             if not isinstance(name, str) or not isinstance(text, str):
                 raise ValueError("bundle: files must be name -> text")
             try:
-                # The same rule /api/files applies through Workspace.save()
-                # - but checked here without ever calling it, so a bad
-                # name is refused outright instead of silently renamed.
-                safe = (_SAFE_NAME.search(name) is None
-                        and Path(name).name == name
-                        and self.kind(name) is not None)
+                # The same rule /api/files applies through
+                # Workspace.save(), computed here without ever calling it,
+                # so a name this workspace cannot keep is refused outright
+                # rather than mangled into some other file's name.
+                # Composing it (NFC, plus U+3000 and the outer whitespace)
+                # is the one change allowed, and it is reported.
+                clean = look_normalize(name)
+                # name_problem() first, and Path() only as a backstop:
+                # Path("a:b.csv").name is "b.csv" on Windows and the whole
+                # string on Linux, so leading with it would give the same
+                # bundle two different refusal reasons on two machines.
+                problem = look_name_problem(clean)
+                if not problem and Path(clean).name != clean:
+                    problem = "a bundle's file names may not hold a path"
+                if not problem and self.kind(clean) is None:
+                    problem = ("not a *_map.csv, *_color_NAME_grid.csv "
+                               "or *_HW.csv (the wiring site writes _HW "
+                               "in capitals)")
             except (OSError, ValueError):     # e.g. an embedded NUL byte
-                safe = False
-            if not safe:
-                refused.append(f"{name}: unusable file name")
+                problem = "unusable file name"
+            if problem:
+                refused.append(f"{name}: {problem}")
                 continue
-            to_save.append((name, text))
-        show = dict(show)
+            # Two entries whose composed forms coincide would have had the
+            # second silently overwrite the first, with nothing in
+            # `refused` to say a design had gone missing (review of
+            # a6b610b). Name both spellings and keep neither guess.
+            if clean in claimed:
+                # Both spellings LOOK identical on screen - that is the
+                # whole trouble - so the message says why rather than
+                # printing the same string twice and leaving the designer
+                # to wonder which two files it means.
+                refused.append(
+                    f"{name}: the same file name as {claimed[clean]} once "
+                    "composed - they differ only in how the characters are "
+                    "written; rename one of them")
+                continue
+            claimed[clean] = name
+            if clean != name:
+                renamed[name] = clean
+            to_save.append((clean, text))
+        show = _rename_design_refs(show, renamed)
         # units: only a *populated* mapping counts as "the bundle brought
         # its own" - {"Look22": null} cleans to {}, same as no units key
         # at all, so it cannot wipe every other assignment the operator
@@ -870,6 +1025,7 @@ class Workspace:
         cue_count, warnings = self._apply_show_changes(changes, cues)
         music = payload.get("music") or show.get("music")
         return {"ok": True, "saved": saved, "refused": refused,
+                "renamed": renamed,
                 "overwritten": overwritten, "cues": cue_count,
                 "warnings": warnings, "units_kept": units_kept,
                 "boards_kept": boards_kept,
@@ -877,22 +1033,18 @@ class Workspace:
 
     # ---- files ----
 
-    @staticmethod
-    def kind(name: str) -> "str | None":
-        stem = Path(name).stem
-        if not name.lower().endswith(".csv"):
-            return None
-        if _IS_GRID.search(stem):
-            return "grid"
-        if _IS_MAP.search(stem):
-            return "map"
-        return None
+    # One grammar for both sides of the wire: conductor/look.py's
+    # file_kind() also reads the production site's own
+    # <item>_<配色案名>_HW.csv as a grid, so a file straight from the
+    # "HW 用 CSV" button uploads without being renamed first.
+    kind = staticmethod(file_kind)
 
     def save(self, name: str, text: str) -> str:
-        name = _SAFE_NAME.sub("_", Path(name).name)
+        name = workspace_name(name)          # raises on an unusable name
         if self.kind(name) is None:
-            raise ValueError(f"{name}: not a *_map.csv or "
-                             "*_color_NAME_grid.csv")
+            raise ValueError(f"{name}: not a *_map.csv, "
+                             "*_color_NAME_grid.csv or *_HW.csv (the "
+                             "wiring site writes _HW in capitals)")
         with self._lock:
             # open(), not Path.write_text(newline=...): that is 3.10+, and
             # the units' Python 3.9 should be able to run this too.
@@ -952,7 +1104,8 @@ class Workspace:
                 problems.append(f"{item}: not assigned to a unit")
                 continue
             try:
-                design = Design.from_csv(self.files / Path(design_name).name)
+                design = Design.from_csv(self.files / Path(design_name).name,
+                                         items=_known_items(maps))
                 on_unit = [m for key, m in maps.items()
                            if assigned.get(m.item) == unit]
                 ids = unit_board_ids(on_unit)
@@ -973,8 +1126,14 @@ class Workspace:
                 # grows below with whatever the chosen designs sweep.
                 "refresh_s": float(show.get("refresh_s", timeline.REFRESH_S)),
                 "span_s": 0.0})
+            # showfile.unit_label(): the same fold the timeline's own cue
+            # labels get, for the same reason - this string is drawn on
+            # the unit's screen by a font with no CJK glyphs. The design's
+            # real name, full-width characters and all, stays in the
+            # workspace and on the Conductor's own screens.
             payload["label"] = (payload["label"] + " + " if payload["label"]
-                                else "") + f"{look_map.item} {name}"
+                                else "") + showfile.unit_label(
+                                    f"{look_map.item} {name}")
             payload["boards"].update({str(address): array.hex()
                                       for address, array in arrays.items()})
             # The design's own transition (Designs tab) sweeps a manual
@@ -1142,7 +1301,8 @@ class Workspace:
         for path in paths:
             if self.kind(path.name) == "grid":
                 try:
-                    designs[path.name] = Design.from_csv(path)
+                    designs[path.name] = Design.from_csv(
+                        path, items=_known_items(maps))
                 except (OSError, LookError):
                     pass
         for key, look_map in maps.items():
@@ -1223,8 +1383,9 @@ class Workspace:
         for path in paths:
             if self.kind(path.name) != "grid":
                 continue
+            known = _known_items(maps)
             try:
-                design = Design.from_csv(path)
+                design = Design.from_csv(path, items=known)
                 problems = []
             except (OSError, LookError) as exc:     # deleted meanwhile, too
                 design, problems = None, getattr(exc, "problems", [str(exc)])
@@ -1233,7 +1394,7 @@ class Workspace:
             record = {"name": path.name,
                       "pattern": design.pattern if design else None,
                       "label": (design.label if design
-                                else Design.name_parts(path.name)[2]),
+                                else Design.name_parts(path.name, known)[2]),
                       # problems: as a full cue. partial_problems: as a
                       # cue that leaves uncoloured scales as they are - a
                       # design that only passes that way is a partial one,

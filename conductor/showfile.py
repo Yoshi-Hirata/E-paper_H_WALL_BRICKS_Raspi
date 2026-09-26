@@ -59,7 +59,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import struct
+import unicodedata
 
 from . import timeline
 from .look import (ARRAY_LEN, MARKER, NO_REFRESH, Design, LookError, LookMap,
@@ -87,9 +89,33 @@ def lay_over(state: bytearray, change: bytes) -> None:
             state[index] = change[index]
 
 
+# Everything the unit's own screen cannot draw. ui/render.py writes with
+# DejaVuSans, which has no CJK glyphs at all and whose coverage of the
+# full-width forms is not something to bet a dress rehearsal on: a label
+# it cannot draw comes out as a row of tofu boxes, which tells the
+# operator less than nothing.
+_UNIT_SCREEN = re.compile(r"[^\x20-\x7e]+")
+
+
+def unit_label(text: str) -> str:
+    """A cue label as the UNIT should show it: NFKC, then any run of
+    characters outside printable ASCII as a single "?".
+
+    This is the one place width is folded (2026-09-26, the operator's
+    call): the 配線ナビ writes 配色案名 with full-width characters and the
+    workspace, show.json, every cue.design reference and the Conductor's
+    own screens keep them exactly as typed. Only the string that travels
+    to a unit is reduced, and only because that unit's font cannot draw
+    it - design "１" reaches the screen as "1", design "柄A" as "?A".
+    Nothing in ui/ changes, and nothing here reads back: this is a label,
+    never an identifier.
+    """
+    return _UNIT_SCREEN.sub("?", unicodedata.normalize("NFKC", str(text)))
+
+
 def design_label(look_map: LookMap, design: Design, partial: bool) -> str:
     name = design.label or design.name
-    return f"{look_map.item} {name}" + ("*" if partial else "")
+    return unit_label(f"{look_map.item} {name}") + ("*" if partial else "")
 
 
 def build_unit_show(unit: str, maps: "list[LookMap]",

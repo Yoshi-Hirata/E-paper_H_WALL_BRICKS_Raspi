@@ -160,6 +160,7 @@ def design_summary(d: Design) -> dict:
         "colors": {f"{s}|{r}|{c}": v for (s, r, c), v in d.colors.items()},
         "shifts": {f"{s}|{r}": v for (s, r), v in d.shifts.items()},
         "undecided": sorted(f"{s}|{r}|{c}" for (s, r, c) in d.undecided),
+        "cols": list(d.cols),
     }
 
 
@@ -280,15 +281,99 @@ def mmss_cases() -> list:
 # map / design / check cases
 # ============================================================
 
+# AZ271SD1301_map.csv here is a TRUNCATED copy of the real garment's map
+# (conductor/web/starter/AZ271SD1301_map.csv): only rows 0, 18 and the top
+# row of each side are kept, so the fixture stays small while the geometry
+# that matters - front rows 0-33, back rows 0-34, 30 columns - is exactly
+# the site's. AZ271SD1301_1_HW.csv is the 19-row grid of the 2026-09-26
+# incident, under the name the site's own "HW 用 CSV" button gives it.
 MAP_FIXTURES = ["Sample_map.csv", "SampleShift_map.csv", "Skirt_map.csv",
                 "BadHeader_map.csv", "DoubledColumn_map.csv",
                 "SocketRange_map.csv", "DupSocket_map.csv", "BadShift_map.csv",
                 "BlankShift_map.csv", "OneBoard_map.csv", "SingleScale_map.csv",
-                "Seq_map.csv", "CenterPlain_map.csv", "CenterShift_map.csv"]
+                "Seq_map.csv", "CenterPlain_map.csv", "CenterShift_map.csv",
+                "AZ271SD1301_map.csv"]
 
 DESIGN_FIXTURES = ["Sample_color_pattern01_grid.csv", "Skirt_color_pattern01_grid.csv",
                    "Sample_color_undecided_grid.csv", "Sample_color_zerowhite_grid.csv",
-                   "Sample_color_extracells_grid.csv"]
+                   "Sample_color_extracells_grid.csv", "AZ271SD1301_1_HW.csv"]
+
+# kind()/name_parts() on both spellings of a design file's name, the
+# _HW.csv one included (2026-09-26). `items` is the garments the caller
+# already knows about - the only way to tell where the item ends when the
+# 配色案名 itself carries underscores.
+NAME_CASES = [
+    ("Sample_map.csv", None),
+    ("Sample_color_pattern01_grid.csv", None),
+    ("Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv", None),
+    ("AZ271SD1301_1_HW.csv", None),
+    ("AZ271SD1301_summer_2_HW.csv", None),
+    ("AZ271SD1301_summer_2_HW.csv", ["AZ271SD1301"]),
+    ("AZ271SD1305_B_1_HW.csv", None),
+    ("AZ271SD1305_B_1_HW.csv", ["AZ271SD1305", "AZ271SD1305_B"]),
+    ("AZ271SD1301_pattern03_HW.csv", None),
+    ("AZ271SD1301_HW.csv", None),          # no 配色案名: not a grid
+    # The 配線ナビ writes 配色案名 with full-width characters and in
+    # Japanese, and both sides keep them exactly as typed (2026-09-26):
+    # nothing here folds width, so "１" is the design's name, not "1".
+    ("AZ271SD1305_１_HW.csv", None),
+    ("AZ271SD1305_１_HW.csv", ["AZ271SD1305"]),
+    ("AZ271SD1305_color_柄A_grid.csv", None),
+    ("AZ271SD1305_夏_２_HW.csv", ["AZ271SD1305"]),
+    # Japanese punctuation is ordinary punctuation: kept, and each name
+    # its own design (review of a6b610b - the Conductor refused all of
+    # these and /api/files folded the first three onto one file).
+    ("Look22_柄・A_HW.csv", None),          # 柄・A
+    ("Look22_柄　A_HW.csv", None),          # U+3000 -> a space
+    ("Look22_（A）_HW.csv", None),          # （A）
+    ("Look22_柄＋A_HW.csv", None),          # 柄＋A
+    ("Look22_か゚_HW.csv", None),           # か゚ (NFC keeps it apart)
+    ("Look22_a：b_HW.csv", None),               # ： is not the ASCII colon
+    # ...and what no file name may hold, whatever else it says.
+    ("Look22_a:b_HW.csv", None),
+    ("Look22_a/b_HW.csv", None),
+    ("Look22_a／b_HW.csv", None),
+    ("Look22_a＼b_HW.csv", None),
+    ("Look22_a|b_HW.csv", None),
+    (".Look22_map.csv", None),
+    ("  Look22_1_HW.csv  ", None),                  # trimmed, then read
+    # The edges the two languages used to trim differently (review of
+    # 3fd1a42): Python's strip() eats U+0085 and U+001C-U+001F, JS's
+    # trim() eats U+FEFF, and neither may - a control character is
+    # refused, and anything else stays part of the name.
+    ("Look22_1_HW.csv", None),
+    ("Look22_1_HW.csv", None),
+    ("Look22_1_HW.csv", None),
+    ("Look22_1_HW.csv", None),
+    ("﻿Look22_1_HW.csv", None),
+    (" Look22_1_HW.csv", None),
+    (" Look22_1_HW.csv", None),
+    ("　Look22_1_HW.csv　", None),
+    ("\tLook22_1_HW.csv\n", None),
+    # A refused name still gets a label, and the two sides must agree on
+    # it: Path.stem drops a trailing dot on Windows and stemOf does not.
+    ("Look22_1_HW.csv.", None),
+    ("Look22_1_HW.", None),
+    ("Look22_1_HW", None),
+    # The _HW grammar's own edges (review of a6b610b).
+    ("my_notes_hw.csv", None),                      # lower case is not the button
+    ("AZ271SD1301_map_HW.csv", None),               # both files at once: neither
+    ("AZ271SD1301_pattern１_HW.csv", None),     # \d must not take this
+    ("notes.csv", None),
+    ("Sample_map.txt", None),
+]
+
+
+def name_cases() -> list:
+    cases = []
+    for filename, items in NAME_CASES:
+        item, pattern, label = Design.name_parts(filename, items)
+        cases.append({"kind": "names", "filename": filename, "items": items,
+                      "expect": {"kind": look.kind(filename),
+                                 "normalized": look.normalize_name(filename),
+                                 "problem": look.name_problem(filename),
+                                 "parts": [item, pattern, label]}})
+    return cases
 
 
 def map_cases() -> list:
@@ -345,6 +430,12 @@ def check_cases() -> list:
         note="undecided colour: blocks a full cue, not a partial one")
     add("Sample_map.csv", "auto", "Sample_color_zerowhite_grid.csv", [False, True],
         note="0 typed for white is caught, not lost - even when partial")
+    # The 2026-09-26 incident: a grid exported from an older layout of the
+    # same garment. The geometry sentence leads BOTH calls - a partial cue
+    # is no more playable than a full one when half the rows do not exist -
+    # and the old partial/shift messages still follow it.
+    add("AZ271SD1301_map.csv", "auto", "AZ271SD1301_1_HW.csv", [False, True],
+        note="a design made for another layout of the same garment")
     return cases
 
 
@@ -678,6 +769,7 @@ def build_goldens() -> dict:
     cases += canonical_cases()
     cases += clock_cases()
     cases += mmss_cases()
+    cases += name_cases()
     cases += map_cases()
     cases += design_cases()
     cases += check_cases()

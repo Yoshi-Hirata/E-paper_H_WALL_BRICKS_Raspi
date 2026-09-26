@@ -507,6 +507,157 @@ def test_the_lean_page_has_no_built_in_track(tmp_path):
     assert match.group(1) == "null" and match.group(2) == "null"
 
 
+# The 2026-09-26 incident, end to end in a real browser: a design grid
+# exported from an OLDER layout of AZ271SD1301 (19 rows a side, against
+# the starter map's 34 front / 35 back) must say so in the Designs tab's
+# own CHECK card - the one screen where a designer meets check()'s
+# problems - and say it first, not under a thousand per-scale lines.
+_GEOMETRY_PROBE = """
+<script>
+window.addEventListener("load", function () {
+  setTimeout(function () {
+    var out = document.createElement("pre");
+    out.id = "geometrycheck-out";
+    try {
+      SIM.app.addFiles([{ name: "AZ271SD1301_1_HW.csv", text: %s }]);
+      SIM.app.show({ tab: "designs", item: "AZ271SD1301",
+                     design: "AZ271SD1301_1_HW.csv" });
+      out.setAttribute("data-first",
+        (document.querySelector("#content ul.problems li") || {}).textContent || "");
+    } catch (e) { out.setAttribute("data-first", "threw " + e); }
+    document.body.appendChild(out);
+  }, 300);
+});
+</script>
+"""
+
+# A designer's real bundle (2026-09-26) carried
+# "AZ271SD1305_color_１_HW_grid.csv" - the 配色案名 typed with FULL-WIDTH
+# digits (U+FF11). The show PC refused the file as an unusable name and
+# every cue that pointed at it read "design … is not loaded". The 配線ナビ
+# goes on writing names that way, so BOTH sides now keep them: the page
+# composes a name (NFC) when it takes it in and folds nothing else.
+# Driven through SIM.app.classifyCsv(), the seam that decides what a
+# dropped file is saved as.
+_NAME_PROBE = """
+<script>
+window.addEventListener("load", function () {
+  setTimeout(function () {
+    var grid = "side,row,shift,1\\nfront,0,0,0x01\\n";
+    var out = {};
+    try {
+      out.wide = SIM.app.classifyCsv("AZ271SD1301_color_\\uFF11_HW_grid.csv", grid);
+      out.hw = SIM.app.classifyCsv("AZ271SD1301_\\uFF14_HW.csv", grid);
+      out.kana = SIM.app.classifyCsv("AZ271SD1301_color_\\u67C4A_grid.csv", grid);
+      out.sniffed = SIM.app.classifyCsv("AZ271SD1301_\\uFF15.csv", grid);
+      // NFD, the way a Mac hands a file name over: カ + U+3099 + ラ.
+      out.decomposed = SIM.app.classifyCsv(
+        "AZ271SD1301_color_\\u30AB\\u3099\\u30E9_grid.csv", grid);
+      // Japanese punctuation: three names that used to collapse onto one.
+      out.punct = ["\\u67C4\\u30FBA", "\\u67C4\\u3000A", "\\u67C4\\uFF0BA",
+                   "\\uFF08A\\uFF09"]
+        .map(n => SIM.app.classifyCsv("AZ271SD1301_" + n + "_HW.csv", grid).name);
+      // ...and the names this page must refuse because the Conductor does.
+      out.refused = ["AZ271SD1301_a/b_HW.csv", "AZ271SD1301_a\\uFF0Fb_HW.csv",
+                     "AZ271SD1301_a:b_HW.csv", ".AZ271SD1301_map.csv",
+                     // The edges String.trim() and str.strip() disagree
+                     // about: refused, never quietly trimmed.
+                     "\\u0085AZ271SD1301_1_HW.csv", "AZ271SD1301_1_HW.csv\\u001C",
+                     "\\u2028AZ271SD1301_1_HW.csv"]
+        .map(n => SIM.app.classifyCsv(n, grid).error || null);
+      // A lower-case "_hw" is not the site's button: it must not be
+      // renamed onto a garment as if it were a design.
+      out.lowerHw = SIM.app.addFilesToItem("AZ271SD1301",
+        [{ name: "AZ271SD1301_1_hw.csv", text: grid }]);
+      out.upperHw = SIM.app.addFilesToItem("AZ271SD1301",
+        [{ name: "AZ271SD1301_9_HW.csv", text: grid }]);
+    } catch (e) { out.error = String(e); }
+    var pre = document.createElement("pre");
+    pre.id = "namecheck-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }, 300);
+});
+</script>
+"""
+
+
+def test_a_full_width_design_name_is_kept_exactly_as_the_site_writes_it(tmp_path):
+    _require_browser(tmp_path)
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    page = tmp_path / "names.html"
+    page.write_text(DIST.read_text(encoding="utf-8")
+                    .replace("</body>", _NAME_PROBE + "</body>", 1),
+                    encoding="utf-8")
+    url = "file:///" + str(page.resolve()).replace("\\", "/")
+    dom = _dump_dom(url, tmp_path)
+    match = re.search(r'<pre id="namecheck-out">(.*?)</pre>', dom or "", re.S)
+    assert match, f"no #namecheck-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    got = json.loads(unescape(match.group(1)))
+    assert got.get("error") is None, got
+    # Full-width digits and Japanese are kept exactly as typed - the page
+    # composes a name (NFC) and folds nothing else.
+    assert got["wide"]["name"] == "AZ271SD1301_color_１_HW_grid.csv"
+    assert got["hw"]["name"] == "AZ271SD1301_４_HW.csv"
+    assert got["kana"]["name"] == "AZ271SD1301_color_柄A_grid.csv"
+    # The derived-name path (a file the page has to read to classify)
+    # keeps them too, rather than folding the design name it builds.
+    assert got["sniffed"]["name"] == "AZ271SD1301_color_５_grid.csv"
+    # ...and NFC really is applied: a decomposed name arrives composed,
+    # so a Mac's file and a Windows one are the same design.
+    assert got["decomposed"]["name"] == "AZ271SD1301_color_ガラ_grid.csv"
+    # Japanese punctuation survives, and each name stays its own design
+    # (U+3000 is written as an ordinary space, and nothing else changes).
+    assert got["punct"] == ["AZ271SD1301_柄・A_HW.csv", "AZ271SD1301_柄 A_HW.csv",
+                            "AZ271SD1301_柄＋A_HW.csv", "AZ271SD1301_（A）_HW.csv"]
+    assert len(set(got["punct"])) == 4
+    # And this page refuses, with the Conductor's own words, exactly what
+    # the Conductor refuses - a bundle it writes can never be turned away
+    # on the show PC for a name it was happy to save (review of a6b610b).
+    control = "a file name cannot contain a line break or a control character"
+    assert got["refused"] == [
+        'a file name cannot contain "/" (a path separator)',
+        'a file name cannot contain "／" (a path separator)',
+        'a file name cannot contain ":" (Windows keeps it)',
+        "a file name cannot start or end with a dot",
+        control, control, control,
+    ]
+    # "_hw" in lower case is not the wiring site's button, so the page must
+    # not rename it onto the garment and leave the server to refuse it
+    # (review of 3fd1a42); "_HW" still works.
+    assert got["lowerHw"]["saved"] == []
+    assert len(got["lowerHw"]["refused"]) == 1
+    assert "in capitals" in got["lowerHw"]["refused"][0]["error"]
+    assert got["upperHw"]["saved"] == ["AZ271SD1301_9_HW.csv"]
+
+
+GEOMETRY_SENTENCE = (
+    "AZ271SD1301_1_HW.csv covers rows 0-18 (front) and 0-18 (back) but this "
+    "garment's wiring has rows 0-33 (front) and 0-34 (back) with 30 columns - "
+    "the design was made for another layout of AZ271SD1301; export it again "
+    "from the current 配線ナビ (配色) page")
+
+
+def test_an_old_layout_grid_says_so_in_the_designs_check_card(tmp_path):
+    _require_browser(tmp_path)
+    assert DIST.exists(), "dist/az27ss-simulator.html has not been built yet"
+    grid = (REPO / "tests" / "fixtures" / "sim" / "AZ271SD1301_1_HW.csv") \
+        .read_text(encoding="utf-8")
+    probe = _GEOMETRY_PROBE % json.dumps(grid)
+    page = tmp_path / "geometry.html"
+    page.write_text(DIST.read_text(encoding="utf-8")
+                    .replace("</body>", probe + "</body>", 1), encoding="utf-8")
+    url = "file:///" + str(page.resolve()).replace("\\", "/")
+    dom = _dump_dom(url, tmp_path)
+    match = re.search(r'<pre id="geometrycheck-out" data-first="([^"]*)"', dom or "")
+    assert match, f"no #geometrycheck-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    first = unescape(match.group(1))
+    assert first == GEOMETRY_SENTENCE, f"CHECK card's first problem is {first!r}"
+    # ...and the page never renames a word of it on the way to the screen
+    # (the file name and 配線ナビ survive clean()).
+    assert "配線ナビ" in first and "AZ271SD1301_1_HW.csv" in first
+
+
 def test_banned_vocabulary_never_reaches_rendered_ui(tmp_path):
     # The dynamic half of the check above: runs the REAL built page
     # (dist/az27ss-simulator.html, the same artefact a designer double-

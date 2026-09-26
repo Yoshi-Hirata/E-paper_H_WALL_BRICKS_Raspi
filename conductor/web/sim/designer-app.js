@@ -433,6 +433,16 @@
     // show's equipment, and a designer fixing a bad row needs to see the
     // real column name their spreadsheet uses, not a renamed one that no
     // longer matches what is actually in the file.
+    // look.py's geometry_problem() (2026-09-26) is written for THIS page
+    // in the first place - no hardware words to swap - so what is checked
+    // is that clean() hands it through untouched: labelize() must not eat
+    // "(front)"/"(配色)" as garment names, and deJargon() must find
+    // nothing to rename. A word swap here would garble the one message a
+    // designer is supposed to act on.
+    const keepAsIs = ["AZ271SD1301_1_HW.csv covers rows 0-18 (front) and 0-18 (back) but this "
+      + "garment's wiring has rows 0-33 (front) and 0-34 (back) with 30 columns - the design "
+      + "was made for another layout of AZ271SD1301; export it again from the current "
+      + "配線ナビ (配色) page"];
     const malformedRowDirty = [["AZ271SD1301_map.csv:5: row/col/board_no/socket must be whole numbers: "
       + "{'side': 'front', 'row': 'x', 'col': '3', 'board_no': '12', 'socket': '5', 'label': ''}",
       "line 5: row, col, board_no and socket must be whole numbers"]];
@@ -451,12 +461,17 @@
       const got = clean(msg);
       if (got !== expect) failures.push(`clean(${JSON.stringify(msg)}) -> ${JSON.stringify(got)}, expected ${JSON.stringify(expect)}`);
     }
+    for (const msg of keepAsIs) {
+      const got = clean(msg);
+      if (got !== msg) failures.push(`clean(${JSON.stringify(msg)}) -> ${JSON.stringify(got)}, expected it unchanged`);
+      if (banned.test(got)) failures.push(`clean(${JSON.stringify(msg)}) -> ${JSON.stringify(got)} has banned vocabulary`);
+    }
     const seqs = (globalThis.SIM.sequence && globalThis.SIM.sequence.LABELS) || {};
     Object.keys(seqs).forEach(id => {
       const got = seqLabel({ id, label: seqs[id] });
       if (banned.test(got)) failures.push(`seqLabel(${id}) -> ${JSON.stringify(got)} still has banned vocabulary`);
     });
-    const result = { ok: failures.length === 0, total: dirty.length + cleanDirty.length + malformedRowDirty.length + Object.keys(seqs).length, failed: failures.length, failures };
+    const result = { ok: failures.length === 0, total: dirty.length + cleanDirty.length + malformedRowDirty.length + keepAsIs.length + Object.keys(seqs).length, failed: failures.length, failures };
     try {
       let pre = document.getElementById("displaycheck-out");
       if (!pre) { pre = document.createElement("pre"); pre.id = "displaycheck-out"; document.body.appendChild(pre); }
@@ -1329,7 +1344,7 @@
       <p>Clock positions (Start, End, Show length, the dock's go-to box) are typed as mm.ss - minutes and seconds, not a decimal fraction of a minute: <code>3.05</code> is 3 minutes 05 seconds; a single-digit second still counts as seconds, so <code>3.5</code> is also 3 minutes 05 seconds; <code>3.60</code> is not valid (there is no 60th second) and turns the field red. The badge and the live "3 min 05 s" readout next to every one of these fields are there so this never has to be memorised.</p>
       <p>Supported browsers: Safari 14.1 or later, or a recent Chrome or Edge. A private/incognito window may refuse to keep the autosaved copy at all (see the warning banner in the header when that happens) - use <b>Save project…</b> there instead of relying on autosave.</p>
       <h2>開き方</h2><p>このファイル（<code>az27ss-simulator.html</code> または <code>designer.html</code>）をダブルクリックするだけで開きます。インストールもサーバーも不要です。Windows は Edge か Chrome、macOS は Safari か Chrome を推奨します。</p>
-      <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。<b>Designs</b> タブの「DESIGNS OF THIS ITEM」にある「Add CSV」を使うと、選んだファイルはその1着だけに追加されます（別の型番の名前でも、その1着の名前で保存されます）。ただし<b>他の衣装のマップCSV（<code>*_map.csv</code>）は受け付けません</b>（配線図は柄と違って入れ替えられるものではないため）。その場合はヘッダーの「Add CSV」を使ってください。同じ名前のファイルは上書きされます。</p>
+      <h2>CSV の入れ方</h2><p>マップCSV（<code>*_map.csv</code>）とデザインCSV（<code>*_color_名前_grid.csv</code>）を、このページのどこにでもドラッグ＆ドロップしてください（フォルダごとも可）。ヘッダーの「Add CSV」ボタンでも選べます。<b>Designs</b> タブの「DESIGNS OF THIS ITEM」にある「Add CSV」を使うと、選んだファイルはその1着だけに追加されます（別の型番の名前でも、その1着の名前で保存されます）。ただし<b>他の衣装のマップCSV（<code>*_map.csv</code>）は受け付けません</b>（配線図は柄と違って入れ替えられるものではないため）。その場合はヘッダーの「Add CSV」を使ってください。同じ名前のファイルは上書きされます。配線ナビの「HW 用 CSV」で書き出したファイル（<code>&lt;型番&gt;_&lt;配色案名&gt;_HW.csv</code>）はそのまま入れられます。配色案名は全角でも日本語でもよく、打ったとおりに保たれます（断られるのはパス区切りと制御文字を含む名前だけ）。デザインCSVは<b>その衣装の「今の」配線ナビ（配色）ページから書き出したもの</b>を使ってください。古いレイアウトのものを入れると、CHECK に「the design was made for another layout of …」と出ます。</p>
       <h2>タイムライン（デザインを後ろに足していく）</h2><p>ショーは通常、${esc(clockShort(0))} から順に、次々と後ろへデザインを足していきます。方法は2つあります。①<b>トラックの好きな位置をクリック</b>すると、その時刻にデザインを置けます。空いている場所にポインタを重ねると、置かれる位置と「+ デザイン名 at m.ss」という薄い帯（プレビュー）が出るので、そのままクリックしてください。②トラック行の右端にある<b>「+」ボタン</b>を押すと、その衣装の<b>次のデザイン</b>（そのアイテムのデザイン一覧で、最後のキューの次にあるもの。最後まで行くと先頭に戻ります）を、直前のデザインの描画が終わった直後（complete の時刻＋1秒）に追加します。続けて押していけば、ローテーション全体をトラック上に並べられます。追加先がショーの終わりを超える場合は <b>Show length</b> が自動的に延長され、その旨が表示されます。<b>EDIT CUE</b> の<b>「＋ Add next design after this cue」</b>も同じ動作で、いま開いているキューの後ろに追加します。追加されたキューは必ず EDIT CUE に開かれます。</p>
       <p><b>「+」の2つの注意点。</b>まだ何も置いていないトラックで「+」を押すと、最初の1つは ${esc(clockShort(0))} に置かれます ―― これはそのアイテムの<b>プリセット</b>（ショー開始前に表示しておく絵）になります。ショー本編の最初のデザインは、もう一度「+」を押してください（1秒後に入ります）。また、デザインが1つしかないアイテムでは、ローテーションの行き先がないため同じデザインが繰り返し追加されます。</p>
       <h2>mm.ss の読み方</h2><p>開始・終了・ショー全体の長さなど「時刻」は分.秒（mm.ss）で入力します。例：<code>3.05</code> → 3分05秒。<code>3.5</code> のように秒が1桁でも「3分05秒」として読みます。<code>3.60</code> のように60秒以上は無効（赤色）になります。入力欄の横に読み方がそのまま表示されます（例：「3 min 05 s」）。</p>
@@ -1450,8 +1465,26 @@
     if (cols[2] === "shift" && cols.length > 3 && cols.slice(3).every(c => /^\d+$/.test(c))) return "grid";
     return null;
   }
+  // NFC, and deliberately NOT NFKC (2026-09-26, the operator's call): the
+  // 配線ナビ goes on writing 配色案名 with full-width characters, so
+  // "AZ271SD1305_１_HW.csv" IS the file's name and is kept exactly as it
+  // is - folding it to "_1_" here would only make this page disagree with
+  // the site and with the show PC about what the file is called. NFC is
+  // composition alone: a name a Mac hands over decomposed (NFD - "が" as
+  // か + ゛) and the same name typed on Windows become one string, so they
+  // are one design rather than two that look identical in the list.
+  // conductor/server.py's workspace_name() is the other half, and
+  // SIM.look.normalizeName/nameProblem is the rule both of them share.
+  const nfc = s => globalThis.SIM.look.normalizeName(s);
   function conventionalName(name, text, itemHint) {
-    const n = String(name);
+    const n = nfc(name);
+    // The SAME refusal the Conductor would give (review of a6b610b):
+    // this page used to accept anything NFC left and write it into a
+    // bundle, and the show PC then threw the file out - a design the
+    // operator could neither use nor fix. Checked before the name is
+    // read as anything, so a bad name is never half-accepted.
+    const bad = globalThis.SIM.look.nameProblem(n);
+    if (bad) return { error: bad };
     if (globalThis.SIM.look.kind(n) !== null) return { name: n };
     if (!/\.csv$/i.test(n)) return { error: refuseReason(n) };
     const kind = sniffCsvKind(text);
@@ -1471,10 +1504,14 @@
     const pre = [itemHint, hit].filter(Boolean).find(k => stem.toLowerCase().startsWith(k.toLowerCase() + "_"))
       || (hit && hit.toLowerCase() === stem.toLowerCase() ? hit : null);
     let design = pre ? stem.slice(pre.length).replace(/^_/, "") : stem;
-    // Keep letters and digits of any script: "柄A" and "柄B" must stay two
-    // names, not both become "-". Only separators the file system or the
-    // CSV rule cannot carry are folded to "-".
-    design = design.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[-_.]+|[-_.]+$/g, "") || "design";
+    // Keep whatever a file name may keep - letters, digits, and the
+    // punctuation a 配色案名 actually uses ("柄・A", "（A）", "柄＋A"): the
+    // old \p{L}\p{N} filter folded all three onto "柄-A" and lost two of
+    // the three designs (review of a6b610b). Only what
+    // SIM.look.nameProblem() refuses is replaced.
+    // eslint-disable-next-line no-control-regex
+    design = design.replace(/[\x00-\x1f\x7f-\x9f/\\／＼:*?"<>|]+/g, "-")
+      .replace(/^[-_.\s]+|[-_.\s]+$/g, "") || "design";
     // "_grid" / "_map" / "_color_" inside a design name would be read as the
     // file-name grammar's own markers ("HW_grid_4" -> design "HW" for every
     // file), so they are spelled with a dash inside the name.
@@ -1488,7 +1525,10 @@
   // second MAP for the same garment is refused, a garment has one wiring.
   function uniqueSaveName(name, taken) {
     if (!taken.has(name)) { taken.add(name); return name; }
-    const m = name.match(/^(.*_color_)(.+?)(_grid.*\.csv)$/i);
+    // Both spellings of a design name: <item>_color_<name>_grid.csv and
+    // the site's own <item>_<name>_HW.csv.
+    const m = name.match(/^(.*_color_)(.+?)(_grid.*\.csv)$/i)
+      || name.match(/^([^_]+_)(.+?)(_HW\.csv)$/i);
     if (!m) return null;
     for (let n = 2; n < 100; n++) {
       const candidate = `${m[1]}${m[2]}-${n}${m[3]}`;
@@ -1540,8 +1580,14 @@
   // *_color_NAME_grid.csv is refused, because there is nothing to rename it
   // to. Returns null for "cannot belong to any item".
   function renameOntoItem(itemKey, name) {
-    const raw = String(name);
-    const m = raw.match(/(_map|_color_.+grid).*\.csv$/i);
+    const raw = nfc(name);         // composed, never width-folded (above)
+    // Two matches, not one alternation: _map and _color_…grid are read
+    // whatever their case, but _HW is the site's own button and is spelled
+    // in capitals (SIM.look.kind agrees). AZ271SD1301_1_HW.csv picked on
+    // another garment becomes <item>_1_HW.csv; "…_1_hw.csv" is not a
+    // design at all and must not be renamed as if it were.
+    const m = raw.match(/(_map|_color_.+grid).*\.csv$/i)
+           || raw.match(/_.+_HW.*\.csv$/);
     return m ? itemKey + raw.slice(m.index) : null;
   }
   async function addFilesToItemFromBlobs(itemKey, files) {
@@ -1722,8 +1768,9 @@
   // take the name and ignore it, so a dropped .xlsx and a mis-named CSV got
   // the same sentence, and the .xlsx one did not describe the problem).
   function refuseReason(name) {
-    return /\.csv$/i.test(String(name)) ? "not a *_map.csv or *_color_NAME_grid.csv"
-                                        : "not a .csv file";
+    return /\.csv$/i.test(String(name))
+      ? "not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv (the wiring site writes _HW in capitals)"
+      : "not a .csv file";
   }
   // A refusal/rename list, short enough to read in a toast: a dropped folder
   // can hold a hundred files nobody wants named one by one.
@@ -1775,6 +1822,17 @@
     // Test seam: how an arbitrary CSV name+text would be taken in (see conventionalName()).
     classifyCsv(name, text, itemHint) { return conventionalName(String(name), String(text), itemHint || null); },
     render() { render(); },
+    // Test seam (2026-09-26): open a tab / garment / design from outside,
+    // exactly as clicking them would - tests/test_designer_build.py uses
+    // it to read the Designs tab's own CHECK card out of a headless
+    // browser, which is the only place some model messages are ever drawn.
+    show({ tab, item, design }) {
+      if (tab) ui.tab = tab;
+      if (item !== undefined) ui.item = item;
+      if (design !== undefined) ui.design = design;
+      ui.cue = null;
+      render();
+    },
     addFiles(list) {
       const saved = [], refused = [];
       for (const { name, text } of list) {
@@ -1797,6 +1855,10 @@
         if (raw.includes("/") || raw.includes("\\") || hasBadPathSegment) {
           refused.push({ name: raw, error: "file names must not contain / \\ or .." }); continue;
         }
+        // The shared rule first, so an unusable name is refused with the
+        // reason the Conductor would give rather than the generic one.
+        const badName = globalThis.SIM.look.nameProblem(raw);
+        if (badName) { refused.push({ name: raw, error: badName }); continue; }
         if (globalThis.SIM.look.kind(raw) === null) { refused.push({ name: raw, error: refuseReason(raw) }); continue; }
         project.files[raw] = text.replace(/\r\n?/g, "\n");
         saved.push(raw);
@@ -1821,6 +1883,8 @@
       const takenBy = new Map();          // target name -> the picked file already going there
       for (const { name, text } of items) {
         const raw = String(name);
+        const badName = globalThis.SIM.look.nameProblem(raw);
+        if (badName) { refused.push({ name: raw, error: badName }); continue; }
         const to = renameOntoItem(itemKey, raw);
         if (to === null) { refused.push({ name: raw, error: refuseReason(raw) }); continue; }
         // A garment's MAP is not interchangeable the way its designs are

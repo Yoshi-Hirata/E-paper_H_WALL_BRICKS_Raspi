@@ -65,6 +65,7 @@
     return {
       name: design.name, item: design.item, pattern: design.pattern, label: design.label,
       colors: design.colors, shifts: design.shifts, undecided: design.undecided.slice().sort(),
+      cols: design.cols,
     };
   }
 
@@ -129,6 +130,19 @@
       else if (c.op === "human") got = mmss.human(c.input);
       else return `mmss: unknown op ${c.op}`;
       return deepEqual(got, c.expect) ? null : `mmss.${c.op}(${short(c.input)}) got ${short(got)} want ${short(c.expect)}`;
+    },
+
+    // look.kind()/nameParts(): the file-name grammar, including the
+    // production site's own <item>_<配色案名>_HW.csv (2026-09-26). Both
+    // sides must read a dropped file's name the same way, or the
+    // simulator and the Conductor disagree on which garment it belongs to.
+    names(c) {
+      const got = { kind: SIM.look.kind(c.filename),
+                    normalized: SIM.look.normalizeName(c.filename),
+                    problem: SIM.look.nameProblem(c.filename),
+                    parts: SIM.look.nameParts(c.filename, c.items || undefined) };
+      return deepEqual(got, c.expect) ? null
+        : `names ${c.filename} got ${short(got)} want ${short(c.expect)}`;
     },
 
     map(c, fixtures) {

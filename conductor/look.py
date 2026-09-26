@@ -17,6 +17,9 @@ Two files, as delivered by the designers (2026-09-21, Look22):
       has no hole, or - for a hole whose colour is not decided yet. One
       file per cue. `shift` (0 / 0.5) is the half-scale offset of that
       row (the rows are laid like bricks), used only to draw the preview.
+      The production site's "HW 用 CSV" button writes this same file
+      under its own name, LookNN_<配色案名>_HW.csv; kind() and
+      Design.name_parts() read both spellings.
 
 They join on (side, row, col). row 0 is the hem, the highest row the
 neck. Both files are drawn as seen from the INSIDE of the garment (the
@@ -46,6 +49,7 @@ from __future__ import annotations
 
 import csv
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -91,12 +95,206 @@ _MAP_NAME = re.compile(r"(.+?)_map", re.IGNORECASE)
 # typed on the wiring page ("pattern01", "ref_multicolor_redorange_s22").
 _GRID_NAME = re.compile(r"(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$",
                         re.IGNORECASE)
-_PATTERN_NO = re.compile(r"pattern\s*0*(\d+)$", re.IGNORECASE)
+# [0-9], never \d: Python's \d matches a FULL-WIDTH digit and JavaScript's
+# does not, so "pattern１" was pattern 1 here and the literal name
+# "pattern１" in conductor/web/sim/model.js - the same file, two different
+# designs depending on which side read the name (review of a6b610b). Every
+# number parsed out of a file name on either side is ASCII-only.
+_PATTERN_NO = re.compile(r"pattern\s*0*([0-9]+)$", re.IGNORECASE)
+# The production site's own "HW 用 CSV" button writes the SAME grid
+# (csvGrid(): side,row,shift,1..W) under its own official name,
+# <item>_<配色案名>_HW.csv - "AZ271SD1301_1_HW.csv" is design "1" of
+# AZ271SD1301, exactly what this module otherwise calls
+# AZ271SD1301_color_1_grid.csv. Both names are read as a design here, so a
+# designer can drop the file the site gave them without renaming it.
+#
+# Case-SENSITIVE, unlike the other two (review of a6b610b): "_HW" is the
+# site's own button, and a lower-case "_hw" is far more likely to be an
+# ordinary word at the end of somebody's file name - "my_notes_hw.csv"
+# used to become design "notes" of a garment called "my".
+_HW_NAME = re.compile(r"(.+?)_(.+)_HW$")
+_HW_SUFFIX = "_HW"
+# "<item>_map_HW.csv" claims to be both files at once; whichever way it is
+# split the answer is a muddle, so it is neither (review of a6b610b).
+_HW_RESERVED_DESIGNS = ("map",)
+_IS_MAP = re.compile(r"_map$", re.IGNORECASE)
+_IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
 _MAP_COLUMNS = ("side", "row", "col", "board_no", "socket")
 _SHIFT_COLUMN = "shift"
 _EMPTY_CELLS = ("", "0")       # no hole here
 _UNDECIDED = "-"               # a hole, colour not chosen yet
+# A design exported from an OLDER layout of the same garment (the real
+# case of 2026-09-26: AZ271SD1301_1_HW.csv, 19 rows per side, loaded
+# against a map whose front runs to row 33 and back to row 34) used to
+# draw half the dress uncoloured while CHECK said only "a partial design"
+# and "the row shift differs on 14 rows" - both true, neither any use.
+# geometry_problem() below says what actually happened. Its trigger is the
+# GRID's own geometry - which rows it lists, how many position columns it
+# has - never how many cells are left blank or "-": a genuinely partial
+# cue still lists every row of the garment.
+_GEOM_MIN_SHORT_ROWS = 2       # one row short of the map is not a layout
+_GEOM_SHORT_TENTHS = 1         # ...nor is anything under a tenth of them
 
+
+
+# ============================================================
+# What a workspace file may be called
+# ============================================================
+# ONE rule, used character for character by the Conductor
+# (conductor/server.py) and by the designers' simulator (model.js's
+# normalizeName/nameProblem, which designer-app.js calls before it saves
+# anything). They have to be the same rule: a name the simulator writes
+# into a bundle and the Conductor then refuses is a design the operator
+# cannot use and cannot fix (review of a6b610b - the Conductor refused
+# "Look22_柄・A_HW.csv" outright, and worse, /api/files quietly folded
+# 柄・A, 柄　A and 柄＋A onto one file, so three designs overwrote each
+# other).
+#
+# The rule: a name is whatever NFC leaves, with U+3000 written as an
+# ordinary space and the outer whitespace trimmed, and it is refused only
+# for something that cannot be a file name at all. Japanese punctuation
+# and symbols - ・ 、 （ ） ＋ ゚ - are ordinary characters and are kept.
+_IDEOGRAPHIC_SPACE = "　"
+# Path syntax, in ASCII and in the full-width forms a Japanese keyboard
+# offers. The full-width pair is refused with the ASCII pair on purpose:
+# they are not separators to any filesystem, but they LOOK like a path,
+# and anything downstream that width-folds a name (NFKC in a log, a zip
+# tool, a shell) would turn them into one.
+_NAME_SEPARATORS = "/\\／＼"
+# Windows keeps these for itself. ASCII only: the full-width forms
+# (：＊？＂＜＞｜) are ordinary characters NTFS is perfectly happy with,
+# and a 配色案名 may well want "柄：A" or "（A）".
+_NAME_RESERVED = ':*?"<>|'
+# U+2028/U+2029 belong here with the ASCII line breaks, and not only
+# because a file name has no business holding one: they are LINE
+# TERMINATORS to a JavaScript regex, so "." matches them in Python and
+# does not in JS, and _HW_NAME would read the same name two ways (review
+# of 3fd1a42 - the names goldens caught it).
+_NAME_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+# Trimmed EXPLICITLY, and only the ordinary space - never str.strip() or
+# String.trim(). Those two do not agree on the edges: strip() eats U+0085
+# and U+001C-U+001F (it goes by str.isspace()), trim() eats U+FEFF and
+# strip() does not, so each side used to accept a name the other refused
+# (review of 3fd1a42). Every other whitespace character IS a control
+# character, and name_problem() refuses those outright before it trims -
+# a tab at the end of a name is a mistake worth reporting, not something
+# to tidy away. U+3000 is written as a space first, so it trims too.
+_NAME_TRIM = " "
+
+
+def file_stem(name) -> str:
+    """The name without its directory or its last extension.
+
+    Ours, not Path.stem: on Windows pathlib also strips trailing dots and
+    spaces ("x.csv." -> "x.csv"), which JavaScript never does, and the two
+    sides then disagreed about a refused name's own label (review of
+    3fd1a42). This is conductor/web/sim/model.js's stemOf(), exactly.
+    """
+    base = re.split(r"[\\/]", str(name))[-1]
+    dot = base.rfind(".")
+    return base[:dot] if dot > 0 else base
+
+
+def normalize_name(name) -> str:
+    """The one spelling of a file name both sides use: NFC, U+3000 as an
+    ordinary space, no leading or trailing whitespace.
+
+    NFC and never NFKC (2026-09-26, the operator's call): the 配線ナビ
+    goes on writing 配色案名 with full-width characters, so those are the
+    name. NFC only composes, which is what makes a name a Mac hands over
+    decomposed the same name as the one typed on Windows.
+    """
+    text = unicodedata.normalize("NFC", str(name))
+    return text.replace(_IDEOGRAPHIC_SPACE, " ").strip(_NAME_TRIM)
+
+
+def name_problem(name) -> "str | None":
+    """Why `name` cannot be a workspace file name, or None.
+
+    The checks run in this order on both sides, so the two always give
+    the same reason for the same name. The control-character check comes
+    FIRST, before any trimming: a control character at either end must be
+    refused, not quietly trimmed away (see _NAME_TRIM).
+    """
+    raw = unicodedata.normalize("NFC", str(name))
+    if _NAME_CONTROL.search(raw):
+        return "a file name cannot contain a line break or a control character"
+    text = raw.replace(_IDEOGRAPHIC_SPACE, " ").strip(_NAME_TRIM)
+    if not text:
+        return "a file name cannot be empty"
+    for char in text:
+        if char in _NAME_SEPARATORS:
+            return f'a file name cannot contain "{char}" (a path separator)'
+    for char in text:
+        if char in _NAME_RESERVED:
+            return f'a file name cannot contain "{char}" (Windows keeps it)'
+    if text.startswith(".") or text.endswith("."):
+        return "a file name cannot start or end with a dot"
+    return None
+
+
+def kind(name: str) -> "str | None":
+    """"map", "grid" or None, from the file's NAME alone.
+
+    Two spellings are a grid: the conventional
+    <item>_color_<name>_grid.csv, and the production site's own
+    <item>_<配色案名>_HW.csv. A *_map.csv is always the map, whatever else
+    the name says. A name name_problem() refuses is neither.
+    """
+    # name_problem() on the name as GIVEN, not on the normalised one: a
+    # control character at either end is refused, and asking about the
+    # trimmed name would have hidden the very thing being refused (review
+    # of 3fd1a42).
+    if name_problem(name):
+        return None
+    text = normalize_name(name)
+    if not text.lower().endswith(".csv"):
+        return None
+    stem = file_stem(text)
+    if _IS_GRID.search(stem):
+        return "grid"
+    if _IS_MAP.search(stem):
+        return "map"
+    if _hw_body(stem) is not None:
+        return "grid"
+    return None
+
+
+def map_item(name) -> "str | None":
+    """The garment a *_map.csv belongs to, from the normalised name."""
+    match = _MAP_NAME.match(file_stem(normalize_name(name)))
+    return match.group(1) if match else None
+
+
+def _hw_body(stem: str) -> "str | None":
+    """The <item>_<配色案名> part of an <...>_HW stem, or None.
+
+    The reserved-word check looks at the LAST underscore-separated piece,
+    so it gives the same answer however the item/design split later falls
+    out: "<item>_map_HW" is refused whether the item is known or not.
+    """
+    if not _HW_NAME.match(stem):
+        return None
+    body = stem[:-len(_HW_SUFFIX)]
+    if body.rsplit("_", 1)[-1].lower() in _HW_RESERVED_DESIGNS:
+        return None
+    return body
+
+
+def _split_hw(stem: str, items=None) -> "tuple[str, str]":
+    """<item>_<配色案名>_HW -> (item, 配色案名).
+
+    The design name may itself hold underscores ("summer_2"), so where the
+    caller knows which garments exist the longest matching one wins; with
+    no such list (look.py on its own) the item is what precedes the FIRST
+    underscore, which is how every model number delivered so far reads.
+    """
+    body = stem[:-len(_HW_SUFFIX)]
+    for known in sorted((i for i in (items or []) if i), key=len, reverse=True):
+        if body.lower().startswith(known.lower() + "_"):
+            return body[:len(known)], body[len(known) + 1:]
+    item, _, name = body.partition("_")
+    return item, name
 
 
 class LookError(ValueError):
@@ -170,10 +368,8 @@ class LookMap:
     @classmethod
     def from_csv(cls, path) -> "LookMap":
         path = Path(path)
-        match = _MAP_NAME.match(path.stem)
-        item = match.group(1) if match else None
         with open(path, newline="", encoding="utf-8-sig") as handle:
-            return cls.parse(handle, name=path.name, item=item)
+            return cls.parse(handle, name=path.name, item=map_item(path.name))
 
     @classmethod
     def parse(cls, lines, name: str = "map", item: "str | None" = None
@@ -316,11 +512,14 @@ class Design:
     label: str = ""             # "P01", or the designer's name for it
     # Holes written "-": there is a scale, its colour is not decided.
     undecided: "set[tuple[str, int, int]]" = field(default_factory=set)
+    # The position columns of the header row, in file order - the grid's
+    # own width, which geometry_problem() compares with the map's.
+    cols: "list[int]" = field(default_factory=list)
 
     @classmethod
-    def from_csv(cls, path) -> "Design":
+    def from_csv(cls, path, items=None) -> "Design":
         path = Path(path)
-        item, pattern, label = cls.name_parts(path.name)
+        item, pattern, label = cls.name_parts(path.name, items)
         with open(path, newline="", encoding="utf-8-sig") as handle:
             design = cls.parse(handle, name=path.name, item=item,
                                pattern=pattern)
@@ -328,12 +527,30 @@ class Design:
             return design
 
     @staticmethod
-    def name_parts(filename) -> "tuple[str | None, int | None, str]":
-        """(item, pattern number, label) from a design file's name."""
-        match = _GRID_NAME.match(Path(filename).stem)
-        if not match:
-            return None, None, Path(filename).stem
-        item, name = match.group(1), match.group(2)
+    def name_parts(filename, items=None) -> "tuple[str | None, int | None, str]":
+        """(item, pattern number, label) from a design file's name.
+
+        `items` is the garments the caller already knows about, used only
+        to split an <item>_<配色案名>_HW.csv whose design name has
+        underscores of its own (see _split_hw).
+
+        A name name_problem() refuses has no item and no design, only its
+        own stem to be named by: it is not a file of this workspace, so
+        there is nothing to read out of it, and trying anyway had the two
+        sides disagree (U+2028 is a line terminator to a JavaScript regex
+        and an ordinary character to Python's, so "." took it here and not
+        there - review of 3fd1a42, caught by the names goldens).
+        """
+        stem = file_stem(normalize_name(filename))
+        if name_problem(filename):
+            return None, None, stem
+        match = _GRID_NAME.match(stem)
+        if match:
+            item, name = match.group(1), match.group(2)
+        elif _hw_body(stem) is not None:
+            item, name = _split_hw(stem, items)
+        else:
+            return None, None, stem
         number = _PATTERN_NO.match(name)
         if number:
             return item, int(number.group(1)), f"P{int(number.group(1)):02d}"
@@ -399,7 +616,7 @@ class Design:
         if problems:
             raise LookError(problems)
         return cls(name=name, colors=colors, shifts=shifts, item=item,
-                   pattern=pattern, undecided=undecided)
+                   pattern=pattern, undecided=undecided, cols=list(cols))
 
     def shift(self, side: str, row: int) -> float:
         return self.shifts.get((side, row), default_shift(row))
@@ -423,6 +640,81 @@ def _pos(position) -> str:
     return f"{side} row {row} col {col}"
 
 
+def _rows_by_side(pairs) -> "dict[str, set]":
+    """(side, row) pairs -> {side: {rows}}, sides in first-seen order."""
+    out: "dict[str, set]" = {}
+    for side, row in pairs:
+        out.setdefault(side, set()).add(row)
+    return out
+
+
+def _and_list(parts: "list[str]") -> str:
+    if len(parts) < 2:
+        return parts[0] if parts else ""
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _rows_text(sides, rows_by_side) -> str:
+    parts = []
+    for side in sides:
+        rows = rows_by_side.get(side)
+        parts.append(f"{min(rows)}-{max(rows)} ({side})" if rows
+                     else f"none ({side})")
+    return _and_list(parts)
+
+
+def geometry_problem(look_map: LookMap, design: Design) -> "str | None":
+    """One sentence when the grid was drawn for a DIFFERENT layout of the
+    garment, or None.
+
+    Three signs, all of them about the shape of the grid rather than what
+    is written in its cells (see _GEOM_MIN_SHORT_ROWS above):
+
+      * it stops well below the map's top row on a side it does cover -
+        more than a tenth of that side's rows, and at least two rows, so
+        one missing hem row is never mistaken for an old layout;
+      * it has rows the map has no scale in at all (a side of its own, or
+        rows above the map's top);
+      * it is narrower than the garment, so the map's rightmost positions
+        have no column to take a colour from. Extra columns on the right
+        are NOT a sign: the site pads them (AZ271SD1307's own grid is 31
+        columns wide against a 30-column map) and an extra column with a
+        colour in it is already caught position by position.
+
+    A side the grid leaves out entirely stays a partial cue, not this.
+    """
+    if not look_map.scales or not design.shifts:
+        return None
+    map_rows = _rows_by_side((s.side, s.row) for s in look_map.scales)
+    design_rows = _rows_by_side(design.shifts)
+    map_cols = max(s.col for s in look_map.scales)
+    design_cols = max(design.cols) if design.cols else None
+    short = False
+    for side, rows in map_rows.items():
+        mine = design_rows.get(side)
+        if not mine:
+            continue
+        missing = max(rows) - max(mine)
+        span = max(rows) - min(rows) + 1
+        if missing >= _GEOM_MIN_SHORT_ROWS and missing * 10 > span * _GEOM_SHORT_TENTHS:
+            short = True
+    over = any(side not in map_rows or max(rows) > max(map_rows[side])
+               for side, rows in design_rows.items())
+    narrow = design_cols is not None and design_cols < map_cols
+    if not (short or over or narrow):
+        return None
+    sides = list(look_map.sides)
+    sides += [side for side in design_rows if side not in sides]
+    covers = _rows_text(sides, design_rows)
+    if narrow:
+        covers += f" with only {design_cols} columns"
+    return (f"{design.name} covers rows {covers} but this garment's wiring "
+            f"has rows {_rows_text(sides, map_rows)} with {map_cols} columns"
+            f" - the design was made for another layout of "
+            f"{look_map.item or look_map.name}; export it again from the "
+            f"current 配線ナビ (配色) page")
+
+
 def check(look_map: LookMap, design: Design, partial: bool = False
           ) -> "list[str]":
     """Problems that only show with both files side by side."""
@@ -431,6 +723,14 @@ def check(look_map: LookMap, design: Design, partial: bool = False
             and look_map.item.lower() != design.item.lower()):
         problems.append(f"{design.name} is for {design.item} but "
                         f"{look_map.name} is {look_map.item}")
+    else:
+        # Leading, and only when the two files agree on WHICH garment they
+        # are for: against another garment's map every row and column
+        # differs, and "made for another layout of X" would be the wrong
+        # story to tell about a file that was never meant for X at all.
+        geometry = geometry_problem(look_map, design)
+        if geometry:
+            problems.append(geometry)
     scales = look_map.by_position
     for position in sorted(set(design.colors) | design.undecided):
         if position not in scales:

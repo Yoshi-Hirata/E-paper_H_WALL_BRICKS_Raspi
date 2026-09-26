@@ -495,7 +495,36 @@
   const _IS_MAP = /_map$/i;
   const _MAP_NAME = /^(.+?)_map/i;
   const _GRID_NAME = /^(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$/i;
-  const _PATTERN_NO = /^pattern\s*0*(\d+)$/i;
+  // [0-9], never \d: Python's \d takes a FULL-WIDTH digit and JS's does
+  // not, so "pattern１" was P01 on one side and the literal "pattern１" on
+  // the other (conductor/look.py's _PATTERN_NO has the same note).
+  const _PATTERN_NO = /^pattern\s*0*([0-9]+)$/i;
+  // The production site's own "HW 用 CSV" name for the same grid:
+  // <item>_<配色案名>_HW.csv (conductor/look.py's _HW_NAME). Case-
+  // SENSITIVE, so "my_notes_hw.csv" is not design "notes" of "my".
+  const _HW_NAME = /^(.+?)_(.+)_HW$/;
+  const _HW_SUFFIX = "_HW";
+  const _HW_RESERVED_DESIGNS = ["map"];
+  // conductor/look.py's shared file-name rule - see its own comment for
+  // why this has to be the same on both sides, character for character.
+  const _IDEOGRAPHIC_SPACE = "　";
+  const _NAME_SEPARATORS = "/\\／＼";
+  const _NAME_RESERVED = ":*?\"<>|";
+  // eslint-disable-next-line no-control-regex
+  // U+2028/U+2029 with the ASCII line breaks: they are LINE TERMINATORS to
+  // a JS regex, so "." matches them in Python and not here, and _HW_NAME
+  // would read one name two ways (conductor/look.py's _NAME_CONTROL).
+  const _NAME_CONTROL = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
+  // Trimmed explicitly, and only the ordinary space - never String.trim():
+  // trim() and Python's str.strip() do not agree on the edges (strip() eats
+  // U+0085 and U+001C-U+001F, trim() eats U+FEFF), so each side used to
+  // accept a name the other refused. Every other whitespace character is a
+  // control character and nameProblem() refuses it before trimming.
+  // conductor/look.py's _NAME_TRIM.
+  const _NAME_TRIM = " ";
+  // geometry_problem()'s thresholds, verbatim from conductor/look.py.
+  const _GEOM_MIN_SHORT_ROWS = 2;
+  const _GEOM_SHORT_TENTHS = 1;
 
   function defaultShift(row) { return row % 2 !== 0 ? 0.5 : 0; }
 
@@ -505,25 +534,110 @@
     return dot > 0 ? base.slice(0, dot) : base;
   }
 
+  // conductor/look.py's normalize_name(): NFC, U+3000 as an ordinary
+  // space, no leading or trailing whitespace. Never NFKC - the 配線ナビ
+  // writes 配色案名 with full-width characters and those ARE the name.
+  function trimName(text) {
+    let from = 0, to = text.length;
+    while (from < to && _NAME_TRIM.indexOf(text.charAt(from)) !== -1) from += 1;
+    while (to > from && _NAME_TRIM.indexOf(text.charAt(to - 1)) !== -1) to -= 1;
+    return text.slice(from, to);
+  }
+
+  function nfcOf(name) {
+    const text = String(name);
+    try { return text.normalize("NFC"); } catch (e) { return text; }
+  }
+
+  function normalizeName(name) {
+    return trimName(nfcOf(name).split(_IDEOGRAPHIC_SPACE).join(" "));
+  }
+
+  // conductor/look.py's name_problem(), same checks in the same order so
+  // both sides refuse the same names and say the same thing about them.
+  // The control-character check runs BEFORE any trimming, or a control
+  // character at either end would be trimmed away by one side and refused
+  // by the other.
+  function nameProblem(name) {
+    const raw = nfcOf(name);
+    if (_NAME_CONTROL.test(raw)) return "a file name cannot contain a line break or a control character";
+    const text = trimName(raw.split(_IDEOGRAPHIC_SPACE).join(" "));
+    if (!text) return "a file name cannot be empty";
+    for (const char of text) {
+      if (_NAME_SEPARATORS.indexOf(char) !== -1) {
+        return `a file name cannot contain "${char}" (a path separator)`;
+      }
+    }
+    for (const char of text) {
+      if (_NAME_RESERVED.indexOf(char) !== -1) {
+        return `a file name cannot contain "${char}" (Windows keeps it)`;
+      }
+    }
+    if (text.startsWith(".") || text.endsWith(".")) {
+      return "a file name cannot start or end with a dot";
+    }
+    return null;
+  }
+
+  // conductor/look.py's _hw_body(): the <item>_<配色案名> of an _HW stem,
+  // or null. "<item>_map_HW" is a muddle, so it is neither file.
+  function hwBody(stem) {
+    if (!_HW_NAME.test(stem)) return null;
+    const body = stem.slice(0, stem.length - _HW_SUFFIX.length);
+    const last = body.slice(body.lastIndexOf("_") + 1);
+    return _HW_RESERVED_DESIGNS.indexOf(last.toLowerCase()) === -1 ? body : null;
+  }
+
   function kind(filename) {
-    const name = String(filename);
+    // nameProblem() on the name as GIVEN (see conductor/look.py's kind()).
+    if (nameProblem(filename)) return null;
+    const name = normalizeName(filename);
     if (!/\.csv$/i.test(name)) return null;
     const stem = stemOf(name);
     if (_IS_GRID.test(stem)) return "grid";
     if (_IS_MAP.test(stem)) return "map";
+    if (hwBody(stem) !== null) return "grid";
     return null;
   }
 
+  // <item>_<配色案名>_HW -> [item, 配色案名], conductor/look.py's
+  // _split_hw(): the longest garment the caller already knows about wins
+  // (the design name may hold underscores of its own), and with no such
+  // list the item is whatever precedes the FIRST underscore.
+  function splitHw(stem, items) {
+    const body = stem.slice(0, stem.length - _HW_SUFFIX.length);
+    const known = (items || []).filter(Boolean).slice()
+      .sort((a, b) => b.length - a.length);
+    for (const k of known) {
+      if (body.toLowerCase().startsWith(k.toLowerCase() + "_")) {
+        return [body.slice(0, k.length), body.slice(k.length + 1)];
+      }
+    }
+    const cut = body.indexOf("_");
+    return cut === -1 ? [body, ""] : [body.slice(0, cut), body.slice(cut + 1)];
+  }
+
   function mapItem(filename) {
-    const m = _MAP_NAME.exec(stemOf(filename));
+    const m = _MAP_NAME.exec(stemOf(normalizeName(filename)));
     return m ? m[1] : null;
   }
 
-  function nameParts(filename) {
-    const stem = stemOf(filename);
+  function nameParts(filename, items) {
+    const stem = stemOf(normalizeName(filename));
+    // A name nameProblem() refuses has no item and no design - see
+    // conductor/look.py's name_parts() for why reading one anyway made
+    // the two sides disagree.
+    if (nameProblem(filename)) return [null, null, stem];
     const m = _GRID_NAME.exec(stem);
-    if (!m) return [null, null, stem];
-    const item = m[1], name = m[2];
+    let item, name;
+    if (m) {
+      item = m[1]; name = m[2];
+    } else if (hwBody(stem) !== null) {
+      const hw = splitHw(stem, items);
+      item = hw[0]; name = hw[1];
+    } else {
+      return [null, null, stem];
+    }
     const num = _PATTERN_NO.exec(name);
     if (num) {
       const n = parseInt(num[1], 10);
@@ -726,7 +840,8 @@
       }
     }
     if (problems.length) return { ok: false, problems };
-    return { ok: true, design: { name, item, pattern, label: "", colors, shifts, undecided } };
+    return { ok: true, design: { name, item, pattern, label: "", colors, shifts, undecided,
+                                 cols: cols.slice() } };
   }
 
   function designShiftAt(design, side, row) {
@@ -734,10 +849,74 @@
     return key in design.shifts ? design.shifts[key] : defaultShift(row);
   }
 
+  // conductor/look.py's _rows_by_side()/_and_list()/_rows_text(): sides in
+  // first-seen order, rows as a min-max range per side.
+  function rowsBySide(pairs) {
+    const out = new Map();
+    for (const [side, row] of pairs) {
+      if (!out.has(side)) out.set(side, new Set());
+      out.get(side).add(row);
+    }
+    return out;
+  }
+  function andList(parts) {
+    if (parts.length < 2) return parts.length ? parts[0] : "";
+    return parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+  }
+  function rowsText(sides, rowsMap) {
+    return andList(sides.map(side => {
+      const rows = rowsMap.get(side);
+      if (!rows || !rows.size) return `none (${side})`;
+      const list = Array.from(rows);
+      return `${Math.min.apply(null, list)}-${Math.max.apply(null, list)} (${side})`;
+    }));
+  }
+  // conductor/look.py's geometry_problem() - see its docstring for why the
+  // trigger is the grid's rows and width and never its empty cells.
+  function geometryProblem(map, design) {
+    if (!map.scales.length || !Object.keys(design.shifts).length) return null;
+    const mapRows = rowsBySide(map.scales.map(s => [s.side, s.row]));
+    const designRows = rowsBySide(Object.keys(design.shifts).map(k => {
+      const sep = k.indexOf("|");
+      return [k.slice(0, sep), Number(k.slice(sep + 1))];
+    }));
+    const mapCols = Math.max.apply(null, map.scales.map(s => s.col));
+    const designCols = design.cols && design.cols.length
+      ? Math.max.apply(null, design.cols) : null;
+    let short = false;
+    mapRows.forEach((rows, side) => {
+      const mine = designRows.get(side);
+      if (!mine || !mine.size) return;
+      const list = Array.from(rows);
+      const top = Math.max.apply(null, list);
+      const missing = top - Math.max.apply(null, Array.from(mine));
+      const span = top - Math.min.apply(null, list) + 1;
+      if (missing >= _GEOM_MIN_SHORT_ROWS && missing * 10 > span * _GEOM_SHORT_TENTHS) short = true;
+    });
+    let over = false;
+    designRows.forEach((rows, side) => {
+      const theirs = mapRows.get(side);
+      if (!theirs || Math.max.apply(null, Array.from(rows)) > Math.max.apply(null, Array.from(theirs))) over = true;
+    });
+    const narrow = designCols !== null && designCols < mapCols;
+    if (!(short || over || narrow)) return null;
+    const sides = map.sides.slice();
+    designRows.forEach((_rows, side) => { if (sides.indexOf(side) === -1) sides.push(side); });
+    let covers = rowsText(sides, designRows);
+    if (narrow) covers += ` with only ${designCols} columns`;
+    return `${design.name} covers rows ${covers} but this garment's wiring `
+      + `has rows ${rowsText(sides, mapRows)} with ${mapCols} columns`
+      + ` - the design was made for another layout of ${map.item || map.name};`
+      + ` export it again from the current 配線ナビ (配色) page`;
+  }
+
   function check(map, design, partial) {
     const problems = [];
     if (map.item && design.item && map.item.toLowerCase() !== design.item.toLowerCase()) {
       problems.push(`${design.name} is for ${design.item} but ${map.name} is ${map.item}`);
+    } else {
+      const geometry = geometryProblem(map, design);
+      if (geometry) problems.push(geometry);
     }
     const keySet = new Set(Object.keys(design.colors));
     design.undecided.forEach(k => keySet.add(k));
@@ -821,8 +1000,8 @@
 
   const look = {
     PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS,
-    defaultShift, kind, nameParts, mapItem,
-    parseMap, parseDesign, shiftAt, designShiftAt, check,
+    defaultShift, kind, nameParts, mapItem, normalizeName, nameProblem,
+    parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,
   };
 

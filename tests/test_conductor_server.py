@@ -113,7 +113,7 @@ def test_grid_without_its_map_waits_as_an_orphan(tmp_path):
     assert state["orphans"][0]["name"] == "Look24_color_pattern01_grid.csv"
 
 
-def test_only_the_two_csv_kinds_are_accepted_and_names_are_tamed(tmp_path):
+def test_only_the_two_csv_kinds_are_accepted_and_a_path_is_refused(tmp_path):
     ws = Workspace(tmp_path)
     with pytest.raises(ValueError):
         ws.save("cables.csv", "x")
@@ -121,10 +121,23 @@ def test_only_the_two_csv_kinds_are_accepted_and_names_are_tamed(tmp_path):
         ws.save("Look22_map.txt", "x")
     with pytest.raises(ValueError):
         ws.assign("Look22", "radxa-99")
-    saved = ws.save("../../evil/Look22_map.csv", MAP)
-    assert saved == "Look22_map.csv"
+    # A name with a path in it is REFUSED, not quietly reduced to its
+    # basename (review of 3fd1a42): taking the basename let
+    # "sub/Look22_map.csv" become a file of this workspace through
+    # /api/files while the simulator and import_bundle both turned it
+    # away, and the error it did raise quoted the stripped name rather
+    # than what the caller sent.
+    for bad in ("../../evil/Look22_map.csv", "sub/Look22_map.csv",
+                "sub\\Look22_map.csv"):
+        with pytest.raises(ValueError) as caught:
+            ws.save(bad, MAP)
+        assert str(caught.value).startswith(bad + ": ")
+        assert "path separator" in str(caught.value)
+    assert list((tmp_path / "files").glob("*.csv")) == []
+    # The plain name still saves, and delete still takes a bare one.
+    assert ws.save("Look22_map.csv", MAP) == "Look22_map.csv"
     assert (tmp_path / "files" / "Look22_map.csv").is_file()
-    ws.delete("../files/Look22_map.csv")
+    ws.delete("Look22_map.csv")
     assert not (tmp_path / "files" / "Look22_map.csv").exists()
 
 
@@ -148,13 +161,23 @@ def test_http_api_round_trip(tmp_path):
         _, raw = call("/api/files", {"files": [
             {"name": "Look22_map.csv", "text": MAP},
             {"name": "Look22_color_pattern01_grid.csv", "text": GRID},
+            # Straight from the wiring site's "HW 用 CSV" button, under
+            # the name that button gives it (2026-09-26).
+            {"name": "Look22_1_HW.csv", "text": GRID},
             {"name": "notes.csv", "text": "x"}]})
         result = json.loads(raw)
-        assert len(result["saved"]) == 2 and len(result["refused"]) == 1
+        assert len(result["saved"]) == 3 and len(result["refused"]) == 1
+        state = json.loads(call("/api/state")[1])
+        # The _HW.csv belongs to Look22 like any other design, and the
+        # Designs list calls it by the 配色案名 in its name ("1").
+        assert [(d["name"], d["label"]) for d in state["items"][0]["designs"]] == [
+            ("Look22_color_pattern01_grid.csv", "P01"),
+            ("Look22_1_HW.csv", "1")]
         call("/api/assign", {"item": "Look22", "unit": "radxa-03"})
         state = json.loads(call("/api/state")[1])
         assert state["items"][0]["unit"] == "radxa-03"
         call("/api/delete", {"name": "Look22_color_pattern01_grid.csv"})
+        call("/api/delete", {"name": "Look22_1_HW.csv"})
         assert json.loads(call("/api/state")[1])["items"][0]["designs"] == []
     finally:
         server.shutdown()
@@ -558,7 +581,9 @@ def test_board_numbers_are_checked_and_survive_a_new_csv(workspace):
 def test_designer_named_files_are_accepted_and_labelled(workspace):
     name = "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv"
     assert Workspace.kind(name) == "grid"
-    assert Workspace.kind("AZ271SD1305_ref_multicolor_redorange_s22_HW.csv") is None
+    # The production site's own "HW 用 CSV" name is a grid too, as of
+    # 2026-09-26 - it used to be refused and had to be renamed by hand.
+    assert Workspace.kind("AZ271SD1305_ref_multicolor_redorange_s22_HW.csv") == "grid"
     workspace.save(name, GRID)
     designs = item(workspace.state(), "Look22")["designs"]
     assert [(d["label"], d["pattern"]) for d in designs] == \
@@ -1251,15 +1276,17 @@ def test_music_upload_name_is_unquoted_before_it_is_saved(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{port}"
     try:
-        encoded = urllib.parse.quote("café.mp3")   # what encodeURIComponent sends
+        encoded = urllib.parse.quote("caf*é.mp3")  # what encodeURIComponent sends
         upload = urllib.request.Request(
             f"{base}/api/music", data=b"abcde",
             headers={"X-File-Name": encoded})
         with urllib.request.urlopen(upload, timeout=5) as response:
             body = json.loads(response.read())
-        # Unquoted first, so only the one accented letter is sanitised -
-        # not every byte of its percent-encoding as well.
-        assert body["music"]["name"] == "caf_.mp3"
+        # Unquoted first, so only the one character the workspace cannot
+        # keep is sanitised - not every byte of the accented letter's
+        # percent-encoding as well. The letter itself survives: a file
+        # name may hold letters and digits of any script (2026-09-26).
+        assert body["music"]["name"] == "caf_é.mp3"
     finally:
         server.shutdown()
         server.server_close()
