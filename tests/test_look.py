@@ -763,3 +763,48 @@ def test_a_map_row_with_a_stray_trailing_comma_still_loads(tmp_path):
     look_map = LookMap.from_csv(path)
     assert any(s.board_no == 17 and s.socket == 1 for s in look_map.scales)
 
+
+# ---- taking a picked file in: the name a Mac hands over, and numbering ----
+
+def test_safaris_csv_txt_is_read_as_the_csv_it_is():
+    assert look_mod.mac_safe_name("Look22_map.csv.txt") == "Look22_map.csv"
+    assert look_mod.mac_safe_name("Look22_map.CSV.TXT") == "Look22_map.CSV"
+    # Only that exact pair: a real .txt keeps its name (and is refused
+    # later for not being a CSV at all), and a .csv is left alone.
+    assert look_mod.mac_safe_name("notes.txt") == "notes.txt"
+    assert look_mod.mac_safe_name("Look22_map.csv") == "Look22_map.csv"
+    # Composed, never trimmed here - normalize_name() is still the one
+    # rule for the edges (a control character must reach name_problem()).
+    assert look_mod.mac_safe_name(" Look22_map.csv ") == " Look22_map.csv "
+
+
+def test_the_clutter_a_mac_puts_beside_a_file_is_recognised():
+    for name in ("._Look22_map.csv", ".DS_Store", "__MACOSX",
+                 "__MACOSX/Look22_map.csv", "__macosx/x.csv",
+                 "folder/._Look22_map.csv"):
+        assert look_mod.is_mac_metadata(name), name
+    for name in ("Look22_map.csv", "_Look22_map.csv", "a._b_map.csv",
+                 "DS_Store.csv"):
+        assert not look_mod.is_mac_metadata(name), name
+
+
+def test_a_taken_name_is_numbered_on_the_design_not_the_garment():
+    taken = {"Look22_color_pattern01_grid.csv"}
+    assert look_mod.unique_save_name("Look22_color_new_grid.csv", taken) == \
+        "Look22_color_new_grid.csv"
+    assert look_mod.unique_save_name("Look22_color_pattern01_grid.csv", taken) \
+        == "Look22_color_pattern01-2_grid.csv"
+    taken.add("Look22_color_pattern01-2_grid.csv")
+    assert look_mod.unique_save_name("Look22_color_pattern01_grid.csv", taken) \
+        == "Look22_color_pattern01-3_grid.csv"
+    # The site's own <item>_<配色案名>_HW.csv numbers the same way.
+    assert look_mod.unique_save_name("Look22_1_HW.csv", {"Look22_1_HW.csv"}) \
+        == "Look22_1-2_HW.csv"
+    # A garment has one wiring file: there is nowhere to put a number
+    # that would still be that garment's map, so the caller is told no.
+    assert look_mod.unique_save_name("Look22_map.csv", {"Look22_map.csv"}) \
+        is None
+    # `taken` is only read - the caller adds what it ends up using.
+    assert taken == {"Look22_color_pattern01_grid.csv",
+                     "Look22_color_pattern01-2_grid.csv"}
+

@@ -47,8 +47,11 @@ from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, default_shift, unit_board_ids)
 from .look import kind as file_kind
 from .look import file_stem, map_item
+from .look import is_mac_metadata as look_is_mac_metadata
+from .look import mac_safe_name as look_mac_safe_name
 from .look import name_problem as look_name_problem
 from .look import normalize_name as look_normalize
+from .look import unique_save_name as look_unique_save_name
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 REPO_DIR = Path(__file__).resolve().parent.parent
@@ -85,6 +88,12 @@ _REVISION_IGNORES = {"music", "labels"}
 # no cue references it by name, so folding a stray character to "_" costs
 # nothing and saves a whole class of filesystem trouble.
 _SAFE_MUSIC_NAME = re.compile(r"[^\w.\- ]", re.UNICODE)
+# Why a CSV whose name says nothing is turned away. One sentence, in one
+# place: Workspace.save(), import_bundle() and the /api/files intake all
+# print it, and the designers' simulator prints the same words
+# (designer-app.js's refuseReason).
+NOT_A_CSV_NAME = ("not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv "
+                  "(the wiring site writes _HW in capitals)")
 _MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
 _COPY_NO = re.compile(r"-[0-9]+$")
 # [0-9], never \d - see conductor/look.py's _PATTERN_NO: Python's \d takes
@@ -110,6 +119,21 @@ def safe_music_name(name: str) -> str:
     """A name for the music blob on disk. Not a CSV rule: see above."""
     return _SAFE_MUSIC_NAME.sub(
         "_", Path(unicodedata.normalize("NFC", str(name))).name)
+
+
+def _same_csv(a: "str | None", b: "str | None") -> bool:
+    """Whether two CSVs are the same file picked twice.
+
+    Line endings and a leading BOM are how the file travelled, not what
+    it says: a grid saved here with "\\n" and handed back by a browser
+    that read it with "\\r\\n" is the same design, and re-picking it
+    must be "already there" rather than a second copy numbered "-2".
+    """
+    if a is None or b is None:
+        return False
+    def body(text: str) -> str:
+        return text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n")
+    return body(a) == body(b)
 
 
 def workspace_name(name: str) -> str:
@@ -1000,9 +1024,7 @@ class Workspace:
                 if not problem and Path(clean).name != clean:
                     problem = "a bundle's file names may not hold a path"
                 if not problem and self.kind(clean) is None:
-                    problem = ("not a *_map.csv, *_color_NAME_grid.csv "
-                               "or *_HW.csv (the wiring site writes _HW "
-                               "in capitals)")
+                    problem = NOT_A_CSV_NAME
             except (OSError, ValueError):     # e.g. an embedded NUL byte
                 problem = "unusable file name"
             if problem:
@@ -1072,11 +1094,16 @@ class Workspace:
     kind = staticmethod(file_kind)
 
     def save(self, name: str, text: str) -> str:
+        """Write one CSV, replacing whatever is there under that name.
+
+        The plain write, and it stays that way: import_bundle() is
+        documented to overwrite and to report what it overwrote. The
+        /api/files path does NOT come here directly - it goes through
+        intake() below, which never lets one file land on another.
+        """
         name = workspace_name(name)          # raises on an unusable name
         if self.kind(name) is None:
-            raise ValueError(f"{name}: not a *_map.csv, "
-                             "*_color_NAME_grid.csv or *_HW.csv (the "
-                             "wiring site writes _HW in capitals)")
+            raise ValueError(f"{name}: {NOT_A_CSV_NAME}")
         with self._lock:
             # open(), not Path.write_text(newline=...): that is 3.10+, and
             # the units' Python 3.9 should be able to run this too.
@@ -1084,6 +1111,98 @@ class Workspace:
                       newline="") as handle:
                 handle.write(text)
         return name
+
+    def item_names(self) -> "list[str]":
+        """The garments this workspace has a wiring file for."""
+        names = []
+        for path in sorted(self.files.glob("*.csv")):
+            if self.kind(path.name) != "map":
+                continue
+            named = _MAP_ITEM.match(file_stem(path.name))
+            if named:
+                names.append(named.group(1))
+        return names
+
+    def _existing_text(self, name: str) -> "str | None":
+        try:
+            return (self.files / name).read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def intake(self, entries) -> dict:
+        """Several picked files at once - the /api/files path.
+
+        Nothing here ever lands on a file that is already in the
+        workspace (2026-09-26, "the 4th of 5 CSVs was overwritten"):
+
+          * a Mac's own clutter is turned away by name, before the text
+            is looked at - the "._NAME.csv" AppleDouble twins end in
+            _map.csv and used to become garments of their own;
+          * Safari's "NAME.csv.txt" is read as the NAME.csv it is;
+          * the same bytes under a name the workspace already holds is
+            the same file picked twice - set aside, not saved again;
+          * anything else that would land on a name already taken (by a
+            file on disk OR by an earlier file of this same pick) is
+            numbered "-2", "-3"... on its DESIGN name, so nothing is
+            lost. A *_map.csv has nowhere to put a number - a garment
+            has one wiring file - so a second, different one is refused
+            with what to do about it.
+
+        Returns {"saved": [...], "renamed": {from: to}, "skipped":
+        {from: the file already there}, "refused": ["name: why"]} - the
+        page says all four out loud, so a file that was picked and did
+        not arrive under its own name can never pass unnoticed.
+
+        import_bundle() deliberately does NOT come this way: a bundle
+        replaces the designs it names and reports what it overwrote
+        (docs/SIMULATOR_FOR_DESIGNERS.md), which is the whole point of
+        sending one.
+        """
+        with self._lock:
+            taken = {path.name for path in self.files.glob("*.csv")}
+        saved: "list[str]" = []
+        renamed: "dict[str, str]" = {}
+        skipped: "dict[str, str]" = {}
+        refused: "list[str]" = []
+        for entry in entries:
+            raw = str((entry or {}).get("name", ""))
+            text = (entry or {}).get("text")
+            if not isinstance(text, str):
+                refused.append(f"{raw}: no text was sent with this file")
+                continue
+            if look_is_mac_metadata(raw):
+                refused.append(f"{raw}: a macOS metadata file, not one of "
+                               "the designers' CSVs")
+                continue
+            wanted = look_mac_safe_name(raw)
+            try:
+                wanted = workspace_name(wanted)
+            except ValueError as exc:
+                refused.append(str(exc))
+                continue
+            if self.kind(wanted) is None:
+                refused.append(f"{raw}: {NOT_A_CSV_NAME}")
+                continue
+            if wanted in taken and _same_csv(self._existing_text(wanted), text):
+                skipped[raw] = wanted
+                continue
+            name = look_unique_save_name(wanted, taken)
+            if name is None:
+                refused.append(
+                    f"{raw}: {wanted} is already here and a garment has one "
+                    "wiring file - delete it first if this replaces it")
+                continue
+            try:
+                self.save(name, text)
+            except (OSError, ValueError) as exc:
+                refused.append(f"{raw}: {exc}")
+                continue
+            taken.add(name)
+            saved.append(name)
+            if name != raw:
+                renamed[raw] = name
+        return {"saved": saved, "renamed": renamed, "skipped": skipped,
+                "refused": refused}
 
     def delete(self, name: str) -> None:
         target = self.files / Path(name).name
@@ -1942,14 +2061,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._body()
             if self.path == "/api/files":
-                saved, refused = [], []
-                for entry in body.get("files", []):
-                    try:
-                        saved.append(self.workspace.save(entry["name"],
-                                                         entry["text"]))
-                    except ValueError as exc:
-                        refused.append(str(exc))
-                return self._json({"saved": saved, "refused": refused})
+                return self._json(
+                    self.workspace.intake(body.get("files") or []))
             if self.path == "/api/duplicate":
                 return self._json({"ok": True, "item":
                                    self.workspace.duplicate(body["item"])})

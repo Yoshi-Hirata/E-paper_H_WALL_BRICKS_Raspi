@@ -4149,14 +4149,32 @@ async function uploadOwn(item, fileList) {
   const note = refused.length ? `Not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv (the wiring site writes _HW in capitals): ${refused.join(", ")}` : "";
   if (files.length) upload(files, note); else toast(note);
 }
+// A refusal/rename list short enough to read in a toast - the simulator's
+// briefly() (designer-app.js): a dropped folder can hold a hundred files,
+// and nobody wants them named one by one across three lines of the screen.
+function briefly(entries, format, limit) {
+  const n = limit || 3;
+  const shown = entries.slice(0, n).map(format).join("; ");
+  return entries.length > n ? `${shown} +${entries.length - n} more` : shown;
+}
+// Every file that was picked is accounted for out loud. The server never
+// overwrites (Workspace.intake): a second design of a name already here is
+// numbered "-2" and says so, the same bytes again are "already there", and
+// a second wiring file is refused - all three are things the operator has
+// to see, not quietly different outcomes of the same drop.
 async function upload(fileList, note) {
   const files = [];
   for (const f of fileList) files.push(f.text instanceof Function ? { name: f.name, text: await f.text() } : f);
   if (!files.length) return;
   const result = await api("/api/files", { files });
   const parts = note ? [note] : [];
+  const renamed = Object.entries(result.renamed || {});
+  const skipped = Object.entries(result.skipped || {});
   if (result.saved?.length) parts.push(`${result.saved.length} file(s) imported`);
-  if (result.refused?.length) parts.push("Not imported: " + result.refused.join(" / "));
+  if (renamed.length) parts.push("saved as " + briefly(renamed, ([from, to]) => `${from} → ${to}`));
+  if (skipped.length) parts.push(`${skipped.length} already there: `
+    + briefly(skipped, ([from, to]) => from === to ? from : `${from} (as ${to})`));
+  if (result.refused?.length) parts.push(`${result.refused.length} refused: ` + briefly(result.refused, x => x));
   toast(parts.join(" · ") || result.error || "");
   refresh();
 }

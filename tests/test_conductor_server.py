@@ -609,6 +609,146 @@ def test_board_numbers_are_checked_and_survive_a_new_csv(workspace):
     assert any("no longer fit" in w for w in look["map"]["warnings"])
 
 
+# ---- taking picked CSVs in (/api/files -> Workspace.intake) ----
+
+def _names(entries):
+    return [{"name": name, "text": text} for name, text in entries]
+
+
+def test_intake_never_lets_one_design_land_on_another(workspace):
+    # 2026-09-26, "the 4th of 5 CSVs was overwritten": a second design
+    # under a name the workspace already holds is numbered, not dropped
+    # on top of the first - and the reply says so, naming both names.
+    first = GRID
+    second = GRID.replace("0x03", "0x02")
+    result = workspace.intake(_names([
+        ("Look22_color_pattern01_grid.csv", second)]))
+    # The number goes on the DESIGN name, before _grid.csv.
+    assert result["saved"] == ["Look22_color_pattern01-2_grid.csv"]
+    assert result["renamed"] == {
+        "Look22_color_pattern01_grid.csv": "Look22_color_pattern01-2_grid.csv"}
+    assert result["refused"] == [] and result["skipped"] == {}
+    # The original is untouched.
+    assert (workspace.files / "Look22_color_pattern01_grid.csv"
+            ).read_text(encoding="utf-8") == first
+    # A third copy numbers again.
+    third = workspace.intake(_names([
+        ("Look22_color_pattern01_grid.csv", GRID.replace("0x03", "0x04"))]))
+    assert third["saved"] == ["Look22_color_pattern01-3_grid.csv"]
+
+
+def test_intake_numbers_within_one_pick_as_well_as_against_the_disk(workspace):
+    # Two files of ONE pick that resolve to the same name: the second is
+    # kept beside the first, not silently swallowed by it.
+    result = workspace.intake(_names([
+        ("Look22_color_new_grid.csv", GRID),
+        ("Look22_color_new_grid.csv", GRID.replace("0x03", "0x02"))]))
+    assert result["saved"] == ["Look22_color_new_grid.csv",
+                               "Look22_color_new-2_grid.csv"]
+    assert result["renamed"] == {
+        "Look22_color_new_grid.csv": "Look22_color_new-2_grid.csv"}
+
+
+def test_intake_numbers_the_sites_own_HW_name_too(workspace):
+    workspace.save("Look22_1_HW.csv", GRID)
+    result = workspace.intake(_names([
+        ("Look22_1_HW.csv", GRID.replace("0x03", "0x02"))]))
+    assert result["saved"] == ["Look22_1-2_HW.csv"]
+
+
+def test_intake_skips_the_same_file_picked_twice(workspace):
+    # The same bytes under the same name is the same file, not a second
+    # design: it is set aside as "already there" instead of becoming a
+    # "-2" nobody asked for. The line endings it travelled under do not
+    # make it a different file.
+    result = workspace.intake(_names([
+        ("Look22_color_pattern01_grid.csv", GRID.replace("\n", "\r\n"))]))
+    assert result["saved"] == [] and result["renamed"] == {}
+    assert result["skipped"] == {
+        "Look22_color_pattern01_grid.csv": "Look22_color_pattern01_grid.csv"}
+    assert sorted(p.name for p in workspace.files.glob("*.csv")) == [
+        "Look22_color_pattern01_grid.csv", "Look22_map.csv"]
+
+
+def test_intake_refuses_a_second_wiring_file_rather_than_numbering_it(workspace):
+    # A garment has ONE map: there is nowhere to put a "-2" that would
+    # still be that garment's wiring, so a different one is refused with
+    # what to do about it instead of overwriting the original.
+    other = MAP.replace(",20,5,020-05", ",21,5,021-05")
+    result = workspace.intake(_names([("Look22_map.csv", other)]))
+    assert result["saved"] == []
+    assert len(result["refused"]) == 1
+    assert "one wiring file" in result["refused"][0]
+    assert "delete it first" in result["refused"][0]
+    assert (workspace.files / "Look22_map.csv").read_text(
+        encoding="utf-8") == MAP
+    # ...but the SAME map picked again is simply "already there".
+    assert workspace.intake(_names([("Look22_map.csv", MAP)]))["skipped"] == {
+        "Look22_map.csv": "Look22_map.csv"}
+
+
+def test_intake_reads_safaris_csv_txt_as_the_csv_it_is(workspace):
+    # Safari appends ".txt" to a text/plain download and Finder hides the
+    # extension, so nobody sees why every CSV was refused (2026-09-25).
+    result = workspace.intake(_names([
+        ("Look22_color_pattern07_grid.csv.txt", GRID)]))
+    assert result["saved"] == ["Look22_color_pattern07_grid.csv"]
+    assert result["renamed"] == {
+        "Look22_color_pattern07_grid.csv.txt":
+            "Look22_color_pattern07_grid.csv"}
+
+
+def test_intake_turns_away_the_clutter_a_mac_puts_beside_a_file(workspace):
+    # "._NAME.csv" AppleDouble twins END in _map.csv and used to be taken
+    # for garments of their own; the refusal says what they are.
+    picked = [("._Look22_map.csv", MAP), (".DS_Store", "x"),
+              ("__MACOSX/Look22_color_pattern09_grid.csv", GRID)]
+    result = workspace.intake(_names(picked))
+    assert result["saved"] == []
+    assert len(result["refused"]) == 3
+    assert all("macOS metadata" in line for line in result["refused"])
+    assert all(line.split(":")[0] == name.split(":")[0]
+               for line, (name, _) in zip(result["refused"], picked))
+    assert sorted(p.name for p in workspace.files.glob("*.csv")) == [
+        "Look22_color_pattern01_grid.csv", "Look22_map.csv"]
+
+
+def test_intake_still_refuses_what_save_refuses_and_says_which_file(workspace):
+    result = workspace.intake(_names([
+        ("notes.csv", "x"), ("sub/Look22_map.csv", MAP),
+        ("Look22_a:b_HW.csv", GRID)]))
+    assert result["saved"] == []
+    assert "notes.csv: " in result["refused"][0]
+    assert "path separator" in result["refused"][1]
+    assert "Windows keeps it" in result["refused"][2]
+
+
+def test_intake_reports_a_file_with_no_text_instead_of_throwing(workspace):
+    result = workspace.intake([{"name": "Look22_color_x_grid.csv"}])
+    assert result["saved"] == [] and len(result["refused"]) == 1
+
+
+def test_import_bundle_still_overwrites_and_reports_it(tmp_path):
+    # The one path that DOES replace what it names, on purpose
+    # (docs/SIMULATOR_FOR_DESIGNERS.md): a bundle is the designers'
+    # project, and the operator asked for it. Nothing about the intake
+    # rules above may change that.
+    ws = Workspace(tmp_path / "ws")
+    ws.save("Look22_map.csv", MAP)
+    ws.save("Look22_color_pattern01_grid.csv", GRID)
+    changed = GRID.replace("0x03", "0x02")
+    result = ws.import_bundle({
+        "format": "epaper-show-bundle", "version": 1,
+        "files": {"Look22_color_pattern01_grid.csv": changed},
+        "show": {"format": "epaper-show", "version": 1, "duration": 600,
+                 "cues": []}})
+    assert result["saved"] == ["Look22_color_pattern01_grid.csv"]
+    assert result["overwritten"] == ["Look22_color_pattern01_grid.csv"]
+    assert (ws.files / "Look22_color_pattern01_grid.csv").read_text(
+        encoding="utf-8") == changed
+    assert not list(ws.files.glob("*-2_grid.csv"))
+
+
 def test_designer_named_files_are_accepted_and_labelled(workspace):
     name = "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv"
     assert Workspace.kind(name) == "grid"

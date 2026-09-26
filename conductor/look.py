@@ -233,6 +233,80 @@ def name_problem(name) -> "str | None":
     return None
 
 
+# ============================================================
+# Taking a picked file in: what a Mac did to its name, and how a
+# second file of the same name is kept instead of overwriting the first
+# ============================================================
+# The same three rules the designers' simulator applies before it saves
+# anything (conductor/web/sim/model.js's SIM.look.macSafeName/
+# isMacMetadata/uniqueSaveName, which designer-app.js calls), so a pick
+# the simulator keeps is a pick the Conductor keeps, under the same name.
+_CSV_TXT = re.compile(r"\.csv\.txt$", re.IGNORECASE)
+_TXT_SUFFIX = re.compile(r"\.txt$", re.IGNORECASE)
+_METADATA_PREFIX = "._"
+_METADATA_NAMES = (".DS_Store",)
+_METADATA_FOLDER = "__MACOSX"
+# Where a "-2" goes in a name that is already taken: on the design's own
+# name, never on the item's - <item>_color_<design>_grid.csv and the
+# site's own <item>_<配色案名>_HW.csv. A *_map.csv matches neither, and
+# that is the point: a garment has one wiring file, so a second one is
+# refused rather than filed away beside it under a made-up name.
+_DESIGN_NUMBER = re.compile(r"^(.*_color_)(.+?)(_grid.*\.csv)$", re.IGNORECASE)
+_HW_NUMBER = re.compile(r"^([^_]+_)(.+?)(_HW\.csv)$", re.IGNORECASE)
+_MAX_COPIES = 100
+
+
+def mac_safe_name(name) -> str:
+    """A picked file's name with what a Mac added to it taken off.
+
+    Safari appends ".txt" to a text/plain download ("NAME.csv.txt") and
+    Finder hides the extension, so nobody sees it; HFS+/APFS hand names
+    back decomposed, so compose first. NOT trimmed here - normalize_name()
+    is still the one rule for that, and name_problem() must see the
+    untrimmed name (see _NAME_TRIM).
+    """
+    text = unicodedata.normalize("NFC", str(name))
+    if _CSV_TXT.search(text):
+        text = _TXT_SUFFIX.sub("", text)
+    return text
+
+
+def is_mac_metadata(name) -> bool:
+    """True for the twins Finder puts beside a file in a zip.
+
+    "._NAME.csv" AppleDouble twins END in _map.csv and used to be taken
+    for garments of their own; ".DS_Store" and everything under
+    "__MACOSX/" are the same kind of thing. Every path segment is
+    checked, not only the last one, because a folder drop hands the
+    "__MACOSX/" over as part of the name.
+    """
+    text = unicodedata.normalize("NFC", str(name))
+    for part in re.split(r"[\\/]", text):
+        if (part.startswith(_METADATA_PREFIX) or part in _METADATA_NAMES
+                or part.upper() == _METADATA_FOLDER):
+            return True
+    return False
+
+
+def unique_save_name(name: str, taken) -> "str | None":
+    """`name`, or the first "-2", "-3"... spelling of it nothing holds.
+
+    None when there is no room to number: a *_map.csv (one wiring per
+    garment) or a hundred copies of the same design. `taken` is only
+    read - the caller adds what it ends up using.
+    """
+    if name not in taken:
+        return name
+    match = _DESIGN_NUMBER.match(name) or _HW_NUMBER.match(name)
+    if not match:
+        return None
+    for number in range(2, _MAX_COPIES):
+        candidate = f"{match.group(1)}{match.group(2)}-{number}{match.group(3)}"
+        if candidate not in taken:
+            return candidate
+    return None
+
+
 def kind(name: str) -> "str | None":
     """"map", "grid" or None, from the file's NAME alone.
 
