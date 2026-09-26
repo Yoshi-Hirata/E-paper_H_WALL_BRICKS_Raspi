@@ -251,6 +251,143 @@ def test_the_guard_stop_follows_a_fire_unless_a_new_cue_comes_first():
     runner.stop()
 
 
+def guards(bus):
+    return len([f for f in bus.sent if f.cmd == STOP and f.dest == 0xFF])
+
+
+def test_the_guard_stop_is_sized_from_the_cues_own_refresh_and_span():
+    """F1, 2026-09-26: the guard was a flat 12 s after every fire, which
+    is one 7 s refresh plus 5 s. A sweep is not finished at the refresh -
+    its last scale only STARTS at the span, and a span may be 30 s - so
+    the broadcast STOP could land inside the change."""
+    runner = make_runner(FakeBus(), guard_delay=12.0)
+
+    class Cue:
+        span_s = refresh_s = None
+
+    cue = Cue()
+    assert runner._guard_for(cue) == 12.0           # an old body: unchanged
+    cue.span_s, cue.refresh_s = 0.0, 7.0
+    assert runner._guard_for(cue) == 12.0           # no sweep: also unchanged
+    cue.span_s = 3.0
+    assert runner._guard_for(cue) == 15.0           # 7 + 3 + the same 5 margin
+    cue.span_s, cue.refresh_s = 30.0, 16.0          # MAX_DELAY_S on a slow panel
+    assert runner._guard_for(cue) == 51.0
+    cue.refresh_s = None                            # span alone: 7 s assumed
+    assert runner._guard_for(cue) == 42.0
+    cue.span_s, cue.refresh_s = 0.0, 1.0            # never EARLIER than before
+    assert runner._guard_for(cue) == 12.0
+    # ...and never so late that the guard is effectively off: nothing
+    # real gets near GUARD_MAX_S (120 s span over a 60 s refresh is the
+    # honest worst case), but a wild number must not silently hand the
+    # wall back to the factory autoplay.
+    cue.span_s, cue.refresh_s = 5000.0, 60.0
+    assert runner._guard_for(cue) == 200.0
+
+
+def test_a_swept_cue_holds_the_guard_stop_off_until_the_sweep_is_over():
+    session, runner, bus = make_session(guard_delay=0.15)
+    session.prepare("c1", {1: array(1)}, span_s=0.3, refresh_s=0.2)
+    assert wait_until(lambda: session.phase == READY)
+    before = guards(bus)
+    session.fire("c1", time.monotonic() + 0.02)
+    assert wait_until(lambda: session.phase == FIRED)
+    fired = session.fired_at
+    assert wait_until(lambda: guards(bus) == before + 1)
+    # refresh 0.2 + span 0.3, not the flat 0.15 s this runner was given.
+    assert time.monotonic() - fired >= 0.5 - 0.02
+    runner.stop()
+
+
+class StampedBus(FakeBus):
+    """A FakeBus that remembers WHEN each broadcast STOP went out."""
+
+    def __init__(self):
+        super().__init__()
+        self.broadcast_stops: list[float] = []
+
+    def send(self, frame):
+        if frame.cmd == STOP and frame.dest == 0xFF:
+            self.broadcast_stops.append(time.monotonic())
+        super().send(frame)
+
+
+def test_a_fire_from_inside_the_probing_sweep_owns_the_guard():
+    """The guard of the LATEST fire wins, not the earliest (review,
+    2026-09-26). A unit that restarted mid-show fires its overdue cue
+    BEFORE the probing sweep, and the next cue can come due inside that
+    sweep, where _fire_before_probing() sends it and leaves its guard
+    _guard_owed. Both are absolute deadlines; merging them with min()
+    kept the dead cue's earlier one and dropped a broadcast 0x17 into
+    the second cue's own sweep."""
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.05)
+    session = RemoteSession(runner)
+    # Armed and already overdue: fired before anything is probed.
+    session.arm("c1", 1, span_s=0.05, refresh_s=0.05)
+    session.fire("c1", time.monotonic() - 0.01)
+    assert wait_until(lambda: session.phase == FIRED and session.cue_id == "c1")
+    # The probing sweep _setup() now runs is where the next cue comes due.
+    session.arm("c2", 2, span_s=0.6, refresh_s=0.2)
+    session.fire("c2", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED and session.cue_id == "c2")
+    fired2 = session.fired_at
+    assert wait_until(lambda: any(t > fired2 for t in bus.broadcast_stops))
+    # c2's own refresh 0.2 + span 0.6 - not c1's guard, long overdue by now.
+    assert min(t for t in bus.broadcast_stops if t > fired2) >= fired2 + 0.78
+    runner.stop()
+
+
+def test_a_cue_with_no_sweep_keeps_the_flat_guard():
+    session, runner, bus = make_session(guard_delay=0.15)
+    session.prepare("c1", {1: array(1)}, span_s=0.0, refresh_s=0.05)
+    assert wait_until(lambda: session.phase == READY)
+    before = guards(bus)
+    session.fire("c1", time.monotonic() + 0.02)
+    assert wait_until(lambda: session.phase == FIRED)
+    fired = session.fired_at
+    assert wait_until(lambda: guards(bus) == before + 1)
+    assert time.monotonic() - fired < 1.0
+    runner.stop()
+
+
+def test_junk_span_and_refresh_are_read_as_not_said():
+    """Advisory numbers: a cue is never refused over one, and the guard
+    falls back to the flat delay rather than to something nonsensical."""
+    session, runner, bus = make_session()
+    for span, refresh in (("soon", -4), (float("nan"), {}),
+                          (float("inf"), float("inf"))):
+        session.prepare("c1", {1: array(1)}, span_s=span, refresh_s=refresh)
+        assert wait_until(lambda: session.phase == READY)
+        assert session.span_s is None and session.refresh_s is None
+        assert runner._guard_for(session) == runner.guard_delay
+    runner.stop()
+
+
+def test_the_sweep_log_names_the_span_when_this_board_falls_short_of_it():
+    """radxa-01, 2026-09-26: a centre sweep of a 3 s span logged "last
+    starts +2.44 s" on every board, because a garment's farthest scales
+    sit on some OTHER board. The line says so now."""
+    bus = FakeBus()
+    runner = make_runner(bus)
+    frames = [NO_DELAY] * 64
+    frames[1], frames[2] = 0, 244
+    assert runner._save_delays(bus, 20, 7, struct.pack(">64H", *frames),
+                               dev_type=3, span_s=3.0)
+    line = [m for m in runner.log if "sweep table saved" in m][-1]
+    assert "last starts +2.44 s of a 3.00 s span" in line
+    assert "farthest scales are on other boards" in line
+    # The board that does carry the last scale says only what it did.
+    assert runner._save_delays(bus, 20, 8, table(300), dev_type=3, span_s=3.0)
+    line = [m for m in runner.log if "sweep table saved" in m][-1]
+    assert line.endswith("last starts +3.00 s")
+    # And a caller that never said a span says nothing either.
+    assert runner._save_delays(bus, 20, 9, table(244), dev_type=3)
+    line = [m for m in runner.log if "sweep table saved" in m][-1]
+    assert line.endswith("last starts +2.44 s")
+    runner.stop()
+
+
 def test_standby_and_release_hand_the_unit_over_and_back():
     session, runner, bus = make_session()
     session.standby()
@@ -528,8 +665,10 @@ def test_delay_tables_go_out_before_the_colours_and_only_when_they_change():
     cmds = [(f.cmd, f.dest) for f in bus.requested if f.cmd in (DELAY, SAVE)]
     assert cmds == [(DELAY, 1), (DELAY, 1), (SAVE, 1), (DELAY, 2), (DELAY, 2), (SAVE, 2)]
     low, high = [f for f in bus.requested if f.cmd == DELAY][:2]
-    # 20 frames (0.2 s) a socket: low bytes 20, high bytes 0, "last" on the high frame.
-    assert low.data == bytes([19, 0, 0]) + bytes([20] * 62) + bytes([0])
+    # 20 frames (0.2 s) a socket: low bytes 20, high bytes 0, "last" on the
+    # high frame. Sockets 0 and 63 carry no scale, so they get the sweep's
+    # LAST frame (here the same 20) rather than frame 0 - see _save_delays().
+    assert low.data == bytes([19, 0]) + bytes([20] * 64)
     assert high.data == bytes([19, 0x03]) + bytes(64)
     # The same tables again: not written again. A new one for board 2 is.
     n = len(bus.requested)
@@ -572,7 +711,7 @@ def test_agent_passes_delays_through(agent):
                                             "delays": {"1": table(30).hex()}})
     assert status == 200, body
     assert wait_until(lambda: session.phase == READY)
-    assert any(f.cmd == DELAY and f.data[2:] == bytes([0]) + bytes([30] * 62) + bytes([0])
+    assert any(f.cmd == DELAY and f.data[2:] == bytes([30] * 64)
                for f in bus.requested)
 
 
@@ -583,8 +722,27 @@ def test_frames_are_sent_as_uint16_low_then_high():
     wide = struct.pack(">64H", *([NO_DELAY] + [300] * 62 + [NO_DELAY]))
     assert runner._save_delays(bus, 20, 7, wide, dev_type=3)
     low, high = [f for f in bus.requested if f.cmd == DELAY][:2]
-    assert low.data[2:] == bytes([0]) + bytes([0x2C] * 62) + bytes([0])
-    assert high.data[2:] == bytes([0]) + bytes([0x01] * 62) + bytes([0])
+    assert low.data[2:] == bytes([0x2C] * 64)
+    assert high.data[2:] == bytes([0x01] * 64)
+    runner.stop()
+
+
+def test_an_unused_socket_starts_with_the_last_scale_not_at_t0():
+    """A socket with no scale on it gets max(frames), not 0 (F4,
+    2026-09-26). On correct firmware the value is ignored either way -
+    the board has no segment there - but 0 means "repaint at T0", which
+    on a firmware that ever did act on it is a flash at the wrong end of
+    the garment, while the last frame is invisible behind the sweep."""
+    bus = FakeBus()
+    runner = make_runner(bus)
+    # Sockets 1..3 sweep at 0 / 50 / 120 frames; everything else is unused.
+    frames = [NO_DELAY] * 64
+    frames[1], frames[2], frames[3] = 0, 50, 120
+    assert runner._save_delays(bus, 20, 7, struct.pack(">64H", *frames), dev_type=3)
+    low = [f for f in bus.requested if f.cmd == DELAY][0]
+    sent = low.data[2:]
+    assert (sent[1], sent[2], sent[3]) == (0, 50, 120)   # the real scales
+    assert sent[0] == sent[4] == sent[63] == 120         # the unused sockets
     runner.stop()
 
 

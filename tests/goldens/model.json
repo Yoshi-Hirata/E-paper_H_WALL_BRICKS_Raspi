@@ -8784,8 +8784,8 @@
   {
    "expect": {
     "ranks": {
-     "front|0|0": 2,
-     "front|4|3": 2
+     "front|0|0": 0,
+     "front|4|3": 0
     },
     "spanS": 0.0
    },
@@ -8801,10 +8801,10 @@
   {
    "expect": {
     "ranks": {
-     "front|0|0": 2,
-     "front|4|3": 2
+     "front|0|0": 0,
+     "front|4|3": 0
     },
-    "spanS": 2.25
+    "spanS": 0.0
    },
    "kind": "ranks",
    "mapFixture": "CenterTie_map.csv",
@@ -8818,10 +8818,10 @@
   {
    "expect": {
     "ranks": {
-     "front|0|0": 2,
-     "front|4|3": 2
+     "front|0|0": 0,
+     "front|4|3": 0
     },
-    "spanS": 3.0
+    "spanS": 0.0
    },
    "kind": "ranks",
    "mapFixture": "CenterTie_map.csv",
@@ -8835,10 +8835,10 @@
   {
    "expect": {
     "ranks": {
-     "front|0|0": 2,
-     "front|4|3": 2
+     "front|0|0": 0,
+     "front|4|3": 0
     },
-    "spanS": 30.1
+    "spanS": 0.0
    },
    "kind": "ranks",
    "mapFixture": "CenterTie_map.csv",
@@ -9117,6 +9117,462 @@
    "opts": {
     "item": "CenterTie",
     "name": "CenterTie_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "natural",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "natural",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "natural",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "natural",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 1,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 1
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "center",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 1,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 1
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "center",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 1,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 1
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "center",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 1,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 1
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "center",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|1|1": 2,
+     "front|2|1": 1,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|1|1": 2,
+     "front|2|1": 1,
+     "front|3|1": 0
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|1|1": 2,
+     "front|2|1": 1,
+     "front|3|1": 0
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 3,
+     "front|1|1": 2,
+     "front|2|1": 1,
+     "front|3|1": 0
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "top_down",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 1,
+     "front|2|1": 2,
+     "front|3|1": 3
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 1,
+     "front|2|1": 2,
+     "front|3|1": 3
+    },
+    "spanS": 2.25
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 1,
+     "front|2|1": 2,
+     "front|3|1": 3
+    },
+    "spanS": 3.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 1,
+     "front|2|1": 2,
+     "front|3|1": 3
+    },
+    "spanS": 30.1
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "bottom_up",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "left_right",
+   "span": 30.1
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 0.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 2.25
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
+   },
+   "sequence": "right_left",
+   "span": 3.0
+  },
+  {
+   "expect": {
+    "ranks": {
+     "front|0|1": 0,
+     "front|1|1": 0,
+     "front|2|1": 0,
+     "front|3|1": 0
+    },
+    "spanS": 0.0
+   },
+   "kind": "ranks",
+   "mapFixture": "CenterGap_map.csv",
+   "opts": {
+    "item": "CenterGap",
+    "name": "CenterGap_map.csv"
    },
    "sequence": "right_left",
    "span": 30.1
@@ -12747,7 +13203,7 @@
    }
   },
   {
-   "expect": "b4664c903f9db775",
+   "expect": "d0602dd2270b82f8",
    "kind": "state-digest",
    "name": "starter-AZ271SB2303",
    "project": {
@@ -12760,7 +13216,7 @@
    }
   },
   {
-   "expect": "8efde3697e4e2bc0",
+   "expect": "131a35d232b4e518",
    "kind": "state-digest",
    "name": "starter-AZ271SC6302",
    "project": {
@@ -12773,7 +13229,7 @@
    }
   },
   {
-   "expect": "5cb96799da02777d",
+   "expect": "696d90727df6dd6e",
    "kind": "state-digest",
    "name": "starter-AZ271SD1301",
    "project": {
@@ -12786,7 +13242,7 @@
    }
   },
   {
-   "expect": "a763a647e8141abc",
+   "expect": "4e5a8ab2ea376054",
    "kind": "state-digest",
    "name": "starter-AZ271SD1305",
    "project": {
@@ -12800,7 +13256,7 @@
    }
   },
   {
-   "expect": "fb4be12617859f3a",
+   "expect": "4c84266af7d07ece",
    "kind": "state-digest",
    "name": "starter-AZ271SD1305_B",
    "project": {
@@ -12827,7 +13283,7 @@
    }
   },
   {
-   "expect": "e725c864f6d0da75",
+   "expect": "4c7c8ac085f75b76",
    "kind": "state-digest",
    "name": "starter-AZ271SD1307",
    "project": {
@@ -12841,7 +13297,7 @@
    }
   },
   {
-   "expect": "b3b340a48afef329",
+   "expect": "b4eea10b7e2cb779",
    "kind": "state-digest",
    "name": "starter-AZ271SG1035",
    "project": {
@@ -12884,6 +13340,7 @@
   "BadHeader_map.csv": "side,row,col\nfront,0,1\n",
   "BadShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,1,1,17,1,017-01,0\nfront,1,2,17,60,017-60,0\nfront,0,1,20,5,020-05,0.3\nback,0,2,18,12,018-12,0.5\n",
   "BlankShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,1,1,17,1,017-01,0\nfront,1,2,17,60,017-60,0\nfront,0,1,20,5,020-05,\nback,0,2,18,12,018-12,0.5\n",
+  "CenterGap_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,1,1,\nfront,1,1,1,2,\nfront,2,1,1,3,\nfront,3,1,1,4,\n",
   "CenterPlain_map.csv": "side,row,col,board_no,socket,label\nfront,0,1,1,1,\nfront,0,2,1,2,\nfront,1,1,1,3,\nfront,1,2,1,4,\nfront,1,3,1,5,\nfront,1,4,1,6,\nfront,2,2,1,7,\n",
   "CenterShift_map.csv": "side,row,col,board_no,socket,label,shift\nfront,0,1,1,1,,0\nfront,0,2,1,2,,0\nfront,1,1,1,3,,0\nfront,1,2,1,4,,0\nfront,1,3,1,5,,0\nfront,1,4,1,6,,0\nfront,2,2,1,7,,0\n",
   "CenterTie_map.csv": "side,row,col,board_no,socket,label\nfront,0,0,1,1,\nfront,4,3,1,2,\n",
@@ -12906,6 +13363,7 @@
   "BadHeader_map.csv": "9df3c47dc984271c",
   "BadShift_map.csv": "0306f9463cae58f3",
   "BlankShift_map.csv": "4c4dd228b074edac",
+  "CenterGap_map.csv": "353b687268d07a5d",
   "CenterPlain_map.csv": "e6b49ccdf1af7978",
   "CenterShift_map.csv": "d575cbc9a5e70e08",
   "CenterTie_map.csv": "e7c30d32b5b5c253",

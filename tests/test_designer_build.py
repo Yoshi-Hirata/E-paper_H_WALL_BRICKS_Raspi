@@ -60,7 +60,8 @@ def test_built_file_is_under_the_size_budget():
     assert DIST.stat().st_size <= build_designer.SIZE_BUDGET
 
 
-CONSTANT_NAMES = ["PITCH", "MARGIN", "JITTER_MAX", "TINT_STEPS", "REFRESH_TINT",
+CONSTANT_NAMES = ["PITCH", "MARGIN", "JITTER_MAX", "SWEEP_JITTER_FRAC",
+                  "TINT_STEPS", "REFRESH_TINT",
                   "REFRESH_PHASE_A", "REFRESH_PALETTE", "REFRESH_PHASE_C"]
 
 

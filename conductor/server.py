@@ -965,7 +965,14 @@ class Workspace:
             name = design.label or design.name
             payload = payloads.setdefault(unit, {
                 "cue": cue, "label": "", "dev_type": NUMBER_BRAND,
-                "boards": {}})
+                "boards": {},
+                # How long this cue needs to finish once it is fired.
+                # The unit's guard STOP waits for it instead of a flat
+                # 12 s, so a long sweep is never cut off half-drawn
+                # (ui/runner.py's _guard_for(), F1 2026-09-26). `span_s`
+                # grows below with whatever the chosen designs sweep.
+                "refresh_s": float(show.get("refresh_s", timeline.REFRESH_S)),
+                "span_s": 0.0})
             payload["label"] = (payload["label"] + " + " if payload["label"]
                                 else "") + f"{look_map.item} {name}"
             payload["boards"].update({str(address): array.hex()
@@ -983,6 +990,11 @@ class Workspace:
                     payload.setdefault("delays", {}).update(
                         {str(address): table.hex()
                          for address, table in tables.items()})
+                    # Items sharing a unit are one broadcast: the cue is
+                    # only finished when the slowest sweep on it is.
+                    payload["span_s"] = max(
+                        payload["span_s"],
+                        sequence.span_s(look_map, seq, span))
         return payloads, problems
 
     def revision(self) -> str:

@@ -19,6 +19,14 @@
   "use strict";
 
   const JITTER_MAX = 0.35;
+  // On a swept cue the jitter is capped at this fraction of the sweep's own step
+  // between consecutive ranks (adversarial review, 2026-09-26): the hardware has
+  // no jitter at all - scales whose delay table gives them equal frames start in
+  // the same 10 ms frame - and at a 3 s span over ~21 ranks the step is 0.14 s,
+  // so an uncapped 0.35 s scrambled about two and a half rows of the preview and
+  // made a real sweep look messier than it is. The full JITTER_MAX stays for a
+  // flat refresh, where it models the panel-to-panel variance we did film.
+  const SWEEP_JITTER_FRAC = 0.3;
   const REFRESH_TINT = [0xb8, 0xa0, 0x30];
   const REFRESH_PHASE_A = ["#2b2a4e", "#3a2f5a"];
   const REFRESH_PALETTE = ["#2b2a4e", "#3a2f5a", "#9a9aa0", "#c9c9cc", "#e6e3d8",
@@ -74,9 +82,13 @@
     const maxRank = ranks ? maxRankOf(item, sweep.sequence, ranks) : 0;
     const n = item.map.scales.length;
     const delay = new Float64Array(n), jitter = new Float64Array(n);
+    const swept = !!ranks && maxRank > 0 && sweep.span_s > 0;
+    // A swept scale's jitter may not eat its own step (see SWEEP_JITTER_FRAC).
+    const cap = swept ? Math.min(JITTER_MAX, SWEEP_JITTER_FRAC * sweep.span_s / maxRank)
+                      : JITTER_MAX;
     for (let i = 0; i < n; i++) {
       delay[i] = ranks && maxRank > 0 ? ranks[i] * sweep.span_s / maxRank : 0;
-      jitter[i] = (hash32(i, 0xa5a5) % 1000) / 1000 * JITTER_MAX;
+      jitter[i] = (hash32(i, 0xa5a5) % 1000) / 1000 * cap;
     }
     m = { delay, jitter };
     refreshModelCache.set(key, m);

@@ -125,6 +125,28 @@ def wait_burn_settled(player, timeout=5.0):
 
 # ---- pre-burn: load() writes every picture up front ----
 
+def test_a_cues_own_span_and_refresh_travel_with_it(rig):
+    """F1, 2026-09-26: the guard STOP after a fire is sized from these
+    (ui/runner.py's _guard_for()), and the burn's per-board log names the
+    span a short "last starts +N s" belongs to."""
+    player, session, runner, bus, _ = rig
+    show = make_show()
+    for cue in show["cues"]:
+        cue["span"] = 1.5
+    assert [c["span_s"] for c in ShowPlayer._burn_items(show)] == [1.5] * 3
+    player._send(show, show["cues"][1], time.monotonic() + 5, player._epoch)
+    assert session.span_s == 1.5 and session.refresh_s == REFRESH
+    assert runner._guard_for(session) == max(runner.guard_delay,
+                                             REFRESH + 1.5)
+    # A show file from before cues carried a span keeps the flat guard.
+    for cue in show["cues"]:
+        del cue["span"]
+    assert ShowPlayer._burn_items(show)[0]["span_s"] is None
+    player._send(show, show["cues"][2], time.monotonic() + 5, player._epoch)
+    assert session.span_s is None
+    assert runner._guard_for(session) == runner.guard_delay
+
+
 def test_load_burns_every_cue_before_anything_runs(rig):
     player, session, runner, bus, _ = rig
     player.load(make_show())

@@ -853,7 +853,21 @@
   // own ranks() return shape (a dict); SIM.sequence.ranks() (below) is the
   // §2.3 JS-facing form, an array in map.scales order, which is what
   // render.js/flicker.js actually want to zip against map.scales.
+  // Rebased, so the lowest rank of a garment is always 0 and the sweep gets
+  // its whole span (conductor/sequence.py's ranks()/_rebased()). The row and
+  // column sequences already count from their own extreme scale; `center`
+  // measures a distance from a centroid that on a real map falls BETWEEN
+  // scales, so its lowest rank is normally 1, not 0.
   function ranksByKey(map, sequence) {
+    const result = rawRanksByKey(map, sequence);
+    const values = Object.values(result);
+    const lowest = values.length ? Math.min(...values) : 0;
+    if (lowest === 0) return result;
+    Object.keys(result).forEach(key => { result[key] -= lowest; });
+    return result;
+  }
+
+  function rawRanksByKey(map, sequence) {
     const scales = map.scales;
     const result = {};
     if (sequence === "natural" || !scales.length) {

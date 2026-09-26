@@ -41,6 +41,7 @@ from epaper.commands import (TEST_SLOT, clear_pipeline, save_color,
 from epaper.protocol import ACK_INVALID_CMD, ACK_SUCCESS, DEV_NUMBER_BRAND
 
 NO_DELAY = 0xFFFF          # in a show file's table: no delay for this socket
+FRAME_S = 0.01             # conductor/sequence.py's FRAME_S: one table frame
 # "No sweep anywhere" as a table: what a cue that carries no delay table
 # for a (board, slot) means (review finding F5, 2026-09-25) - the slot's
 # pipeline is cleared (0x25) once and remembered in _delays_sent, so a
@@ -94,6 +95,25 @@ PROBE_HOLD_S = 3.0
 # timeout. One request into a wedged CDC can block for ~7.5 s (three
 # tries of 2 s write timeout + 0.5 s read), and a save retries that.
 OLD_WORKER_PATIENCE_S = 12.0
+# The guard STOP (a broadcast 0x17 after a fire, so a finished slot does
+# not run on into the factory autoplay - SPECIFICATION 5.4) used to be a
+# flat guard_delay seconds after every fire. That 12 s is one refresh
+# (conductor/timeline.py's REFRESH_S = 7 s, the first-generation panel)
+# plus 5 s of slack. A swept cue is not finished at refresh: its last
+# scale only STARTS at the sweep's span, so it completes at refresh +
+# span - and a span may be up to sequence.MAX_DELAY_S = 30 s, which put
+# the STOP squarely inside the sweep and killed the change half-drawn
+# (adversarial review, 2026-09-26; latent, because the spans tried on
+# hardware so far are 3 s and the wall is a 7 s refresh). The margin
+# over the picture's completion is kept at whatever guard_delay has over
+# this refresh, so a test that compresses guard_delay compresses it too.
+GUARD_REFRESH_S = 7.0
+# ...and a ceiling on what a cue can talk the guard into. The honest
+# worst case is sequence.SPAN_HARD_MAX_S (120 s) over a 60 s refresh
+# (timeline.REFRESH_RANGE_S), so nothing real reaches this; it is here
+# so a show file or a /prepare body with a wild number cannot switch the
+# guard off altogether and hand the wall back to the factory autoplay.
+GUARD_MAX_S = 200.0
 
 
 def device_token(port: str):
@@ -512,7 +532,7 @@ class DemoRunner:
             return
         due = session.due()             # re-read: it may have just fired
         if due is not None and self._fire_at(bus, groups, session, *due):
-            self._guard_owed = time.monotonic() + self.guard_delay
+            self._guard_owed = time.monotonic() + self._guard_for(session)
 
     def _wait_probing(self, bus, groups: int, seconds: float) -> bool:
         """A wait inside the probing that still lets a cue through: the
@@ -832,7 +852,8 @@ class DemoRunner:
 
     def _save_one(self, bus, groups: int, slot: int, dev_type: int,
                  board: int, array: bytes,
-                 table: "bytes | None" = None) -> bool:
+                 table: "bytes | None" = None,
+                 span_s: "float | None" = None) -> bool:
         """Write one board's picture and its delay table into `slot`. No
         per-board stop first: 0x13 is pure storage and never needs the
         board silenced (docs/MERIS_REPLY_3SLOT.pdf) - unlike _cycle()'s
@@ -841,7 +862,10 @@ class DemoRunner:
         No `table` means "no sweep": the slot's pipeline is cleared
         (NO_TABLE -> 0x25) unless _save_delays() remembers it already
         is, so a slot never keeps a sweep from a previous show or a
-        previous manual cue (review finding F5, 2026-09-25)."""
+        previous manual cue (review finding F5, 2026-09-25).
+
+        `span_s` is only what the sweep was asked for, for the log line
+        _save_delays() writes; nothing is timed by it here."""
         if board not in self.live:
             return False
         if table is None:
@@ -852,7 +876,8 @@ class DemoRunner:
             self._drop(board)
             return False
         self._cfg_done.add((board, slot))
-        if not self._save_delays(bus, groups, board, table, dev_type, slot):
+        if not self._save_delays(bus, groups, board, table, dev_type, slot,
+                                 span_s=span_s):
             self._forget_board(board)
             return False
         if not self._request(bus, save_color(board, slot, array, groups,
@@ -873,7 +898,8 @@ class DemoRunner:
             if self._stop.is_set():
                 break
             if self._save_one(bus, groups, slot, dev_type, board,
-                              job["boards"][board], delays.get(board)):
+                              job["boards"][board], delays.get(board),
+                              span_s=job.get("span_s")):
                 saved.append(board)
                 self._forget_burned(board, slot)   # the burn cache is stale now
             else:
@@ -881,7 +907,8 @@ class DemoRunner:
         return saved, failed
 
     def _save_delays(self, bus, groups: int, board: int, table: bytes,
-                     dev_type: int, slot: "int | None" = None) -> bool:
+                     dev_type: int, slot: "int | None" = None,
+                     span_s: "float | None" = None) -> bool:
         """Give a board the sweep's delay table unless it already holds
         it (in this `slot`). The show file's table is 64 sockets of
         uint16, big-endian, already in the board's own unit - 10 ms
@@ -889,18 +916,32 @@ class DemoRunner:
         0x1F, and a table with no delays at all is 0x25 - forget the
         sweep. A board whose firmware does not know the commands is
         remembered and left alone: the picture still goes out, in
-        socket order."""
+        socket order.
+
+        `span_s`, when the caller knows it, is the span the sweep was
+        ASKED for - only for the log line below."""
         slot = self.slot if slot is None else slot
         if board in self.no_sweep or self._delays_sent.get((board, slot)) == table:
             return True
         values = struct.unpack(">64H", table)
-        if all(v == NO_DELAY for v in values):
+        timed = [v for v in values if v != NO_DELAY]
+        if not timed:
             frames = [clear_pipeline(board, slot, groups, dev_type=dev_type)]
             label = f"sweep off @{board:02d}"
         else:
+            # A socket with no scale on it takes the LAST frame of this
+            # board's sweep, not frame 0. The table has an entry for all
+            # 64 sockets and the board is handed all of them; correct
+            # firmware ignores the ones it has no segment for, so this
+            # is the same bytes-on-the-glass either way - but frame 0
+            # means "start with the very first scale", and if a board
+            # ever did act on an unused socket that is a flash at the
+            # wrong end of the garment at T0, where the last frame is
+            # invisible (adversarial review, 2026-09-26).
+            unused = max(timed)
             frames = list(save_pipeline(
                 board, slot,
-                [0 if v == NO_DELAY else v for v in values],
+                [unused if v == NO_DELAY else v for v in values],
                 groups, dev_type=dev_type))
             label = f"sweep @{board:02d}"
         for frame in frames:
@@ -919,12 +960,22 @@ class DemoRunner:
         # Said once per table, so the operator can see on the unit's
         # log that the sweep really reached the board (a cached table
         # is not sent again and not announced again).
-        if all(v == NO_DELAY for v in values):
+        if not timed:
             self.emit(f"board {board}: sweep cleared")
         else:
-            timed = [v for v in values if v != NO_DELAY]
-            self.emit(f"board {board}: sweep table saved, {len(timed)} sockets,"
-                      f" last starts +{max(timed) * 10 / 1000:.2f} s")
+            last = max(timed) * FRAME_S
+            line = (f"board {board}: sweep table saved, {len(timed)} sockets,"
+                    f" last starts +{last:.2f} s")
+            # A garment's scales are spread over several boards, so this
+            # board's own last start is normally BELOW the span the
+            # sweep was asked for - the scales that finish it sit on
+            # another board. Saying the span too is what turns "+2.44 s"
+            # from something to double-check into something to read past
+            # (radxa-01, 2026-09-26).
+            if span_s is not None and last < float(span_s) - FRAME_S / 2:
+                line += (f" of a {float(span_s):.2f} s span - the farthest"
+                         f" scales are on other boards")
+            self.emit(line)
         return True
 
     def _run_burn(self, bus, groups: int, session, burn_job: dict,
@@ -982,7 +1033,7 @@ class DemoRunner:
             elif self._burn_cache.get((board, slot)) == (array, table):
                 pass                     # unchanged: nothing to write
             elif self._save_one(bus, groups, slot, dev_type, board,
-                                array, table):
+                                array, table, span_s=cue.get("span_s")):
                 self._burn_cache[(board, slot)] = (array, table)
             else:
                 failed.append((board, slot))
@@ -1046,6 +1097,30 @@ class DemoRunner:
         if gone:
             self.emit(f"{len(gone)} board{'' if len(gone) == 1 else 's'} "
                       f"absent ({self._fmt_boards(gone)}) - skipped")
+
+    def _guard_for(self, session) -> float:
+        """Seconds after a fire before the guard STOP may go out.
+
+        The flat `guard_delay` is a refresh plus a margin (see
+        GUARD_REFRESH_S). When the cue says how long it actually needs -
+        its refresh and its sweep's span, carried by /prepare and by the
+        show file's cues - the same margin is measured from the picture's
+        real completion instead, so the STOP can never land inside a
+        sweep. A cue that says nothing (an older conductor's body, a
+        show file from before cues carried a span) keeps the flat delay,
+        and the flat delay is also the floor: this only ever waits
+        longer than it used to, never less.
+        """
+        span_s = getattr(session, "span_s", None)
+        if span_s is None:
+            return self.guard_delay
+        refresh_s = getattr(session, "refresh_s", None)
+        if refresh_s is None:
+            refresh_s = GUARD_REFRESH_S
+        margin = max(0.0, self.guard_delay - GUARD_REFRESH_S)
+        return max(self.guard_delay,
+                   min(GUARD_MAX_S,
+                       float(refresh_s) + float(span_s) + margin))
 
     def _fire_at(self, bus, groups: int, session, cue_id: str, at: float,
                  slot: int, dev_type: int) -> bool:
@@ -1118,7 +1193,10 @@ class DemoRunner:
                         # then a second one right after adjusting it.
                         job = session.take_job()
                         if job is not None:
-                            guard_due = None    # the save's stops cover it
+                            # The save's own stops cover it - both the
+                            # guard this loop holds and one a fire from
+                            # inside the probing left owed.
+                            guard_due = self._guard_owed = None
                             wanted = sorted(job["boards"])
                             if wanted != sorted(self.boards):
                                 # Another garment, another board list - but
@@ -1161,7 +1239,7 @@ class DemoRunner:
                             # sweep below is what a wall with absent
                             # boards spends most of an Upload on.
                             burn_began = time.monotonic()
-                            guard_due = None
+                            guard_due = self._guard_owed = None
                             wanted = sorted({b for cue in burn_job["cues"]
                                             for b in cue["boards"]})
                             if wanted and wanted != sorted(self.boards):
@@ -1234,7 +1312,7 @@ class DemoRunner:
                             # unit (2026-09-25), which on stage is the
                             # garment sitting on the wrong picture.
                             if self._fire_at(bus, groups, session, *late):
-                                guard_due = time.monotonic() + self.guard_delay
+                                guard_due = time.monotonic() + self._guard_for(session)
                         if needs_setup:
                             # The one broadcast 0x17 for this port session
                             # (docs/MERIS_REPLY_3SLOT.pdf: one is enough
@@ -1252,12 +1330,23 @@ class DemoRunner:
                         due = session.due()
                         if due is not None:
                             if self._fire_at(bus, groups, session, *due):
-                                guard_due = time.monotonic() + self.guard_delay
+                                guard_due = time.monotonic() + self._guard_for(session)
                             continue
                         now = time.monotonic()
                         if self._guard_owed is not None:
+                            # The LATEST fire's guard, not the earliest.
+                            # Both are absolute deadlines, and an older
+                            # fire's deadline is meaningless once a newer
+                            # cue has gone out: a unit restarting
+                            # mid-show fires its overdue cue before the
+                            # probing sweep (guard at t+15), the next cue
+                            # comes due inside that sweep and
+                            # _fire_before_probing() sends it (guard at
+                            # t+26), and taking the smaller of the two
+                            # put a broadcast 0x17 five seconds into the
+                            # second cue's own sweep (review, 2026-09-26).
                             guard_due = (self._guard_owed if guard_due is None
-                                         else min(guard_due, self._guard_owed))
+                                         else max(guard_due, self._guard_owed))
                             self._guard_owed = None
                         if guard_due is not None and now >= guard_due:
                             # As after every demo cycle: a shown slot runs
