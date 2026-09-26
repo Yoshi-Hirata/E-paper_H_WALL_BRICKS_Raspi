@@ -18,6 +18,43 @@
 
 ## 2. 直近で完成したもの
 
+**THE SHOW の再生に音源を追従させた(2026-09-26)**
+
+オペレーターの要望「THE SHOW の再生時も、Timeline と同様に音源を再生する機能を実装」。
+**③ START でこの PC が音源を鳴らし、機体の時計(`/api/fleet` の `run` / `start_at`)に
+追従させる**。親は常に機体の時計で、音が時計を動かすことは無い。
+
+- **Units タブ「THE SHOW」カードに MUSIC 行**を追加:`Music with THE SHOW` の
+  on/off(既定 on、`localStorage` の `show.music` にブラウザごと記憶、try/catch で
+  ガード)、Mute、Volume、状態表示(`playing 1:23` / `paused` / `stopped` /
+  `track ended` / `blocked — click to join` / `no track` / `off`)
+- **START はショーの位置から鳴らす**(`③ START FROM 1:00` なら曲の 1:00 から)。
+  HOLD で一時停止、RESUME で続き、STOP で停止して先頭へ、シークで曲も飛ぶ、
+  ショーの終わり(および曲がショーより短いとき)で停止。START のリード中
+  (`run.now` が負のあいだ)は鳴らさない
+- **ズレの補正**:0.15 s を超えたら seek し直す。ただし **2 s に 1 回まで**
+  (シーク相当の 1 s 超の飛びだけは 300 ms 間隔で即座に追う)。さらに
+  「`currentTime` を書いてから実際に音が出るまでの遅れ」(この PC の Edge で約 0.13 s)を
+  **測って次の狙いに足す**ので、取り返せない遅れのために一晩中 2 秒おきに
+  seek し直す(＝音が飛び続ける)ことにはならない ― 実測でズレ 0.01 s に収束
+- **音源は 1 つだけ**:Timeline のプレビューと同じ `<audio>` を使う。ショーが
+  握っているあいだ Timeline の ▶ Play / ⏹ Stop とプレビューのスクラブは
+  `THE SHOW is playing the music` と出して断る(安全な側を選んだ)。逆に
+  START 時にプレビューが鳴っていれば止める。Mute / Volume は共通で 1 か所
+- **再読み込み対策**:ショー中にページを開き直すとブラウザは勝手に音を出さない。
+  `play()` の拒否は投げず・ログにも出さず・再試行もせず、緑の
+  **「Music: click to join」** を出して 1 クリックで今の位置から鳴らす
+- ショーが音源を握っているあいだは、どのタブにいても `/api/fleet` を毎秒読む
+  (それ以外の挙動は変更なし)
+- 判断のロジックは index.html の中の**純関数 `SHOWMUSIC.plan()`**
+  (`<<< SHOWMUSIC >>>` マーカーで囲んである)に集めてあり、
+  `tests/test_conductor_music.py` がそのテキストだけを取り出してヘッドレス
+  ブラウザで走らせる(`CONDUCTOR_BROWSER_TESTS=1`)。17 件:途中開始・
+  HOLD/RESUME・STOP・シーク・しきい値と間隔・自動再生拒否・トグル off・
+  音源なし・遅れの先読み、それに index.html 側の文言と localStorage の
+  ガードの検査
+- ドキュメント:CONDUCTOR_START §6 の手順 4 に音源の 4 行
+
 **再起動でデモが「PC のショー」に化けて LCD が無反応になる不具合
 (radxa-05、2026-09-26)**
 
