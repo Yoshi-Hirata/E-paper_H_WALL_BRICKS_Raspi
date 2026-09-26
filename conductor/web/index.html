@@ -243,7 +243,9 @@ input[type=range] { width: 100%; }
 .tile .e { color: var(--err); }
 /* The unit's landing check on the last cue (fleet.py's "verify"): amber
    when a re-send put it right, red when even that was not confirmed.
-   Nothing at all when the broadcast landed, which is every normal cue. */
+   Nothing at all when the broadcast landed, which is every normal cue.
+   The board-list and "restarted since Upload" marks are the same amber:
+   the show will run, but that unit is not in the state it should be. */
 .tile .vf { font-size: 11px; font-weight: 600; margin-left: 6px; }
 .tile .vf.re { color: var(--warn); } .tile .vf.no { color: var(--err); }
 .tile .l { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
@@ -3433,6 +3435,107 @@ function demosOnUnitHtml(u) {
     + ` · ${clock(d.duration || 0)}${d.loop ? " · loop" : ""})`
     + (d.current === false ? ` <span class="warn">older</span>` : "")).join("<br>");
 }
+// The unit's own board list against the one this show gives it.
+//
+// 2026-09-26: radxa-04 lost its last cue in all three rehearsals and
+// nothing on this page said a word - every picture WAS written. What was
+// wrong was inside the unit: it had come up in STANDBY, explored the bus,
+// found six empty sockets past the garment (17-22) and went on probing
+// them all through the show, 15 s of serial timeouts a minute. The unit
+// now takes the show's list as the only list (ui/runner.py's
+// _apply_job_boards()) - and says which list it is working to, so a unit
+// that is somehow still on its own gets marked here rather than
+// discovered the next morning in the logs.
+//
+// <<< BOARDLIST: pure (tests/test_conductor_boards.py lifts everything
+// between these two markers out of this page and runs it on its own in a
+// headless browser - keep it free of the DOM, of `fleet` and of any clock
+// of its own; it is handed a unit's tile data and the show's own ids). >>>
+const BOARDLIST = (() => {
+  // The unit's uptime is rounded to the second and read from a poll that
+  // is itself a moment old, so a unit that did NOT restart can still look
+  // a hair younger than the upload. Only a real gap counts.
+  const RESTART_SLACK_S = 5;
+  const up = (a, b) => a - b;
+  // [1,2,3,5] -> "1-3,5", the same compression the unit's own log uses.
+  function ranges(list) {
+    const sorted = [...new Set((list || []).map(Number))]
+      .filter(n => Number.isFinite(n)).sort(up);
+    const out = [];
+    let start = null, prev = null;
+    for (const n of sorted) {
+      if (start === null) { start = prev = n; continue; }
+      if (n === prev + 1) { prev = n; continue; }
+      out.push(start === prev ? `${start}` : `${start}-${prev}`);
+      start = prev = n;
+    }
+    if (start !== null) out.push(start === prev ? `${start}` : `${start}-${prev}`);
+    return out.join(",");
+  }
+  // Every socket the unit still believes in: the boards it counts as its
+  // own PLUS the ones it is only probing. A unit exploring past a
+  // 16-board garment reports boards 1-16 and absent 17-22 - and it is the
+  // 17-22 that cost the cue its instant.
+  function unitList(unit) {
+    return [...new Set([...(unit && unit.board_ids || []),
+                        ...(unit && unit.absent || [])].map(Number))]
+      .filter(n => Number.isFinite(n)).sort(up);
+  }
+  // A unit playing its own demo from its own menu is not this show's to
+  // judge: its list is the DEMO's garment, and holding that up against
+  // the show would mark a unit that is doing exactly what was asked of
+  // it (review, 2026-09-27). The same goes for the restart mark below.
+  const drivenByUs = unit =>
+    !!unit && unit.online && !!unit.show && !unit.show.demo;
+  // null when there is nothing to say - which is every healthy unit, and
+  // also every unit we cannot honestly judge: offline, no show of ours,
+  // an older agent that does not report its list at all.
+  function note(unit, show) {
+    if (!drivenByUs(unit)) return null;
+    const source = unit.boards_source;
+    if (!source) return null;
+    const want = ranges((show && show.boards) || []);
+    const have = unitList(unit);
+    if (!want || !have.length) return null;
+    const mine = ranges(have);
+    if (mine === want && source === "show") return null;
+    const where = source === "explore" ? "exploring"
+      : source === "fixed" ? "its own --boards list"
+      // A cue's or a burn's own boards, not a garment: a manual
+      // /prepare, or a show file whose cues named a board its own list
+      // does not have (which conductor/showfile.py cannot produce).
+      : source === "job" ? "a prepare/burn list" : "from another show";
+    const absent = ranges(unit.absent || []);
+    const aside = where + (absent ? `, ${absent} absent` : "");
+    return {
+      text: mine === want ? `unit list ${mine} (${aside}) — not this show's`
+        : `unit list ${mine} (${aside}) ≠ show ${want}`,
+      title: "The unit is probing boards this show does not have; "
+        + "re-upload or restart the unit.",
+    };
+  }
+  // The unit has been up for less time than the Upload is old, so it came
+  // back after it: its pictures are still in the boards' flash, but
+  // everything it only held in memory started again from nothing.
+  function restarted(unit) {
+    if (!drivenByUs(unit)) return false;
+    const uptime = unit.uptime_s, ago = unit.uploaded_ago_s;
+    if (typeof uptime !== "number" || typeof ago !== "number") return false;
+    return uptime + RESTART_SLACK_S < ago;
+  }
+  return { RESTART_SLACK_S, ranges, unitList, note, restarted };
+})();
+// <<< /BOARDLIST >>>
+function boardListMark(u) {
+  const note = BOARDLIST.note(u, (fleet && fleet.shows || {})[u.name]);
+  return note ? `<span class="vf re" title="${esc(note.title)}">${esc(note.text)}</span>` : "";
+}
+function restartMark(u) {
+  if (!BOARDLIST.restarted(u)) return "";
+  const title = `The unit has been up ${esc(Math.round(u.uptime_s))} s, less than the `
+    + `${esc(Math.round(u.uploaded_ago_s))} s since this show was uploaded to it.`;
+  return `<span class="vf re" title="${title}">restarted since Upload</span>`;
+}
 // The unit checks, on its own, whether a cue's broadcast was actually
 // taken by the boards (ui/runner.py's landing check) and re-sends it
 // once if it was not. Nothing is shown when it landed - that is every
@@ -3469,14 +3572,14 @@ function renderTiles() {
       <div class="n"><span class="dot ${u.online ? "ok" : "none"}"></span>${esc(u.name)}<span class="ph ${esc(phase)}">${esc(phase)}</span></div>
       <div class="row"><span>Item</span><b>${esc(items.map(itemFull).join(" + ") || "—")}</b></div>
       ${u.online ? `
-      <div class="row"><span>Boards (answering / expected)</span><b>${u.live} / ${expected || u.boards || "?"}</b></div>
+      <div class="row"><span>Boards (answering / expected)</span><b>${u.live} / ${expected || u.boards || "?"}${boardListMark(u)}</b></div>
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
       <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}${verifyMark(u)}</b></div>
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version")
             + (unitHoldsRevision(u.name) === false ? " (older timeline)" : "") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
-      <div class="row"><span>Pictures</span><b>${picturesText(u)}</b></div>
+      <div class="row"><span>Pictures</span><b>${picturesText(u)}${restartMark(u)}</b></div>
       <div class="row"><span>On unit</span><b>${demosOnUnitHtml(u)}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
       ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}

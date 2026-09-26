@@ -157,6 +157,61 @@ def test_a_unit_that_had_to_re_send_a_cue_says_so_in_the_fleet(fleet, units):
                       == "idle-not-repaired")
 
 
+def test_the_board_list_a_unit_works_to_reaches_the_tile(fleet, units):
+    # 2026-09-26: radxa-04 lost its last cue in all three rehearsals and
+    # nothing on this page could have said why - every picture WAS
+    # written. What was wrong was inside the unit: its own board list,
+    # six sockets wide of the garment, probed all show. The whole way
+    # again: runner -> session -> /status -> UnitLink.snapshot().
+    def snap():
+        return {u["name"]: u for u in fleet.snapshot()["units"]}
+
+    assert wait_until(lambda: snap()["radxa-01"]["boards_source"] == "fixed")
+    tile = snap()["radxa-01"]
+    assert tile["board_ids"] == list(range(1, 21))     # make_runner's --boards
+    assert tile["absent"] == [] and tile["group_count"] == 20
+    assert isinstance(tile["uptime_s"], int)
+    # A cue carries its own board list, and the tile follows it - as a
+    # job's list, not a show's (only a show file's garment list is
+    # "show", ui/remote.py's set_boards()).
+    fleet.prepare({"radxa-01": payload("c1", 3, boards=(1, 2))})
+    assert wait_until(lambda: units["radxa-01"].session.phase == "ready")
+    assert wait_until(lambda: snap()["radxa-01"]["boards_source"] == "job")
+    tile = snap()["radxa-01"]
+    assert tile["board_ids"] == [1, 2] and tile["group_count"] == 2
+    # A unit that never answered says nothing at all, rather than
+    # something the tile would hold against it.
+    assert snap()["radxa-09"]["boards_source"] is None
+    assert snap()["radxa-09"]["board_ids"] == []
+
+
+def test_the_tile_knows_the_shows_boards_and_when_it_was_uploaded():
+    # The two halves of "this unit is not in the state it should be":
+    # the ids THIS show gives the unit, and how long ago it was written
+    # there - against which the unit's own uptime says it has restarted
+    # since (conductor/web/index.html's BOARDLIST).
+    now = [1000.0]
+    fleet = Fleet({}, clock=lambda: now[0])
+    fleet.links = {"radxa-01": StubLink("radxa-01", "stopped")}
+    assert fleet.snapshot()["units"][0]["uploaded_ago_s"] is None
+    fleet.upload({"radxa-01": {"id": "showA", "cues": [], "duration": 600,
+                               "boards": [3, 1, 2]}})
+    now[0] = 1090.0
+    snap = fleet.snapshot()
+    assert snap["shows"]["radxa-01"]["boards"] == [1, 2, 3]
+    assert snap["units"][0]["uploaded_ago_s"] == 90.0
+
+
+def test_an_upload_a_unit_refused_is_not_dated_on_it():
+    # ...or every later restart of a unit that never took the show would
+    # read as "restarted since Upload".
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    fleet.links = {"radxa-01": FailingLink("radxa-01", "stopped")}
+    fleet.upload({"radxa-01": {"id": "showA", "cues": [], "duration": 600,
+                               "boards": [1, 2]}})
+    assert fleet.snapshot()["units"][0]["uploaded_ago_s"] is None
+
+
 def test_an_unreachable_unit_does_not_hold_up_the_others(fleet, units):
     cues = {name: payload("c2", 4) for name in list(units) + ["radxa-09"]}
     results = fleet.prepare(cues)
