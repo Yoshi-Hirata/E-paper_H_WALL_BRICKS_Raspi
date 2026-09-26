@@ -91,7 +91,7 @@ def test_standby_retries_a_board_that_is_mid_repaint():
 
         deaf_for = 3
 
-        def request(self, frame, retries=3):
+        def request(self, frame, retries=3, timeout=None):
             if self.deaf_for > 0:
                 self.deaf_for -= 1
                 self.requested.append(frame)
@@ -153,7 +153,7 @@ def test_standby_paints_who_answers_and_recruits_late_boards():
             super().__init__()
             self.dead = {20}
 
-        def request(self, frame, retries=3):
+        def request(self, frame, retries=3, timeout=None):
             if frame.dest in self.dead:
                 self.requested.append(frame)
                 return None

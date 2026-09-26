@@ -99,7 +99,7 @@ def ordered_bus(monkeypatch):
         self.times.append(time.monotonic())
         return original_send(self, frame)
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         self.log.append(frame)
         self.times.append(time.monotonic())
         return original_request(self, frame, retries)
@@ -256,7 +256,7 @@ class RefusesSaveBus:
         self.requested = self._bus.requested
         self.sent = self._bus.sent
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.cmd == SAVE and frame.dest == self.board:
             self.requested.append(frame)
             return None
@@ -952,7 +952,7 @@ class SlowSaveBus:
     def times(self):
         return self._bus.times
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.cmd == SAVE:
             time.sleep(self._delay)
         return self._bus.request(frame, retries)

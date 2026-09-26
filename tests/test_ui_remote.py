@@ -196,7 +196,7 @@ class PickyBus(FakeBus):
         super().__init__()
         self.silent = set(silent)
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.dest in self.silent:
             self.requested.append(frame)
             return None
@@ -688,7 +688,7 @@ def test_delay_tables_go_out_before_the_colours_and_only_when_they_change():
 
 def test_a_board_whose_firmware_has_no_sweeps_still_gets_the_cue():
     class OldFirmware(FakeBus):
-        def request(self, frame, retries=3):
+        def request(self, frame, retries=3, timeout=None):
             ack = super().request(frame, retries)
             if frame.cmd == DELAY:
                 ack.cmd = 0x83                      # ACK_INVALID_CMD
@@ -762,7 +762,7 @@ class FailOnceBus(FakeBus):
         self.fail_cmd, self.board = fail_cmd, board
         self.failed_once = False
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         self.requested.append(frame)
         if (not self.failed_once and frame.cmd == self.fail_cmd
                 and frame.dest == self.board):
@@ -1028,7 +1028,7 @@ class SlowProbeBus(PickyBus):
         super().__init__(silent)
         self._delay = delay
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.dest in self.silent:
             time.sleep(self._delay)
         return super().request(frame, retries)
@@ -1061,7 +1061,7 @@ def test_a_cue_due_during_the_probing_sweep_still_fires_on_time(sweeps, ahead):
 
 
 class _SlowBurnBus(FakeBus):
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.cmd == SAVE:
             time.sleep(0.05)
         return super().request(frame, retries)

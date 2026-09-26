@@ -549,7 +549,7 @@ class _SlowSaveBus:
     def __getattr__(self, name):
         return getattr(self._bus, name)
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         if frame.cmd == 0x13:          # SAVE
             time.sleep(self._delay)
         return self._bus.request(frame, retries)

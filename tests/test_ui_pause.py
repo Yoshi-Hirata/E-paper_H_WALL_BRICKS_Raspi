@@ -26,7 +26,7 @@ class FakeBus:
     def send(self, frame):
         self.sent.append(frame)
 
-    def request(self, frame, retries=3):
+    def request(self, frame, retries=3, timeout=None):
         self.requested.append(frame)
         return Frame(dest=0, src=frame.dest, dev_type=0xFF, cmd=0x80)
 
