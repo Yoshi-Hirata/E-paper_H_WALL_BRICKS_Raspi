@@ -158,8 +158,20 @@ class RemoteSession:
         # next cue within a tick of the last one applying, so a record
         # dropped or cleared on that would be a verdict nobody ever saw
         # (it takes a second or more to reach one). Replaced by the next
-        # check, by a fresh prepare(), by standby() and by release().
+        # check, and forgotten by forget_verify() (below) - a new design,
+        # a run started or stopped, standby, release.
         self.verify: dict | None = None
+        # Which GENERATION of the glass the verdict belongs to, and the
+        # generation a cue firing now belongs to. Everything that makes
+        # what is on the boards stop being vouched for bumps glass_gen,
+        # and the runner only skips re-checking a cue when the cue id AND
+        # the generation both match - so ui/showplay.py's heal (the same
+        # cue id, same generation) is skipped, while a new fire of the
+        # same cue id after a STOP/START, or a looping demo coming round
+        # to the same cue again, is checked like anything else (review
+        # round 3). A heal's arm() deliberately does NOT bump it.
+        self.glass_gen = 0
+        self.verify_gen: int | None = None
         self._job: dict | None = None
 
         # A show's own burn (see the module docstring): None means
@@ -237,7 +249,7 @@ class RemoteSession:
             # /prepare is the operator sending the design again and
             # wanting to know whether THAT one landed. (arm() is the
             # other way round - see its heal note.)
-            self.verify = None
+            self._forget_verify_locked()
             self.slot, self.dev_type = slot, dev_type
             self.span_s, self.refresh_s = span_s, refresh_s
             self._job = {"cue_id": cue_id, "boards": dict(boards),
@@ -327,7 +339,7 @@ class RemoteSession:
             self.cue_id, self.label, self.error = None, "", None
             self.fire_at = self.fired_at = None
             self.span_s = self.refresh_s = None
-            self.verify = None
+            self._forget_verify_locked()
             self._job = None
         self.runner.standby()
 
@@ -340,6 +352,10 @@ class RemoteSession:
             self.phase = LOCAL
             self.fire_at = None
             self.span_s = self.refresh_s = None
+            # The unit is its own again: the last cue's verdict is not
+            # about anything anyone is driving (review round 3 - it used
+            # to be left standing here despite what the commit said).
+            self._forget_verify_locked()
             self._job = None
         self.runner.stop()
 
@@ -509,8 +525,24 @@ class RemoteSession:
             self.fired_at = at
             self.phase = FIRED
 
+    def forget_verify(self) -> None:
+        """Whatever the landing check knew, nobody is vouching for the
+        glass any more: a run started or stopped, the unit released, a
+        new design prepared. The verdict goes (a red marker from the last
+        run must not hang over this one) and the generation moves on, so
+        no cue firing from here can be mistaken for one already
+        confirmed."""
+        with self._lock:
+            self._forget_verify_locked()
+
+    def _forget_verify_locked(self) -> None:
+        self.verify = None
+        self.verify_gen = None
+        self.glass_gen += 1
+
     def verified(self, cue_id: str, landed: str, resent: bool = False,
-                 witness: "int | None" = None) -> None:
+                 witness: "int | None" = None,
+                 gen: "int | None" = None) -> None:
         """What the landing check found (see `self.verify`).
 
         Recorded whatever the session is holding by now: the verdict
@@ -532,6 +564,9 @@ class RemoteSession:
         with self._lock:
             self.verify = {"cue": cue_id, "landed": landed,
                            "resent": bool(resent), "witness": witness}
+            # The generation the CUE fired in, not whatever it is now: a
+            # verdict cannot vouch for a glass that has since been let go.
+            self.verify_gen = gen
 
     def failed_with(self, message: str) -> None:
         with self._lock:

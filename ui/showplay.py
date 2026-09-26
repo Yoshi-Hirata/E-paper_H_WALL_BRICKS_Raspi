@@ -312,6 +312,8 @@ class ShowPlayer:
             self.restored_id = None
             self.state, self.t0, self.synced = LOADED, None, False
             self._forget_garment()
+            self.session.forget_verify()     # the previous show's, not this one's
+            self._verify_seen = None
             self.note = ""
             self._persist(with_show=True)
         # Burn every cue into its own slot now, ahead of the show itself -
@@ -391,6 +393,13 @@ class ShowPlayer:
                            if c["id"] == cue_id), None)
                 if cue is not None and cue["sent"] <= self._clock() - self.t0:
                     self._disarm()
+            # A start is a new fire onto boards nobody is vouching
+            # for: the last run's landing verdict says nothing about it,
+            # must not hang over this run's tile in red, and must not let
+            # the unit skip checking a cue id this run repeats (a
+            # one-cue show, a looping demo - review round 3).
+            self.session.forget_verify()
+            self._verify_seen = None
             self._persist()
         self._wake.set()
 
@@ -527,6 +536,10 @@ class ShowPlayer:
             # back is no longer something anyone is driving, so it stops
             # holding a demo out of the menu (ui/app.py's _enter_demo).
             self.restored_id = None
+            # Let go of the last cue's verdict with the run itself (the
+            # same reasoning as run()'s).
+            self.session.forget_verify()
+            self._verify_seen = None
             self._persist()
         self.session.cancel_burn()   # give up on a burn still in flight
         self._wake.set()

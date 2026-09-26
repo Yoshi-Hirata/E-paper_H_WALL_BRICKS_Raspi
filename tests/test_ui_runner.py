@@ -853,6 +853,36 @@ def test_a_healed_cue_is_not_checked_a_second_time():
     runner.stop()
 
 
+def test_a_new_fire_of_the_same_cue_id_is_always_checked():
+    # A one-cue show stopped and started again fires the very same cue
+    # id, and a looping demo comes round to its ids for ever. Those are
+    # new fires onto boards nobody is vouching for any more - not heals -
+    # so the "landed already" shortcut must not swallow them. What tells
+    # them apart is the session's glass generation, not the cue id.
+    bus = FakeBus()
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    assert len(bus.asked) == 1
+    # The generation moves on (what run(), stop() and release() do),
+    # while the verdict itself is still on the tile...
+    session.glass_gen += 1
+    session.arm("c1", 19)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: len(bus.broadcasts) == 2)
+    assert wait_until(lambda: len(bus.asked) == 2)     # ...and it is checked
+    assert not logged(runner, "landed already")
+    runner.stop()
+
+
+def test_a_verdict_from_before_a_release_is_forgotten():
+    bus = FakeBus()
+    session, runner = fired_cue(bus)
+    assert wait_until(lambda: session.verify is not None)
+    session.release()
+    assert session.verify is None and session.status()["verify"] is None
+    runner.stop()
+
+
 def test_the_pattern_loop_is_left_alone():
     # Only a show's cues are checked: the demo loop repaints every
     # interval anyway, and a question after every cycle would be noise.

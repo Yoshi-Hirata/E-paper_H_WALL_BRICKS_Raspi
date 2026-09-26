@@ -1395,8 +1395,29 @@ class DemoRunner:
             return "busy"
         return "idle"
 
+    def _cue_snapshot(self, session) -> dict:
+        """What the landing check must know about the cue going out now,
+        read while the session still holds it (see _fire_at()).
+
+        `span_s` and `refresh_s` size the repair budget; `gen` is the
+        session's glass generation, which is what tells a heal of this
+        very fire from a NEW fire of the same cue id after a STOP/START
+        or a demo's next lap (ui/remote.py's glass_gen).
+        """
+        span_s = getattr(session, "span_s", None)
+        refresh_s = getattr(session, "refresh_s", None)
+        return {
+            "span_s": (float(span_s) if isinstance(span_s, (int, float))
+                       else 0.0),
+            "refresh_s": (float(refresh_s)
+                          if isinstance(refresh_s, (int, float))
+                          else GUARD_REFRESH_S),
+            "gen": getattr(session, "glass_gen", None),
+        }
+
     def _verify_landing(self, bus, groups: int, session, cue_id: str,
-                        slot: int, dev_type: int, sent_at: float) -> None:
+                        slot: int, dev_type: int, sent_at: float,
+                        fired: dict) -> None:
         """Check that the cue's broadcast landed; re-send it once if not.
 
         At most two broadcasts per FIRE: the one _fire_at() already sent
@@ -1408,20 +1429,12 @@ class DemoRunner:
         """
         if not self.verify_fire:
             return
-        # This cue's own span and refresh, read now rather than when the
-        # repair is decided: ui/showplay.py arms the NEXT cue within a
-        # tick of this one applying, and the session then carries that
-        # one's numbers. A caller that says nothing keeps the flat
-        # refresh and no sweep, exactly as the guard STOP does.
-        cue_span = getattr(session, "span_s", None)
-        cue_refresh = getattr(session, "refresh_s", None)
-        cue_span = float(cue_span) if isinstance(cue_span, (int, float)) else 0.0
-        cue_refresh = (float(cue_refresh)
-                       if isinstance(cue_refresh, (int, float))
-                       else GUARD_REFRESH_S)
+        cue_span, cue_refresh = fired["span_s"], fired["refresh_s"]
         landed = getattr(session, "verify", None) or {}
         if (landed.get("cue") == cue_id
-                and landed.get("landed") in ("deaf", "busy")):
+                and landed.get("landed") in ("deaf", "busy")
+                and fired["gen"] is not None
+                and getattr(session, "verify_gen", None) == fired["gen"]):
             # The same cue broadcast again for a board that joined late
             # (ui/showplay.py's heal): it was confirmed on the glass once
             # already, and this frame is for a board that was not even
@@ -1436,7 +1449,8 @@ class DemoRunner:
         chosen = self._witness(session, slot)
         if isinstance(chosen, str):
             self.emit(f"cue {cue_id} verify skipped: {chosen}")
-            self._record_verify(session, cue_id, "skipped", False, None)
+            self._record_verify(session, cue_id, "skipped", False, None,
+                                fired["gen"])
             return
         board, delay = chosen
         resent = False
@@ -1445,7 +1459,8 @@ class DemoRunner:
             give_up = self._verify_wait(session, ask_at)
             if give_up is not None:
                 self.emit(f"cue {cue_id} verify skipped: {give_up}")
-                self._record_verify(session, cue_id, "skipped", resent, board)
+                self._record_verify(session, cue_id, "skipped", resent, board,
+                                    fired["gen"])
                 return
             # THE INVARIANT: never ask before the witness has had its own
             # sweep start plus the whole deaf window. A board that has not
@@ -1459,13 +1474,15 @@ class DemoRunner:
             if checked < delay + self.verify_after - 0.001:
                 self.emit(f"cue {cue_id} verify skipped: asked "
                           f"{delay + self.verify_after - checked:.2f} s early")
-                self._record_verify(session, cue_id, "skipped", resent, board)
+                self._record_verify(session, cue_id, "skipped", resent, board,
+                                    fired["gen"])
                 return
             state = self._ask_witness(bus, groups, board, dev_type, cue_id)
             if state != "idle":
                 self.emit(f"cue {cue_id} landed (@{board:02d} {state}, "
                           f"checked +{checked:.1f} s)")
-                self._record_verify(session, cue_id, state, resent, board)
+                self._record_verify(session, cue_id, state, resent, board,
+                                    fired["gen"])
                 return
             if resent:
                 # Two broadcasts out and the board still says it is idle.
@@ -1474,7 +1491,7 @@ class DemoRunner:
                 self.emit(f"cue {cue_id} re-send unconfirmed @{board:02d} "
                           f"(checked +{checked:.1f} s)")
                 self._record_verify(session, cue_id, "idle-after-resend",
-                                    True, board)
+                                    True, board, fired["gen"])
                 return
             # The ask itself took up to verify_read x VERIFY_TRIES, and
             # what may happen in that window - a stop, the next cue
@@ -1486,7 +1503,7 @@ class DemoRunner:
                 self.emit(f"cue {cue_id} not applied at @{board:02d} "
                           f"(checked +{checked:.1f} s), not re-sent: {hold}")
                 self._record_verify(session, cue_id, "idle-not-repaired",
-                                    resent, board)
+                                    resent, board, fired["gen"])
                 return
             bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
             again = time.monotonic()
@@ -1497,12 +1514,18 @@ class DemoRunner:
             resent = True
 
     def _record_verify(self, session, cue_id: str, landed: str,
-                       resent: bool, board: "int | None") -> None:
+                       resent: bool, board: "int | None",
+                       gen: "int | None" = None) -> None:
         """Tell the session, for /status and the show PC's tile. A
         session too old to know about landing checks simply is not
-        told."""
+        told, and one that does not carry a generation is told without
+        one (which then never matches a heal - the safe way round)."""
         verified = getattr(session, "verified", None)
-        if verified is not None:
+        if verified is None:
+            return
+        try:
+            verified(cue_id, landed, resent=resent, witness=board, gen=gen)
+        except TypeError:
             verified(cue_id, landed, resent=resent, witness=board)
 
     def _fire_at(self, bus, groups: int, session, cue_id: str, at: float,
@@ -1545,6 +1568,12 @@ class DemoRunner:
                     time.sleep(0.0005)
             bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
             sent_at = self._last_show_at = time.monotonic()
+            # What the landing check needs to know about THIS cue, read
+            # before the session is told it fired: ui/showplay.py arms
+            # the next cue as soon as it sees FIRED, and from then on the
+            # session carries that cue's span and refresh (review round
+            # 3 - the repair budget was being sized from the wrong cue).
+            fired = self._cue_snapshot(session)
             # The time the PC is told is this FIRST send, whatever the
             # landing check does afterwards: "how late was the cue" is
             # about when the picture was asked for, and a re-send is a
@@ -1560,7 +1589,7 @@ class DemoRunner:
         self.emit(f"cue {cue_id} fired slot {slot} "
                   f"{(sent_at - at) * 1000:+.0f} ms")
         self._verify_landing(bus, groups, session, cue_id, slot, dev_type,
-                             sent_at)
+                             sent_at, fired)
         return True
 
     def _run_remote(self, session) -> None:
