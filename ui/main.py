@@ -293,7 +293,14 @@ def main() -> int:
                          "that do not answer are skipped and re-probed)")
     ap.add_argument("--interval", type=float, default=60.0,
                     help="seconds between panel refreshes (default 60)")
-    ap.add_argument("--guard-delay", type=float, default=12.0)
+    # 30 s since the 2026-09-26 rehearsal: the tops on radxa-04 lost its
+    # LAST cue every time while the skirt on radxa-05 did not - the only
+    # thing that reaches the boards after the last fire is this guard
+    # STOP, and 0x17 inside a repaint leaves the picture half drawn (or
+    # not begun: SPECIFICATION 4.2). Its boards repaint slower than the
+    # 7 s the 12 s default assumed. Between cues the next fire replaces
+    # the guard, so a longer wait costs nothing there.
+    ap.add_argument("--guard-delay", type=float, default=30.0)
     # The landing check (ui/runner.py's VERIFY_AFTER_S). OFF by default
     # since the 2026-09-26 rehearsal: the current firmware answers 0x02
     # while it repaints, so the check read every landed cue as lost and

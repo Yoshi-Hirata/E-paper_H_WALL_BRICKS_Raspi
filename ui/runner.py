@@ -218,7 +218,7 @@ class DemoRunner:
     """
 
     def __init__(self, boards: list[int] | None = None,
-                 interval: float = 60.0, guard_delay: float = 12.0,
+                 interval: float = 60.0, guard_delay: float = 30.0,
                  slot: int = TEST_SLOT, port: str | None = None,
                  palette: list[int] | None = None,
                  open_bus=None, seed: int | None = None,

@@ -573,8 +573,12 @@ def test_what_a_unit_is_told_keeps_its_guard_after_the_real_end():
 
     guard_delay = inspect.signature(DemoRunner.__init__) \
         .parameters["guard_delay"].default
-    assert (guard_delay, GUARD_REFRESH_S) == (12.0, 7.0)
-    margin = max(0.0, guard_delay - GUARD_REFRESH_S)        # 5.0 s
+    # 30 s since the 2026-09-26 rehearsal: the tops on radxa-04 lost its
+    # last cue every time (only the last cue ever receives the guard;
+    # SPECIFICATION 4.2 - a STOP inside a repaint leaves it half drawn),
+    # so the flat wait now clears even a 16 s-firmware repaint plus span.
+    assert (guard_delay, GUARD_REFRESH_S) == (30.0, 7.0)
+    margin = max(0.0, guard_delay - GUARD_REFRESH_S)        # 23.0 s
 
     def guard(refresh_s, span):                             # _guard_for()
         return max(guard_delay, min(GUARD_MAX_S, refresh_s + span + margin))
@@ -596,16 +600,18 @@ def test_what_a_unit_is_told_keeps_its_guard_after_the_real_end():
 
     # The guard must land AFTER the picture is really finished. A swept
     # production cue is done at PANEL_REPAINT_S + 1 = 8 s; the guard is
-    # 14 s with what we send (8.0), 13 s if we sent the bare repaint, so
-    # neither can fall inside the sweep.
+    # 32 s with what we send (8.0), 31 s if we sent the bare repaint, so
+    # neither can fall inside the sweep - nor inside a slower board's
+    # 16 s repaint plus its span (the radxa-04 tops, 2026-09-26).
     real_end = PANEL_REPAINT_S + 1.0
     assert real_end == 8.0 == complete_s(swept)
-    assert guard(panel_refresh(swept), 1.0) == 14.0 > real_end
-    assert guard(PANEL_REPAINT_S, 1.0) == 13.0 > real_end
-    assert guard(panel_refresh(natural), 0.0) == 13.0 > PANEL_REPAINT_S
+    assert guard(panel_refresh(swept), 1.0) == 32.0 > real_end
+    assert guard(PANEL_REPAINT_S, 1.0) == 31.0 > real_end
+    assert guard(panel_refresh(natural), 0.0) == 31.0 > PANEL_REPAINT_S
+    assert guard_delay > 16.0 + 1.0 + 5.0        # slow firmware + span + margin
 
     # It does NOT land before the next send at the new 9 s minimum - and
-    # cannot be made to: the flat guard_delay floor alone is 12 s, which
+    # cannot be made to: the flat guard_delay floor alone is 30 s, which
     # already exceeded the old 8 s minimum too. Every fire RESETS the
     # deadline (ui/runner.py: `guard_due = time.monotonic() +
     # self._guard_for(session)` on each fire), so between two cues the
