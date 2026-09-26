@@ -6,7 +6,12 @@ units run Python 3.9 and nothing may be added to their requirements for
 a show.
 
     GET  /status     who am I, what am I doing, which boards answer -
-                     and the clock, for the PC's offset measurement
+                     and the clock, for the PC's offset measurement.
+                     "verify" is what the unit's own landing check made
+                     of the last cue it fired (ui/runner.py's
+                     _verify_landing()): null until one has, then
+                     {"cue", "landed", "resent", "witness"} - see
+                     ui/remote.py's RemoteSession.verify
     GET  /clock      the clock alone (smallest, fastest answer)
     POST /prepare    {"cue", "label", "dev_type", "boards": {"1": hex64, ...},
                       "delays": {"1": hex128, ...},   (delays optional)

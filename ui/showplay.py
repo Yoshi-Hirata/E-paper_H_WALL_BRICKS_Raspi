@@ -213,6 +213,12 @@ class ShowPlayer:
         # later is what makes `dirty` true (see _check_dirty()).
         self._ever_ok: "set[int]" = set()
         self._counted: "str | None" = None     # session key already tallied
+        # The last landing check the unit did (ui/runner.py), as last
+        # written to the run record. A cue that could not be confirmed
+        # is about a garment that may still be showing the wrong
+        # picture, and that outlives this process - so it is persisted
+        # and restored, not only held in the session.
+        self._verify_seen: "dict | None" = None
         # The burn belongs to a show (module docstring): the session's
         # burn counts for the loaded show only while _burn_id names it;
         # _burn_disk is a finished burn read back by restore() (paired by
@@ -306,6 +312,8 @@ class ShowPlayer:
             self.restored_id = None
             self.state, self.t0, self.synced = LOADED, None, False
             self._forget_garment()
+            self.session.forget_verify()     # the previous show's, not this one's
+            self._verify_seen = None
             self.note = ""
             self._persist(with_show=True)
         # Burn every cue into its own slot now, ahead of the show itself -
@@ -385,6 +393,13 @@ class ShowPlayer:
                            if c["id"] == cue_id), None)
                 if cue is not None and cue["sent"] <= self._clock() - self.t0:
                     self._disarm()
+            # A start is a new fire onto boards nobody is vouching
+            # for: the last run's landing verdict says nothing about it,
+            # must not hang over this run's tile in red, and must not let
+            # the unit skip checking a cue id this run repeats (a
+            # one-cue show, a looping demo - review round 3).
+            self.session.forget_verify()
+            self._verify_seen = None
             self._persist()
         self._wake.set()
 
@@ -408,6 +423,16 @@ class ShowPlayer:
             self._run_no += 1
             show, first = self.show, self.show["cues"][0]
             self._forget_garment()
+            # A preset repaints the garment, so the last check's verdict
+            # is not about what is going up now - and a second PRESET of
+            # the same cue must be checked on its own, not waved through
+            # as "landed already" (ui/runner.py). Today the _run_no bump
+            # above happens to make every preset a new session key, which
+            # would do it too; this says it where it is meant rather than
+            # leaning on that (review round 4).
+            self.session.forget_verify()
+            self._verify_seen = None
+            self._persist()
             # No write to budget for any more - the picture is already
             # burned into its slot; a small margin only covers arm()
             # possibly waiting for the port (start_remote()).
@@ -521,6 +546,10 @@ class ShowPlayer:
             # back is no longer something anyone is driving, so it stops
             # holding a demo out of the menu (ui/app.py's _enter_demo).
             self.restored_id = None
+            # Let go of the last cue's verdict with the run itself (the
+            # same reasoning as run()'s).
+            self.session.forget_verify()
+            self._verify_seen = None
             self._persist()
         self.session.cancel_burn()   # give up on a burn still in flight
         self._wake.set()
@@ -623,6 +652,11 @@ class ShowPlayer:
                     # it alone.
                     "demo": self.is_demo, "demo_name": self.demo_name,
                     "demo_slug": self.demo_slug, "demo_loop": self.demo_loop,
+                    # The unit's own verdict on the last cue it sent
+                    # (ui/remote.py's RemoteSession.verify). A restart
+                    # must not turn a red "not applied" into a blank
+                    # while the garment is still wrong.
+                    "verify": self._verify_seen,
                     # T0 as wall time: what survives a reboot.
                     "t0_wall": (None if self.t0 is None else
                                 self._wall() + (self.t0 - self._clock()))})
@@ -692,6 +726,14 @@ class ShowPlayer:
             self._burn_none_why = "since this unit restarted"
             if not named:
                 return
+            # What the unit last made of its own broadcast, back into the
+            # session so /status (and the PC's tile) says it again. Only
+            # from a record that names this very show: a verdict about
+            # another show's cue says nothing about this garment.
+            verify = run.get("verify")
+            if isinstance(verify, dict) and verify.get("landed"):
+                self._verify_seen = dict(verify)
+                self.session.verify = dict(verify)
             # A demo comes back AS a demo (radxa-05, 2026-09-26: it used
             # to come back as a plain PC show, and from then on KEY1 on
             # every demo row was refused - "PC show loaded - use the PC" -
@@ -898,10 +940,33 @@ class ShowPlayer:
             self.note = (f"board {named} joined late: "
                          f"re-arming {self.applied}")
 
+    def _note_verify(self) -> None:
+        """Keep the run record's copy of the landing check up to date.
+
+        The verdict arrives on the runner's thread, whenever the check
+        finishes; this is the tick that notices. Written only when it
+        changes - once per cue - so the card costs nothing to keep
+        honest.
+
+        What it buys depends on what the restart interrupts: a show that
+        comes back RUNNING has its next cue checked within seconds, and
+        the restored verdict stands only until then. The one that
+        matters is the show whose last cue was the one that went wrong -
+        stopped, held, or simply loaded and waiting - where nothing else
+        would ever say so again.
+        """
+        verify = self.session.verify
+        if verify == self._verify_seen:
+            return
+        self._verify_seen = dict(verify) if verify else None
+        self._persist()
+
     def _plan(self) -> "tuple[float, tuple | None]":
         """(seconds until it is worth looking again, what to send now)."""
         with self._lock:
             self._tally()
+            if self.show is not None:
+                self._note_verify()
             if self.state != RUNNING or self.show is None or self.t0 is None:
                 return self.tick_s, None
             now_mono = self._clock()

@@ -201,6 +201,11 @@ input[type=range] { width: 100%; }
 .tile .row { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); }
 .tile .row b { color: var(--ink); font-weight: 500; }
 .tile .e { color: var(--err); }
+/* The unit's landing check on the last cue (fleet.py's "verify"): amber
+   when a re-send put it right, red when even that was not confirmed.
+   Nothing at all when the broadcast landed, which is every normal cue. */
+.tile .vf { font-size: 11px; font-weight: 600; margin-left: 6px; }
+.tile .vf.re { color: var(--warn); } .tile .vf.no { color: var(--err); }
 .tile .l { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 .go { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 10px; }
 .go button.big { padding: 7px 16px; font-weight: 600; }
@@ -3204,6 +3209,27 @@ function demosOnUnitHtml(u) {
     + ` · ${clock(d.duration || 0)}${d.loop ? " · loop" : ""})`
     + (d.current === false ? ` <span class="warn">older</span>` : "")).join("<br>");
 }
+// The unit checks, on its own, whether a cue's broadcast was actually
+// taken by the boards (ui/runner.py's landing check) and re-sends it
+// once if it was not. Nothing is shown when it landed - that is every
+// normal cue and the tile is busy enough; "re-sent" says a frame was
+// lost and repaired. A loss the unit KNOWS about is always red, whether
+// it could not be repaired (the next cue was too close) or the repair
+// itself could not be confirmed - a known loss is never rendered as
+// nothing.
+function verifyMark(u) {
+  const v = u.verify;
+  if (!v || !v.landed) return "";
+  const at = v.witness ? ` (board ${esc(v.witness)})` : "";
+  const cue = v.cue ? ` Cue ${esc(v.cue)}.` : "";
+  if (v.landed === "idle-after-resend")
+    return `<span class="vf no" title="Sent twice and the board was still idle${at} — the garment may be showing the previous cue.${cue}">not applied</span>`;
+  if (v.landed === "idle-not-repaired")
+    return `<span class="vf no" title="The picture did not land${at} and the next cue was too close to send it again — the garment may be showing the previous cue.${cue}">not applied</span>`;
+  if (v.resent)
+    return `<span class="vf re" title="The first broadcast was not taken${at}; the unit sent it again and that one landed.${cue}">re-sent</span>`;
+  return "";
+}
 function renderTiles() {
   showClockText();
   const box = $("#tiles");
@@ -3222,7 +3248,7 @@ function renderTiles() {
       <div class="row"><span>Boards (answering / expected)</span><b>${u.live} / ${expected || u.boards || "?"}</b></div>
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
-      <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}</b></div>
+      <div class="row"><span>Fired late by</span><b>${u.late_ms === null || u.late_ms === undefined ? "—" : (u.late_ms >= 0 ? "+" : "") + u.late_ms + " ms"}${verifyMark(u)}</b></div>
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version")
             + (unitHoldsRevision(u.name) === false ? " (older timeline)" : "") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
