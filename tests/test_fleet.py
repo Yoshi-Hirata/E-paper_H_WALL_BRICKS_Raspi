@@ -148,6 +148,13 @@ def test_a_unit_that_had_to_re_send_a_cue_says_so_in_the_fleet(fleet, units):
                                             "resent": False, "witness": 1}
     assert len(units["radxa-02"].shows) == 1
     assert snap()["radxa-09"]["verify"] is None         # never answered at all
+    # A loss the unit found and did NOT repair (the next cue was too
+    # close to send the frame again) travels the same way, and the tile
+    # renders it red - a known loss is never shown as nothing.
+    units["radxa-03"].session.verified("c1", "idle-not-repaired",
+                                       resent=False, witness=1)
+    assert wait_until(lambda: (snap()["radxa-03"]["verify"] or {}).get("landed")
+                      == "idle-not-repaired")
 
 
 def test_an_unreachable_unit_does_not_hold_up_the_others(fleet, units):

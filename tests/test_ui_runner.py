@@ -596,10 +596,16 @@ def test_the_check_gives_the_port_to_a_cue_that_comes_due():
     at = time.monotonic() + 0.15
     session.arm("c2", 3)
     session.fire("c2", at)
-    assert wait_until(lambda: session.verify is not None, timeout=3)
-    assert session.verify["cue"] == "c2"         # c1's window was given up
-    assert abs(session.fired_at - at) < 0.05     # and c2 was not held up
+    # c1's window was given up - recorded as "skipped", which says
+    # nothing either way and shows nothing on the tile...
+    assert wait_until(lambda: (session.verify or {}).get("cue") == "c1")
+    assert session.verify["landed"] == "skipped"
     assert logged(runner, "cue c1 verify skipped: cue c2 is due")
+    # ...and c2, which was not held up, replaces it with its own verdict.
+    assert wait_until(lambda: (session.verify or {}).get("cue") == "c2",
+                      timeout=3)
+    assert session.verify["landed"] == "deaf"
+    assert abs(session.fired_at - at) < 0.05
     assert [f.data[0] for f in bus.broadcasts] == [2, 3]
     runner.stop()
 
@@ -666,30 +672,63 @@ def test_the_witness_is_asked_twice_before_silence_is_believed():
     runner.stop()
 
 
-def test_a_cue_about_to_fire_cancels_the_re_send():
-    # The question itself takes up to 0.6 s. A cue whose trigger lands in
-    # that window owns the port, and repairing the cue before it is
-    # pointless anyway - the next picture is about to replace it, and two
-    # show frames a fraction of a second apart is the 2026-08-14 double
-    # repaint by another route.
+class _Armed:
+    """A session holding one armed cue, for the repair arithmetic."""
+
+    def __init__(self, at, span_s=None, refresh_s=None):
+        self.span_s, self.refresh_s, self._at = span_s, refresh_s, at
+
+    def due(self):
+        return ("cB", self._at, 3, 3)
+
+
+def test_the_repair_goes_out_when_the_next_cue_loses_at_most_two_seconds():
+    # The rule is a lateness budget, not "one repaint clear". A board
+    # queues what arrives mid-repaint and runs it after, so a repair
+    # still drawing when the next trigger comes does not repaint this
+    # slot twice - it makes the NEXT cue that late. Two seconds of that
+    # is worth the right picture.
+    #
+    # Cues nine seconds apart, 7 s refresh: a 1 s sweep found lost at
+    # T+2.5 finishes at T+10.5, which is 1.5 s into the next cue - it
+    # goes out. A 7 s sweep is only found lost at T+8.5 and would finish
+    # at T+22.5, 11.5 s late - it does not.
+    runner = make_runner(FakeBus(), boards=[1])
+    now = time.monotonic()
+    quick = _Armed(now + 6.5)                    # T+9, seen from T+2.5
+    slow = _Armed(now + 0.5)                     # T+9, seen from T+8.5
+    assert runner._repair_blocked(quick, 1.0, 7.0) is None
+    assert "cue cB due in 0.5 s" in runner._repair_blocked(slow, 7.0, 7.0)
+    # ...and a cue whose trigger is already past always wins the port.
+    assert runner._repair_blocked(_Armed(now - 0.1), 0.0, 7.0) == \
+        "cue cB is due"
+
+
+def test_a_loss_that_is_not_repaired_is_still_reported_red():
+    # The one thing that must never happen: the unit KNOWS the cue did
+    # not land, decides against repairing it because the next cue is too
+    # close, and the tile shows nothing at all.
     from ui.remote import RemoteSession
 
     bus = FakeBus(witness={1: "idle"})
     runner = make_runner(bus, boards=[1])
     session = RemoteSession(runner)
+    # Armed inside the question's own window, close enough that a repair
+    # (7 s of flat refresh) would eat it.
     bus.on_ask = lambda: (session.arm("c2", 3),
-                          session.fire("c2", time.monotonic() + 0.3))
+                          session.fire("c2", time.monotonic() + 4.5))
     session.arm("c1", 2)
     assert wait_until(lambda: runner.live == [1])
     session.fire("c1", time.monotonic() + 0.05)
     assert wait_until(lambda: len(bus.asked) == 1)
     bus.on_ask = None
-    assert wait_until(lambda: [f.data[0] for f in bus.broadcasts] == [2, 3],
-                      timeout=3)
-    assert logged(runner, "cue c1 verify skipped: cue c2 is due")
+    assert wait_until(lambda: session.verify is not None)
+    assert session.verify == {"cue": "c1", "landed": "idle-not-repaired",
+                              "resent": False, "witness": 1}
+    assert logged(runner, "cue c1 not applied at @01 (checked +")
+    assert logged(runner, "not re-sent: cue c2 due in 4.")
+    assert len(bus.broadcasts) == 1              # c1 only, never repaired
     runner.stop()
-    # One broadcast for c1 (never repaired), one for c2 - not three.
-    assert [f.data[0] for f in bus.broadcasts] == [2, 3]
 
 
 def test_a_cue_far_enough_off_does_not_cancel_the_re_send():
@@ -713,6 +752,30 @@ def test_a_cue_far_enough_off_does_not_cancel_the_re_send():
     runner.stop()
 
 
+def test_the_question_is_not_begun_right_before_the_next_trigger():
+    # The ask holds the port for verify_read x VERIFY_TRIES; started
+    # just before a trigger it would make that cue late by the whole of
+    # it. Not started at all, then.
+    from ui.remote import RemoteSession
+
+    bus = FakeBus()
+    runner = make_runner(bus, boards=[1], verify_after=0.5, verify_read=0.3)
+    session = RemoteSession(runner)
+    session.arm("c1", 2)
+    assert wait_until(lambda: runner.live == [1])
+    at = time.monotonic() + 0.05
+    session.fire("c1", at)
+    assert wait_until(lambda: len(bus.broadcasts) == 1)
+    nxt = at + 0.5 + 0.4                 # 0.4 s after the question's instant
+    session.arm("c2", 3)
+    session.fire("c2", nxt)
+    assert wait_until(lambda: len(bus.broadcasts) == 2, timeout=3)
+    assert bus.asked == []               # never begun
+    assert logged(runner, "cue c1 verify skipped: cue c2 is due")
+    assert abs(session.fired_at - nxt) < 0.05      # ...and c2 was on time
+    runner.stop()
+
+
 def test_a_stop_while_the_question_is_in_flight_stops_the_re_send():
     # KEY2 / /show/stop during the 0.6 s the question takes. Nothing may
     # go on the glass after that.
@@ -729,7 +792,11 @@ def test_a_stop_while_the_question_is_in_flight_stops_the_re_send():
     session.fire("c1", time.monotonic() + 0.05)
     assert wait_until(lambda: not runner.running)
     assert len(bus.broadcasts) == 1
-    assert logged(runner, "cue c1 verify skipped: stopped")
+    # The loss was found before the stop, so it is still reported as one -
+    # the garment is wrong whether or not anyone is still driving it.
+    assert logged(runner, "cue c1 not applied at @01 (checked +")
+    assert logged(runner, "not re-sent: stopped")
+    assert session.verify["landed"] == "idle-not-repaired"
     runner.stop()
 
 

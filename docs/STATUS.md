@@ -41,10 +41,21 @@ ttyACM0→ttyACM1 の再列挙、90 秒前に `ERROR bus Input/output error`)。
 - 届いていない時だけ **もう 1 通だけ**送り直す。**1 回の発火につき
   ブロードキャストは最大 2 通**(heal の再発火は確認しないので
   ちょうど 1 通増えるだけ)。送り直す直前に停止と次キューをもう一度
-  見る ― 質問に 0.6 秒かかるので、その間に次のキューが来ていたら
-  直す意味は無く、2 通連続は二度描きになる。2 通目でも確認できなければ
-  `cue X re-send unconfirmed @NN` と記録し、`show-run.json` に保存して
-  **再起動後も出したまま**にする(実機がまだ間違った絵のままだから)
+  見る ― 質問に 0.6 秒かかるので、その間に事情が変わりうる
+- 送り直すかどうかは**「次キューを何秒遅らせるか」**で決める
+  (`REPAIR_LATE_S = 2` 秒。基板は再描画中のコマンドを溜めて後で
+  実行するので、コストは二度描きではなく**次の絵の遅れ**)。
+  `now + refresh_s + span_s ≤ 次の発火時刻 + 2 秒`なら送り直す ―
+  9 秒間隔・リフレッシュ 7 秒なら span 1 秒は送り直し、span 7 秒は
+  送り直さない
+- **送り直さないと決めたときも「損失」として赤で出す**
+  (`landed: "idle-not-repaired"`)。届いていないと判ったものを
+  「何も表示しない」にはしない。2 通目でも確認できなければ
+  `cue X re-send unconfirmed @NN` で同じく赤。どちらも
+  `show-run.json` に保存して**再起動後も出したまま**にする(実機が
+  まだ間違った絵のままだから)。再開して RUNNING に戻ったショーでは
+  数秒後に次キューの判定で上書きされるので、保存が効くのは
+  **最後のキューで止まった/HOLD/LOADED のまま再起動した場合**
 - **聞く相手は既定で USB 直結基板(アドレス 1)だけ**
   (`--verify-witness usb`)。485 中継越しの照会は安全未確認で、
   0x29 は中継するとマスタの CDC を固める([SPECIFICATION.md](SPECIFICATION.md)
@@ -55,18 +66,23 @@ ttyACM0→ttyACM1 の再列挙、90 秒前に `ERROR bus Input/output error`)。
 - `--verify-witness any`(開始が最も早い基板を聞く)は
   **ベンチ試験で「中継した 0x02 がマスタを固めない」ことを確認して
   から**。手順は [DEVELOPMENT.md](DEVELOPMENT.md) 6 章
-- 機体のログに出る行は 4 通り:
+- 機体のログに出る行は 5 通り:
   `cue X landed (@01 deaf, checked +1.5 s)` /
   `cue X landed (@01 busy, checked +1.5 s)` /
   `cue X not applied at @01 (checked +1.5 s), re-sent +1504 ms` /
-  `cue X re-send unconfirmed @01 (checked +3.0 s)`(確認しなかった時は
+  `cue X re-send unconfirmed @01 (checked +3.0 s)` /
+  `cue X not applied at @01 (checked +1.5 s), not re-sent: cue Y due in 4.5 s`
+  (確認しなかった時は
   `cue X verify skipped: ...` ― `usb board absent` /
   `no sweep table known for slot N` / `sweep start N s too late to check` /
   `cue Y is due` / `stopped` / `no live board`。heal は
   `cue X landed already, not checked again`)
 - `/status` に `verify: {cue, landed, resent, witness}` が乗り、
   Conductor の Units タイルに小さく **`re-sent`(琥珀)**/
-  **`not applied`(赤)** が出る。届いた時は**何も出ない**
+  **`not applied`(赤)** が出る。届いた時は**何も出ない**。この記録は
+  「最後に確認したキュー」のものでキュー名を持ち、**次のキューが arm
+  されても消えない**(判定が届くのは発火から 1.5 秒以上あと。消して
+  いたらショー中の判定は一度も表示されない)
 - ガード停止は**最後に送ったブロードキャスト**から数える(送り直すと
   一緒にずれる)。PC に報告する `fired` 時刻は**最初の 1 通**のまま
   (遅れの意味を変えないため)

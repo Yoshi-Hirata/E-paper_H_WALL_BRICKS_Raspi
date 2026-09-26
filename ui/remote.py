@@ -137,18 +137,28 @@ class RemoteSession:
         # ui/runner.py's _guard_for()).
         self.span_s: float | None = None
         self.refresh_s: float | None = None
-        # What the unit's own landing check made of the last cue it sent
-        # (ui/runner.py's _verify_landing()): None until a cue has fired,
-        # then {"cue", "landed", "resent", "witness"} -
+        # What the unit's own landing check made of the last cue it
+        # CHECKED (ui/runner.py's _verify_landing()): None until one has
+        # been, then {"cue", "landed", "resent", "witness"} -
         #   landed "deaf" / "busy"  the witness board was repainting, so
         #                           the broadcast was taken; nothing to see
         #   landed "idle-after-resend"  even the one re-send could not be
         #                           confirmed - the garment may be showing
         #                           the previous picture
+        #   landed "idle-not-repaired"  the broadcast was NOT taken and
+        #                           the next cue was too close to send it
+        #                           again (ui/runner.py's REPAIR_LATE_S) -
+        #                           a known loss, shown red like the above
         #   landed "skipped"        not checked (no board, no table, or a
         #                           cue came due) - says nothing either way
         # `resent` is true when a second broadcast went out at all, which
         # is the operator's cue that the link dropped a frame.
+        #
+        # It names its own cue and OUTLIVES that cue: a show arms the
+        # next cue within a tick of the last one applying, so a record
+        # dropped or cleared on that would be a verdict nobody ever saw
+        # (it takes a second or more to reach one). Replaced by the next
+        # check, by a fresh prepare(), by standby() and by release().
         self.verify: dict | None = None
         self._job: dict | None = None
 
@@ -248,12 +258,14 @@ class RemoteSession:
         `span_s` / `refresh_s` are the cue's own, from the show file, and
         only the guard STOP reads them (see prepare()).
 
-        Re-arming the SAME cue id keeps the landing check's verdict: that
-        is ui/showplay.py's heal (the same cue broadcast again for a
-        board that joined late), and what the check already learned about
-        this cue on the glass is still true - the unit does not ask again
-        (ui/runner.py's _verify_landing()), and a "re-sent" the operator
-        can see does not blink away because a board joined."""
+        The landing check's verdict is NOT cleared here, whichever cue is
+        armed: it names the cue it is about and takes a second or more to
+        arrive, while a running show arms the next cue within a tick of
+        the last one applying - clearing it here would throw away every
+        verdict a show ever reaches, and blink a red "not applied" off
+        the operator's tile the moment the next cue is armed. The next
+        check replaces it (ui/runner.py's _verify_landing(), which also
+        reads it: a heal of a cue already confirmed is not re-checked)."""
         if self.busy():
             raise RemoteError("unit is busy (firmware update, scan or reboot)")
         cue_id, slot = str(cue_id), int(slot)
@@ -262,8 +274,6 @@ class RemoteSession:
             self._refuse_if_imminent_locked(cue_id)
             self.active = True
             self.phase = READY
-            if cue_id != self.cue_id:
-                self.verify = None
             self.cue_id, self.label = cue_id, label
             self.error = None
             self.saved, self.failed = [], []
@@ -503,6 +513,12 @@ class RemoteSession:
                  witness: "int | None" = None) -> None:
         """What the landing check found (see `self.verify`).
 
+        Recorded whatever the session is holding by now: the verdict
+        takes a second or more to reach, by which time a running show
+        has armed the next cue, and matching on cue_id the way fired()
+        does would drop every verdict a show ever produces. The record
+        says which cue it is about instead.
+
         `fired_at` and `late_ms` are deliberately left alone: they are
         about the cue's FIRST broadcast, and a re-send repairs that cue
         rather than making a new, later one - "how late was the cue" must
@@ -514,8 +530,6 @@ class RemoteSession:
         broadcast. A guard timed from the first send would land a
         re-sent cue's 0x17 inside its own sweep."""
         with self._lock:
-            if cue_id != self.cue_id:
-                return              # a newer cue arrived meanwhile
             self.verify = {"cue": cue_id, "landed": landed,
                            "resent": bool(resent), "witness": witness}
 

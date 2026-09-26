@@ -922,8 +922,15 @@ class ShowPlayer:
 
         The verdict arrives on the runner's thread, whenever the check
         finishes; this is the tick that notices. Written only when it
-        changes - once per cue, and once more when the next cue's arm()
-        clears it - so the card costs nothing to keep honest.
+        changes - once per cue - so the card costs nothing to keep
+        honest.
+
+        What it buys depends on what the restart interrupts: a show that
+        comes back RUNNING has its next cue checked within seconds, and
+        the restored verdict stands only until then. The one that
+        matters is the show whose last cue was the one that went wrong -
+        stopped, held, or simply loaded and waiting - where nothing else
+        would ever say so again.
         """
         verify = self.session.verify
         if verify == self._verify_seen:

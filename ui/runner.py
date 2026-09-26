@@ -121,6 +121,15 @@ VERIFY_TRIES = 2
 # that - a socket starting after the LAST scale is a broken table by
 # definition - and anything else at conductor/sequence.py's MAX_DELAY_S.
 VERIFY_MAX_DELAY_S = 30.0
+# How late the NEXT cue may be made by repairing the last one. A board
+# does not discard what arrives while it repaints - it queues it and
+# runs it afterwards (the 2026-08-14 measurement) - so a repair that is
+# still drawing when the next trigger goes out does not double-paint the
+# same slot: it delays the next picture by what is left of it. Two
+# seconds of that is worth a garment showing the right look; beyond it
+# the repair would eat the cue after it, and the honest answer is to
+# leave the loss on the tile in red instead (landed "idle-not-repaired").
+REPAIR_LATE_S = 2.0
 # WHICH board may be asked. Only one board of a garment is on the USB
 # cable - the RS-485 master, address 1 (ADDR_BUS_MASTER; the production
 # wall is ID:1 on USB, docs/SPECIFICATION.md 5.7, and every garment is
@@ -1296,13 +1305,13 @@ class DemoRunner:
 
         A cue owns the port before anything else: a trigger at or before
         `until` takes the window (the next broadcast answers "did the
-        last one land" anyway). `horizon` is for the re-send only - a
-        repair is pointless when the next picture is about to replace it,
-        and a repair that starts less than a repaint before the next
-        trigger IS the 2026-08-14 double repaint, arrived at the long way
-        round. A cue armed beyond the horizon does not count: on a show
-        the next cue is armed the moment this one applies, and yielding
-        to that would mean never checking, or never repairing, anything.
+        last one land" anyway). `horizon` covers the work that would
+        follow - the question itself takes verify_read x VERIFY_TRIES,
+        and starting one just before a trigger would hold that trigger
+        up by the whole of it. A cue armed beyond the horizon does not
+        count: on a show the next cue is armed the moment this one
+        applies, and yielding to that would mean never checking
+        anything.
         """
         if self._stop.is_set():
             return "stopped"
@@ -1314,14 +1323,43 @@ class DemoRunner:
 
     def _verify_wait(self, session, until: float) -> "str | None":
         """Wait for the instant to ask; a reason to give up, or None."""
+        horizon = self.verify_read * VERIFY_TRIES
         while True:
-            give_up = self._yield_to(session, until)
+            give_up = self._yield_to(session, until, horizon)
             if give_up is not None:
                 return give_up
             left = until - time.monotonic()
             if left <= 0:
                 return None
             self._stop.wait(min(left, 0.05))
+
+    def _repair_blocked(self, session, span_s: float,
+                        refresh_s: float) -> "str | None":
+        """Why the lost cue may NOT be broadcast again, or None.
+
+        The boards queue what arrives mid-repaint and run it afterwards,
+        so the cost of repairing is not a double repaint of this slot -
+        it is the NEXT cue going out however much of this repair is
+        still running when its trigger comes. The repair is worth that
+        up to REPAIR_LATE_S: a one-second sweep found lost 2.5 s into a
+        nine-second gap finishes 1.5 s into the next cue's own start and
+        goes out; a seven-second sweep found lost at 8.5 s would finish
+        11.5 s late and does not.
+
+        `span_s` / `refresh_s` are the REPAIRED cue's own (taken when it
+        fired) - the session may already be holding the next cue's.
+        """
+        if self._stop.is_set():
+            return "stopped"
+        due = session.due()
+        if due is None:
+            return None
+        now = time.monotonic()
+        if due[1] <= now:
+            return f"cue {due[0]} is due"
+        if (now + refresh_s + span_s) - due[1] > REPAIR_LATE_S:
+            return f"cue {due[0]} due in {due[1] - now:.1f} s"
+        return None
 
     def _ask_witness(self, bus, groups: int, board: int, dev_type: int,
                      cue_id: str) -> str:
@@ -1370,6 +1408,17 @@ class DemoRunner:
         """
         if not self.verify_fire:
             return
+        # This cue's own span and refresh, read now rather than when the
+        # repair is decided: ui/showplay.py arms the NEXT cue within a
+        # tick of this one applying, and the session then carries that
+        # one's numbers. A caller that says nothing keeps the flat
+        # refresh and no sweep, exactly as the guard STOP does.
+        cue_span = getattr(session, "span_s", None)
+        cue_refresh = getattr(session, "refresh_s", None)
+        cue_span = float(cue_span) if isinstance(cue_span, (int, float)) else 0.0
+        cue_refresh = (float(cue_refresh)
+                       if isinstance(cue_refresh, (int, float))
+                       else GUARD_REFRESH_S)
         landed = getattr(session, "verify", None) or {}
         if (landed.get("cue") == cue_id
                 and landed.get("landed") in ("deaf", "busy")):
@@ -1377,8 +1426,11 @@ class DemoRunner:
             # (ui/showplay.py's heal): it was confirmed on the glass once
             # already, and this frame is for a board that was not even
             # there to be asked about. Checking again would only spend
-            # port time and risk a re-send nothing needs - so a heal adds
-            # exactly one broadcast, never two.
+            # port time and risk a re-send nothing needs - so a heal of a
+            # confirmed cue adds exactly one broadcast. (If some other
+            # cue was checked in between, this does not match and the
+            # heal is checked like anything else: harmless, since a heal
+            # repaints and the witness then reads deaf.)
             self.emit(f"cue {cue_id} landed already, not checked again")
             return
         chosen = self._witness(session, slot)
@@ -1424,21 +1476,17 @@ class DemoRunner:
                 self._record_verify(session, cue_id, "idle-after-resend",
                                     True, board)
                 return
-            # The ask itself took up to verify_read x VERIFY_TRIES, and a
-            # cue's own trigger owns the port ahead of any repair of the
-            # last one: without this second look a cue due just after the
-            # question would get its broadcast 0.05-0.3 s behind a
-            # re-send of the cue before it - two show frames in a row,
-            # which is the 2026-08-14 double repaint with extra steps -
-            # and a STOP in that window would still put a picture up.
-            refresh_s = getattr(session, "refresh_s", None)
-            give_up = self._yield_to(
-                session, time.monotonic(),
-                horizon=(float(refresh_s) if isinstance(refresh_s, (int, float))
-                         else GUARD_REFRESH_S))
-            if give_up is not None:
-                self.emit(f"cue {cue_id} verify skipped: {give_up}")
-                self._record_verify(session, cue_id, "skipped", resent, board)
+            # The ask itself took up to verify_read x VERIFY_TRIES, and
+            # what may happen in that window - a stop, the next cue
+            # coming due - outranks repairing the last one. A loss found
+            # and NOT repaired is still a loss: it is recorded red, never
+            # as "nothing to see" (review round 2).
+            hold = self._repair_blocked(session, cue_span, cue_refresh)
+            if hold is not None:
+                self.emit(f"cue {cue_id} not applied at @{board:02d} "
+                          f"(checked +{checked:.1f} s), not re-sent: {hold}")
+                self._record_verify(session, cue_id, "idle-not-repaired",
+                                    resent, board)
                 return
             bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
             again = time.monotonic()
