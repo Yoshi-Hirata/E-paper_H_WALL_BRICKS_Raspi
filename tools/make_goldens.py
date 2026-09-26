@@ -507,6 +507,10 @@ def _serialize_cue(c: dict) -> dict:
 
 
 def _run_timeline_case(name, cues, items, duration=600.0, refresh=7.0, gap=1.0):
+    # refresh=7.0 is deliberately the LEGACY value (a show saved before the
+    # refresh became effect-inclusive still carries it), so the cases
+    # transcribed from tests/test_timeline.py keep exercising it; the
+    # refresh8_* cases below pass timeline.REFRESH_S explicitly.
     problems, warnings = timeline.validate(cues, items, duration, refresh, gap)
     ends = timeline.ends(cues, refresh, duration)
     unit_boards = {}
@@ -631,6 +635,55 @@ def timeline_cases() -> list:
                                  "designs": {f"p{n}": OK for n in range(19)}}}
     overflow_cues = [_cue(f"c{n}", "Look22", n * 20, f"p{n}") for n in range(19)]
     cases.append(_run_timeline_case("slot_capacity_overflow", overflow_cues, overflow_items))
+
+    # The effect-inclusive refresh (2026-09-26): complete is the modelled
+    # refresh unless the sweep genuinely runs past it (PANEL_REPAINT_S +
+    # span), and the floor between two sends follows complete, not a sum.
+    # The cases above keep the legacy 7.0 s refresh on purpose - a show
+    # saved before the change still has it; these are the new default.
+    eight = timeline.REFRESH_S
+    sweep8 = {"look22": {"item": "Look22", "unit": "radxa-09", "boards": 16,
+                         "designs": {"p1": OK, "p2": OK,
+                                     "g1.csv": {"full": True, "partial": True}}}}
+    # Natural: 8 s, and the next send may follow 9 s later, not 8.
+    nat8 = _cue("a", "Look22", 60, "p1")
+    nat8_tight = _cue("b", "Look22", 68.0, "p2")
+    cases.append(_run_timeline_case("refresh8_natural", [nat8, nat8_tight],
+                                    sweep8, refresh=eight))
+    cases.append(_run_timeline_case(
+        "refresh8_natural_fine", [nat8, _cue("b", "Look22", 69.0, "p2")],
+        sweep8, refresh=eight))
+    # A production sweep (span 1) fits inside the 8 s: complete is still
+    # 8 s, and the floor is still 9 s - the same for both cue kinds.
+    swept8_1 = _cue("a", "Look22", 60, "g1.csv",
+                   sweep={"sequence": "top_down", "span_s": 1.0, "source": "cue"},
+                   span=1.0)
+    cases.append(_run_timeline_case(
+        "refresh8_sweep_span1", [swept8_1, _cue("b", "Look22", 68.0, "p2")],
+        sweep8, refresh=eight))
+    cases.append(_run_timeline_case(
+        "refresh8_sweep_span1_fine",
+        [swept8_1, _cue("b", "Look22", 69.0, "p2")], sweep8, refresh=eight))
+    # A 7 s sweep does run past it: complete 14 s (7 s repaint + 7 s
+    # sweep), floor 15 s, and the message says so in those terms.
+    swept8_7 = _cue("a", "Look22", 60, "g1.csv",
+                   sweep={"sequence": "top_down", "span_s": 7.0, "source": "cue"},
+                   span=7.0)
+    cases.append(_run_timeline_case(
+        "refresh8_sweep_span7", [swept8_7, _cue("b", "Look22", 74.0, "p2")],
+        sweep8, refresh=eight))
+    # A cue's own refresh above panel + span wins outright.
+    own12 = _cue("a", "Look22", 60, "g1.csv", refresh_s=12.0,
+                sweep={"sequence": "top_down", "span_s": 1.0, "source": "cue"},
+                span=1.0)
+    cases.append(_run_timeline_case(
+        "refresh8_cue_own_refresh_wins",
+        [own12, _cue("b", "Look22", 72.0, "p2")], sweep8, refresh=eight))
+    # A legacy show (refresh 7.0) with a 1 s sweep: complete 8 s by the
+    # max rule, so its floor is 9 s too.
+    cases.append(_run_timeline_case(
+        "legacy_refresh7_sweep_span1",
+        [swept8_1, _cue("b", "Look22", 68.0, "p2")], sweep8, refresh=7.0))
 
     return cases
 

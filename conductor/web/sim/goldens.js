@@ -12274,7 +12274,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     "problems": {
      "a": [],
      "b": [
-      "only 11.0 s after the previous send on radxa-01; at least 12.0 s is needed (7.0 s refresh + 4.0 s sweep + 1.0 s gap)"
+      "only 11.0 s after the previous send on radxa-01; at least 12.0 s is needed (7.0 s panel repaint + 4.0 s sweep + 1.0 s gap)"
      ]
     },
     "warnings": [
@@ -13407,6 +13407,610 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    "refresh": 7.0
   },
   {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 68.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 68.0,
+      "end": 68.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 76.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 68.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 8.0 s after the previous send on radxa-09; at least 9.0 s is needed (8.0 s refresh + 1.0 s gap)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh8_natural",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 69.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 68.0,
+      "end": 69.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 77.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 69.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "a": [],
+     "b": []
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh8_natural_fine",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "g1.csv",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": 1.0,
+     "sweep": {
+      "sequence": "top_down",
+      "source": "cue",
+      "span_s": 1.0
+     }
+    },
+    {
+     "at": 68.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 68.0,
+      "end": 68.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 76.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 68.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 8.0 s after the previous send on radxa-09; at least 9.0 s is needed (8.0 s refresh + 1.0 s gap)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh8_sweep_span1",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "g1.csv",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": 1.0,
+     "sweep": {
+      "sequence": "top_down",
+      "source": "cue",
+      "span_s": 1.0
+     }
+    },
+    {
+     "at": 69.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 68.0,
+      "end": 69.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 77.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 69.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "a": [],
+     "b": []
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh8_sweep_span1_fine",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "g1.csv",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": 7.0,
+     "sweep": {
+      "sequence": "top_down",
+      "source": "cue",
+      "span_s": 7.0
+     }
+    },
+    {
+     "at": 74.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 74.0,
+      "end": 74.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 82.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 74.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 14.0 s after the previous send on radxa-09; at least 15.0 s is needed (7.0 s panel repaint + 7.0 s sweep + 1.0 s gap)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh8_sweep_span7",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "g1.csv",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 12.0,
+     "span": 1.0,
+     "sweep": {
+      "sequence": "top_down",
+      "source": "cue",
+      "span_s": 1.0
+     }
+    },
+    {
+     "at": 72.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 72.0,
+      "end": 72.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 12.0,
+      "refresh_source": "cue",
+      "sent": 60.0
+     },
+     {
+      "complete": 80.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 72.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 12.0 s after the previous send on radxa-09; at least 13.0 s is needed (12.0 s refresh + 1.0 s gap)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "refresh8_cue_own_refresh_wins",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 60.0,
+     "design": "g1.csv",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": 1.0,
+     "sweep": {
+      "sequence": "top_down",
+      "source": "cue",
+      "span_s": 1.0
+     }
+    },
+    {
+     "at": 68.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 600.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 68.0,
+      "end": 68.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 60.0
+     },
+     {
+      "complete": 75.0,
+      "end": 600.0,
+      "end_source": "show",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 68.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": [
+      "only 8.0 s after the previous send on radxa-09; at least 9.0 s is needed (7.0 s panel repaint + 1.0 s sweep + 1.0 s gap)"
+     ]
+    },
+    "warnings": [
+     "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "legacy_refresh7_sweep_span1",
+   "refresh": 7.0
+  },
+  {
    "expect": {
     "items": [
      {
@@ -13906,6 +14510,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
       "(BagA)": 8.0,
       "(Look22)": 8.0
      },
+     "panel_repaint_s": 7.0,
+     "refresh_default": 8.0,
      "refresh_s": 7.0,
      "warnings": []
     },
@@ -14325,6 +14931,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
      "min_interval": {
       "(Sample)": 8.0
      },
+     "panel_repaint_s": 7.0,
+     "refresh_default": 8.0,
      "refresh_s": 7.0,
      "warnings": []
     },
@@ -14678,6 +15286,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
      "min_interval": {
       "(Sample)": 8.0
      },
+     "panel_repaint_s": 7.0,
+     "refresh_default": 8.0,
      "refresh_s": 7.0,
      "warnings": []
     },
@@ -15043,6 +15653,8 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
      "min_interval": {
       "(Sample)": 8.0
      },
+     "panel_repaint_s": 7.0,
+     "refresh_default": 8.0,
      "refresh_s": 7.0,
      "warnings": []
     },
@@ -15085,7 +15697,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "d0602dd2270b82f8",
+   "expect": "0482998be4215b0e",
    "kind": "state-digest",
    "name": "starter-AZ271SB2303",
    "project": {
@@ -15098,7 +15710,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "131a35d232b4e518",
+   "expect": "26971ff8a5e0e9ee",
    "kind": "state-digest",
    "name": "starter-AZ271SC6302",
    "project": {
@@ -15111,7 +15723,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "696d90727df6dd6e",
+   "expect": "73f762af542de474",
    "kind": "state-digest",
    "name": "starter-AZ271SD1301",
    "project": {
@@ -15124,7 +15736,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "4e5a8ab2ea376054",
+   "expect": "0477c636a24086ba",
    "kind": "state-digest",
    "name": "starter-AZ271SD1305",
    "project": {
@@ -15138,7 +15750,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "4c84266af7d07ece",
+   "expect": "c0e225a6c88c1f94",
    "kind": "state-digest",
    "name": "starter-AZ271SD1305_B",
    "project": {
@@ -15152,7 +15764,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "e440d4515bc4e699",
+   "expect": "f1be9b67ef989893",
    "kind": "state-digest",
    "name": "starter-AZ271SD1306",
    "project": {
@@ -15165,7 +15777,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "4c7c8ac085f75b76",
+   "expect": "2a4b1b5d5d3bba4c",
    "kind": "state-digest",
    "name": "starter-AZ271SD1307",
    "project": {
@@ -15179,7 +15791,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "b4eea10b7e2cb779",
+   "expect": "7b3f82d8b28691b3",
    "kind": "state-digest",
    "name": "starter-AZ271SG1035",
    "project": {
@@ -15192,7 +15804,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "6776068341ed0ee4",
+   "expect": "bea53741f97949ea",
    "kind": "state-digest",
    "name": "starter-AZ271SG1036",
    "project": {
@@ -15205,7 +15817,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
-   "expect": "91f4cd82abaa8220",
+   "expect": "3b15c54f56001386",
    "kind": "state-digest",
    "name": "starter-AZ271SG3037",
    "project": {

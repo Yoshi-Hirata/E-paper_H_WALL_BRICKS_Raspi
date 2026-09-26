@@ -310,7 +310,12 @@
     Object.keys(unitBoards).forEach(u => { minInterval[u] = timeline.minInterval(unitBoards[u], refresh); });
 
     return {
-      show: { duration, refresh_s: refresh, cues, warnings, min_interval: minInterval },
+      // refresh_default / panel_repaint_s: the model's two refresh numbers,
+      // carried so a page never has one of its own (conductor/server.py's
+      // state() sends the same two).
+      show: { duration, refresh_s: refresh, refresh_default: REFRESH_S,
+              panel_repaint_s: timeline.PANEL_REPAINT_S,
+              cues, warnings, min_interval: minInterval },
       units: [],
       items: ordered,
       orphans,
