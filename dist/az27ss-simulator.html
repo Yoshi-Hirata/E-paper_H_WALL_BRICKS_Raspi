@@ -847,9 +847,15 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   const NOT_A_CSV_NAME = "not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv "
     + "(the wiring site writes _HW in capitals)";
   const NOT_A_CSV_FILE = "not a .csv file";
-  const NOT_A_CSV_BODY = "neither a map (first line side,row,col,board_no,socket,…) "
-    + "nor a design grid (side,row,shift,1,2,…)";
+  // Designer-facing, so it says nothing about board numbers and sockets.
+  const NOT_A_CSV_BODY = "neither a garment map nor a design grid - the first "
+    + "line must be the wiring site's own header";
   const NO_GARMENT = "which garment? name it MODEL_…csv, or use that garment's own Add CSV";
+  const NO_DESIGN_NAME = "no design name in the file name - name it MODEL_NAME.csv (NAME is the 配色案名)";
+  const _NEWLINE = /\r\n|\r|\n/;
+  // See conductor/look.py's parse_clock(). [0-9], never \d.
+  const _CLOCK_FIELD = /^(?:([0-9]{1,3})[:.])?([0-9]{1,4})$/;
+  const CLOCK_HINT = "m:ss or mm.ss (e.g. 3:20 or 3.20); a plain number is seconds";
   const _MAP_HEADER = ["board_no", "socket"];
   const _GRID_HEADER = ["side", "row", "shift"];
   const _GRID_COLUMN = /^[0-9]+$/;          // [0-9], never \d - see _PATTERN_NO
@@ -998,19 +1004,35 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       part => part.startsWith("._") || part === ".DS_Store"
               || part.toUpperCase() === "__MACOSX");
   }
+  // The spelling two file names share when a filesystem cannot tell them
+  // apart - see conductor/look.py's fold_name() for why this is
+  // toLowerCase() and not something cleverer, and why the two sides must
+  // agree about which files are the same file.
+  function foldName(name) { return normalizeName(name).toLowerCase(); }
+  function csvExtension(name) { return String(name).replace(/\.csv$/i, ".csv"); }
   // `taken` is only READ - the caller adds what it ends up using, so
   // this answers the same question twice the same way (and matches
   // conductor/look.py's unique_save_name, which cannot mutate a set it
-  // was handed either).
+  // was handed either). Read through foldName(): a name differing only
+  // in case from one already held counts as held.
   function uniqueSaveName(name, taken) {
-    if (!taken.has(name)) return name;
+    const held = new Set([...taken].map(foldName));
+    if (!held.has(foldName(name))) return name;
     const m = _DESIGN_NUMBER.exec(name) || _HW_NUMBER.exec(name);
     if (!m) return null;
     for (let n = 2; n < _MAX_COPIES; n++) {
       const candidate = `${m[1]}${m[2]}-${n}${m[3]}`;
-      if (!taken.has(candidate)) return candidate;
+      if (!held.has(foldName(candidate))) return candidate;
     }
     return null;
+  }
+  // conductor/look.py's parse_clock(): the Conductor's own time-field
+  // grammar, here so the two pages can never read "3.05" two ways.
+  function parseTimeField(text) {
+    const m = _CLOCK_FIELD.exec(jsTrim(text));
+    if (!m) return null;
+    if (m[1] !== undefined && Number(m[2]) >= 60) return null;
+    return (m[1] !== undefined ? Number(m[1]) * 60 : 0) + Number(m[2]);
   }
   function refuseReason(name) {
     return /\.csv$/i.test(String(name)) ? NOT_A_CSV_NAME : NOT_A_CSV_FILE;
@@ -1021,7 +1043,7 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   // Two matches, not one alternation - _HW is the site's own button and
   // is spelled in capitals, so "…_1_hw.csv" is not a design at all.
   function renameOntoItem(item, name) {
-    const raw = normalizeName(name);
+    const raw = csvExtension(normalizeName(name));
     const m = _ONTO_ITEM.exec(raw) || _ONTO_ITEM_HW.exec(raw);
     return m ? item + raw.slice(m.index) : null;
   }
@@ -1030,11 +1052,27 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     // str.strip() is NOT (see conductor/look.py's _JS_SPACE).
     return String(text).replace(_JS_EDGE, "");
   }
+  // One header cell: trimmed, with the quotes a CSV writer may have put
+  // round it taken off (Excel quotes the moment a header holds a comma or
+  // a space), trimmed again.
+  function unquote(cell) {
+    let text = jsTrim(cell);
+    if (text.length >= 2 && text[0] === '"' && text[text.length - 1] === '"') {
+      text = jsTrim(text.slice(1, -1).split('""').join('"'));
+    }
+    return text;
+  }
   function sniffCsvKind(text) {
     let body = String(text);
     if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
-    const first = body.split(/\r?\n/).find(l => jsTrim(l)) || "";
-    const cols = first.split(",").map(c => jsTrim(c).toLowerCase());
+    // Any of the three line endings: a file written with \r alone is one
+    // long line to a \r?\n split, and its header is never seen.
+    const first = body.split(_NEWLINE).find(l => jsTrim(l)) || "";
+    const cols = first.split(",").map(c => unquote(c).toLowerCase());
+    // Empty columns on the RIGHT (Excel's trailing comma) say nothing
+    // either way - the grid check used to be stricter than the map check
+    // about them purely by accident.
+    while (cols.length && cols[cols.length - 1] === "") cols.pop();
     if (cols.length < 2 || cols[0] !== "side" || cols[1] !== "row") return null;
     if (_MAP_HEADER.every(c => cols.indexOf(c) !== -1)) return "map";
     if (cols.length > 3 && _GRID_HEADER.every((c, i) => cols[i] === c)
@@ -1045,7 +1083,7 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     const composed = normalizeName(name);
     const bad = nameProblem(composed);
     if (bad) return { error: bad };
-    if (kind(composed) !== null) return { name: composed };
+    if (kind(composed) !== null) return { name: csvExtension(composed) };
     if (!/\.csv$/i.test(composed)) return { error: refuseReason(composed) };
     const sniffed = sniffCsvKind(text);
     if (!sniffed) return { error: NOT_A_CSV_BODY };
@@ -1061,7 +1099,11 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       || (hit && hit.toLowerCase() === stem.toLowerCase() ? hit : null);
     let design = prefix ? stem.slice(prefix.length).replace(/^_/, "") : stem;
     // eslint-disable-next-line no-control-regex
-    design = design.replace(_DESIGN_UNUSABLE, "-").replace(_DESIGN_EDGE, "") || "design";
+    design = design.replace(_DESIGN_UNUSABLE, "-").replace(_DESIGN_EDGE, "");
+    // Nothing left to call it by: a design saved as "…_color_design_grid"
+    // is one nobody can find again, and every such file in a pick would
+    // land on the same name.
+    if (!design) return { error: NO_DESIGN_NAME };
     design = design.replace(/_grid/gi, "-grid")
                    .replace(/_map(?=$|[_-])/gi, "-map")
                    .replace(/_color_/gi, "-color-");
@@ -1451,9 +1493,9 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,
     macSafeName, isMacMetadata, uniqueSaveName, refuseReason, renameOntoItem,
-    sniffCsvKind, conventionalName,
+    sniffCsvKind, conventionalName, foldName, csvExtension, parseTimeField,
     NOT_A_CSV_NAME, NOT_A_CSV_FILE, NOT_A_CSV_BODY, NO_GARMENT,
-    ANOTHER_GARMENTS_MAP,
+    NO_DESIGN_NAME, ANOTHER_GARMENTS_MAP, CLOCK_HINT,
   };
 
   // ============================================================

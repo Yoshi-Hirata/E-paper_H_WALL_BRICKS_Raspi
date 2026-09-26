@@ -23,11 +23,19 @@ INDEX_HTML = REPO / "conductor" / "web" / "index.html"
 
 sys.path.insert(0, str(REPO))
 
-from conductor import timeline  # noqa: E402
+from conductor import look, timeline  # noqa: E402
 from tests.test_conductor_intake import _Stand  # noqa: E402
 from tests.test_designer_build import _dump_dom, _require_browser  # noqa: E402
 
 PAGE = INDEX_HTML.read_text(encoding="utf-8")
+
+# Everything a time field might be handed, including the edges the two
+# languages could read differently (a full-width digit, a stray space,
+# more digits than the rule allows).
+CLOCK_INPUTS = ["3:20", "3.20", "3.05", "0.30", "200", "0", "59", "9999",
+                "3:75", "3.60", "1:2:3", "", "   ", " 3.20 ", "abc", "-1",
+                "3.5", "1000.00", "１:２０", "12.075", "3:5", "0999",
+                "99.59"]
 
 
 # ------------------------------------------------------- the page as text
@@ -54,6 +62,7 @@ def test_the_ruler_and_the_playhead_leave_room_for_the_add_column():
 _PROBE = """
 <script>
 (function () {
+  var CLOCK_INPUTS = %(clocks)s;
   var out = { error: null };
   function publish() {
     var pre = document.createElement("pre");
@@ -145,8 +154,8 @@ _PROBE = """
 
       // 7. The time fields read the designers' own mm.ss as well as m:ss,
       //    and the show cannot be set past 99:59.
-      out.clocks = ["3:20", "3.20", "3.05", "200", "0.30", "3:75", "", "abc", "1:2:3"]
-        .map(s => [s, parseClock(s)]);
+      out.clocks = CLOCK_INPUTS.map(s => [s, parseTimeField(s)]);
+      out.clockHint = CLOCK_HINT;
       out.maxShow = MAX_SHOW_DURATION_S;
       var dur = document.querySelector("#duration");
       dur.value = "999.00";
@@ -193,7 +202,8 @@ _PROBE = """
 def tracks(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("tracks")
     _require_browser(tmp)
-    stand = _Stand(tmp, _PROBE, designs=2)
+    stand = _Stand(tmp, _PROBE % {"clocks": json.dumps(CLOCK_INPUTS)},
+                   designs=2)
     try:
         dom = _dump_dom(stand.url, tmp)
     finally:
@@ -287,17 +297,22 @@ def test_a_click_places_exactly_what_the_ghost_promised(tracks):
 
 # ------------------------------------------------------------ the polish
 
-def test_a_time_field_reads_the_designers_own_mm_ss(tracks):
-    # Their simulator prints and parses mm.ss (SIM.mmss), so a cue sheet
-    # copied off their screen has to be typeable here as it stands.
-    clocks = dict((k, v) for k, v in tracks["clocks"])
-    assert clocks["3:20"] == 200 and clocks["3.20"] == 200
-    assert clocks["3.05"] == 185
-    assert clocks["0.30"] == 30
-    assert clocks["200"] == 200, "a bare number is still seconds on this page"
-    # ...and nonsense is still nonsense.
-    assert clocks["3:75"] is None and clocks[""] is None
-    assert clocks["abc"] is None and clocks["1:2:3"] is None
+def test_a_time_field_reads_exactly_what_conductor_look_reads(tracks):
+    """index.html cannot import model.js, so its copy of the shared
+    grammar is cross-checked here the way the goldens cross-check the
+    simulator's: every input through the page's own parseTimeField(),
+    against conductor/look.py's parse_time_field()."""
+    got = {text: value for text, value in tracks["clocks"]}
+    want = {text: look.parse_time_field(text) for text in CLOCK_INPUTS}
+    assert got == want
+    # The rule itself, so a silent change to it is a failing test: mm.ss
+    # is the designers' own spelling, a bare number is seconds here.
+    assert want["3:20"] == 200 and want["3.20"] == 200 and want["3.05"] == 185
+    assert want["200"] == 200, "a bare number is seconds on this page"
+    assert want["3:75"] is None and want["abc"] is None
+    # ...and the operator is told which rule it is, in the field itself.
+    assert tracks["clockHint"] == look.CLOCK_HINT
+    assert "mm.ss" in look.CLOCK_HINT and "seconds" in look.CLOCK_HINT
 
 
 def test_the_show_cannot_be_set_past_99_59(tracks):

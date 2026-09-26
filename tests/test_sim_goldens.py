@@ -195,7 +195,15 @@ def test_goldens_cover_every_sequence_and_rule(golden):
     # the simulator applies is a rule the show PC will disagree with.
     intake_ops = {c["op"] for c in golden["cases"] if c["kind"] == "intake"}
     assert intake_ops == {"macSafeName", "isMacMetadata", "uniqueSaveName",
-                          "renameOntoItem", "sniffCsvKind", "conventionalName"}
+                          "renameOntoItem", "sniffCsvKind", "conventionalName",
+                          "foldName", "csvExtension", "parseTimeField"}
+    # Case folding is what stands between the workspace and a Windows
+    # filesystem that cannot tell two names apart, so a uniqueSaveName
+    # case that differs only in case has to be in the goldens.
+    assert any(c["name"].lower() in {t.lower() for t in c["taken"]}
+               and c["name"] not in c["taken"]
+               for c in golden["cases"]
+               if c["kind"] == "intake" and c["op"] == "uniqueSaveName")
     sniffed = [c["expect"] for c in golden["cases"]
                if c["kind"] == "intake" and c["op"] == "sniffCsvKind"]
     assert set(sniffed) == {"map", "grid", None}

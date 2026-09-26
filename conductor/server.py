@@ -51,6 +51,7 @@ from .look import NOT_A_CSV_NAME
 from .look import ANOTHER_GARMENTS_MAP as look_another_garments_map
 from .look import NO_SUCH_GARMENT as look_no_such_garment
 from .look import conventional_name as look_conventional_name
+from .look import fold_name as look_fold_name
 from .look import is_mac_metadata as look_is_mac_metadata
 from .look import mac_safe_name as look_mac_safe_name
 from .look import name_problem as look_name_problem
@@ -1101,15 +1102,26 @@ class Workspace:
         /api/files path does NOT come here directly - it goes through
         intake() below, which never lets one file land on another.
         """
+        with self._lock:
+            return self._save_locked(name, text)
+
+    def _save_locked(self, name: str, text: str) -> str:
+        """save(), with self._lock already held by the caller.
+
+        intake() holds the lock across the whole of its own work - the
+        moment it lets go between "which names are free" and "write", two
+        requests can pick the same free name and one clobbers the other
+        (review of dbed7d5, 25 of 25 runs with two threads). threading.Lock
+        is not reentrant, so the two halves have to be separate functions.
+        """
         name = workspace_name(name)          # raises on an unusable name
         if self.kind(name) is None:
             raise ValueError(f"{name}: {NOT_A_CSV_NAME}")
-        with self._lock:
-            # open(), not Path.write_text(newline=...): that is 3.10+, and
-            # the units' Python 3.9 should be able to run this too.
-            with open(self.files / name, "w", encoding="utf-8",
-                      newline="") as handle:
-                handle.write(text)
+        # open(), not Path.write_text(newline=...): that is 3.10+, and
+        # the units' Python 3.9 should be able to run this too.
+        with open(self.files / name, "w", encoding="utf-8",
+                  newline="") as handle:
+            handle.write(text)
         return name
 
     def item_names(self) -> "list[str]":
@@ -1122,6 +1134,16 @@ class Workspace:
             if named:
                 names.append(named.group(1))
         return names
+
+    def _on_disk(self) -> "dict[str, str]":
+        """{the folded name: the name as the folder actually spells it}.
+
+        Folded, because the operator's PC is Windows: NTFS cannot tell
+        "…_Pattern_grid.csv" from "…_pattern_grid.csv", so neither may
+        anything here (see look.fold_name).
+        """
+        return {look_fold_name(path.name): path.name
+                for path in sorted(self.files.glob("*.csv"))}
 
     def _existing_text(self, name: str) -> "str | None":
         try:
@@ -1158,10 +1180,17 @@ class Workspace:
         original, and report it as a success (the simulator's own
         adversarial review F1).
 
-        Returns {"saved": [...], "renamed": {from: to}, "skipped":
-        {from: the file already there}, "refused": ["name: why"]} - the
-        page says all four out loud, so a file that was picked and did
-        not arrive under its own name can never pass unnoticed.
+        Returns {"saved": [...], "renamed": [{from, to}], "skipped":
+        [{from, as}], "refused": ["name: why"]} - the page says all four
+        out loud, so a file that was picked and did not arrive under its
+        own name can never pass unnoticed. Lists, not maps keyed by the
+        picked name: a folder drop can hold two "pattern.csv" one
+        directory apart, and a map would report one of them.
+
+        The whole of it runs under self._lock. Deciding which names are
+        free and then writing without the lock let two requests - two
+        tabs, two operators, a re-fired drop - pick the same free name
+        and one clobber the other (review of dbed7d5).
 
         import_bundle() deliberately does NOT come this way: a bundle
         replaces the designs it names and reports what it overwrote
@@ -1169,25 +1198,44 @@ class Workspace:
         sending one.
         """
         with self._lock:
-            taken = {path.name for path in self.files.glob("*.csv")}
+            return self._intake_locked(list(entries), item)
+
+    def _intake_locked(self, entries, item: "str | None") -> dict:
+        on_disk = self._on_disk()                 # folded name -> real name
         items = self.item_names()
         saved: "list[str]" = []
-        renamed: "dict[str, str]" = {}
-        skipped: "dict[str, str]" = {}
+        renamed: "list[dict]" = []
+        skipped: "list[dict]" = []
         refused: "list[str]" = []
+
+        def name_of(entry) -> str:
+            return str(entry.get("name", "")) if isinstance(entry, dict) else ""
+
         if item is not None:
             # Spelled the way the workspace spells it, so everything
             # below compares one name with itself.
-            known = {name.lower(): name for name in items}
-            item = known.get(str(item).lower())
+            known = {look_fold_name(name): name for name in items}
+            item = known.get(look_fold_name(item))
             if item is None:
-                return {"saved": [], "renamed": {}, "skipped": {},
-                        "refused": [f"{(e or {}).get('name', '')}: "
-                                    f"{look_no_such_garment}"
+                return {"saved": [], "renamed": [], "skipped": [],
+                        "refused": [f"{name_of(e)}: {look_no_such_garment}"
                                     for e in entries]}
+
+        # ---- pass 1: what each picked file wants to be called ----
+        # Resolved for EVERY entry before any of them is numbered, so a
+        # "-2" can never steal the name a genuine "…-2_grid.csv" in the
+        # same pick already wants (review of dbed7d5: a new A_grid landing
+        # on an occupied name became A-2_grid, and the real A-2_grid that
+        # came with it was then pushed to A-2-2_grid).
+        wanted: "list[str | None]" = []
         for entry in entries:
-            raw = str((entry or {}).get("name", ""))
-            text = (entry or {}).get("text")
+            raw = name_of(entry)
+            wanted.append(None)
+            if not isinstance(entry, dict):
+                refused.append(f"{raw}: a file must be sent as "
+                               "{name, text}")
+                continue
+            text = entry.get("text")
             if not isinstance(text, str):
                 refused.append(f"{raw}: no text was sent with this file")
                 continue
@@ -1203,8 +1251,9 @@ class Workspace:
             if item is not None:
                 owner = (map_item(resolved["name"])
                          if self.kind(resolved["name"]) == "map" else None)
-                if (owner and owner.lower() != item.lower()
-                        and owner.lower() in {i.lower() for i in items}):
+                if (owner and look_fold_name(owner) != look_fold_name(item)
+                        and look_fold_name(owner) in
+                        {look_fold_name(i) for i in items}):
                     refused.append(f"{raw}: {look_another_garments_map}")
                     continue
                 onto = look_rename_onto_item(item, resolved["name"])
@@ -1216,31 +1265,51 @@ class Workspace:
                 # The name conventional_name() built is still put through
                 # the shared rule: the garment half of it can come from a
                 # caller, not only from a map already on disk.
-                wanted = workspace_name(resolved["name"])
+                name = workspace_name(resolved["name"])
             except ValueError as exc:
                 refused.append(f"{raw}: {exc}")
                 continue
-            if self.kind(wanted) is None:
+            if self.kind(name) is None:
                 refused.append(f"{raw}: {NOT_A_CSV_NAME}")
                 continue
-            if wanted in taken and _same_csv(self._existing_text(wanted), text):
-                skipped[raw] = wanted
+            wanted[-1] = name
+
+        # ---- pass 2: claim a name for each, and write ----
+        claimed = set(on_disk)                    # folded
+        for index, entry in enumerate(entries):
+            target = wanted[index]
+            if target is None:
                 continue
-            name = look_unique_save_name(wanted, taken)
+            raw, text = name_of(entry), entry["text"]
+            folded = look_fold_name(target)
+            here = on_disk.get(folded)
+            if here is not None and _same_csv(self._existing_text(here), text):
+                skipped.append({"from": raw, "as": here})
+                continue
+            if folded in claimed:
+                # Every OTHER picked file's own name is off limits while
+                # this one looks for a free "-2".
+                others = {look_fold_name(w) for i, w in enumerate(wanted)
+                          if w is not None and i != index}
+                name = look_unique_save_name(target, claimed | others)
+            else:
+                name = target
             if name is None:
                 refused.append(
-                    f"{raw}: {wanted} is already here and a garment has one "
-                    "wiring file - delete it first if this replaces it")
+                    f"{raw}: {here or target} is already here and a garment "
+                    "has one wiring file - delete it first if this "
+                    "replaces it")
                 continue
             try:
-                self.save(name, text)
+                self._save_locked(name, text)
             except (OSError, ValueError) as exc:
                 refused.append(f"{raw}: {exc}")
                 continue
-            taken.add(name)
+            claimed.add(look_fold_name(name))
+            on_disk[look_fold_name(name)] = name
             saved.append(name)
             if name != raw:
-                renamed[raw] = name
+                renamed.append({"from": raw, "to": name})
         return {"saved": saved, "renamed": renamed, "skipped": skipped,
                 "refused": refused}
 
@@ -2101,11 +2170,23 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._body()
             if self.path == "/api/files":
+                # A malformed body is the caller's mistake, not a 500:
+                # `files` as a list of bare strings used to reach
+                # intake() and come back as an AttributeError traceback
+                # (review of dbed7d5). intake() itself refuses an entry
+                # that is not {name, text}; this catches the shape above
+                # it, where there is nothing to name in a refusal.
+                files = body.get("files") or []
+                if not isinstance(files, list):
+                    return self._json(
+                        {"error": "files: a list of {name, text}"},
+                        status=400)
                 # `item` set: a garment's own "Add CSV" - see intake().
                 item = body.get("item")
-                return self._json(self.workspace.intake(
-                    body.get("files") or [],
-                    str(item) if item else None))
+                if item is not None and not isinstance(item, str):
+                    return self._json({"error": "item: a garment's name"},
+                                      status=400)
+                return self._json(self.workspace.intake(files, item or None))
             if self.path == "/api/duplicate":
                 return self._json({"ok": True, "item":
                                    self.workspace.duplicate(body["item"])})

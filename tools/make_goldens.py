@@ -395,6 +395,26 @@ INTAKE_CASES = [
      "taken": ["Look22_1_HW.csv"]},
     {"op": "uniqueSaveName", "name": "Look22_map.csv",
      "taken": ["Look22_map.csv"]},
+    # The operator's PC is Windows and NTFS cannot tell these apart, so
+    # neither may either side (review of dbed7d5).
+    {"op": "uniqueSaveName", "name": "Look22_color_P1_grid.csv",
+     "taken": ["look22_color_p1_grid.CSV"]},
+    {"op": "uniqueSaveName", "name": "Look22_map.csv",
+     "taken": ["look22_MAP.csv"]},
+    {"op": "foldName", "name": "Look22_color_Pattern_grid.CSV"},
+    {"op": "foldName", "name": "  Look22_柄・A_HW.csv  "},
+    # The characters most likely to make Python's lower() and JS's
+    # toLowerCase() part company. If one of these ever does, the browser
+    # self-test says so before a file is lost to it.
+    {"op": "foldName", "name": "İstanbul_map.csv"},
+    {"op": "foldName", "name": "STRASSE_ß_map.csv"},
+    {"op": "foldName", "name": "ΣΟΦΟΣ_map.csv"},
+    {"op": "foldName", "name": "ＡＢＣ_map.csv"},
+    {"op": "foldName", "name": "ǅUNGLA_map.csv"},
+    {"op": "csvExtension", "name": "Look22_map.CSV"},
+    {"op": "csvExtension", "name": "Look22_map.Csv"},
+    {"op": "csvExtension", "name": "Look22_map.csv"},
+    {"op": "csvExtension", "name": "notes.txt"},
     # A file added through ONE garment's own "Add CSV" is renamed onto
     # it - the Conductor does this on the server now, so the two sides
     # have to land on the same name.
@@ -418,6 +438,21 @@ INTAKE_CASES = [
     {"op": "sniffCsvKind", "text": "side,row\n"},
     {"op": "sniffCsvKind", "text": ""},
     {"op": "sniffCsvKind", "text": "name,colour\n1,2\n"},
+    # What a real spreadsheet writes: a trailing comma on a header it has
+    # widened, quoted headers, and (from an old Mac, or a tool that still
+    # writes them) \r line endings alone. The grid check used to be
+    # stricter than the map check about the first of these by accident.
+    {"op": "sniffCsvKind", "text": _GRID_HEAD.rstrip("\n") + ",\nfront,1,0.5,0x03\n"},
+    {"op": "sniffCsvKind", "text": _MAP_HEAD.rstrip("\n") + ",,\nfront,1,1,17,1\n"},
+    {"op": "sniffCsvKind",
+     "text": '"side","row","shift","1","2"\nfront,1,0.5,0x03,0\n'},
+    {"op": "sniffCsvKind",
+     "text": '"side","row","col","board_no","socket"\nfront,1,1,17,1\n'},
+    {"op": "sniffCsvKind", "text": "side,row,shift,1,2\rfront,1,0.5,0x03,0\r"},
+    {"op": "sniffCsvKind", "text": "side,row,col,board_no,socket\rfront,1,1,17,1\r"},
+    # A trailing empty column is dropped; an empty one in the MIDDLE is
+    # not, and is not a position number either.
+    {"op": "sniffCsvKind", "text": "side,row,shift,1,,3\n"},
     # A name that already says what it is keeps it, whatever is inside.
     {"op": "conventionalName", "name": "Look22_map.csv", "text": _GRID_HEAD,
      "itemHint": None, "items": _KNOWN},
@@ -468,6 +503,29 @@ INTAKE_CASES = [
     # Full-width digits stay full-width (the 配線ナビ writes them).
     {"op": "conventionalName", "name": "AZ271SD1305_１.csv",
      "text": _GRID_HEAD, "itemHint": None, "items": _KNOWN},
+    # A shouted extension is written back in lower case: Windows and the
+    # operator read "X.CSV" as X.csv, but the units' own glob("*.csv")
+    # does not, so the design would sit on top of the real file here and
+    # be invisible there.
+    {"op": "conventionalName", "name": "Look22_map.CSV", "text": _MAP_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "Look22_1_HW.CSV", "text": _GRID_HEAD,
+     "itemHint": None, "items": _KNOWN},
+    # Nothing left to call the design by: refused, with what to type.
+    {"op": "conventionalName", "name": "AZ271SD1305_B.csv",
+     "text": _GRID_HEAD, "itemHint": None, "items": _KNOWN},
+    {"op": "conventionalName", "name": "AZ271SD1305__.csv",
+     "text": _GRID_HEAD, "itemHint": "AZ271SD1305", "items": _KNOWN},
+]
+
+# The Conductor's own time-field grammar (2026-09-27), shared so that
+# page and the simulator can never read "3.05" two ways. Goes in with the
+# intake cases: it is the same kind of thing - one rule, two languages.
+INTAKE_CASES += [
+    {"op": "parseTimeField", "input": text} for text in
+    ["3:20", "3.20", "3.05", "0.30", "200", "0", "59", "9999",
+     "3:75", "3.60", "1:2:3", "", "   ", " 3.20 ", "abc", "-1", "3.5",
+     "1000.00", "１:２０", "12.075", "3:5", "0999", "99.59"]
 ]
 
 
@@ -481,6 +539,12 @@ def intake_cases() -> list:
             expect = look.is_mac_metadata(case["name"])
         elif op == "uniqueSaveName":
             expect = look.unique_save_name(case["name"], set(case["taken"]))
+        elif op == "foldName":
+            expect = look.fold_name(case["name"])
+        elif op == "csvExtension":
+            expect = look.csv_extension(case["name"])
+        elif op == "parseTimeField":
+            expect = look.parse_time_field(case["input"])
         elif op == "renameOntoItem":
             expect = look.rename_onto_item(case["item"], case["name"])
         elif op == "sniffCsvKind":

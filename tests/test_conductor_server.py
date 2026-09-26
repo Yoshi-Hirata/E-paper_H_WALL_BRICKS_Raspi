@@ -625,9 +625,9 @@ def test_intake_never_lets_one_design_land_on_another(workspace):
         ("Look22_color_pattern01_grid.csv", second)]))
     # The number goes on the DESIGN name, before _grid.csv.
     assert result["saved"] == ["Look22_color_pattern01-2_grid.csv"]
-    assert result["renamed"] == {
-        "Look22_color_pattern01_grid.csv": "Look22_color_pattern01-2_grid.csv"}
-    assert result["refused"] == [] and result["skipped"] == {}
+    assert result["renamed"] == [{"from": "Look22_color_pattern01_grid.csv",
+                                  "to": "Look22_color_pattern01-2_grid.csv"}]
+    assert result["refused"] == [] and result["skipped"] == []
     # The original is untouched.
     assert (workspace.files / "Look22_color_pattern01_grid.csv"
             ).read_text(encoding="utf-8") == first
@@ -645,8 +645,8 @@ def test_intake_numbers_within_one_pick_as_well_as_against_the_disk(workspace):
         ("Look22_color_new_grid.csv", GRID.replace("0x03", "0x02"))]))
     assert result["saved"] == ["Look22_color_new_grid.csv",
                                "Look22_color_new-2_grid.csv"]
-    assert result["renamed"] == {
-        "Look22_color_new_grid.csv": "Look22_color_new-2_grid.csv"}
+    assert result["renamed"] == [{"from": "Look22_color_new_grid.csv",
+                                  "to": "Look22_color_new-2_grid.csv"}]
 
 
 def test_intake_numbers_the_sites_own_HW_name_too(workspace):
@@ -663,9 +663,9 @@ def test_intake_skips_the_same_file_picked_twice(workspace):
     # make it a different file.
     result = workspace.intake(_names([
         ("Look22_color_pattern01_grid.csv", GRID.replace("\n", "\r\n"))]))
-    assert result["saved"] == [] and result["renamed"] == {}
-    assert result["skipped"] == {
-        "Look22_color_pattern01_grid.csv": "Look22_color_pattern01_grid.csv"}
+    assert result["saved"] == [] and result["renamed"] == []
+    assert result["skipped"] == [{"from": "Look22_color_pattern01_grid.csv",
+                                  "as": "Look22_color_pattern01_grid.csv"}]
     assert sorted(p.name for p in workspace.files.glob("*.csv")) == [
         "Look22_color_pattern01_grid.csv", "Look22_map.csv"]
 
@@ -683,8 +683,8 @@ def test_intake_refuses_a_second_wiring_file_rather_than_numbering_it(workspace)
     assert (workspace.files / "Look22_map.csv").read_text(
         encoding="utf-8") == MAP
     # ...but the SAME map picked again is simply "already there".
-    assert workspace.intake(_names([("Look22_map.csv", MAP)]))["skipped"] == {
-        "Look22_map.csv": "Look22_map.csv"}
+    assert workspace.intake(_names([("Look22_map.csv", MAP)]))["skipped"] == [
+        {"from": "Look22_map.csv", "as": "Look22_map.csv"}]
 
 
 def test_intake_reads_safaris_csv_txt_as_the_csv_it_is(workspace):
@@ -693,9 +693,8 @@ def test_intake_reads_safaris_csv_txt_as_the_csv_it_is(workspace):
     result = workspace.intake(_names([
         ("Look22_color_pattern07_grid.csv.txt", GRID)]))
     assert result["saved"] == ["Look22_color_pattern07_grid.csv"]
-    assert result["renamed"] == {
-        "Look22_color_pattern07_grid.csv.txt":
-            "Look22_color_pattern07_grid.csv"}
+    assert result["renamed"] == [{"from": "Look22_color_pattern07_grid.csv.txt",
+                                  "to": "Look22_color_pattern07_grid.csv"}]
 
 
 def test_intake_turns_away_the_clutter_a_mac_puts_beside_a_file(workspace):
@@ -738,10 +737,10 @@ def test_a_garments_own_add_csv_renames_a_design_onto_it(workspace):
         ("AZ271SD1305_9_HW.csv", GRID)]), item="Look22")
     assert result["saved"] == ["Look22_color_pattern07_grid.csv",
                                "Look22_9_HW.csv"]
-    assert result["renamed"] == {
-        "AZ271SD1305_color_pattern07_grid.csv":
-            "Look22_color_pattern07_grid.csv",
-        "AZ271SD1305_9_HW.csv": "Look22_9_HW.csv"}
+    assert result["renamed"] == [
+        {"from": "AZ271SD1305_color_pattern07_grid.csv",
+         "to": "Look22_color_pattern07_grid.csv"},
+        {"from": "AZ271SD1305_9_HW.csv", "to": "Look22_9_HW.csv"}]
     # ...and the garment the file was NAMED after gets nothing.
     assert not list(workspace.files.glob("AZ271SD1305*"))
 
@@ -795,6 +794,143 @@ def test_a_per_item_pick_sniffs_an_unnamed_csv_onto_that_garment(workspace):
     # A header that is neither is still refused, whatever it is called.
     assert workspace.intake(_names([("summer2.csv", "a,b\n1,2\n")]),
                             item="Look22")["saved"] == []
+
+
+def test_two_intakes_at_once_cannot_land_on_one_file(workspace):
+    """Two tabs, two operators, or a drop fired twice: the server is a
+    ThreadingHTTPServer, so two /api/files requests really do run at the
+    same time. Deciding which names are free and then writing without the
+    lock let both pick the same free name and one clobber the other -
+    25 runs out of 25 (review of dbed7d5)."""
+    import threading
+
+    grids = [GRID.replace("0x03", f"0x0{n}") for n in range(1, 9)]
+    results = [None] * len(grids)
+
+    def go(n):
+        results[n] = workspace.intake(_names([
+            ("Look22_color_race_grid.csv", grids[n])]))
+
+    threads = [threading.Thread(target=go, args=(n,)) for n in range(len(grids))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    saved = [name for result in results for name in result["saved"]]
+    assert len(saved) == len(grids), results
+    # Every one of them under a name of its own...
+    assert len(set(saved)) == len(grids), saved
+    # ...and every one of them still on disk with its own bytes.
+    on_disk = {p.read_text(encoding="utf-8")
+               for p in workspace.files.glob("Look22_color_race*")}
+    assert on_disk == set(grids)
+
+
+def test_a_name_that_differs_only_in_case_is_the_same_file_here(workspace):
+    """The operator's PC is Windows and NTFS cannot tell these apart, so
+    neither may intake() - exact-case bookkeeping against a filesystem
+    that folds meant the second file simply replaced the first, with the
+    reply reporting a success (review of dbed7d5)."""
+    changed = GRID.replace("0x03", "0x02")
+    result = workspace.intake(_names([
+        ("Look22_color_PATTERN01_grid.csv", changed)]))
+    assert result["saved"] == ["Look22_color_PATTERN01-2_grid.csv"], result
+    assert (workspace.files / "Look22_color_pattern01_grid.csv").read_text(
+        encoding="utf-8") == GRID
+    # The same bytes under a differently-cased name is still "already
+    # there" - _existing_text() has always opened the case-insensitive
+    # match, so the two halves used to disagree.
+    again = workspace.intake(_names([("LOOK22_color_pattern01_GRID.csv", GRID)]))
+    assert again["saved"] == []
+    assert again["skipped"] == [{"from": "LOOK22_color_pattern01_GRID.csv",
+                                 "as": "Look22_color_pattern01_grid.csv"}]
+    # ...and a differently-cased MAP cannot slip past "one wiring file".
+    other = MAP.replace(",20,5,020-05", ",21,5,021-05")
+    refused = workspace.intake(_names([("look22_MAP.csv", other)]))
+    assert refused["saved"] == [], refused
+    assert "one wiring file" in refused["refused"][0]
+    assert (workspace.files / "Look22_map.csv").read_text(
+        encoding="utf-8") == MAP
+
+
+def test_a_shouted_extension_is_written_back_in_lower_case(workspace):
+    # "X.CSV" is X.csv to Windows and to the operator, but not to the
+    # units' own glob("*.csv") - it would sit on top of the real file
+    # here and be invisible there.
+    result = workspace.intake(_names([("Look22_color_shout_grid.CSV", GRID)]))
+    assert result["saved"] == ["Look22_color_shout_grid.csv"]
+
+
+def test_numbering_never_steals_a_name_another_picked_file_wants(workspace):
+    """A pick holding both a new "A_grid" and a genuine "A-2_grid": the
+    new one lands on an occupied name and numbers, and used to take the
+    real A-2_grid's name with it, pushing that file to "A-2-2_grid"
+    (review of dbed7d5). Order-independent, so both orders are checked."""
+    workspace.save("Look22_color_A_grid.csv", GRID)
+    new_a = GRID.replace("0x03", "0x02")
+    real_a2 = GRID.replace("0x03", "0x04")
+    pick = [("Look22_color_A_grid.csv", new_a),
+            ("Look22_color_A-2_grid.csv", real_a2)]
+    result = workspace.intake(_names(pick))
+    assert set(result["saved"]) == {"Look22_color_A-3_grid.csv",
+                                    "Look22_color_A-2_grid.csv"}, result
+    # The genuine A-2 is on disk under its own name, with its own bytes.
+    assert (workspace.files / "Look22_color_A-2_grid.csv").read_text(
+        encoding="utf-8") == real_a2
+    # The other way round gives the same answer.
+    for name in ("Look22_color_A-2_grid.csv", "Look22_color_A-3_grid.csv"):
+        (workspace.files / name).unlink()
+    other_way = workspace.intake(_names(list(reversed(pick))))
+    assert set(other_way["saved"]) == {"Look22_color_A-3_grid.csv",
+                                       "Look22_color_A-2_grid.csv"}, other_way
+    assert (workspace.files / "Look22_color_A-2_grid.csv").read_text(
+        encoding="utf-8") == real_a2
+
+
+def test_a_file_with_no_design_name_is_refused_not_called_design(workspace):
+    # "…_color_design_grid.csv" is a design nobody can find again, and
+    # every such file in one pick would land on the same name.
+    workspace.save("Look22-B_map.csv", MAP)
+    result = workspace.intake(_names([("Look22-B.csv", GRID)]))
+    assert result["saved"] == []
+    assert "no design name" in result["refused"][0], result
+
+
+def test_an_entry_that_is_not_a_file_is_refused_not_a_traceback(workspace):
+    result = workspace.intake(["Look22_color_x_grid.csv", None, 7])
+    assert result["saved"] == []
+    assert len(result["refused"]) == 3
+    assert all("{name, text}" in line for line in result["refused"])
+
+
+def test_a_malformed_files_body_is_a_400_not_a_500(tmp_path):
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def post(body):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/files",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    try:
+        status, payload = post({"files": "Look22_map.csv"})
+        assert status == 400 and "files" in payload["error"], payload
+        status, payload = post({"files": ["Look22_map.csv"]})
+        assert status == 200, payload
+        assert payload["saved"] == [] and len(payload["refused"]) == 1
+        status, payload = post({"files": [], "item": 7})
+        assert status == 400 and "item" in payload["error"], payload
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_import_bundle_still_overwrites_and_reports_it(tmp_path):

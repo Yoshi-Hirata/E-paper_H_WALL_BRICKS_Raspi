@@ -260,10 +260,16 @@ _MAX_COPIES = 100
 NOT_A_CSV_NAME = ("not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv "
                   "(the wiring site writes _HW in capitals)")
 NOT_A_CSV_FILE = "not a .csv file"
-NOT_A_CSV_BODY = ("neither a map (first line side,row,col,board_no,socket,…) "
-                  "nor a design grid (side,row,shift,1,2,…)")
+# Designer-facing, so it says nothing about board numbers and sockets -
+# a 配色案名 is all a designer deals in, and "board_no, socket" reads as
+# a fault in their file rather than as "this is the wrong export"
+# (friendly review, 2026-09-27).
+NOT_A_CSV_BODY = ("neither a garment map nor a design grid - the first "
+                  "line must be the wiring site's own header")
 NO_GARMENT = ("which garment? name it MODEL_…csv, or use that garment's "
               "own Add CSV")
+NO_DESIGN_NAME = ("no design name in the file name - name it "
+                  "MODEL_NAME.csv (NAME is the 配色案名)")
 _CSV_SUFFIX = re.compile(r"\.csv$", re.IGNORECASE)
 _MAP_HEADER = ("board_no", "socket")
 _GRID_HEADER = ("side", "row", "shift")
@@ -291,6 +297,7 @@ _LEADING_UNDERSCORE = re.compile(r"^_")
 # _HW_NAME is.
 _ONTO_ITEM = re.compile(r"(_map|_color_.+grid).*\.csv$", re.IGNORECASE)
 _ONTO_ITEM_HW = re.compile(r"_.+_HW.*\.csv$")
+_NEWLINE = re.compile(r"\r\n|\r|\n")
 # A garment's MAP is not interchangeable the way its designs are.
 ANOTHER_GARMENTS_MAP = "another garment's map - use the header's Add CSV for it"
 NO_SUCH_GARMENT = "no garment of that name in this workspace"
@@ -299,6 +306,19 @@ NO_SUCH_GARMENT = "no garment of that name in this workspace"
 def _js_trim(text) -> str:
     """str.trim() as JavaScript does it - see _JS_SPACE."""
     return str(text).strip(_JS_SPACE)
+
+
+def _unquote(cell) -> str:
+    """One header cell: trimmed, with the quotes a CSV writer may have put
+    round it taken off, trimmed again.
+
+    Excel quotes a header the moment it holds a comma or a space, and both
+    checks below used to fail on the whole file because of it.
+    """
+    text = _js_trim(cell)
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        text = _js_trim(text[1:-1].replace('""', '"'))
+    return text
 
 
 def mac_safe_name(name) -> str:
@@ -333,21 +353,56 @@ def is_mac_metadata(name) -> bool:
     return False
 
 
+def fold_name(name) -> str:
+    """The spelling two file names share when a filesystem cannot tell
+    them apart.
+
+    The workspace is a folder on the operator's Windows PC, and NTFS does
+    not distinguish "Look22_color_Pattern_grid.csv" from
+    "…_pattern_grid.csv" or "X.CSV" from "X.csv". Comparing exact case
+    against a filesystem that does not defeated every guarantee intake()
+    makes - "already there" said no, "a garment has one wiring file" said
+    no, the "-2" said no, and the second file simply replaced the first
+    (review of dbed7d5, reproduced on the show PC).
+
+    Lower case, not casefold(): Python's str.casefold() and JavaScript's
+    toLowerCase() are different functions (casefold turns ß into ss and
+    toLowerCase does not), and these two sides may never disagree about
+    which files are the same file. lower() is the Unicode default
+    lowercase on both, and the goldens pin the characters that could
+    still drift.
+    """
+    return normalize_name(name).lower()
+
+
+def csv_extension(name) -> str:
+    """`name` with a .csv extension written in lower case.
+
+    "X.CSV" is X.csv to Windows AND to the operator, but it is not a
+    "*.csv" to the units' own glob, so a design saved under it would be
+    invisible on the unit while sitting on top of the real file here.
+    """
+    return _CSV_SUFFIX.sub(".csv", str(name))
+
+
 def unique_save_name(name: str, taken) -> "str | None":
     """`name`, or the first "-2", "-3"... spelling of it nothing holds.
 
     None when there is no room to number: a *_map.csv (one wiring per
     garment) or a hundred copies of the same design. `taken` is only
-    read - the caller adds what it ends up using.
+    read - the caller adds what it ends up using - and it is read
+    through fold_name(), so a name that differs only in case from one
+    already held counts as held.
     """
-    if name not in taken:
+    held = {fold_name(one) for one in taken}
+    if fold_name(name) not in held:
         return name
     match = _DESIGN_NUMBER.match(name) or _HW_NUMBER.match(name)
     if not match:
         return None
     for number in range(2, _MAX_COPIES):
         candidate = f"{match.group(1)}{match.group(2)}-{number}{match.group(3)}"
-        if candidate not in taken:
+        if fold_name(candidate) not in held:
             return candidate
     return None
 
@@ -373,9 +428,45 @@ def rename_onto_item(item: str, name) -> "str | None":
     spelled in capitals (kind() agrees). "…_1_hw.csv" is not a design
     at all and must not be renamed as if it were.
     """
-    raw = normalize_name(name)
+    raw = csv_extension(normalize_name(name))
     match = _ONTO_ITEM.search(raw) or _ONTO_ITEM_HW.search(raw)
     return item + raw[match.start():] if match else None
+
+
+# ============================================================
+# Typing a time into a field
+# ============================================================
+# ONE grammar for the Conductor's own time fields (Show length, a cue's
+# Start and End), shared with conductor/web/sim/model.js's
+# SIM.look.parseClock so the two pages can never read "3.05" two ways.
+#
+#   m:ss / mm.ss   minutes, then 0-59 seconds - "3:20" and "3.20" are
+#                  both 200 s. The dot spelling is the designers' own
+#                  (their simulator prints every time as mm.ss), so a cue
+#                  sheet copied off their screen can be typed in as it
+#                  stands.
+#   a bare number  SECONDS, up to 4 digits. That is what the Conductor's
+#                  fields have always meant and what its own hint says;
+#                  the designers' Show length field is labelled in
+#                  minutes and keeps SIM.mmss for itself, which is why
+#                  this is a separate, explicit rule rather than a call
+#                  into that one (review of dbed7d5).
+#
+# [0-9] and never \d, as everywhere else a number is read out of text:
+# Python's \d takes a FULL-WIDTH digit and JavaScript's does not.
+_CLOCK = re.compile(r"^(?:([0-9]{1,3})[:.])?([0-9]{1,4})$")
+CLOCK_HINT = "m:ss or mm.ss (e.g. 3:20 or 3.20); a plain number is seconds"
+
+
+def parse_time_field(text) -> "int | None":
+    """Seconds from what was typed into a time field, or None."""
+    match = _CLOCK.match(_js_trim(text))
+    if not match:
+        return None
+    minutes, seconds = match.group(1), match.group(2)
+    if minutes is not None and int(seconds) >= 60:
+        return None                       # "3:75" is a typo, not 4:15
+    return (int(minutes) * 60 if minutes is not None else 0) + int(seconds)
 
 
 def sniff_csv_kind(text) -> "str | None":
@@ -395,12 +486,21 @@ def sniff_csv_kind(text) -> "str | None":
     body = str(text)
     if body.startswith("﻿"):
         body = body[1:]
+    # Any of the three line endings, not just \r\n and \n: a file saved on
+    # an old Mac (or written by a tool that still does) is one long line to
+    # a \r?\n split, and its header would never be seen at all.
     first = ""
-    for line in re.split(r"\r?\n", body):
+    for line in _NEWLINE.split(body):
         if _js_trim(line):
             first = line
             break
-    cols = [_js_trim(c).lower() for c in first.split(",")]
+    cols = [_unquote(c).lower() for c in first.split(",")]
+    # Excel writes a trailing comma on a header it has widened, and the
+    # grid check used to be stricter than the map check about it purely by
+    # accident (review of dbed7d5). Empty columns on the RIGHT say nothing
+    # either way, so they are dropped before either check.
+    while cols and cols[-1] == "":
+        cols.pop()
     if len(cols) < 2 or cols[0] != "side" or cols[1] != "row":
         return None
     if all(column in cols for column in _MAP_HEADER):
@@ -434,7 +534,7 @@ def conventional_name(name, text, item_hint=None, items=()) -> dict:
     if bad:
         return {"error": bad}
     if kind(composed) is not None:
-        return {"name": composed}
+        return {"name": csv_extension(composed)}
     if not composed.lower().endswith(".csv"):
         return {"error": refuse_reason(composed)}
     sniffed = sniff_csv_kind(text)
@@ -466,7 +566,13 @@ def conventional_name(name, text, item_hint=None, items=()) -> dict:
               if prefix else stem)
     # Keep whatever a file name may keep - letters, digits, and the
     # punctuation a 配色案名 actually uses ("柄・A", "（A）", "柄＋A").
-    design = _DESIGN_EDGE.sub("", _DESIGN_UNUSABLE.sub("-", design)) or "design"
+    design = _DESIGN_EDGE.sub("", _DESIGN_UNUSABLE.sub("-", design))
+    # Nothing left to call it by. A design saved as "…_color_design_grid"
+    # is a design nobody can find again, and every such file in a pick
+    # would land on the same name - say what to do instead (review of
+    # dbed7d5).
+    if not design:
+        return {"error": NO_DESIGN_NAME}
     # "_grid" / "_map" / "_color_" inside a design name would be read as
     # the file-name grammar's own markers ("HW_grid_4" -> design "HW" for
     # every file), so they are spelled with a dash inside the name.

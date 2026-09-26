@@ -237,6 +237,14 @@ _PROBE = """
         fileEntry("readme.txt", "hello")]) }] };
       var flat = await filesFromDataTransfer(dt);
       out.folderDrop = { picked: flat.map(f => f.name) };
+      // Safari (and some drags on Chrome) HAVE webkitGetAsEntry and hand
+      // back nothing from it, while dt.files holds the files all along.
+      var noEntries = { items: [{ webkitGetAsEntry: () => null }],
+                        files: [pick("Look22_color_fallback_grid.csv", GRID)] };
+      out.entryFallback = (await filesFromDataTransfer(noEntries)).map(f => f.name);
+      var emptyDir = { items: [{ webkitGetAsEntry: () => dirEntry([]) }],
+                       files: [pick("Look22_color_fallback2_grid.csv", GRID)] };
+      out.emptyDirFallback = (await filesFromDataTransfer(emptyDir)).map(f => f.name);
       await upload(flat);
       await wait(250);
       out.folderDrop.toast = toastNow();
@@ -315,6 +323,14 @@ def test_a_dropped_folder_is_walked_to_the_bottom(intake):
                                         "readme.txt"], folder
     assert "Look22_color_deep_grid.csv" in folder["designs"], folder
     assert "readme.txt" in folder["toast"], folder
+
+
+def test_a_drag_that_offers_no_entries_still_falls_back_to_its_files(intake):
+    # Safari - and some drags on Chrome - HAVE webkitGetAsEntry and hand
+    # back nothing from it, while dt.files held the files all along. A
+    # drop that silently does nothing looks exactly like a broken page.
+    assert intake["entryFallback"] == ["Look22_color_fallback_grid.csv"]
+    assert intake["emptyDirFallback"] == ["Look22_color_fallback2_grid.csv"]
 
 
 def test_a_garments_own_add_csv_says_which_garment_the_file_went_to(intake):

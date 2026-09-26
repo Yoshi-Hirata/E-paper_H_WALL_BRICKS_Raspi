@@ -6169,6 +6169,90 @@
    ]
   },
   {
+   "expect": "Look22_color_P1-2_grid.csv",
+   "kind": "intake",
+   "name": "Look22_color_P1_grid.csv",
+   "op": "uniqueSaveName",
+   "taken": [
+    "look22_color_p1_grid.CSV"
+   ]
+  },
+  {
+   "expect": null,
+   "kind": "intake",
+   "name": "Look22_map.csv",
+   "op": "uniqueSaveName",
+   "taken": [
+    "look22_MAP.csv"
+   ]
+  },
+  {
+   "expect": "look22_color_pattern_grid.csv",
+   "kind": "intake",
+   "name": "Look22_color_Pattern_grid.CSV",
+   "op": "foldName"
+  },
+  {
+   "expect": "look22_\u67c4\u30fba_hw.csv",
+   "kind": "intake",
+   "name": "  Look22_\u67c4\u30fbA_HW.csv  ",
+   "op": "foldName"
+  },
+  {
+   "expect": "i\u0307stanbul_map.csv",
+   "kind": "intake",
+   "name": "\u0130stanbul_map.csv",
+   "op": "foldName"
+  },
+  {
+   "expect": "strasse_\u00df_map.csv",
+   "kind": "intake",
+   "name": "STRASSE_\u00df_map.csv",
+   "op": "foldName"
+  },
+  {
+   "expect": "\u03c3\u03bf\u03c6\u03bf\u03c2_map.csv",
+   "kind": "intake",
+   "name": "\u03a3\u039f\u03a6\u039f\u03a3_map.csv",
+   "op": "foldName"
+  },
+  {
+   "expect": "\uff41\uff42\uff43_map.csv",
+   "kind": "intake",
+   "name": "\uff21\uff22\uff23_map.csv",
+   "op": "foldName"
+  },
+  {
+   "expect": "\u01c6ungla_map.csv",
+   "kind": "intake",
+   "name": "\u01c5UNGLA_map.csv",
+   "op": "foldName"
+  },
+  {
+   "expect": "Look22_map.csv",
+   "kind": "intake",
+   "name": "Look22_map.CSV",
+   "op": "csvExtension"
+  },
+  {
+   "expect": "Look22_map.csv",
+   "kind": "intake",
+   "name": "Look22_map.Csv",
+   "op": "csvExtension"
+  },
+  {
+   "expect": "Look22_map.csv",
+   "kind": "intake",
+   "name": "Look22_map.csv",
+   "op": "csvExtension"
+  },
+  {
+   "expect": "notes.txt",
+   "kind": "intake",
+   "name": "notes.txt",
+   "op": "csvExtension"
+  },
+  {
    "expect": "Look22_color_pattern01_grid.csv",
    "item": "Look22",
    "kind": "intake",
@@ -6258,6 +6342,48 @@
    "kind": "intake",
    "op": "sniffCsvKind",
    "text": "name,colour\n1,2\n"
+  },
+  {
+   "expect": "grid",
+   "kind": "intake",
+   "op": "sniffCsvKind",
+   "text": "side,row,shift,1,2,3,\nfront,1,0.5,0x03\n"
+  },
+  {
+   "expect": "map",
+   "kind": "intake",
+   "op": "sniffCsvKind",
+   "text": "side,row,col,board_no,socket,label,,\nfront,1,1,17,1\n"
+  },
+  {
+   "expect": "grid",
+   "kind": "intake",
+   "op": "sniffCsvKind",
+   "text": "\"side\",\"row\",\"shift\",\"1\",\"2\"\nfront,1,0.5,0x03,0\n"
+  },
+  {
+   "expect": "map",
+   "kind": "intake",
+   "op": "sniffCsvKind",
+   "text": "\"side\",\"row\",\"col\",\"board_no\",\"socket\"\nfront,1,1,17,1\n"
+  },
+  {
+   "expect": "grid",
+   "kind": "intake",
+   "op": "sniffCsvKind",
+   "text": "side,row,shift,1,2\rfront,1,0.5,0x03,0\r"
+  },
+  {
+   "expect": "map",
+   "kind": "intake",
+   "op": "sniffCsvKind",
+   "text": "side,row,col,board_no,socket\rfront,1,1,17,1\r"
+  },
+  {
+   "expect": null,
+   "kind": "intake",
+   "op": "sniffCsvKind",
+   "text": "side,row,shift,1,,3\n"
   },
   {
    "expect": {
@@ -6356,8 +6482,7 @@
   },
   {
    "expect": {
-    "name": "AZ271SD1305_color_design_grid.csv",
-    "read_as": "design design"
+    "error": "no design name in the file name - name it MODEL_NAME.csv (NAME is the \u914d\u8272\u6848\u540d)"
    },
    "itemHint": null,
    "items": [
@@ -6387,7 +6512,7 @@
   },
   {
    "expect": {
-    "error": "neither a map (first line side,row,col,board_no,socket,\u2026) nor a design grid (side,row,shift,1,2,\u2026)"
+    "error": "neither a garment map nor a design grid - the first line must be the wiring site's own header"
    },
    "itemHint": null,
    "items": [
@@ -6511,8 +6636,7 @@
   },
   {
    "expect": {
-    "name": "Look22_color_design_grid.csv",
-    "read_as": "design design"
+    "error": "no design name in the file name - name it MODEL_NAME.csv (NAME is the \u914d\u8272\u6848\u540d)"
    },
    "itemHint": null,
    "items": [
@@ -6540,6 +6664,204 @@
    "name": "AZ271SD1305_\uff11.csv",
    "op": "conventionalName",
    "text": "side,row,shift,1,2,3\n"
+  },
+  {
+   "expect": {
+    "name": "Look22_map.csv"
+   },
+   "itemHint": null,
+   "items": [
+    "AZ271SD1305",
+    "AZ271SD1305_B",
+    "Look22"
+   ],
+   "kind": "intake",
+   "name": "Look22_map.CSV",
+   "op": "conventionalName",
+   "text": "side,row,col,board_no,socket,label\n"
+  },
+  {
+   "expect": {
+    "name": "Look22_1_HW.csv"
+   },
+   "itemHint": null,
+   "items": [
+    "AZ271SD1305",
+    "AZ271SD1305_B",
+    "Look22"
+   ],
+   "kind": "intake",
+   "name": "Look22_1_HW.CSV",
+   "op": "conventionalName",
+   "text": "side,row,shift,1,2,3\n"
+  },
+  {
+   "expect": {
+    "error": "no design name in the file name - name it MODEL_NAME.csv (NAME is the \u914d\u8272\u6848\u540d)"
+   },
+   "itemHint": null,
+   "items": [
+    "AZ271SD1305",
+    "AZ271SD1305_B",
+    "Look22"
+   ],
+   "kind": "intake",
+   "name": "AZ271SD1305_B.csv",
+   "op": "conventionalName",
+   "text": "side,row,shift,1,2,3\n"
+  },
+  {
+   "expect": {
+    "error": "no design name in the file name - name it MODEL_NAME.csv (NAME is the \u914d\u8272\u6848\u540d)"
+   },
+   "itemHint": "AZ271SD1305",
+   "items": [
+    "AZ271SD1305",
+    "AZ271SD1305_B",
+    "Look22"
+   ],
+   "kind": "intake",
+   "name": "AZ271SD1305__.csv",
+   "op": "conventionalName",
+   "text": "side,row,shift,1,2,3\n"
+  },
+  {
+   "expect": 200,
+   "input": "3:20",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 200,
+   "input": "3.20",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 185,
+   "input": "3.05",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 30,
+   "input": "0.30",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 200,
+   "input": "200",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 0,
+   "input": "0",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 59,
+   "input": "59",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 9999,
+   "input": "9999",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "3:75",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "3.60",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "1:2:3",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "   ",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 200,
+   "input": " 3.20 ",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "abc",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "-1",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 185,
+   "input": "3.5",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "1000.00",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "\uff11:\uff12\uff10",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": null,
+   "input": "12.075",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 185,
+   "input": "3:5",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 999,
+   "input": "0999",
+   "kind": "intake",
+   "op": "parseTimeField"
+  },
+  {
+   "expect": 5999,
+   "input": "99.59",
+   "kind": "intake",
+   "op": "parseTimeField"
   },
   {
    "expect": {
