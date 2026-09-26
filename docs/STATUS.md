@@ -89,6 +89,18 @@ max 規則で 8 秒、natural はオペレーターが設定を変えるまで 7
 included) — set it in Default refresh time above.」Dismiss でこのブラウザ
 から消える、作業は止めない)。
 
+**プレビューのチラつきは「1 スケール分の物理リフレッシュ」で刻む**
+(`conductor/web/sim/flicker.js` と `index.html` の同じコード、
+`panelRepaintFor()` = `min(PANEL_REPAINT_S, そのキューの実効 refresh)` ―
+モデル側の `panel_repaint_of()` と同じ式)。refresh で刻んでいたので、
+span 1 秒のスイープだと**最後のスケールが Complete の時点でまだチラついて
+いて**、`wornAt()` がそこで完成形を一気に入れるためプレビューが
+「パチッ」と切り替わっていた。いまは最後のスケールが `delay + repaint`
+= ちょうど Complete で収まり、一斉のキューは 7 秒で収まって残り 1 秒は
+静止する(実機どおり)。2 つのコピーが文字単位で一致していることと、
+最後のスケールの終了時刻(一斉 7 秒 / span 1 → 8 秒 / span 7 → 14 秒、
+どれも Complete を超えない)をテストで固定した。
+
 **本番のショーにすることは 1 つだけ**:Timeline タブの
 **Default refresh time を 8.0 にする**(`PUT /api/show` の `refresh_s`)。
 

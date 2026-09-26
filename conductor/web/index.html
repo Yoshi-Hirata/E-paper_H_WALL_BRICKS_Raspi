@@ -953,9 +953,9 @@ function refreshModelFor(item, cue, sweep) {
   refreshModelCache.set(key, m);
   return m;
 }
-// One scale's colour at τ seconds into its own refresh (0 <= τ < refresh): the
-// phase table from plan_refresh_sim.md, expressed as a fraction of the refresh
-// time so a 16 s firmware scales the same as the 7 s one measured on video.
+// One scale's colour at τ seconds into its own repaint (0 <= τ < repaint): the
+// phase table from plan_refresh_sim.md, expressed as a fraction of the repaint
+// so a 16 s firmware scales the same as the 7 s one measured on video.
 function refreshPhaseColor(n, tau, frac, targetCode) {
   const bucket = Math.floor(tau / 0.25);
   const h = hash32(n, bucket);
@@ -976,13 +976,28 @@ function refreshPhaseColor(n, tau, frac, targetCode) {
 // The scales a cue in flight is showing at t, written directly into `out`
 // (mutated, not spread) - a fresh {...colors, ...swept} of a ~1,000-key
 // object every frame for every in-flight cue was the main cost measured
-// here (fix round finding 2). Each scale starts its own refresh at
+// here (fix round finding 2). Each scale starts its own repaint at
 // sent + delay (sweep) + jitter, runs through the flicker phases above, and
-// reaches its target one refresh after it started. A scale the design does
+// reaches its target one repaint after it started. A scale the design does
 // not colour (partial cue) is left untouched.
+//
+// ONE SCALE's own repaint - what the flicker is phased over, and NOT the cue's
+// refresh. Since 2026-09-26 a refresh is the whole change, the sweep INCLUDED
+// (8 s = a 7 s panel repaint with a 1 s sweep inside it), so phasing a scale
+// over the refresh made the last scale of a swept cue still mid-flicker at
+// Complete, where wornAt() drops the whole design in at once and the preview
+// snapped. A scale takes one PHYSICAL repaint, capped at the cue's own refresh
+// exactly as conductor/timeline.py's panel_repaint_of() does (a show that
+// declares a 1 s refresh must not be given a 7 s one), so the last scale of a
+// swept cue now settles at delay + repaint = Complete, and an all-at-once cue
+// settles at the repaint, one second inside its own 8 s budget - which is what
+// the hardware does.
+function panelRepaintFor(cue) {
+  return Math.min(panelRepaintS(), refreshOf(cue).value);
+}
 function applySweptColors(item, cue, design, t, out) {
   const sweep = sweepOf(cue);
-  const refresh = refreshOf(cue).value;
+  const repaint = panelRepaintFor(cue);
   const model = refreshModelFor(item, cue, sweep);
   item.map.scales.forEach((s, n) => {
     const key = `${s[0]}|${s[1]}|${s[2]}`;
@@ -990,23 +1005,23 @@ function applySweptColors(item, cue, design, t, out) {
     if (targetCode === undefined) return;                    // partial cue: this scale is untouched
     const tau = t - (cue.sent + model.delay[n] + model.jitter[n]);
     if (tau < 0) return;                                      // not started yet: keep showing the old colour
-    out[key] = tau >= refresh ? targetCode : refreshPhaseColor(n, tau, tau / refresh, targetCode);
+    out[key] = tau >= repaint ? targetCode : refreshPhaseColor(n, tau, tau / repaint, targetCode);
   });
 }
 // The old, flat simulator: a scale simply cuts to its target once its own
-// refresh finishes (sent + delay + refresh <= t) - no phases, no jitter, no
+// repaint finishes (sent + delay + repaint <= t) - no phases, no jitter, no
 // wave. Used by the Units tab's live LOOK row (wornAt's flicker:false),
 // which shows what the real e-paper does, not the simulator's dramatisation
 // of how it gets there (fix round finding 5).
 function applyFlatColors(item, cue, design, t, out) {
   const sweep = sweepOf(cue);
-  const refresh = refreshOf(cue).value;
+  const repaint = panelRepaintFor(cue);
   const model = refreshModelFor(item, cue, sweep);
   item.map.scales.forEach((s, n) => {
     const key = `${s[0]}|${s[1]}|${s[2]}`;
     const targetCode = design.colors[key];
     if (targetCode === undefined) return;
-    if (t >= cue.sent + model.delay[n] + refresh) out[key] = targetCode;
+    if (t >= cue.sent + model.delay[n] + repaint) out[key] = targetCode;
   });
 }
 // opts.flicker (default true): the e-paper refresh flicker simulation is for

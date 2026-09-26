@@ -94,6 +94,10 @@
     refreshModelCache.set(key, m);
     return m;
   }
+  // One scale's colour at τ seconds into its own repaint (0 <= τ < repaint):
+  // the phase table from plan_refresh_sim.md, expressed as a fraction of the
+  // repaint so a 16 s firmware scales the same as the 7 s one measured on
+  // video.
   function refreshPhaseColor(n, tau, frac, targetCode, palette) {
     const bucket = Math.floor(tau / 0.25);
     const h = hash32(n, bucket);
@@ -112,15 +116,31 @@
     if (cue.refresh !== undefined) return { value: cue.refresh, source: cue.refresh_source || (cue.refresh_s != null ? "cue" : "show") };
     return cue.refresh_s != null ? { value: cue.refresh_s, source: "cue" } : { value: showRefreshS, source: "show" };
   }
+  // ONE SCALE's own repaint - what the flicker below is phased over, and NOT
+  // the cue's refresh. Since 2026-09-26 a refresh is the whole change, the
+  // sweep INCLUDED (8 s = a 7 s panel repaint with a 1 s sweep inside it), so
+  // phasing a scale over the refresh made the last scale of a swept cue still
+  // mid-flicker at Complete, where wornAt() drops the whole design in at once
+  // and the preview snapped. A scale takes one PHYSICAL repaint, capped at the
+  // cue's own refresh exactly as conductor/timeline.py's panel_repaint_of()
+  // does (a show that declares a 1 s refresh must not be given a 7 s one), so
+  // the last scale of a swept cue now settles at delay + repaint = Complete,
+  // and an all-at-once cue settles at the repaint, one second inside its own
+  // 8 s budget - which is what the hardware does.
+  function panelRepaintFor(cue, showRefreshS) {
+    const panel = (globalThis.SIM && globalThis.SIM.timeline
+                   && globalThis.SIM.timeline.PANEL_REPAINT_S) || 7.0;
+    return Math.min(panel, refreshOfFor(cue, showRefreshS).value);
+  }
   function applySweptColors(item, cue, design, t, out, palette, showRefreshS) {
     const sweep = sweepOf(cue);
-    // refreshOfFor(), not a second hard-coded fallback (adversarial review,
+    // panelRepaintFor(), never a hard-coded number (adversarial review,
     // 2026-09-25: this used to fall back to a bare "7" - a silent duplicate
-    // of timeline.js's own REFRESH_S default that would quietly drift the
-    // moment that constant ever changed, and wrong whenever the show's own
-    // default refresh isn't 7.0s in the first place, e.g. after Default
-    // refresh time is edited on the Timeline toolbar).
-    const refresh = refreshOfFor(cue, showRefreshS).value;
+    // of timeline.js's own default that would quietly drift the moment that
+    // constant ever changed, and wrong whenever the show's own refresh isn't
+    // 7.0s in the first place, e.g. after Default refresh time is edited on
+    // the Timeline toolbar).
+    const repaint = panelRepaintFor(cue, showRefreshS);
     const model = refreshModelFor(item, cue, sweep);
     item.map.scales.forEach((s, n) => {
       const key = `${s[0]}|${s[1]}|${s[2]}`;
@@ -128,18 +148,18 @@
       if (targetCode === undefined) return;
       const tau = t - (cue.sent + model.delay[n] + model.jitter[n]);
       if (tau < 0) return;
-      out[key] = tau >= refresh ? targetCode : refreshPhaseColor(n, tau, tau / refresh, targetCode, palette);
+      out[key] = tau >= repaint ? targetCode : refreshPhaseColor(n, tau, tau / repaint, targetCode, palette);
     });
   }
   function applyFlatColors(item, cue, design, t, out, showRefreshS) {
     const sweep = sweepOf(cue);
-    const refresh = refreshOfFor(cue, showRefreshS).value;
+    const repaint = panelRepaintFor(cue, showRefreshS);
     const model = refreshModelFor(item, cue, sweep);
     item.map.scales.forEach((s, n) => {
       const key = `${s[0]}|${s[1]}|${s[2]}`;
       const targetCode = design.colors[key];
       if (targetCode === undefined) return;
-      if (t >= cue.sent + model.delay[n] + refresh) out[key] = targetCode;
+      if (t >= cue.sent + model.delay[n] + repaint) out[key] = targetCode;
     });
   }
   const designLabel = d => d.label || d.name;
@@ -174,7 +194,8 @@
   globalThis.SIM = Object.assign(globalThis.SIM || {}, {
     flicker: {
       JITTER_MAX, REFRESH_TINT, REFRESH_PHASE_A, REFRESH_PALETTE, REFRESH_PHASE_C, TINT_STEPS,
-      hash32, refreshPhaseColor, refreshModelFor, refreshOfFor, wornAt, clearCaches,
+      hash32, refreshPhaseColor, refreshModelFor, refreshOfFor, panelRepaintFor,
+      wornAt, clearCaches,
     },
   });
 })();
