@@ -46,9 +46,14 @@ hands the unit back to its own menu; on a locked unit nothing does, so
 a knock on stage cannot drop a garment out of the show.
 
 A standalone demo (ui/demos.py) IS a menu row, one per show the PC has
-written into this unit, sorted in right after STANDBY. KEY1 loads it
-(ui/showplay.py's ShowPlayer, with demo=True so a reboot does not
-resume it on its own) and the DEMO screen opens right away, on the
+written into this unit, sorted in right after STANDBY. KEY1 is refused
+only while the PC's show is RUNNING or HOLDING - then the PC really is
+in control and the menu says so for 5 s - and a PC show that is merely
+LOADED, STOPPED or ENDED is superseded, since the PC's own next
+/show/load puts it straight back. KEY1 loads it (ui/showplay.py's
+ShowPlayer, with demo=True and the row's slug, so that a restart in the
+middle of one brings the demo back AS a demo and _adopt_restored_demo()
+hands it back to this screen) and the DEMO screen opens right away, on the
 burn ui/remote.py's RemoteSession.burn() just started - it shows
 "writing n/N  KEY2 cancel" (status.show.burn) while that runs, and KEY2
 during it cancels the burn and returns to the menu, same as any other
@@ -87,7 +92,7 @@ from .config import (BLANK_AFTER_S, FRAME_INTERVAL_S, LOG_LINES,
 from .patterns import PATTERNS
 from .remote import RemoteError
 from .runner import DemoRunner
-from .showplay import ENDED, STOPPED
+from .showplay import ENDED, HOLDING, RUNNING, STOPPED
 
 # Standalone demos poll the store rather than being pushed a change from
 # the agent's HTTP thread - the two run in the same process but talking
@@ -208,6 +213,7 @@ class App:
         self._drawn_key = None
         self._standby = False
         self.refresh_demos()           # initial rows, right after STANDBY
+        self._adopt_restored_demo()    # ...and one already playing again
 
     # ---- state transitions ----
 
@@ -451,10 +457,12 @@ class App:
 
         `name` (the row's label) is what /status.show.demo_name carries
         for the PC's Units tile; a restart that does not pass one again
-        (KEY1-hold) keeps whatever _enter_demo() set the first time."""
+        (KEY1-hold) keeps whatever _enter_demo() set the first time. The
+        slug goes with it, so that a restart of the UNIT can hand this
+        same demo back to this same screen (_adopt_restored_demo())."""
         try:
             show = self.demo_store.load(slug)
-            self.player.load(show, demo=True,
+            self.player.load(show, demo=True, slug=slug,
                              name=self._demo_name if name is None else name)
             self._demo_show_id = show["id"]
             self._demo_awaiting_run = True
@@ -462,6 +470,38 @@ class App:
             return True
         except RemoteError:
             return False
+
+    def _adopt_restored_demo(self) -> None:
+        """The unit restarted while it was playing one of its own demos.
+
+        ShowPlayer.restore() runs before this App exists (ui/main.py) and
+        brings a demo that was RUNNING back running, as a demo - so the
+        screen has to pick it up too, or the LCD would sit on the menu
+        while the garment plays, KEY2 would not stop it, and a `loop`
+        demo would stop at its last cue. The loop flag comes from the
+        menu row the slug names, which is where the operator last set it
+        (the run record only says WHICH demo, never how it was listed).
+
+        A demo restored merely LOADED is left on the menu on purpose:
+        nothing is on the garment, and KEY1 on its row starts it.
+        """
+        player = self.player
+        if (player is None or not player.is_demo or player.show is None
+                or player.state not in (RUNNING, HOLDING)
+                or not player.demo_slug):
+            return
+        row = next((r for r in self._demo_rows
+                    if r.slug == player.demo_slug), None)
+        self._playing_demo = player.demo_slug
+        self._demo_name = player.demo_name or (row.label if row else "")
+        self._demo_loop = bool(row.loop) if row is not None else False
+        self._demo_show_id = player.show["id"]
+        self._demo_ended_at = None
+        self._demo_awaiting_run = False
+        self._demo_burn_error = None
+        self._standby = False
+        self.screen = Screen.DEMO
+        self._dirty = True
 
     def _loop_demo_show(self) -> bool:
         """ENDED, loop set: run the already-loaded show again from 0:00 -
@@ -519,11 +559,17 @@ class App:
             return
         player = self.player
         if (player.show is not None and not player.is_demo
-                and player.state != STOPPED):
-            # A PC show is loaded (or ended and not yet let go of) - the
-            # PC always wins; loading over it here would either fight a
-            # show in progress or make the PC's own next /show/load see a
-            # mismatched id and refuse itself pointlessly.
+                and player.state in (RUNNING, HOLDING)):
+            # The PC's show is actually on the garment right now - the PC
+            # really is in control, and loading over it here would fight
+            # a show in progress. A PC show that is merely LOADED,
+            # STOPPED or ENDED is not: the PC's own next /show/load puts
+            # it back (and the conductor's _supervise() reloads on an id
+            # mismatch by itself), so a demo may supersede it. That used
+            # to be refused too, which is how a unit that restarted
+            # mid-demo - its demo restored as a plain LOADED PC show -
+            # answered KEY1 on every demo row with nothing but this note
+            # (radxa-05, 2026-09-26).
             self._note_on_menu("PC show loaded - use the PC")
             return
         if not self._start_demo_show(row.slug, row.label):
@@ -536,7 +582,10 @@ class App:
         self.screen = Screen.DEMO
         self._dirty = True
 
-    def _note_on_menu(self, text: str, seconds: float = 3.0) -> None:
+    def _note_on_menu(self, text: str, seconds: float = 5.0) -> None:
+        # 5 s, not 3: the operator presses KEY1 and looks at the wall,
+        # not at the 1.3" screen - three seconds of subtitle went by
+        # unread and the LCD read as "did nothing" (radxa-05, 2026-09-26).
         self._menu_note = text
         self._menu_note_until = self._clock() + seconds
         self._dirty = True
