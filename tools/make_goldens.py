@@ -320,6 +320,27 @@ NAME_CASES = [
     ("AZ271SD1305_１_HW.csv", ["AZ271SD1305"]),
     ("AZ271SD1305_color_柄A_grid.csv", None),
     ("AZ271SD1305_夏_２_HW.csv", ["AZ271SD1305"]),
+    # Japanese punctuation is ordinary punctuation: kept, and each name
+    # its own design (review of a6b610b - the Conductor refused all of
+    # these and /api/files folded the first three onto one file).
+    ("Look22_柄・A_HW.csv", None),          # 柄・A
+    ("Look22_柄　A_HW.csv", None),          # U+3000 -> a space
+    ("Look22_（A）_HW.csv", None),          # （A）
+    ("Look22_柄＋A_HW.csv", None),          # 柄＋A
+    ("Look22_か゚_HW.csv", None),           # か゚ (NFC keeps it apart)
+    ("Look22_a：b_HW.csv", None),               # ： is not the ASCII colon
+    # ...and what no file name may hold, whatever else it says.
+    ("Look22_a:b_HW.csv", None),
+    ("Look22_a/b_HW.csv", None),
+    ("Look22_a／b_HW.csv", None),
+    ("Look22_a＼b_HW.csv", None),
+    ("Look22_a|b_HW.csv", None),
+    (".Look22_map.csv", None),
+    ("  Look22_1_HW.csv  ", None),                  # trimmed, then read
+    # The _HW grammar's own edges (review of a6b610b).
+    ("my_notes_hw.csv", None),                      # lower case is not the button
+    ("AZ271SD1301_map_HW.csv", None),               # both files at once: neither
+    ("AZ271SD1301_pattern１_HW.csv", None),     # \d must not take this
     ("notes.csv", None),
     ("Sample_map.txt", None),
 ]
@@ -331,6 +352,8 @@ def name_cases() -> list:
         item, pattern, label = Design.name_parts(filename, items)
         cases.append({"kind": "names", "filename": filename, "items": items,
                       "expect": {"kind": look.kind(filename),
+                                 "normalized": look.normalize_name(filename),
+                                 "problem": look.name_problem(filename),
                                  "parts": [item, pattern, label]}})
     return cases
 

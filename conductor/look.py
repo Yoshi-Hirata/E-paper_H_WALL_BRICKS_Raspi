@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import csv
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -94,15 +95,28 @@ _MAP_NAME = re.compile(r"(.+?)_map", re.IGNORECASE)
 # typed on the wiring page ("pattern01", "ref_multicolor_redorange_s22").
 _GRID_NAME = re.compile(r"(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$",
                         re.IGNORECASE)
-_PATTERN_NO = re.compile(r"pattern\s*0*(\d+)$", re.IGNORECASE)
+# [0-9], never \d: Python's \d matches a FULL-WIDTH digit and JavaScript's
+# does not, so "pattern１" was pattern 1 here and the literal name
+# "pattern１" in conductor/web/sim/model.js - the same file, two different
+# designs depending on which side read the name (review of a6b610b). Every
+# number parsed out of a file name on either side is ASCII-only.
+_PATTERN_NO = re.compile(r"pattern\s*0*([0-9]+)$", re.IGNORECASE)
 # The production site's own "HW 用 CSV" button writes the SAME grid
 # (csvGrid(): side,row,shift,1..W) under its own official name,
 # <item>_<配色案名>_HW.csv - "AZ271SD1301_1_HW.csv" is design "1" of
 # AZ271SD1301, exactly what this module otherwise calls
 # AZ271SD1301_color_1_grid.csv. Both names are read as a design here, so a
 # designer can drop the file the site gave them without renaming it.
-_HW_NAME = re.compile(r"(.+?)_(.+)_HW$", re.IGNORECASE)
+#
+# Case-SENSITIVE, unlike the other two (review of a6b610b): "_HW" is the
+# site's own button, and a lower-case "_hw" is far more likely to be an
+# ordinary word at the end of somebody's file name - "my_notes_hw.csv"
+# used to become design "notes" of a garment called "my".
+_HW_NAME = re.compile(r"(.+?)_(.+)_HW$")
 _HW_SUFFIX = "_HW"
+# "<item>_map_HW.csv" claims to be both files at once; whichever way it is
+# split the answer is a muddle, so it is neither (review of a6b610b).
+_HW_RESERVED_DESIGNS = ("map",)
 _IS_MAP = re.compile(r"_map$", re.IGNORECASE)
 _IS_GRID = re.compile(r"_color_.+grid", re.IGNORECASE)
 _MAP_COLUMNS = ("side", "row", "col", "board_no", "socket")
@@ -123,24 +137,112 @@ _GEOM_SHORT_TENTHS = 1         # ...nor is anything under a tenth of them
 
 
 
+# ============================================================
+# What a workspace file may be called
+# ============================================================
+# ONE rule, used character for character by the Conductor
+# (conductor/server.py) and by the designers' simulator (model.js's
+# normalizeName/nameProblem, which designer-app.js calls before it saves
+# anything). They have to be the same rule: a name the simulator writes
+# into a bundle and the Conductor then refuses is a design the operator
+# cannot use and cannot fix (review of a6b610b - the Conductor refused
+# "Look22_柄・A_HW.csv" outright, and worse, /api/files quietly folded
+# 柄・A, 柄　A and 柄＋A onto one file, so three designs overwrote each
+# other).
+#
+# The rule: a name is whatever NFC leaves, with U+3000 written as an
+# ordinary space and the outer whitespace trimmed, and it is refused only
+# for something that cannot be a file name at all. Japanese punctuation
+# and symbols - ・ 、 （ ） ＋ ゚ - are ordinary characters and are kept.
+_IDEOGRAPHIC_SPACE = "　"
+# Path syntax, in ASCII and in the full-width forms a Japanese keyboard
+# offers. The full-width pair is refused with the ASCII pair on purpose:
+# they are not separators to any filesystem, but they LOOK like a path,
+# and anything downstream that width-folds a name (NFKC in a log, a zip
+# tool, a shell) would turn them into one.
+_NAME_SEPARATORS = "/\\／＼"
+# Windows keeps these for itself. ASCII only: the full-width forms
+# (：＊？＂＜＞｜) are ordinary characters NTFS is perfectly happy with,
+# and a 配色案名 may well want "柄：A" or "（A）".
+_NAME_RESERVED = ':*?"<>|'
+_NAME_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def normalize_name(name) -> str:
+    """The one spelling of a file name both sides use: NFC, U+3000 as an
+    ordinary space, no leading or trailing whitespace.
+
+    NFC and never NFKC (2026-09-26, the operator's call): the 配線ナビ
+    goes on writing 配色案名 with full-width characters, so those are the
+    name. NFC only composes, which is what makes a name a Mac hands over
+    decomposed the same name as the one typed on Windows.
+    """
+    text = unicodedata.normalize("NFC", str(name))
+    return text.replace(_IDEOGRAPHIC_SPACE, " ").strip()
+
+
+def name_problem(name) -> "str | None":
+    """Why `name` cannot be a workspace file name, or None.
+
+    The checks run in this order on both sides, so the two always give
+    the same reason for the same name.
+    """
+    text = normalize_name(name)
+    if not text:
+        return "a file name cannot be empty"
+    if _NAME_CONTROL.search(text):
+        return "a file name cannot contain a control character"
+    for char in text:
+        if char in _NAME_SEPARATORS:
+            return f'a file name cannot contain "{char}" (a path separator)'
+    for char in text:
+        if char in _NAME_RESERVED:
+            return f'a file name cannot contain "{char}" (Windows keeps it)'
+    if text.startswith(".") or text.endswith("."):
+        return "a file name cannot start or end with a dot"
+    return None
+
+
 def kind(name: str) -> "str | None":
     """"map", "grid" or None, from the file's NAME alone.
 
-    Three spellings are a grid: the conventional
+    Two spellings are a grid: the conventional
     <item>_color_<name>_grid.csv, and the production site's own
     <item>_<配色案名>_HW.csv. A *_map.csv is always the map, whatever else
-    the name says.
+    the name says. A name name_problem() refuses is neither.
     """
-    if not str(name).lower().endswith(".csv"):
+    text = normalize_name(name)
+    if not text.lower().endswith(".csv") or name_problem(text):
         return None
-    stem = Path(name).stem
+    stem = Path(text).stem
     if _IS_GRID.search(stem):
         return "grid"
     if _IS_MAP.search(stem):
         return "map"
-    if _HW_NAME.match(stem):
+    if _hw_body(stem) is not None:
         return "grid"
     return None
+
+
+def map_item(name) -> "str | None":
+    """The garment a *_map.csv belongs to, from the normalised name."""
+    match = _MAP_NAME.match(Path(normalize_name(name)).stem)
+    return match.group(1) if match else None
+
+
+def _hw_body(stem: str) -> "str | None":
+    """The <item>_<配色案名> part of an <...>_HW stem, or None.
+
+    The reserved-word check looks at the LAST underscore-separated piece,
+    so it gives the same answer however the item/design split later falls
+    out: "<item>_map_HW" is refused whether the item is known or not.
+    """
+    if not _HW_NAME.match(stem):
+        return None
+    body = stem[:-len(_HW_SUFFIX)]
+    if body.rsplit("_", 1)[-1].lower() in _HW_RESERVED_DESIGNS:
+        return None
+    return body
 
 
 def _split_hw(stem: str, items=None) -> "tuple[str, str]":
@@ -230,10 +332,8 @@ class LookMap:
     @classmethod
     def from_csv(cls, path) -> "LookMap":
         path = Path(path)
-        match = _MAP_NAME.match(path.stem)
-        item = match.group(1) if match else None
         with open(path, newline="", encoding="utf-8-sig") as handle:
-            return cls.parse(handle, name=path.name, item=item)
+            return cls.parse(handle, name=path.name, item=map_item(path.name))
 
     @classmethod
     def parse(cls, lines, name: str = "map", item: "str | None" = None
@@ -398,11 +498,11 @@ class Design:
         to split an <item>_<配色案名>_HW.csv whose design name has
         underscores of its own (see _split_hw).
         """
-        stem = Path(filename).stem
+        stem = Path(normalize_name(filename)).stem
         match = _GRID_NAME.match(stem)
         if match:
             item, name = match.group(1), match.group(2)
-        elif _HW_NAME.match(stem):
+        elif _hw_body(stem) is not None:
             item, name = _split_hw(stem, items)
         else:
             return None, None, stem

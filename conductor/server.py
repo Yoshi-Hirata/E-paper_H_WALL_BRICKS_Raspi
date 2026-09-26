@@ -46,6 +46,9 @@ from .fleet import DEFAULT_LEAD_S, Fleet, default_units
 from .look import (PALETTE, Design, LookError, LookMap, check,
                    compile_design, default_shift, unit_board_ids)
 from .look import kind as file_kind
+from .look import map_item
+from .look import name_problem as look_name_problem
+from .look import normalize_name as look_normalize
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 REPO_DIR = Path(__file__).resolve().parent.parent
@@ -76,15 +79,18 @@ _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # Parts of show.json that never reach a unit: the operator's own notes
 # about the show (see Workspace.revision).
 _REVISION_IGNORES = {"music", "labels"}
-# Letters and digits of ANY script, plus . - _ and a space. `\w` is
-# already Unicode-aware for str patterns (letters, digits, underscore of
-# every script), so a designer's own 配色案名 - "柄A", "夏_2" - reaches the
-# show PC spelled the way they typed it. Everything else (a path
-# separator above all) is folded to "_" by safe_name() below.
-_SAFE_NAME = re.compile(r"[^\w.\- ]", re.UNICODE)
+# A CSV's name is conductor/look.py's business now (normalize_name /
+# name_problem, the same rule the designers' simulator applies): this one
+# is only for the MUSIC blob, which is a file on disk and nothing else -
+# no cue references it by name, so folding a stray character to "_" costs
+# nothing and saves a whole class of filesystem trouble.
+_SAFE_MUSIC_NAME = re.compile(r"[^\w.\- ]", re.UNICODE)
 _MAP_ITEM = re.compile(r"(.+?)_map", re.IGNORECASE)     # as look.py names items
-_COPY_NO = re.compile(r"-\d+$")
-_LOOK_NO = re.compile(r"look\s*0*(\d+)", re.IGNORECASE)
+_COPY_NO = re.compile(r"-[0-9]+$")
+# [0-9], never \d - see conductor/look.py's _PATTERN_NO: Python's \d takes
+# a full-width digit and JavaScript's does not, and conductor/web/sim's
+# LOOK_NO has to agree with this one.
+_LOOK_NO = re.compile(r"look\s*0*([0-9]+)", re.IGNORECASE)
 _MUSIC_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav",
                 ".ogg": "audio/ogg", ".m4a": "audio/mp4"}
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
@@ -94,57 +100,100 @@ def _key(position) -> str:
     return "|".join(str(part) for part in position)
 
 
-def safe_name(name: str) -> str:
-    """The workspace's own spelling of a file name: NFC, then anything
-    but a letter, a digit, ". - _" or a space folded to "_".
+def safe_music_name(name: str) -> str:
+    """A name for the music blob on disk. Not a CSV rule: see above."""
+    return _SAFE_MUSIC_NAME.sub(
+        "_", Path(unicodedata.normalize("NFC", str(name))).name)
 
-    NFC, and deliberately NOT NFKC (2026-09-26, the operator's call): the
-    配線ナビ goes on writing 配色案名 with full-width characters, so
-    "AZ271SD1305_１_HW.csv" is the file's real name and is kept exactly as
-    it is - the earlier respelling to "_1_" would have made the show PC
-    disagree with the site about what the file is called. NFC is only
-    composition: a name a Mac hands over decomposed (NFD - "が" as か + ゛)
-    and the same name from Windows become one string, so they are one
-    file rather than two that look identical in a list.
-    conductor/web/sim/designer-app.js's nfc() is the other half.
+
+def workspace_name(name: str) -> str:
+    """A CSV's name as this workspace spells it - conductor/look.py's
+    shared rule, applied to the file's own basename so that a path in a
+    name is a dropped directory rather than a traversal.
+
+    Raises ValueError naming the problem when the name is not usable. It
+    REFUSES rather than folds (review of a6b610b): the old substituting
+    version turned 柄・A, 柄　A and 柄＋A into one "柄_A", so three
+    designs quietly overwrote each other.
     """
-    return _SAFE_NAME.sub("_", Path(nfc_name(name)).name)
+    clean = look_normalize(Path(look_normalize(name)).name)
+    problem = look_name_problem(clean)
+    if problem:
+        raise ValueError(f"{name}: {problem}")
+    return clean
 
 
-def nfc_name(name: str) -> str:
-    """Just the NFC half of safe_name(), for the one caller that must
-    tell "the same name, composed" from "a name with something in it
-    this workspace cannot keep" (import_bundle: the first is saved and
-    reported as a rename, the second refused rather than mangled)."""
-    return unicodedata.normalize("NFC", str(name))
+def _renamed_items(renamed: "dict[str, str]") -> "dict[str, str]":
+    """The garment renames implied by the MAP renames in `renamed`.
+
+    A map's name carries the item: respelling AZ271SD1305_map.csv renames
+    the garment too, and the timeline names that garment in four more
+    places than the design references (review of a6b610b).
+    """
+    items: "dict[str, str]" = {}
+    for old, new in renamed.items():
+        if file_kind(new) != "map":
+            continue
+        # The OLD item comes off the raw name: map_item() normalises, so
+        # asking it for both sides would return the same string twice and
+        # find no rename at all.
+        was = _MAP_ITEM.match(Path(old).stem)
+        old_item = was.group(1) if was else None
+        new_item = map_item(new)
+        if old_item and new_item and old_item != new_item:
+            items[old_item] = new_item
+    return items
 
 
 def _rename_design_refs(show: dict, renamed: "dict[str, str]") -> dict:
-    """A copy of `show` with every design file name the import renamed
-    (safe_name(), above) rewritten wherever the timeline names one.
+    """A copy of `show` with every name the import respelled rewritten
+    wherever the timeline uses it.
 
-    Two places name a design file: a cue's "design", and a key of
-    "transitions". A cue that names a file the bundle did not carry is
-    composed too - it may well be pointing at one this workspace already
-    holds in NFC - but never invented: the reference is only rewritten
-    when NFC actually changes it AND the result is a real design name.
+    Design files are named by a cue's "design" and by a key of
+    "transitions". A MAP's rename is a garment's rename, which the cues'
+    "item" and the "units"/"labels"/"boards" maps all key on. A name the
+    bundle did not carry is composed too - it may well be pointing at
+    something this workspace already holds in NFC - but never invented:
+    a design reference is only rewritten when NFC changes it AND the
+    result is a real design name.
     """
     show = dict(show)
+    items = _renamed_items(renamed)
+
     def rename(name):
         if not isinstance(name, str):
             return name
         if name in renamed:
             return renamed[name]
-        clean = nfc_name(name)
+        clean = look_normalize(name)
         return clean if clean != name and file_kind(clean) is not None else name
+
+    def rename_item(name):
+        if not isinstance(name, str):
+            return name
+        return items.get(name) or items.get(look_normalize(name)) or name
+
     cues = show.get("cues")
     if isinstance(cues, list):
-        show["cues"] = [dict(c, design=rename(c.get("design")))
-                        if isinstance(c, dict) and "design" in c else c
-                        for c in cues]
+        fresh = []
+        for cue in cues:
+            if not isinstance(cue, dict):
+                fresh.append(cue)
+                continue
+            cue = dict(cue)
+            if "design" in cue:
+                cue["design"] = rename(cue["design"])
+            if "item" in cue:
+                cue["item"] = rename_item(cue["item"])
+            fresh.append(cue)
+        show["cues"] = fresh
     transitions = show.get("transitions")
     if isinstance(transitions, dict):
         show["transitions"] = {rename(k): v for k, v in transitions.items()}
+    for key in ("units", "labels", "boards"):
+        value = show.get(key)
+        if isinstance(value, dict):
+            show[key] = {rename_item(k): v for k, v in value.items()}
     return show
 
 
@@ -643,7 +692,7 @@ class Workspace:
         every byte is down; the lock is taken for that swap and the
         commit, never for the streaming itself.
         """
-        safe = safe_name(name or "music") or "music"
+        safe = safe_music_name(name or "music") or "music"
         self.music.mkdir(parents=True, exist_ok=True)
         part = self.music / f"{safe}.{os.getpid()}-{threading.get_ident()}.part"
         try:
@@ -896,28 +945,49 @@ class Workspace:
         # would read "design ... is not loaded" against a file that IS
         # there under its composed spelling.
         renamed: "dict[str, str]" = {}
+        claimed: "dict[str, str]" = {}     # saved name -> the spelling that took it
         for name in sorted(files):
             text = files[name]
             if not isinstance(name, str) or not isinstance(text, str):
                 raise ValueError("bundle: files must be name -> text")
             try:
-                # The same rule /api/files applies through Workspace.save()
-                # - but computed here without ever calling it, so a name
-                # this workspace cannot keep is still refused outright
-                # rather than silently mangled into some other file's
-                # name. Composing it (NFC) is the one change allowed, and
-                # it is reported: everything else must already be a
-                # usable name before it gets here.
-                clean = nfc_name(name)
-                safe = (Path(name).name == name
-                        and Path(clean).name == clean
-                        and _SAFE_NAME.search(clean) is None
-                        and self.kind(clean) is not None)
+                # The same rule /api/files applies through
+                # Workspace.save(), computed here without ever calling it,
+                # so a name this workspace cannot keep is refused outright
+                # rather than mangled into some other file's name.
+                # Composing it (NFC, plus U+3000 and the outer whitespace)
+                # is the one change allowed, and it is reported.
+                clean = look_normalize(name)
+                # name_problem() first, and Path() only as a backstop:
+                # Path("a:b.csv").name is "b.csv" on Windows and the whole
+                # string on Linux, so leading with it would give the same
+                # bundle two different refusal reasons on two machines.
+                problem = look_name_problem(clean)
+                if not problem and Path(clean).name != clean:
+                    problem = "a bundle's file names may not hold a path"
+                if not problem and self.kind(clean) is None:
+                    problem = ("not a *_map.csv, *_color_NAME_grid.csv "
+                               "or *_HW.csv")
             except (OSError, ValueError):     # e.g. an embedded NUL byte
-                safe = False
-            if not safe:
-                refused.append(f"{name}: unusable file name")
+                problem = "unusable file name"
+            if problem:
+                refused.append(f"{name}: {problem}")
                 continue
+            # Two entries whose composed forms coincide would have had the
+            # second silently overwrite the first, with nothing in
+            # `refused` to say a design had gone missing (review of
+            # a6b610b). Name both spellings and keep neither guess.
+            if clean in claimed:
+                # Both spellings LOOK identical on screen - that is the
+                # whole trouble - so the message says why rather than
+                # printing the same string twice and leaving the designer
+                # to wonder which two files it means.
+                refused.append(
+                    f"{name}: the same file name as {claimed[clean]} once "
+                    "composed - they differ only in how the characters are "
+                    "written; rename one of them")
+                continue
+            claimed[clean] = name
             if clean != name:
                 renamed[name] = clean
             to_save.append((clean, text))
@@ -967,7 +1037,7 @@ class Workspace:
     kind = staticmethod(file_kind)
 
     def save(self, name: str, text: str) -> str:
-        name = safe_name(name)
+        name = workspace_name(name)          # raises on an unusable name
         if self.kind(name) is None:
             raise ValueError(f"{name}: not a *_map.csv, "
                              "*_color_NAME_grid.csv or *_HW.csv")

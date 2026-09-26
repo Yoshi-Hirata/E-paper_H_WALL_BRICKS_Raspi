@@ -1473,12 +1473,18 @@
   // composition alone: a name a Mac hands over decomposed (NFD - "が" as
   // か + ゛) and the same name typed on Windows become one string, so they
   // are one design rather than two that look identical in the list.
-  // conductor/server.py's nfc_name() is the other half.
-  function nfc(s) {
-    try { return String(s).normalize("NFC"); } catch { return String(s); }
-  }
+  // conductor/server.py's workspace_name() is the other half, and
+  // SIM.look.normalizeName/nameProblem is the rule both of them share.
+  const nfc = s => globalThis.SIM.look.normalizeName(s);
   function conventionalName(name, text, itemHint) {
     const n = nfc(name);
+    // The SAME refusal the Conductor would give (review of a6b610b):
+    // this page used to accept anything NFC left and write it into a
+    // bundle, and the show PC then threw the file out - a design the
+    // operator could neither use nor fix. Checked before the name is
+    // read as anything, so a bad name is never half-accepted.
+    const bad = globalThis.SIM.look.nameProblem(n);
+    if (bad) return { error: bad };
     if (globalThis.SIM.look.kind(n) !== null) return { name: n };
     if (!/\.csv$/i.test(n)) return { error: refuseReason(n) };
     const kind = sniffCsvKind(text);
@@ -1498,10 +1504,14 @@
     const pre = [itemHint, hit].filter(Boolean).find(k => stem.toLowerCase().startsWith(k.toLowerCase() + "_"))
       || (hit && hit.toLowerCase() === stem.toLowerCase() ? hit : null);
     let design = pre ? stem.slice(pre.length).replace(/^_/, "") : stem;
-    // Keep letters and digits of any script: "柄A" and "柄B" must stay two
-    // names, not both become "-". Only separators the file system or the
-    // CSV rule cannot carry are folded to "-".
-    design = design.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[-_.]+|[-_.]+$/g, "") || "design";
+    // Keep whatever a file name may keep - letters, digits, and the
+    // punctuation a 配色案名 actually uses ("柄・A", "（A）", "柄＋A"): the
+    // old \p{L}\p{N} filter folded all three onto "柄-A" and lost two of
+    // the three designs (review of a6b610b). Only what
+    // SIM.look.nameProblem() refuses is replaced.
+    // eslint-disable-next-line no-control-regex
+    design = design.replace(/[\x00-\x1f\x7f-\x9f/\\／＼:*?"<>|]+/g, "-")
+      .replace(/^[-_.\s]+|[-_.\s]+$/g, "") || "design";
     // "_grid" / "_map" / "_color_" inside a design name would be read as the
     // file-name grammar's own markers ("HW_grid_4" -> design "HW" for every
     // file), so they are spelled with a dash inside the name.
@@ -1841,6 +1851,10 @@
         if (raw.includes("/") || raw.includes("\\") || hasBadPathSegment) {
           refused.push({ name: raw, error: "file names must not contain / \\ or .." }); continue;
         }
+        // The shared rule first, so an unusable name is refused with the
+        // reason the Conductor would give rather than the generic one.
+        const badName = globalThis.SIM.look.nameProblem(raw);
+        if (badName) { refused.push({ name: raw, error: badName }); continue; }
         if (globalThis.SIM.look.kind(raw) === null) { refused.push({ name: raw, error: refuseReason(raw) }); continue; }
         project.files[raw] = text.replace(/\r\n?/g, "\n");
         saved.push(raw);
@@ -1865,6 +1879,8 @@
       const takenBy = new Map();          // target name -> the picked file already going there
       for (const { name, text } of items) {
         const raw = String(name);
+        const badName = globalThis.SIM.look.nameProblem(raw);
+        if (badName) { refused.push({ name: raw, error: badName }); continue; }
         const to = renameOntoItem(itemKey, raw);
         if (to === null) { refused.push({ name: raw, error: refuseReason(raw) }); continue; }
         // A garment's MAP is not interchangeable the way its designs are

@@ -248,7 +248,14 @@ def test_bundle_refuses_unsafe_file_names_without_writing_anything(tmp_path):
     result = ws.import_bundle(bundle)
     assert result["saved"] == [MAP_NAME]
     assert len(result["refused"]) == 3
-    assert all("unusable file name" in r for r in result["refused"])
+    # Each one says what is actually wrong with it, rather than one
+    # sentence for every kind of bad name (review of a6b610b).
+    reasons = {r.split(": ", 1)[0]: r.split(": ", 1)[1] for r in result["refused"]}
+    separator = 'a file name cannot contain "/" (a path separator)'
+    assert reasons["../x_map.csv"] == separator
+    assert reasons["/etc/x_map.csv"] == separator
+    assert reasons["bad\x00name_map.csv"] == \
+        "a file name cannot contain a control character"
     assert sorted(p.name for p in ws.files.glob("*.csv")) == [MAP_NAME]
 
 
@@ -322,23 +329,102 @@ def test_a_decomposed_japanese_name_lands_on_the_composed_one(tmp_path):
     assert cue["design"] == composed and cue["problems"] == []
 
 
+def test_two_spellings_of_one_name_are_refused_rather_than_silently_merged(tmp_path):
+    # Two bundle entries whose composed forms coincide used to map to one
+    # file: the second overwrote the first and `refused` stayed empty, so
+    # a design went missing without a word (review of a6b610b).
+    composed = "Look22_color_ガ_grid.csv"
+    decomposed = "Look22_color_" + "ガ" + "_grid.csv"
+    ws = Workspace(tmp_path / "ws")
+    bundle = make_bundle(files={MAP_NAME: MAP, composed: GRID,
+                                decomposed: GRID}, cues=[])
+    result = ws.import_bundle(bundle)
+    # Whichever of the two sorts first takes the name; the other is
+    # refused rather than overwriting it.
+    assert result["saved"] == sorted([MAP_NAME, composed])
+    assert len(result["refused"]) == 1
+    refusal = result["refused"][0]
+    assert refusal.startswith(composed + ": ")
+    # The two names look identical on screen, so the reason says why.
+    assert "differ only in how the characters are written" in refusal
+    assert "rename one of them" in refusal
+    assert len(item(ws.state(), "Look22")["designs"]) == 1
+
+
+def test_a_decomposed_map_name_renames_the_garment_everywhere(tmp_path):
+    # A map's name carries the ITEM, so respelling the map respells the
+    # garment - and the timeline names a garment in four more places than
+    # the design references (review of a6b610b): cues[].item, units,
+    # labels and boards all used to keep the decomposed spelling and stop
+    # matching the map that had just been saved.
+    composed_item = "ガラ"
+    decomposed_item = "ガラ"
+    composed_map = f"{composed_item}_map.csv"
+    decomposed_map = f"{decomposed_item}_map.csv"
+    grid = f"{decomposed_item}_color_pattern01_grid.csv"
+    ws = Workspace(tmp_path / "ws")
+    bundle = make_bundle(
+        files={decomposed_map: MAP, grid: GRID},
+        cues=[{"id": "c0", "item": decomposed_item, "at": 0.0, "design": grid}],
+        units={decomposed_item: "radxa-03"},
+        extra_show={"labels": {decomposed_item: {"look": "9", "model": "X"}}})
+    result = ws.import_bundle(bundle)
+    assert result["refused"] == []
+    assert result["renamed"][decomposed_map] == composed_map
+    state = ws.state()
+    entry = item(state, composed_item)
+    assert entry["unit"] == "radxa-03"          # units key followed
+    assert entry["look"] == "9"                 # labels key followed
+    cue = state["show"]["cues"][0]
+    assert cue["item"] == composed_item         # cues[].item followed
+    assert cue["problems"] == []                # ...so the cue resolves
+
+
 def test_a_name_that_is_still_unusable_after_composing_is_refused(tmp_path):
-    # Composing (NFC) is the ONE change an import may make to a file
-    # name. Anything else - a path, a control character, a full-width
-    # solidus - is refused outright, never quietly mangled into some
-    # other file's name.
+    # Composing is the ONE change an import may make to a file name.
+    # Anything else - a control character, a path separator in any width,
+    # a character Windows keeps - is refused outright, never quietly
+    # mangled into some other file's name.
     ws = Workspace(tmp_path / "ws")
     bundle = make_bundle(files={
         MAP_NAME: MAP,
         "bad\x00name_map.csv": "side,row\n",
-        "sub／x_map.csv": "side,row\n",   # ／ is not a letter or a digit
+        "sub／x_map.csv": "side,row\n",     # a full-width solidus
+        "a:b_map.csv": "side,row\n",        # Windows keeps the colon
     }, cues=[])
     result = ws.import_bundle(bundle)
     assert result["saved"] == [MAP_NAME]
     assert result["renamed"] == {}
-    assert len(result["refused"]) == 2
-    assert all("unusable file name" in r for r in result["refused"])
+    reasons = {r.split(": ", 1)[0]: r.split(": ", 1)[1] for r in result["refused"]}
+    assert reasons == {
+        "bad\x00name_map.csv": "a file name cannot contain a control character",
+        "sub／x_map.csv": 'a file name cannot contain "／" (a path separator)',
+        "a:b_map.csv": 'a file name cannot contain ":" (Windows keeps it)',
+    }
     assert sorted(p.name for p in ws.files.glob("*.csv")) == [MAP_NAME]
+
+
+def test_japanese_punctuation_in_a_design_name_is_kept_and_kept_apart(tmp_path):
+    # The whole point of the shared rule (review of a6b610b): the
+    # Conductor used to refuse every one of these outright, and
+    # /api/files used to fold 柄・A, 柄　A and 柄＋A onto one "柄_A" - three
+    # designs overwriting each other in silence. They are ordinary
+    # characters; each name is its own design.
+    names = ["Look22_柄・A_HW.csv", "Look22_柄　A_HW.csv", "Look22_（A）_HW.csv",
+             "Look22_柄＋A_HW.csv", "Look22_か゚_HW.csv"]
+    ws = Workspace(tmp_path / "ws")
+    bundle = make_bundle(
+        files=dict({MAP_NAME: MAP}, **{n: GRID for n in names}), cues=[])
+    result = ws.import_bundle(bundle)
+    assert result["refused"] == []
+    # U+3000 is written as an ordinary space, and that is the only change.
+    on_disk = sorted(p.name for p in ws.files.glob("*.csv"))
+    assert on_disk == sorted([MAP_NAME, "Look22_柄・A_HW.csv", "Look22_柄 A_HW.csv",
+                              "Look22_（A）_HW.csv", "Look22_柄＋A_HW.csv",
+                              "Look22_か゚_HW.csv"])
+    assert result["renamed"] == {"Look22_柄　A_HW.csv": "Look22_柄 A_HW.csv"}
+    # Five separate designs, not one file written five times.
+    assert len(item(ws.state(), "Look22")["designs"]) == 5
 
 
 def test_bundle_with_a_non_string_file_value_writes_nothing(tmp_path):

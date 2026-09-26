@@ -476,6 +476,88 @@ def test_the_wiring_sites_own_hw_name_is_a_design_too():
         ("AZ271SD1301", 3, "P03")
 
 
+def test_the_hw_grammar_does_not_swallow_ordinary_names():
+    # Review of a6b610b. "_HW" is the site's own button, spelled in
+    # capitals: a lower-case "_hw" at the end of somebody's file name is
+    # an ordinary word, and used to make "my_notes_hw.csv" design "notes"
+    # of a garment called "my".
+    assert look_mod.kind("my_notes_hw.csv") is None
+    assert Design.name_parts("my_notes_hw.csv") == (None, None, "my_notes_hw")
+    assert look_mod.kind("my_notes_HW.csv") == "grid"      # ...but this is
+    # A name claiming to be both files at once is neither.
+    assert look_mod.kind("AZ271SD1301_map_HW.csv") is None
+    assert look_mod.kind("AZ271SD1305_B_map_HW.csv") is None
+    assert Design.name_parts("AZ271SD1301_map_HW.csv") == \
+        (None, None, "AZ271SD1301_map_HW")
+    # Outer whitespace is trimmed before anything is read, so it can never
+    # end up inside the item.
+    assert look_mod.kind("  AZ271SD1301_1_HW.csv  ") == "grid"
+    assert Design.name_parts(" AZ271SD1301_1_HW.csv") == ("AZ271SD1301", None, "1")
+
+
+def test_a_pattern_number_is_ascii_on_both_sides():
+    # Python's \d matches a full-width digit and JavaScript's does not, so
+    # "pattern１" used to be P01 here and the literal name in model.js -
+    # the same file, two different designs (review of a6b610b).
+    assert Design.name_parts("AZ271SD1301_pattern1_HW.csv") == \
+        ("AZ271SD1301", 1, "P01")
+    assert Design.name_parts("AZ271SD1301_pattern１_HW.csv") == \
+        ("AZ271SD1301", None, "pattern１")
+
+
+# ---- what a workspace file may be called ----
+
+def test_japanese_punctuation_is_an_ordinary_part_of_a_name():
+    # The 配線ナビ writes these, and each one is its own design: the
+    # Conductor used to refuse them all and /api/files used to fold the
+    # first three onto one "柄_A" (review of a6b610b).
+    for name in ["Look22_柄・A_HW.csv", "Look22_（A）_HW.csv",
+                 "Look22_柄＋A_HW.csv", "Look22_か゚_HW.csv",
+                 "Look22_柄：A_HW.csv", "Look22_夏_2_HW.csv"]:
+        assert look_mod.name_problem(name) is None, name
+        assert look_mod.kind(name) == "grid", name
+        assert look_mod.normalize_name(name) == name, name
+    # Five different names, five different designs - not one file.
+    designs = {Design.name_parts(n)[2] for n in
+               ["Look22_柄・A_HW.csv", "Look22_柄 A_HW.csv",
+                "Look22_柄＋A_HW.csv", "Look22_（A）_HW.csv",
+                "Look22_か゚_HW.csv"]}
+    assert len(designs) == 5
+
+
+def test_the_ideographic_space_becomes_an_ordinary_one():
+    assert look_mod.normalize_name("Look22_柄　A_HW.csv") == "Look22_柄 A_HW.csv"
+    assert look_mod.name_problem("Look22_柄　A_HW.csv") is None
+
+
+def test_a_decomposed_name_composes():
+    assert look_mod.normalize_name("Look22_color_" + "ガ" + "_grid.csv") \
+        == "Look22_color_ガ_grid.csv"
+
+
+@pytest.mark.parametrize("name,problem", [
+    ("", "a file name cannot be empty"),
+    ("   ", "a file name cannot be empty"),
+    ("bad\x00_map.csv", "a file name cannot contain a control character"),
+    ("a/b_map.csv", 'a file name cannot contain "/" (a path separator)'),
+    ("a\\b_map.csv", 'a file name cannot contain "\\" (a path separator)'),
+    ("a／b_map.csv", 'a file name cannot contain "／" (a path separator)'),
+    ("a＼b_map.csv", 'a file name cannot contain "＼" (a path separator)'),
+    ("a:b_map.csv", 'a file name cannot contain ":" (Windows keeps it)'),
+    ("a|b_map.csv", 'a file name cannot contain "|" (Windows keeps it)'),
+    ('a"b_map.csv', 'a file name cannot contain """ (Windows keeps it)'),
+    (".Look22_map.csv", "a file name cannot start or end with a dot"),
+])
+def test_what_no_workspace_file_name_may_hold(name, problem):
+    assert look_mod.name_problem(name) == problem
+    assert look_mod.kind(name) is None          # ...and so it is no file at all
+
+
+def test_outer_whitespace_is_trimmed_not_refused():
+    assert look_mod.name_problem("  Look22_map.csv  ") is None
+    assert look_mod.normalize_name("  Look22_map.csv  ") == "Look22_map.csv"
+
+
 # ---- a design drawn for another layout of the same garment ----
 
 # The real map of AZ271SD1301 runs front rows 0-33, back rows 0-34, 30

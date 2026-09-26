@@ -553,6 +553,14 @@ window.addEventListener("load", function () {
       // NFD, the way a Mac hands a file name over: カ + U+3099 + ラ.
       out.decomposed = SIM.app.classifyCsv(
         "AZ271SD1301_color_\\u30AB\\u3099\\u30E9_grid.csv", grid);
+      // Japanese punctuation: three names that used to collapse onto one.
+      out.punct = ["\\u67C4\\u30FBA", "\\u67C4\\u3000A", "\\u67C4\\uFF0BA",
+                   "\\uFF08A\\uFF09"]
+        .map(n => SIM.app.classifyCsv("AZ271SD1301_" + n + "_HW.csv", grid).name);
+      // ...and the names this page must refuse because the Conductor does.
+      out.refused = ["AZ271SD1301_a/b_HW.csv", "AZ271SD1301_a\\uFF0Fb_HW.csv",
+                     "AZ271SD1301_a:b_HW.csv", ".AZ271SD1301_map.csv"]
+        .map(n => SIM.app.classifyCsv(n, grid).error || null);
     } catch (e) { out.error = String(e); }
     var pre = document.createElement("pre");
     pre.id = "namecheck-out";
@@ -588,6 +596,20 @@ def test_a_full_width_design_name_is_kept_exactly_as_the_site_writes_it(tmp_path
     # ...and NFC really is applied: a decomposed name arrives composed,
     # so a Mac's file and a Windows one are the same design.
     assert got["decomposed"]["name"] == "AZ271SD1301_color_ガラ_grid.csv"
+    # Japanese punctuation survives, and each name stays its own design
+    # (U+3000 is written as an ordinary space, and nothing else changes).
+    assert got["punct"] == ["AZ271SD1301_柄・A_HW.csv", "AZ271SD1301_柄 A_HW.csv",
+                            "AZ271SD1301_柄＋A_HW.csv", "AZ271SD1301_（A）_HW.csv"]
+    assert len(set(got["punct"])) == 4
+    # And this page refuses, with the Conductor's own words, exactly what
+    # the Conductor refuses - a bundle it writes can never be turned away
+    # on the show PC for a name it was happy to save (review of a6b610b).
+    assert got["refused"] == [
+        'a file name cannot contain "/" (a path separator)',
+        'a file name cannot contain "／" (a path separator)',
+        'a file name cannot contain ":" (Windows keeps it)',
+        "a file name cannot start or end with a dot",
+    ]
 
 
 GEOMETRY_SENTENCE = (

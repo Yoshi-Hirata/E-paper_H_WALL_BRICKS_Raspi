@@ -5392,11 +5392,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "map",
+    "normalized": "Sample_map.csv",
     "parts": [
      null,
      null,
      "Sample_map"
-    ]
+    ],
+    "problem": null
    },
    "filename": "Sample_map.csv",
    "items": null,
@@ -5405,11 +5407,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "Sample_color_pattern01_grid.csv",
     "parts": [
      "Sample",
      1,
      "P01"
-    ]
+    ],
+    "problem": null
    },
    "filename": "Sample_color_pattern01_grid.csv",
    "items": null,
@@ -5418,11 +5422,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv",
     "parts": [
      "Look22",
      null,
      "ref_multicolor_redorange_s22"
-    ]
+    ],
+    "problem": null
    },
    "filename": "Look22_color_ref_multicolor_redorange_s22_grid_A-1.csv",
    "items": null,
@@ -5431,11 +5437,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1301_1_HW.csv",
     "parts": [
      "AZ271SD1301",
      null,
      "1"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1301_1_HW.csv",
    "items": null,
@@ -5444,11 +5452,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1301_summer_2_HW.csv",
     "parts": [
      "AZ271SD1301",
      null,
      "summer_2"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1301_summer_2_HW.csv",
    "items": null,
@@ -5457,11 +5467,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1301_summer_2_HW.csv",
     "parts": [
      "AZ271SD1301",
      null,
      "summer_2"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1301_summer_2_HW.csv",
    "items": [
@@ -5472,11 +5484,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1305_B_1_HW.csv",
     "parts": [
      "AZ271SD1305",
      null,
      "B_1"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1305_B_1_HW.csv",
    "items": null,
@@ -5485,11 +5499,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1305_B_1_HW.csv",
     "parts": [
      "AZ271SD1305_B",
      null,
      "1"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1305_B_1_HW.csv",
    "items": [
@@ -5501,11 +5517,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1301_pattern03_HW.csv",
     "parts": [
      "AZ271SD1301",
      3,
      "P03"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1301_pattern03_HW.csv",
    "items": null,
@@ -5514,11 +5532,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": null,
+    "normalized": "AZ271SD1301_HW.csv",
     "parts": [
      null,
      null,
      "AZ271SD1301_HW"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1301_HW.csv",
    "items": null,
@@ -5527,11 +5547,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1305_\uff11_HW.csv",
     "parts": [
      "AZ271SD1305",
      null,
      "\uff11"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1305_\uff11_HW.csv",
    "items": null,
@@ -5540,11 +5562,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1305_\uff11_HW.csv",
     "parts": [
      "AZ271SD1305",
      null,
      "\uff11"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1305_\uff11_HW.csv",
    "items": [
@@ -5555,11 +5579,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1305_color_\u67c4A_grid.csv",
     "parts": [
      "AZ271SD1305",
      null,
      "\u67c4A"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1305_color_\u67c4A_grid.csv",
    "items": null,
@@ -5568,11 +5594,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": "grid",
+    "normalized": "AZ271SD1305_\u590f_\uff12_HW.csv",
     "parts": [
      "AZ271SD1305",
      null,
      "\u590f_\uff12"
-    ]
+    ],
+    "problem": null
    },
    "filename": "AZ271SD1305_\u590f_\uff12_HW.csv",
    "items": [
@@ -5582,12 +5610,254 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   },
   {
    "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\u67c4\u30fbA_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\u67c4\u30fbA"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\u67c4\u30fbA_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\u67c4 A_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\u67c4 A"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\u67c4\u3000A_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\uff08A\uff09_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\uff08A\uff09"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\uff08A\uff09_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\u67c4\uff0bA_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\u67c4\uff0bA"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\u67c4\uff0bA_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_\u304b\u309a_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "\u304b\u309a"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_\u304b\u309a_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_a\uff1ab_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "a\uff1ab"
+    ],
+    "problem": null
+   },
+   "filename": "Look22_a\uff1ab_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
     "kind": null,
+    "normalized": "Look22_a:b_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "a:b"
+    ],
+    "problem": "a file name cannot contain \":\" (Windows keeps it)"
+   },
+   "filename": "Look22_a:b_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a/b_HW.csv",
+    "parts": [
+     null,
+     null,
+     "b_HW"
+    ],
+    "problem": "a file name cannot contain \"/\" (a path separator)"
+   },
+   "filename": "Look22_a/b_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a\uff0fb_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "a\uff0fb"
+    ],
+    "problem": "a file name cannot contain \"\uff0f\" (a path separator)"
+   },
+   "filename": "Look22_a\uff0fb_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a\uff3cb_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "a\uff3cb"
+    ],
+    "problem": "a file name cannot contain \"\uff3c\" (a path separator)"
+   },
+   "filename": "Look22_a\uff3cb_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "Look22_a|b_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "a|b"
+    ],
+    "problem": "a file name cannot contain \"|\" (Windows keeps it)"
+   },
+   "filename": "Look22_a|b_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": ".Look22_map.csv",
+    "parts": [
+     null,
+     null,
+     ".Look22_map"
+    ],
+    "problem": "a file name cannot start or end with a dot"
+   },
+   "filename": ".Look22_map.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "Look22_1_HW.csv",
+    "parts": [
+     "Look22",
+     null,
+     "1"
+    ],
+    "problem": null
+   },
+   "filename": "  Look22_1_HW.csv  ",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "my_notes_hw.csv",
+    "parts": [
+     null,
+     null,
+     "my_notes_hw"
+    ],
+    "problem": null
+   },
+   "filename": "my_notes_hw.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "AZ271SD1301_map_HW.csv",
+    "parts": [
+     null,
+     null,
+     "AZ271SD1301_map_HW"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_map_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": "grid",
+    "normalized": "AZ271SD1301_pattern\uff11_HW.csv",
+    "parts": [
+     "AZ271SD1301",
+     null,
+     "pattern\uff11"
+    ],
+    "problem": null
+   },
+   "filename": "AZ271SD1301_pattern\uff11_HW.csv",
+   "items": null,
+   "kind": "names"
+  },
+  {
+   "expect": {
+    "kind": null,
+    "normalized": "notes.csv",
     "parts": [
      null,
      null,
      "notes"
-    ]
+    ],
+    "problem": null
    },
    "filename": "notes.csv",
    "items": null,
@@ -5596,11 +5866,13 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
   {
    "expect": {
     "kind": null,
+    "normalized": "Sample_map.txt",
     "parts": [
      null,
      null,
      "Sample_map"
-    ]
+    ],
+    "problem": null
    },
    "filename": "Sample_map.txt",
    "items": null,

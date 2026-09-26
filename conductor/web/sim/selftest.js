@@ -138,6 +138,8 @@
     // simulator and the Conductor disagree on which garment it belongs to.
     names(c) {
       const got = { kind: SIM.look.kind(c.filename),
+                    normalized: SIM.look.normalizeName(c.filename),
+                    problem: SIM.look.nameProblem(c.filename),
                     parts: SIM.look.nameParts(c.filename, c.items || undefined) };
       return deepEqual(got, c.expect) ? null
         : `names ${c.filename} got ${short(got)} want ${short(c.expect)}`;

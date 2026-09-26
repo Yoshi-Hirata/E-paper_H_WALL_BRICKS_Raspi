@@ -495,11 +495,23 @@
   const _IS_MAP = /_map$/i;
   const _MAP_NAME = /^(.+?)_map/i;
   const _GRID_NAME = /^(.+?)_color_(.+?)(?:_grid(?![A-Za-z0-9]).*)?$/i;
-  const _PATTERN_NO = /^pattern\s*0*(\d+)$/i;
+  // [0-9], never \d: Python's \d takes a FULL-WIDTH digit and JS's does
+  // not, so "pattern１" was P01 on one side and the literal "pattern１" on
+  // the other (conductor/look.py's _PATTERN_NO has the same note).
+  const _PATTERN_NO = /^pattern\s*0*([0-9]+)$/i;
   // The production site's own "HW 用 CSV" name for the same grid:
-  // <item>_<配色案名>_HW.csv (conductor/look.py's _HW_NAME).
-  const _HW_NAME = /^(.+?)_(.+)_HW$/i;
+  // <item>_<配色案名>_HW.csv (conductor/look.py's _HW_NAME). Case-
+  // SENSITIVE, so "my_notes_hw.csv" is not design "notes" of "my".
+  const _HW_NAME = /^(.+?)_(.+)_HW$/;
   const _HW_SUFFIX = "_HW";
+  const _HW_RESERVED_DESIGNS = ["map"];
+  // conductor/look.py's shared file-name rule - see its own comment for
+  // why this has to be the same on both sides, character for character.
+  const _IDEOGRAPHIC_SPACE = "　";
+  const _NAME_SEPARATORS = "/\\／＼";
+  const _NAME_RESERVED = ":*?\"<>|";
+  // eslint-disable-next-line no-control-regex
+  const _NAME_CONTROL = /[\x00-\x1f\x7f-\x9f]/;
   // geometry_problem()'s thresholds, verbatim from conductor/look.py.
   const _GEOM_MIN_SHORT_ROWS = 2;
   const _GEOM_SHORT_TENTHS = 1;
@@ -512,13 +524,53 @@
     return dot > 0 ? base.slice(0, dot) : base;
   }
 
+  // conductor/look.py's normalize_name(): NFC, U+3000 as an ordinary
+  // space, no leading or trailing whitespace. Never NFKC - the 配線ナビ
+  // writes 配色案名 with full-width characters and those ARE the name.
+  function normalizeName(name) {
+    let text = String(name);
+    try { text = text.normalize("NFC"); } catch (e) { /* no ICU: leave it */ }
+    return text.split(_IDEOGRAPHIC_SPACE).join(" ").trim();
+  }
+
+  // conductor/look.py's name_problem(), same checks in the same order so
+  // both sides refuse the same names and say the same thing about them.
+  function nameProblem(name) {
+    const text = normalizeName(name);
+    if (!text) return "a file name cannot be empty";
+    if (_NAME_CONTROL.test(text)) return "a file name cannot contain a control character";
+    for (const char of text) {
+      if (_NAME_SEPARATORS.indexOf(char) !== -1) {
+        return `a file name cannot contain "${char}" (a path separator)`;
+      }
+    }
+    for (const char of text) {
+      if (_NAME_RESERVED.indexOf(char) !== -1) {
+        return `a file name cannot contain "${char}" (Windows keeps it)`;
+      }
+    }
+    if (text.startsWith(".") || text.endsWith(".")) {
+      return "a file name cannot start or end with a dot";
+    }
+    return null;
+  }
+
+  // conductor/look.py's _hw_body(): the <item>_<配色案名> of an _HW stem,
+  // or null. "<item>_map_HW" is a muddle, so it is neither file.
+  function hwBody(stem) {
+    if (!_HW_NAME.test(stem)) return null;
+    const body = stem.slice(0, stem.length - _HW_SUFFIX.length);
+    const last = body.slice(body.lastIndexOf("_") + 1);
+    return _HW_RESERVED_DESIGNS.indexOf(last.toLowerCase()) === -1 ? body : null;
+  }
+
   function kind(filename) {
-    const name = String(filename);
-    if (!/\.csv$/i.test(name)) return null;
+    const name = normalizeName(filename);
+    if (!/\.csv$/i.test(name) || nameProblem(name)) return null;
     const stem = stemOf(name);
     if (_IS_GRID.test(stem)) return "grid";
     if (_IS_MAP.test(stem)) return "map";
-    if (_HW_NAME.test(stem)) return "grid";
+    if (hwBody(stem) !== null) return "grid";
     return null;
   }
 
@@ -540,17 +592,17 @@
   }
 
   function mapItem(filename) {
-    const m = _MAP_NAME.exec(stemOf(filename));
+    const m = _MAP_NAME.exec(stemOf(normalizeName(filename)));
     return m ? m[1] : null;
   }
 
   function nameParts(filename, items) {
-    const stem = stemOf(filename);
+    const stem = stemOf(normalizeName(filename));
     const m = _GRID_NAME.exec(stem);
     let item, name;
     if (m) {
       item = m[1]; name = m[2];
-    } else if (_HW_NAME.test(stem)) {
+    } else if (hwBody(stem) !== null) {
       const hw = splitHw(stem, items);
       item = hw[0]; name = hw[1];
     } else {
@@ -918,7 +970,7 @@
 
   const look = {
     PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS,
-    defaultShift, kind, nameParts, mapItem,
+    defaultShift, kind, nameParts, mapItem, normalizeName, nameProblem,
     parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,
   };
