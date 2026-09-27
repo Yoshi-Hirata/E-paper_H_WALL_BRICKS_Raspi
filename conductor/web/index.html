@@ -2754,7 +2754,6 @@ function paintChips() {
 // inline under it, never as a button that simply does nothing.
 function writeState() {
   const cues = state.show.cues.length;
-  const bad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
   const every = writeTargets();
   // "Which LOOKs": everything below the radio group is about the chosen
   // row alone - who is written to, how long it takes, what is refused.
@@ -2764,16 +2763,44 @@ function writeState() {
   // writes nothing (review F4).
   const only = row ? row.targets.map(t => t.unit) : null;
   const targets = only ? every.filter(t => only.includes(t.unit)) : every;
+  // Which problems are THIS write's business. The server draws exactly
+  // the same line (conductor/showfile.py's build(only=...)): a one-LOOK
+  // write is refused only on the problems of the units it writes to,
+  // because no other garment's cues, boards or map go into those units'
+  // show files. A full upload stays whole or not at all.
+  const mine = only ? state.show.cues.filter(c => only.includes(itemByKey(c.item)?.unit))
+                    : state.show.cues;
+  const bad = mine.reduce((n, c) => n + c.problems.length, 0);
+  // Items the timeline has cues for that no unit could be written for.
+  // They block a full upload (the server's "<item>: not assigned to a
+  // unit") and are simply not part of a one-LOOK write - which is the
+  // whole fix of 2026-09-27: one bag on its Radxa was refused over five
+  // garments that were between units and were never going to be written.
+  // Named by the ITEM, which is what the server's own refusal and its
+  // amber "not written" line say - one garment, one name, wherever the
+  // operator reads about it (the model label is on the row above).
+  const unassigned = [...new Set(state.show.cues.map(c => itemByKey(c.item))
+    .filter(i => i && !i.unit).map(i => i.item))];
   const busy = targets.filter(t => t.demoBusy).map(t => t.unit);
   const run = fleet?.run || null;
   let both = null;
   if (!cues) both = "The timeline has no cues yet — add them on the Timeline tab.";
-  else if (bad) both = `The timeline has ${bad} problem${bad === 1 ? "" : "s"} — fix them on the Timeline tab (nothing is written while one is left).`;
-  else if (!every.length) both = "No cue is on a unit yet — give the items a unit in the list on the Designs tab.";
   // The chosen LOOK has gone from the timeline under an open dialog: the
-  // write is refused, not silently widened to the whole fleet.
+  // write is refused, not silently widened to the whole fleet. Asked
+  // before the problems below, which would otherwise be counted over the
+  // whole timeline and named as this LOOK's.
   else if (ui.writeOnly !== null && !row)
     both = "The LOOK you picked is no longer in the timeline — pick one again above.";
+  else if (bad) both = `${only ? row.title : "The timeline"} has ${bad} problem${bad === 1 ? "" : "s"}`
+    + ` — fix ${bad === 1 ? "it" : "them"} on the Timeline tab (nothing is written while one is left).`;
+  else if (!every.length) both = "No cue is on a unit yet — give the items a unit in the list on the Designs tab.";
+  // A full upload goes out whole: an item with cues and no unit is a hole
+  // in it, and the server refuses it by name. One LOOK is a different
+  // question, and the answer is yes - so the way out is offered here.
+  else if (!only && unassigned.length)
+    both = `${unassigned.join(", ")} ${unassigned.length === 1 ? "has" : "have"} cues but no unit`
+      + ` — give ${unassigned.length === 1 ? "it" : "them"} one on the Designs tab, or pick one LOOK`
+      + ` above to write just that one.`;
   const demoPlaying = busy.length
     ? `${busy.join(", ")} ${busy.length === 1 ? "is" : "are"} playing a demo — press STOP first.`
     : null;
@@ -2812,7 +2839,7 @@ function writeState() {
     : clearOnly && !clearOnly.length
       ? "That LOOK's unit does not hold this conductor's show."
     : demoPlaying;
-  return { cues, bad, targets, run, busy, name, note, offline,
+  return { cues, bad, targets, run, busy, name, note, offline, unassigned,
            clearTargets, clearWhy,
            only, onlyTitle: row ? row.title : null,
            onlyShared: !!row && row.shared,
@@ -2890,13 +2917,26 @@ function uploadOnlyText(s) {
     + (s.onlyShared ? ` (the unit's other looks ride along — a unit is`
        + ` written its whole show, not one look of it)` : "")
     + ". START needs every unit of the timeline to hold this upload"
-    + " — use this for checking one look, then Upload for all before the show.";
+    + " — use this for checking one look, then Upload for all before the show."
+    + notWrittenText(s);
 }
 function demoOnlyText(s) {
   if (!s.onlyTitle) return "";
   const many = s.only.length !== 1;
   return `Only ${s.onlyTitle}'s unit${many ? "s get" : " gets"} the demo;`
-    + " the other units keep theirs.";
+    + " the other units keep theirs." + notWrittenText(s);
+}
+// What a one-LOOK write leaves out for good, rather than merely leaves
+// alone: a garment with cues and no unit has nowhere to be written, so it
+// is not in this write and cannot be in the next one either until it has
+// one. Said on both choices, because the server answers both the same
+// way (its `warnings`) - and said HERE rather than as a refusal, since
+// this write is perfectly good (2026-09-27).
+function notWrittenText(s) {
+  if (!s.only || !s.unassigned.length) return "";
+  return ` Not written: ${s.unassigned.join(", ")} — no unit yet`
+    + ` (give ${s.unassigned.length === 1 ? "it" : "them"} one on the Designs tab`
+    + ` before the show).`;
 }
 // The units this write is NOT going to, while one LOOK is selected: the
 // same list, with the same "older upload" marker, because THEY are the
@@ -2934,6 +2974,15 @@ function writeProgressHtml() {
 const LCD_STEPS = (name, seconds) => `On each unit: <b>KEY2</b> opens the menu → `
   + `<b>${esc(name)}</b> (just below STANDBY) → <b>KEY1</b> plays it (it writes its own `
   + `pictures first, about ${seconds} s) · <b>KEY2</b> stops it and goes back to the menu.`;
+// What a write left out on purpose, in the server's own words
+// ("AZ271SB2303: not assigned to a unit" - its `warnings`). Amber and not
+// red: nothing failed, and a one-LOOK write over a garment that has no
+// unit is exactly what the operator asked for. Red is for the refusals
+// above it, which mean nothing was written at all.
+function writeWarningsHtml(r) {
+  return (r.warnings || []).map(
+    w => `<div class="warn">not written: ${esc(w)}</div>`).join("");
+}
 function writeResultHtml() {
   const r = ui.writeResult;
   if (!r) return "";
@@ -2941,6 +2990,7 @@ function writeResultHtml() {
   return `<div class="dlg-result">
     <h3 class="${r.ok ? "" : "fail"}">${esc(r.title)} · ${esc(r.at)}</h3>
     ${(r.problems || []).map(p => `<div class="fail">${esc(p)}</div>`).join("")}
+    ${writeWarningsHtml(r)}
     ${r.error ? `<div class="fail">${esc(r.error)}</div>` : ""}
     ${units.length ? units.map(([unit, u]) => `<div>${esc(unit)}: `
       + (u.ok ? "✓ written" : `<span class="fail">FAILED — ${esc(u.error)}</span>`)
@@ -3178,10 +3228,16 @@ const uploadDuringRunQuestion = (seconds, only) =>
 // How an answer read: all of it, some of it, or none of it. The result
 // heading says which - "Uploaded for the show" over a column of FAILED
 // would be the page lying about the one thing it was opened to settle.
+// `problems` are refusals; `warnings` are what the write left out on
+// purpose (a one-LOOK write over a garment with no unit - the server's
+// showfile.build). A warning is not a failure: it must not turn "LOOK 26
+// uploaded" into "nothing was uploaded", which is why only `problems`
+// are counted here.
 function writeOutcome(result) {
   const units = Object.values(result.units || {});
   const ok = units.filter(u => u.ok).length;
   return { ok, total: units.length, some: ok > 0,
+           warnings: result.warnings || [],
            all: !!units.length && ok === units.length && !result.error
                 && !(result.problems || []).length };
 }
@@ -3217,7 +3273,8 @@ async function writeUpload() {
                        : (s.only ? `${s.onlyTitle}: nothing was uploaded`
                                  : "Nothing was uploaded"),
                      at: new Date().toLocaleTimeString(), units: result.units,
-                     problems: result.problems, error: result.error,
+                     problems: result.problems, warnings: out.warnings,
+                     error: result.error,
                      // What to do next after a look went out on its own -
                      // and the radio goes back to All LOOKs, so the next
                      // Upload is the whole show unless it is chosen again.
@@ -3266,8 +3323,8 @@ async function writeDemo() {
                                             : `Saved on ${out.ok} of ${out.total} units as "${name}" — the rest did not take it`)
                        : `${look}"${name}" was not saved on any unit`,
                      at: new Date().toLocaleTimeString(), units: result.units,
-                     problems: result.problems, error: result.error,
-                     name, seconds: s.seconds };
+                     problems: result.problems, warnings: out.warnings,
+                     error: result.error, name, seconds: s.seconds };
   if (s.only) ui.writeOnly = null;
   renderWriteDialog();
   await refreshDemos();
