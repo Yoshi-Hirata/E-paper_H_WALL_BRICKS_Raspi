@@ -120,6 +120,13 @@ class _Stand:
                     return self._json(workspace.intake(
                         body.get("files") or [],
                         str(item) if item else None))
+                if self.path == "/api/bundle/import":
+                    # Load bundle… against the real thing: the wiring here
+                    # is kept and the page has to say so.
+                    try:
+                        return self._json(workspace.import_bundle(body))
+                    except ValueError as exc:
+                        return self._json({"error": str(exc)})
                 if self.path == "/api/show":
                     workspace.set_timeline(body.get("duration", 600),
                                            body.get("cues", []),
@@ -180,6 +187,7 @@ _PROBE = """
     return { name: name, text: function () { readNames.push(name); return Promise.resolve(text); } };
   }
   function toastNow() { return (document.querySelector("#toast") || {}).textContent || ""; }
+  function toastTone() { return (document.querySelector("#toast") || {}).className || ""; }
   function designsOf(key) {
     var it = state.items.find(i => i.item === key);
     return it ? it.designs.map(d => d.name) : null;
@@ -187,6 +195,10 @@ _PROBE = """
   function scalesOf(key) {
     var it = state.items.find(i => i.item === key);
     return it && it.map ? it.map.scales.length : null;
+  }
+  function socketsOf(key) {
+    var it = state.items.find(i => i.item === key);
+    return it && it.map ? it.map.scales.map(s => s[4]).sort((a, b) => a - b) : null;
   }
   (async function () {
     try {
@@ -262,6 +274,24 @@ _PROBE = """
       await wait(250);
       out.foreignMap = { toast: toastNow(), skirt: scalesOf("Skirt"),
                          look22: scalesOf("Look22") };
+
+      // 8. Load bundle…: the designers' project replaces designs, and
+      //    KEEPS the wiring already here - amber, once per garment, with
+      //    what to do about it (2026-09-27).
+      var realConfirm = window.confirm;
+      window.confirm = function () { return true; };
+      var stale = MAP.replace("front,1,2,17,60,017-60", "front,1,2,17,59,017-59");
+      var bundle = { format: "epaper-show-bundle", version: 1,
+                     files: { "Look22_map.csv": stale,
+                              "Look22_color_bundled_grid.csv": GRID },
+                     show: { format: "epaper-show", version: 1,
+                             duration: 600, cues: [] } };
+      await loadBundleFile({ name: "designers.json",
+                             text: () => Promise.resolve(JSON.stringify(bundle)) });
+      await wait(400);
+      window.confirm = realConfirm;
+      out.bundle = { toast: toastNow(), tone: toastTone(),
+                     designs: designsOf("Look22"), sockets: socketsOf("Look22") };
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -349,3 +379,21 @@ def test_another_garments_map_is_refused_on_the_page_too(intake):
     assert "refused" in foreign["toast"], foreign
     # Neither garment's wiring moved (the two maps differ in size).
     assert foreign["look22"] == 4 and foreign["skirt"] != 4, foreign
+
+
+def test_load_bundle_says_the_wiring_here_was_kept(intake):
+    """2026-09-27: a bundle loaded at 13:49 put a stale *_map.csv back over
+    that morning's wiring change, silently. The wiring stays now - and the
+    operator is told, in amber, once per garment, with what to do about
+    it."""
+    bundle = intake["bundle"]
+    assert "1 wiring file kept" in bundle["toast"], bundle
+    assert "Look22_map.csv: the workspace's wiring is kept " \
+           "(the bundle's copy differs)" in bundle["toast"], bundle
+    assert "regenerate from the wiring site if the garment changed" \
+        in bundle["toast"], bundle
+    assert bundle["tone"] == "warn", bundle          # amber, not a glance
+    # The wiring on the page is still the operator's (socket 60, not the
+    # bundle's 59), and the bundle's design arrived all the same.
+    assert 60 in bundle["sockets"] and 59 not in bundle["sockets"], bundle
+    assert "Look22_color_bundled_grid.csv" in bundle["designs"], bundle
