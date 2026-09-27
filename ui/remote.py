@@ -1032,6 +1032,12 @@ class RemoteSession:
                 # broadcast blocked, sent again once. None until one has.
                 "resend_on_stall": bool(runner.resend_on_stall),
                 "resend": _with_age(runner.resend),
+                # The health check two seconds before the last cue
+                # (ui/runner.py's PRECHECK_S): {"cue", "before_ms", "by"
+                # ("padding" | "reopen" | null), "after_ms", "at",
+                # "ago_s"}. `before_ms` of 1-2 ms with `by` null is the
+                # normal answer - the port was fine and nothing was done.
+                "precheck": _with_age(runner.precheck),
                 "burn": burn,
                 # Taking the pictures back out of slots 1-18 after the
                 # show (see the module docstring): {"state", "done",

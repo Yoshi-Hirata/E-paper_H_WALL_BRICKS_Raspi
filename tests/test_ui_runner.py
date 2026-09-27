@@ -141,6 +141,21 @@ class RecoveringBus(FakeBus):
             self.stalled = False
         return self.port
 
+    def unplug(self, back_as: "str | None" = None):
+        """A USB re-enumeration: the device node goes, and comes back under
+        `back_as` (the kernel's ttyACM0 -> ttyACM1). Paired with
+        `token()` below as the runner's link_token."""
+        self.gone = self.port
+        self.back_as = back_as or self.port
+
+    def token(self, port: str):
+        """What DemoRunner(link_token=...) reads: None for a node that is
+        not there. A port that has been unplugged reads as gone until the
+        one it comes back as is asked for."""
+        if getattr(self, "gone", None) is None:
+            return "up"
+        return "up" if port == getattr(self, "back_as", None) else None
+
     def _block(self):
         if self.stalled:
             time.sleep(self.block_s)
