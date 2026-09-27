@@ -158,12 +158,38 @@ def test_one_bus_verdict_serves_the_tile_the_row_and_the_notes():
     # Red for the streak, today's amber for one - the same two classes the
     # landing check uses, so a unit reads the same wherever the trouble is.
     assert 's.degraded ? "no" : "re"' in mark
-    assert "esc(s.text)" in mark and "esc(s.title)" in mark
+    # `short` is read once and used twice - for the words, and to keep the
+    # "Recover bus" button off the row (see the next test).
+    assert "const short = !!(opts && opts.short)" in mark
+    assert "esc(short ? s.short : s.text)" in mark
+    assert "esc(s.title)" in mark
+    # The NOW -> NEXT row's state cell is one column of a grid: it gets the
+    # two-word form, and the sentence stays on the tile (M1).
+    assert "stallMark(u, { short: true })" in _function_body("paintBoard")
     assert "SHOWBOARD.vitals(u, c.r.boardNos, showMidRun())" in PAGE
     listed = _function_body("degradedUnits")
     assert "SHOWBOARD.busStall(u, mid)" in listed and "u.online" in listed
-    # The note's words, and the order the operator has to work in.
-    assert "bus degraded — restart the unit, then Upload" in _function_body("degradedNote")
+    # The note's words, and the order the operator has to work in - said once
+    # for all the named units rather than once per unit.
+    note = _function_body("degradedNote")
+    assert "bus degraded — restart " in note
+    assert '"the unit" : "these units"' in note and "then Upload" in note
+
+
+def test_a_unit_still_playing_counts_as_mid_show():
+    # A conductor restarted mid-show has no run of its own for a poll or two
+    # (or never, if the units came back unsynced) - and the cues are firing
+    # all the same. "Restart this unit" must not appear over a garment that
+    # is on stage (M2).
+    mid = PAGE[PAGE.index("const showMidRun ="):]
+    mid = mid[:mid.index(";\n")]
+    assert mid.count('["running", "holding"].includes') == 2, \
+        "a unit that is HOLDING is mid-show too (N3)"
+    # Three things a unit's own `show` is not evidence of: a demo it is
+    # playing from its own menu (N1), an offline unit's kept last answer
+    # (N2), and anything other than running/holding.
+    assert "u.online" in mid, "an offline unit's stale show.state counts (N2)"
+    assert "!u.show.demo" in mid, "a unit's own demo silences the fleet (N1)"
 
 
 def test_the_note_is_shown_under_start_and_in_the_write_dialog():
@@ -176,10 +202,23 @@ def test_the_note_is_shown_under_start_and_in_the_write_dialog():
     dialog = _function_body("writeDialogHtml")
     assert 'id="write-degraded"' in dialog and "esc(degradedNote())" in dialog
     assert '$("#write-degraded")' in _function_body("paintWrite")
-    # START itself is NOT gated on it: a degraded unit still shows every
-    # cue, only late, and a refusal the night of the show would be worse.
+    # Both lines cost nothing on the evenings they say nothing: the margin is
+    # in the stylesheet, behind :empty, not inline on the element (L4).
+    assert "#show-degraded:empty, #write-degraded:empty { display: none; }" in PAGE
+    assert 'id="show-degraded" style=' not in PAGE
+
+
+def test_start_itself_is_not_gated_on_the_bus():
+    # A degraded unit still shows every cue, only late - a refusal on the
+    # night of the show would be worse than a late cue. The conductor never
+    # reads the field, so no refusal can be built out of it...
     server = (REPO / "conductor" / "server.py").read_text(encoding="utf-8")
-    assert "bus_stall" not in server and "degraded" not in server
+    assert "bus_stall" not in server
+    # ...and the START / ② PRESET gate itself refuses on nothing of the kind.
+    gate = server[server.index("def _one_timeline("):]
+    gate = gate[:gate.index("\n    def ")]
+    for word in ("bus_stall", "degraded", "stall"):
+        assert word not in gate, f"the START gate refuses on {word!r}"
 
 
 def test_recover_bus_sits_on_the_mark_and_runs_before_preset_and_start():
@@ -189,8 +228,10 @@ def test_recover_bus_sits_on_the_mark_and_runs_before_preset_and_start():
     mark = _function_body("stallMark")
     assert "data-recover-bus" in mark and "esc(u.name)" in mark
     # Not mid-run and not for a unit that is not answering: the unit would
-    # refuse the first and cannot hear the second.
-    assert "showMidRun() || !u.online" in mark
+    # refuse the first and cannot hear the second. Not on the NOW -> NEXT
+    # row either (`short`), for M1's own reason - a button in that one grid
+    # column would push the row's numbers off the end of it.
+    assert "short || showMidRun() || !u.online" in mark
     assert '[data-recover-bus]' in PAGE and "recoverBuses([" in PAGE
     # One unit at a time, on its own proxy - never a fleet-wide command.
     sweep = _function_body("recoverBuses")
@@ -515,6 +556,15 @@ CALLS = {
     # over something that happened twenty minutes ago.
     "stall_degraded_but_old": ["busStall", _u(bus_stall=_stall(count=37, ago_s=1200.0)), False],
     "stall_degraded_right_on_the_edge": ["busStall", _u(bus_stall=_stall(count=37, ago_s=120.0)), False],
+    # An agent that reports no age at all: nothing here can tell whether the
+    # streak is still happening, and "restart this unit" is not a guess to
+    # make on the night. Pinned fail-safe (M3).
+    "stall_no_age_at_all": ["busStall", _u(bus_stall=_stall(count=37, ago_s=None)), False],
+    # A long streak of ORDINARY stalls: a board busy repainting blocks
+    # 50-60 ms, and there is no restart in that however many times it
+    # happens. Only the 2026-09-28 depth (225-390 ms) is a degraded bus.
+    "stall_many_but_shallow": ["busStall", _u(bus_stall=_stall(count=37, ms=58.0)), False],
+    "stall_deep_on_the_edge": ["busStall", _u(bus_stall=_stall(count=5, ms=150.0)), False],
     # The unit's own all-clear: a show broadcast went out cleanly, so `ms`
     # and `at` are gone and only the count is kept (ui/runner.py).
     "stall_cleared_itself": ["busStall",
@@ -620,6 +670,7 @@ try {
                     RTT_SLOW_MS: SHOWBOARD.RTT_SLOW_MS, RESTART_S: SHOWBOARD.RESTART_S,
                     STALL_STREAK_N: SHOWBOARD.STALL_STREAK_N,
                     STALL_FRESH_S: SHOWBOARD.STALL_FRESH_S,
+                    STALL_DEGRADED_MS: SHOWBOARD.STALL_DEGRADED_MS,
                     ARROWS: SHOWBOARD.ARROWS };
   for (var name in CALLS)
     out.results[name] = SHOWBOARD[CALLS[name][0]].apply(null, CALLS[name].slice(1));
@@ -972,6 +1023,7 @@ DEGRADED_TILE = "bus degraded (37 stalls) — restart this unit before START"
 def test_five_stalls_with_a_fresh_one_is_a_unit_to_restart(board):
     r, c = board["results"], board["constants"]
     assert c["STALL_STREAK_N"] == 5 and c["STALL_FRESH_S"] == 120
+    assert c["STALL_DEGRADED_MS"] == 150
     # Nothing to say at all: no stall, no field, no unit.
     for name in ("stall_none", "stall_no_field_at_all", "stall_no_unit"):
         assert r[name] is None, name
@@ -988,11 +1040,28 @@ def test_five_stalls_with_a_fresh_one_is_a_unit_to_restart(board):
     assert five["degraded"] is True
     assert five["text"] == "bus degraded (5 stalls) — restart this unit before START"
     assert r["stall_degraded_many"]["text"] == DEGRADED_TILE
-    # ...and the tooltip names the pre-show procedure, in the order it is
-    # to be done - the boards powered FIRST, the restart after it.
+    # ...and the tooltip names the pre-show procedure, in the order it is to
+    # be done - the boards powered FIRST, the restart after it - in the words
+    # this page itself prints on the tile. "REMOTE" is not one of them.
     title = r["stall_degraded_many"]["title"]
-    assert "boards ALREADY" in title and "powered" in title
+    assert "Power the garment's boards FIRST" in title, title
+    assert "Boards 16 / 16" in title and "panels online: 16/16" in title, title
+    assert "standby" in title and "ready" in title, title
+    assert "REMOTE" not in title, title
     assert "本番前の起動手順" in title, title
+
+
+def test_an_ordinary_stall_stays_amber_however_many_of_them_there_are(board):
+    # The 2026-09-28 fingerprint was the DEPTH: 225-390 ms on every write.
+    # A board merely busy repainting blocks 50-60 ms, and a long streak of
+    # those is not a unit to restart - the count alone would have turned a
+    # whole fleet red on an ordinary evening (PM decision).
+    r = board["results"]
+    shallow = r["stall_many_but_shallow"]
+    assert shallow["degraded"] is False, shallow
+    assert shallow["text"] == "bus stalled 58 ms"
+    # 150 ms exactly is deep enough - the threshold is inclusive, like the age.
+    assert r["stall_deep_on_the_edge"]["degraded"] is True
 
 
 def test_a_degraded_bus_says_nothing_new_mid_show(board):
@@ -1010,6 +1079,10 @@ def test_an_old_streak_is_not_a_unit_to_restart(board):
     assert r["stall_degraded_but_old"]["degraded"] is False
     # 120 s exactly still counts - the threshold is inclusive.
     assert r["stall_degraded_right_on_the_edge"]["degraded"] is True
+    # An agent that sends no age: the count is cumulative over the whole
+    # worker session and says nothing about WHEN, so this stays amber rather
+    # than guess (M3). Every unit runs d374825, which does send ago_s.
+    assert r["stall_no_age_at_all"]["degraded"] is False
     # The unit's own all-clear (a clean show broadcast) takes the mark down
     # altogether, count and all: nothing is said about a unit that recovered.
     assert r["stall_cleared_itself"] is None
@@ -1024,6 +1097,15 @@ def test_the_now_next_row_carries_the_same_verdict(board):
     assert bad["tone"] == "red", bad
     part = [p for p in bad["parts"] if p["text"] == "bus degraded"]
     assert len(part) == 1 and "本番前の起動手順" in part[0]["title"]
+    # ...and SECOND on the line, right behind the unit's own name: .nn-vit
+    # ellipsises, and the one thing here that has to be acted on must not be
+    # the thing that falls off the end of the row (H1). Asserted on the order
+    # the parts are BUILT in, which is what the ellipsis then eats from.
+    order = [p["text"] for p in bad["parts"]]
+    assert order[0] == "radxa-01" and order[1] == "bus degraded", order
+    # The clean row is unchanged by any of this.
+    assert [p["text"] for p in r["vitals_good"]["parts"]][:2] \
+        == ["radxa-01", "lag +4 ±3 ms"]
     # One stall is not the row's business: the tile beside it says it.
     assert "bus" not in r["vitals_one_stall"]["text"]
     assert r["vitals_one_stall"]["tone"] == ""
@@ -1174,6 +1256,20 @@ _SHOWS = {
                 "demo": False,
                 "burn": {"state": "cleared", "done": 6, "total": 6,
                          "failed": []}},
+    # The units are still playing and this conductor has no run of its own:
+    # it was restarted mid-show and has not adopted the run yet (M2).
+    "playing": {"id": "S1", "state": "running", "applied": 1, "cues": 2,
+                "demo": False,
+                "burn": {"state": "burned", "done": 6, "total": 6,
+                         "failed": []}},
+    # A unit playing its OWN standalone demo from KEY1. It reads "running"
+    # exactly as a show does (conductor/fleet.py's _playing_demo), and one
+    # unit on a stand in a showroom must not silence the degraded-bus
+    # guidance across the whole fleet (N1).
+    "demo": {"id": "D1", "state": "running", "applied": 1, "cues": 2,
+             "demo": True, "demo_name": "PARIS SS26",
+             "burn": {"state": "burned", "done": 6, "total": 6,
+                      "failed": []}},
 }
 # ...and what the unit says about the clear itself, beside its show.
 _STALLS = {
@@ -1237,8 +1333,15 @@ class _Stand:
         self.unit_clear = "none"
         # What radxa-01's own serial port has been doing (ui/remote.py's
         # bus_stall), steered on its own: the 2026-09-28 unit was one of
-        # five, and only one of them was degraded.
+        # five, and only one of them was degraded. radxa-02's is separate,
+        # so the note can be seen naming two units at once.
         self.stall = "none"
+        self.stall2 = "none"
+        # radxa-04 playing its own standalone demo (N1), and the offline
+        # radxa-03 still carrying a stale show.state of "running" (N2):
+        # neither is evidence that THIS show is on stage.
+        self.demo4 = False
+        self.stale3 = False
         # What POST /api/units/<name>/bus/recover answers: "padding" and
         # "reopen" are the two cures, "never" the unit that has to be
         # restarted (ui/runner.py's _recover_bus()).
@@ -1325,6 +1428,11 @@ class _Stand:
                 if path == "/api/fleet":
                     show = _SHOWS[stand.unit_show]
                     clear = _CLEARS[stand.unit_clear]
+                    # radxa-04 on its own standalone demo (N1), and the
+                    # offline radxa-03 still carrying whatever its last
+                    # answer said - which the fleet keeps as it was (N2).
+                    four = _SHOWS["demo"] if stand.demo4 else show
+                    three = _SHOWS["playing"] if stand.stale3 else None
                     return self._json({
                         # radxa-02 is a third of a second behind this PC AND
                         # one board short - either on its own is red.
@@ -1332,9 +1440,11 @@ class _Stand:
                                         bus_stall=_STALLS[stand.stall]),
                                   _unit("radxa-02", show_lag_ms=330.0, show=show,
                                         live=2, live_ids=[17, 18], absent=[20],
-                                        clear=clear),
-                                  _unit("radxa-03", online=False, error="no answer"),
-                                  _unit("radxa-04", show=show, clear=clear),
+                                        clear=clear,
+                                        bus_stall=_STALLS[stand.stall2]),
+                                  _unit("radxa-03", online=False, error="no answer",
+                                        show=three),
+                                  _unit("radxa-04", show=four, clear=clear),
                                   _unit("radxa-05", show=show, clear=clear)],
                         "last_fire": None, "run": _RUNS[stand.run],
                         "shows": ({n: {"id": "S1", "cues": 2, "boards": []}
@@ -1354,6 +1464,11 @@ class _Stand:
                     stand.unit_show = args.get("show", stand.unit_show)
                     stand.unit_clear = args.get("clear", stand.unit_clear)
                     stand.stall = args.get("stall", stand.stall)
+                    stand.stall2 = args.get("stall2", stand.stall2)
+                    if "demo4" in args:
+                        stand.demo4 = args["demo4"] == "1"
+                    if "stale3" in args:
+                        stand.stale3 = args["stale3"] == "1"
                     if "recover" in args:
                         stand.recover = args["recover"]
                         stand.asked = []        # each step asks its own way
@@ -1622,10 +1737,12 @@ _PAGE_PROBE = """
       //     tile, red on the garment's row, and one amber line under
       //     (3) START and in WRITE TO UNITS - and nothing new at all while
       //     a show is running.
-      await fetch("/test/fleet?run=none&show=ran&clear=none&stall=once");
+      await fetch("/test/fleet?run=none&show=ran&clear=none&stall=once&stall2=none");
       await wait(1600);
       out.oneStall = { tile: document.querySelector("#tiles .tile").textContent,
-                       note: document.querySelector("#show-degraded").textContent };
+                       note: document.querySelector("#show-degraded").textContent,
+                       // An empty line must cost no height at all (:empty).
+                       noteHeight: document.querySelector("#show-degraded").offsetHeight };
       await fetch("/test/fleet?stall=degraded");
       await wait(1600);
       var badTile = document.querySelector("#tiles .tile");
@@ -1637,14 +1754,48 @@ _PAGE_PROBE = """
         title: [].map.call(badTile.querySelectorAll(".vf.no"),
                            function (s) { return s.title; }).join(" "),
         note: document.querySelector("#show-degraded").textContent,
+        noteHeight: document.querySelector("#show-degraded").offsetHeight,
         startOn: !document.querySelector("#show-start").disabled,
-        row: vit.textContent, rowCls: vit.className };
+        row: vit.textContent, rowCls: vit.className,
+        // The row's own state cell: the two-word form, never the sentence
+        // that belongs on the tile (M1).
+        cell: board().querySelector(".nn-row [data-state]").textContent.trim(),
+        cellRed: [].map.call(board().querySelectorAll(".nn-row [data-state] .vf.no"),
+                             function (s) { return s.textContent; }) };
       document.querySelector("#show-write").click();
       await wait(600);
       out.degradedDialog = (document.querySelector("#write-degraded") || {}).textContent;
       document.querySelector("#write-close").click();
       await wait(400);
-      await fetch("/test/fleet?run=running");
+      // Two of them at once: the names, then the sentence once, in the plural.
+      await fetch("/test/fleet?stall2=degraded");
+      await wait(1600);
+      out.degradedTwo = document.querySelector("#show-degraded").textContent;
+      await fetch("/test/fleet?stall2=none");
+      await wait(1600);
+      // A unit still playing while this conductor has no run of its own: the
+      // cues are firing, so nothing turns red (M2).
+      await fetch("/test/fleet?run=none&show=playing");
+      await wait(1600);
+      out.degradedUnitPlaying = {
+        tile: document.querySelector("#tiles .tile").textContent,
+        note: document.querySelector("#show-degraded").textContent };
+      // ...but radxa-04 on its own standalone DEMO is not this show on stage:
+      // one unit on a stand in a showroom must not silence the guidance for
+      // the other nine (N1).
+      await fetch("/test/fleet?show=ran&demo4=1");
+      await wait(1600);
+      out.degradedWhileOneUnitDemos = {
+        tile: document.querySelector("#tiles .tile").textContent,
+        note: document.querySelector("#show-degraded").textContent };
+      // ...and neither is the OFFLINE radxa-03's last answer, kept as it was
+      // and possibly about a show that ended before this PC was plugged in.
+      await fetch("/test/fleet?demo4=0&stale3=1");
+      await wait(1600);
+      out.degradedWhileOfflineSaysRunning = {
+        tile: document.querySelector("#tiles .tile").textContent,
+        note: document.querySelector("#show-degraded").textContent };
+      await fetch("/test/fleet?stale3=0&run=running&show=ran");
       await wait(1600);
       out.degradedRunning = {
         tile: document.querySelector("#tiles .tile").textContent,
@@ -2045,21 +2196,67 @@ def test_one_stall_stays_amber_and_says_nothing_under_start(page):
     assert "bus stalled 88 ms" in page["oneStall"]["tile"], page["oneStall"]["tile"]
     assert "bus degraded" not in page["oneStall"]["tile"]
     assert page["oneStall"]["note"] == "", page["oneStall"]["note"]
+    # ...and the line it would have gone on takes no room at all (L4).
+    assert page["oneStall"]["noteHeight"] == 0, page["oneStall"]["noteHeight"]
 
 
 def test_a_degraded_bus_is_red_on_the_tile_the_row_and_both_notes(page):
     d = page["degraded"]
-    assert d["red"] == ["bus degraded (37 stalls) — restart this unit before START"], d["red"]
+    assert "bus degraded (37 stalls) — restart this unit before START" in d["red"], d["red"]
     assert "本番前の起動手順" in d["title"], d["title"]
+    assert "panels online: 16/16" in d["title"], d["title"]
     # The garment's own row on the NOW -> NEXT board, red, in two words.
     assert "bus degraded" in d["row"], d["row"]
     assert "red" in d["rowCls"], d["rowCls"]
+    # Its state cell too - and there the SHORT form only: the sentence that
+    # fits a tile would push the row's own numbers off it (M1).
+    assert d["cellRed"] == ["bus degraded"], d["cellRed"]
+    assert "restart this unit before START" not in d["cell"], d["cell"]
     # One amber line under ③ START, and the same one in WRITE TO UNITS -
     # both naming the unit and the order to work in.
     assert d["note"] == "radxa-01: bus degraded — restart the unit, then Upload", d["note"]
     assert page["degradedDialog"] == d["note"], page["degradedDialog"]
+    assert d["noteHeight"] > 0, "the note is there but takes no room"
     # START is NOT gated: a degraded unit still shows every cue, only late.
     assert d["startOn"] is True, "START was taken away over a degraded bus"
+
+
+def test_two_degraded_units_share_one_sentence(page):
+    # The names, then what is wrong once and what to do once, in the plural -
+    # not the same sentence twice across the panel (L4).
+    assert page["degradedTwo"] == ("radxa-01, radxa-02: bus degraded — "
+                                   "restart these units, then Upload"), page["degradedTwo"]
+
+
+def test_a_unit_still_playing_keeps_the_wording_it_had(page):
+    # No run on this conductor, but the units say they are running: it was
+    # restarted mid-show and the cues are still firing (M2).
+    p = page["degradedUnitPlaying"]
+    assert "bus degraded" not in p["tile"], p["tile"]
+    assert "bus stalled 359 ms" in p["tile"], p["tile"]
+    assert p["note"] == "", p["note"]
+
+
+DEGRADED_NOTE = "radxa-01: bus degraded — restart the unit, then Upload"
+
+
+def test_a_demo_on_one_unit_does_not_silence_the_other_nine(page):
+    # A demo reads "running" exactly as a show does (fleet.py's
+    # _playing_demo). One unit on a stand in a showroom, playing from KEY1,
+    # would otherwise take this guidance away from the whole fleet for hours
+    # on end (N1).
+    d = page["degradedWhileOneUnitDemos"]
+    assert "bus degraded (37 stalls)" in d["tile"], d["tile"]
+    assert d["note"] == DEGRADED_NOTE, d["note"]
+
+
+def test_an_offline_units_stale_show_state_is_not_evidence(page):
+    # The fleet keeps an offline unit's last answer as it was, and that
+    # answer can say "running" about a show that ended before this PC was
+    # plugged in. It is not a garment on stage (N2).
+    d = page["degradedWhileOfflineSaysRunning"]
+    assert "bus degraded (37 stalls)" in d["tile"], d["tile"]
+    assert d["note"] == DEGRADED_NOTE, d["note"]
 
 
 def test_nothing_about_it_changes_once_the_show_is_running(page):

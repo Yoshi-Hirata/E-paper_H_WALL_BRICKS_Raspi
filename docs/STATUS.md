@@ -73,33 +73,53 @@
 毎回 225〜390 ms ブロック**(`bus stalled … on stop/show`、タイル
 `+211.7 ms / bus stalled 359 ms`)、**q03〜q06 が遅延**、ショー後もハートビートが
 数分間 359 ms 詰まり続けた。*きれいな回*:基板に電源を入れたまま機体の UI
-サービスを再起動しただけ(standby → `panels online 16/16` → 白の standby →
-REMOTE → Upload)→ **全キュー +1〜6 ms、詰まりゼロ**、以後もきれい
+サービスを再起動しただけ(タイルで見ると `Boards` が `16 / 16`、ログ行が
+`panels online: 16/16`、白のスタンバイを描いてチップが `standby` → `ready`、
+そこで ① Upload)→ **全キュー +1〜6 ms、詰まりゼロ**、以後もきれい
 (ハートビート 81 回、stall なし)。**結論:電源・USB の立ち上がりが荒かった
 親基板は全フレームを約 360 ms 遅らせる状態に入りうる ―― 基板に電源を入れたまま
 機体を再起動すれば直る。**
 
 **Conductor 側だけの変更**(機体は本番前に再デプロイしない):
 
-- タイルの印を 2 段にした。`bus_stall.count` が **5 回以上**
-  (`SHOWBOARD.STALL_STREAK_N`。数は機体のワーカーが立ち上がるたび 0 に戻るので
-  「今のセッションで」の意味)で、**最後の 1 回が 2 分以内**(`STALL_FRESH_S`)なら
-  **赤で `bus degraded (n stalls) — restart this unit before START`**
-  (ツールチップが本番前の手順を名指しする)。5 回未満は従来どおり琥珀色の
-  `bus stalled n ms`。**ショー中(running / holding)は文言を変えない** ――
-  本番中にタイルの言葉が変わらないようにし、赤の案内は待ち時間のためのもの
-- **NOW → NEXT ボード**のその衣装の行にも赤で **`bus degraded`**
+- タイルの `Fired late by` 行の印を 2 段にした。**3 つそろったときだけ**赤で
+  `bus degraded (n stalls) — restart this unit before START`(ツールチップが
+  本番前の手順を、タイルに出る文字で名指しする):
+  **① 回数 5 回以上**(`SHOWBOARD.STALL_STREAK_N`)、**② 最後の 1 回が 150 ms 以上**
+  (`STALL_DEGRADED_MS`)、**③ 最後の 1 回が 2 分以内**(`STALL_FRESH_S`)。
+  どれか欠ければ従来どおり琥珀色の `bus stalled n ms`
+- **150 ms の条件は PM 判断**(レビュー H2)。2026-09-28 の詰まりは毎回
+  225〜390 ms、基板が描画中に取らなかっただけの詰まりは 50〜60 ms ――
+  **50〜60 ms は何回たまっても赤にしない**。数字の性質も押さえておくこと:
+  **`count` はワーカー起動からの通算**で、**`ago_s` は最後の 1 回だけ**が持つ。
+  つまり「5 回 + 最後が 2 分以内」は「まだ続いている」の意味で、
+  「2 分間に 5 回」ではない。`ago_s` が来ない相手は赤にしない(フェイルセーフ。
+  全機体 d374825 なので `ago_s` は必ず来る)
+- **NOW → NEXT ボード**のその衣装の行にも赤で **`bus degraded`**。行の
+  vitals では**機体名のすぐ後ろ**に入れる(`.nn-vit` は溢れを `…` で切るので、
+  対処が要る唯一の項目が切られてはいけない)。行の状態セルも**短い 2 語だけ**で、
+  長い文はタイルにしか出さない
 - **③ START は止めない**(詰まっていてもキューは出る、ただ遅れる)。代わりに
-  **③ START の下**と **WRITE TO UNITS** に黄色で 1 行
-  `radxa-01: bus degraded — restart the unit, then Upload`
+  **③ START の下**と **WRITE TO UNITS** に**琥珀色(amber)**で 1 行、
+  名前を並べて文は 1 回:
+  `radxa-01: bus degraded — restart the unit, then Upload` /
+  `radxa-01, radxa-02: bus degraded — restart these units, then Upload`。
+  空のときは `:empty` で行ごと消える
+- **ショー中は文言を変えない**。run が running / holding のとき、および
+  **この PC に run が無くてもどれかの機体が `show.state === "running"` と
+  言っている間**(本番中に Conductor を再起動して run を拾い直すまでの数
+  ポーリング)も同じ ―― 舞台に出ている衣装に「再起動しろ」は出さない
 - 判定は `index.html` の `SHOWBOARD.busStall()` 1 か所(`<<< SHOWBOARD >>>` の
   純粋層)。タイル・行・2 つの注記が同じ機体について食い違えない
-- 手順は [CONDUCTOR_START.md](CONDUCTOR_START.md) §6「本番前の起動手順」に:
-  **① 衣装の 12 V を先に全部入れる → ② そのあと Radxa を入れる/再起動して
-  `panels online n/n` と白の standby を待つ → ③ `no boards answering` の機体に
-  Upload しない → ④ 機体より後から基板に電源を入れてしまった機体、
-  `bus degraded` の機体は Upload の前に再起動 → ⑤ Upload → 全タイルの
-  `pictures written n/n` を確認 → START**
+- 手順は [CONDUCTOR_START.md](CONDUCTOR_START.md) §6「本番前の起動手順」に。
+  **オペレーターが見るのは機体のログではなくタイル**なので、タイルに出る文字で
+  書いてある:**① 衣装の 12 V を先に全部入れる → ② そのあと Radxa を入れる/
+  再起動して、タイルの `Boards (answering / expected)` が `16 / 16`、最下段の
+  ログ行が `panels online: 16/16`、チップが `standby` → `ready` になるのを待つ
+  → ③ `no boards answering` の機体に Upload しない → ④ 機体より後から基板に
+  電源を入れてしまった機体、`bus degraded` の機体は Upload の前に再起動 →
+  ⑤ Upload → 「THE SHOW」カードが `pictures written on 10 / 10 units`、
+  全タイルの `Pictures` 行が `written` を確認 → START**
 
 **ショーのあと、絵をスロットから消す(2026-09-27 本番後)**
 
