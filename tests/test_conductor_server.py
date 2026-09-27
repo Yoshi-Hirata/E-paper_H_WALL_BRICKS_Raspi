@@ -593,6 +593,265 @@ def test_the_boards_a_garment_really_carries_are_set_on_the_page(workspace):
     assert 200 in [b["board_no"] for b in item(workspace.state(), third)["boards"]]
 
 
+# ---- a DIP ID set by hand (show.json's `dips`) ----
+
+D1301 = "AZ271SD1301"
+# The real garment's shape: 27 boards, map numbers 92-118, one scale each.
+D1301_MAP = "side,row,col,board_no,socket\n" + "".join(
+    f"front,0,{n + 1},{92 + n},1\n" for n in range(27))
+D1301_GRID = ("side,row,shift," + ",".join(str(n + 1) for n in range(27))
+              + "\nfront,0,0," + ",".join("0x00" for _ in range(27)) + "\n")
+
+
+@pytest.fixture
+def d1301(tmp_path):
+    ws = Workspace(tmp_path / "ws")
+    ws.save(f"{D1301}_map.csv", D1301_MAP)
+    ws.save(f"{D1301}_color_pattern01_grid.csv", D1301_GRID)
+    ws.assign(D1301, "radxa-03")
+    return ws
+
+
+def dips_of(state, name):
+    return [(b["board_no"], b["dip_id"], b["dip_by_hand"])
+            for b in item(state, name)["boards"]]
+
+
+def test_a_dip_id_set_by_hand_reaches_the_page_and_the_unit(d1301):
+    # LOOK 25's DIP 27 was changed to 28 on the garment (2026-09-27): a
+    # 27-board item whose ranks can only reach 27.
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 27, False)
+    d1301.set_dips(D1301, {"118": 28})
+    rows = dips_of(d1301.state(), D1301)
+    assert [dip for _, dip, _ in rows] == list(range(1, 27)) + [28]
+    assert rows[-1] == (118, 28, True) and rows[-2] == (117, 26, False)
+    # SWITCHES ON follows the DIP: 28 is 11100, three switches.
+    last = item(d1301.state(), D1301)["boards"][-1]
+    assert last["switches_on"] == "3 4 5"
+    # ...and the unit's own show file addresses that board as 28.
+    d1301.set_timeline(60, [{"id": "a", "item": D1301, "at": 0,
+                             "design": f"{D1301}_color_pattern01_grid.csv"}],
+                       refresh=1.0)
+    shows, problems = d1301.compile_show()
+    assert problems == []
+    assert shows["radxa-03"]["boards"] == list(range(1, 27)) + [28]
+    assert "28" in shows["radxa-03"]["cues"][0]["state"]
+    # A manual cue (Designs tab Prepare) uses the same addresses.
+    payloads, problems = d1301.compile_units(
+        {D1301: f"{D1301}_color_pattern01_grid.csv"}, "m")
+    assert problems == [] and "28" in payloads["radxa-03"]["boards"]
+
+
+def test_a_dip_id_already_on_the_bus_is_refused_with_the_board_named(d1301):
+    with pytest.raises(ValueError) as caught:
+        d1301.set_dips(D1301, {"118": 26})
+    assert str(caught.value) == ("DIP 26 would be used twice on radxa-03 "
+                                 "(boards 117, 118)")
+    assert d1301.state()["items"][0]["boards"][-1]["dip_id"] == 27
+    for wrong in ({"118": 0}, {"118": 61}, {"999": 28}, {"118": "x"}, [1]):
+        with pytest.raises(ValueError):
+            d1301.set_dips(D1301, wrong)
+    with pytest.raises(ValueError):
+        d1301.set_dips("Look99", {"1": 2})
+
+
+def test_a_dip_id_is_undone_and_only_none_takes_it_off(d1301):
+    d1301.set_dips(D1301, {"118": 28})
+    d1301.undo()
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 27, False)
+    d1301.redo()
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 28, True)
+    # The badge's "✕" - None - is the ONLY way back to the rank.
+    d1301.set_dips(D1301, {"118": None})
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 27, False)
+    # A setting that happens to equal the rank is a statement about the
+    # switches, not a no-op: it is kept, badge and all, so a later
+    # renumbering cannot move that board's address off the hardware with
+    # nothing recorded to stop it (found in review).
+    d1301.set_dips(D1301, {"118": 27})
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 27, True)
+    assert d1301.export_show()["dips"] == {D1301: {"118": 27}}
+    # ...and setting the same thing twice is still not a second step.
+    before = d1301.state()["history"]
+    d1301.set_dips(D1301, {"118": 27})
+    assert d1301.state()["history"] == before
+
+
+def test_renumbering_a_board_carries_its_hand_set_dip_over(d1301):
+    """`dips` is keyed on the number the PAGE shows, which set_boards()
+    changes - so it has to carry the setting to the board's new number in
+    the same step. Renumbering 118 -> 119 used to leave `dips` saying
+    {"118": 28}: the board went back to its rank while its switches still
+    read 28, so its cue painted nothing and the board really at 27 took
+    it - with no warning anywhere (found in review)."""
+    d1301.set_dips(D1301, {"118": 28})
+    d1301.set_boards(D1301, {"118": 119})
+    rows = {no: (dip, hand) for no, dip, hand in dips_of(d1301.state(), D1301)}
+    assert 118 not in rows and rows[119] == (28, True)
+    assert d1301.export_show()["dips"] == {D1301: {"119": 28}}
+    # Undo takes both halves back together: one step, one meaning.
+    d1301.undo()
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 28, True)
+
+
+def test_a_renumbering_onto_another_boards_number_moves_no_dip_onto_it(d1301):
+    """The worse half of the same bug: 117 -> 118 and 118 -> 130 in one
+    call. A stale {"118": 28} would have become the setting of what used to
+    be 117 - a different board, silently addressed by hand."""
+    d1301.set_dips(D1301, {"118": 28})
+    d1301.set_boards(D1301, {"117": 118, "118": 130})
+    rows = {no: (dip, hand) for no, dip, hand in dips_of(d1301.state(), D1301)}
+    # 118 is now the board that was 117, and it was never set by hand.
+    assert rows[118] == (26, False)
+    # The setting followed its own board to 130.
+    assert rows[130] == (28, True)
+    assert d1301.export_show()["dips"] == {D1301: {"130": 28}}
+
+
+def test_a_board_left_alone_by_a_renumbering_keeps_its_dip(d1301):
+    # Two boards set by hand; one of them is renumbered, the other is not.
+    d1301.set_dips(D1301, {"117": 40, "118": 28})
+    d1301.set_boards(D1301, {"118": 119})
+    assert d1301.export_show()["dips"] == {D1301: {"117": 40, "119": 28}}
+    rows = {no: (dip, hand) for no, dip, hand in dips_of(d1301.state(), D1301)}
+    assert rows[117] == (40, True) and rows[119] == (28, True)
+
+
+def test_one_unusable_dip_in_a_hand_edited_show_leaves_the_others_badged(
+        tmp_path):
+    """A show.json edited by hand: board 20's DIP is out of range and board
+    17's is a perfectly good 5. The bus falls back to the ranks and says why
+    - but 17 still wears its badge, because its address really was set by
+    hand. _own_dips() is per entry for exactly this (found in review)."""
+    ws = Workspace(tmp_path / "ws")
+    ws.save("Look22_map.csv", MAP)                  # boards 17, 18, 20
+    (ws.root / "show.json").write_text(json.dumps(
+        {"dips": {"Look22": {"17": 5, "20": 61}}}), encoding="utf-8")
+    look = item(ws.state(), "Look22")
+    assert [b["dip_id"] for b in look["boards"]] == [1, 2, 3]   # the ranks
+    # Both were set by hand - 20's is refused, not unsaid - and 17 keeps
+    # its badge instead of being thrown away with 20.
+    assert [b["dip_by_hand"] for b in look["boards"]] == [True, False, True]
+    assert look["problems"] == ["board 20: DIP 61 is outside 1-60"]
+    # A value that is not a number at all cannot be shown as a DIP ID, so
+    # there is no badge for it - but it is still said, never swallowed.
+    (ws.root / "show.json").write_text(json.dumps(
+        {"dips": {"Look22": {"17": 5, "20": "x"}}}), encoding="utf-8")
+    look = item(ws.state(), "Look22")
+    assert [b["dip_by_hand"] for b in look["boards"]] == [True, False, False]
+    assert look["problems"] == [
+        "board 20: the DIP ID set by hand ('x') is not a number"]
+
+
+def test_a_dip_id_is_set_across_two_items_of_one_unit(workspace):
+    # Look22 (17, 18, 20) and a skirt (1, 2) share radxa-02: ranks 3, 4, 5
+    # and 1, 2. One board of each is typed over, and the two settings live
+    # under their own items but are judged on the one bus.
+    workspace.save("Look20-Skirt_map.csv", SKIRT_MAP)
+    workspace.assign("Look22", "radxa-02")
+    workspace.assign("Look20-Skirt", "radxa-02")
+    workspace.set_dips("Look22", {"20": 30})
+    workspace.set_dips("Look20-Skirt", {"1": 29})
+    state = workspace.state()
+    assert dips_of(state, "Look22") == [(17, 3, False), (18, 4, False),
+                                        (20, 30, True)]
+    assert dips_of(state, "Look20-Skirt") == [(1, 29, True), (2, 2, False)]
+    # A DIP the OTHER item already holds is refused, unit named.
+    with pytest.raises(ValueError) as caught:
+        workspace.set_dips("Look20-Skirt", {"2": 30})
+    assert "DIP 30 would be used twice on radxa-02" in str(caught.value)
+
+
+def test_four_switches_on_is_a_warning_beside_upload_not_a_refusal(d1301):
+    # 15 is 1111 and 27 is 11011: four switches, which the operator reports
+    # unreliable on the bus (2026-09-27). Those the RANKS produce are
+    # warned about too - nothing is refused, and nothing is renumbered.
+    warnings = d1301.state()["show"]["warnings"]
+    flagged = [w for w in warnings if "4+ switches on" in w]
+    assert [w.split("DIP ")[1].split(" ")[0] for w in flagged] == \
+        ["15", "23", "27"]
+    assert flagged[0] == (f"{D1301} board 106: DIP 15 has 4+ switches on - "
+                          "reported unreliable; set another ID by hand")
+    assert [b["dip_unreliable"] for b in item(d1301.state(), D1301)["boards"]]\
+        .count(True) == 3
+    # Setting the flagged 27 to 28 (11100) takes that one off the list.
+    d1301.set_dips(D1301, {"118": 28})
+    after = [w for w in d1301.state()["show"]["warnings"]
+             if "4+ switches on" in w]
+    assert len(after) == 2 and all("DIP 27" not in w for w in after)
+    # Still only a warning: the show builds.
+    d1301.set_timeline(60, [{"id": "a", "item": D1301, "at": 0,
+                             "design": f"{D1301}_color_pattern01_grid.csv"}],
+                       refresh=1.0)
+    assert d1301.compile_show()[1] == []
+
+
+def test_dips_survive_an_export_and_an_import(d1301):
+    d1301.set_dips(D1301, {"118": 28})
+    exported = d1301.export_show()
+    assert exported["dips"] == {D1301: {"118": 28}}
+    d1301.set_dips(D1301, {"118": None})
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 27, False)
+    d1301.import_show(exported)
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 28, True)
+
+
+def test_a_bundle_without_dips_keeps_the_ones_this_workspace_has(d1301):
+    # The switches are a fact about the boards standing here, not about the
+    # timeline that arrived - the same rule `boards` follows.
+    d1301.set_dips(D1301, {"118": 28})
+    bundle = {"format": "epaper-show-bundle", "version": 1, "files": {},
+              "show": d1301.export_show()}
+    bundle["show"].pop("dips")
+    answer = d1301.import_bundle(bundle)
+    assert answer["dips_kept"] is True
+    assert dips_of(d1301.state(), D1301)[-1] == (118, 28, True)
+    # A bundle that DOES carry a populated mapping replaces it.
+    bundle["show"]["dips"] = {D1301: {"117": 40}}
+    answer = d1301.import_bundle(bundle)
+    assert answer["dips_kept"] is False
+    rows = {no: (dip, hand) for no, dip, hand in dips_of(d1301.state(), D1301)}
+    assert rows[117] == (40, True) and rows[118] == (27, False)
+
+
+def test_a_dip_id_is_set_over_http(tmp_path):
+    """The exact call the operator's page makes - and the one to make by
+    hand against the show PC when there is no time to click."""
+    ws = Workspace(tmp_path / "ws")
+    ws.save(f"{D1301}_map.csv", D1301_MAP)
+    ws.assign(D1301, "radxa-03")
+    server = make_server(ws.root, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def post(path, body):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    try:
+        assert post("/api/boards",
+                    {"item": D1301, "dips": {"118": 28}}) == {"ok": True}
+        state = json.loads(urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/state", timeout=5).read())
+        assert dips_of(state, D1301)[-1] == (118, 28, True)
+        # A clash comes back as the page's own toast, not a traceback.
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            post("/api/boards", {"item": D1301, "dips": {"117": 28}})
+        assert "would be used twice on radxa-03" in \
+            json.loads(caught.value.read())["error"]
+        # ...and the ✕ / empty cell sends null.
+        assert post("/api/boards",
+                    {"item": D1301, "dips": {"118": None}}) == {"ok": True}
+        with pytest.raises(urllib.error.HTTPError):
+            post("/api/boards", {"item": D1301})
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_board_numbers_are_checked_and_survive_a_new_csv(workspace):
     nos = [b["board_no"] for b in item(workspace.state(), "Look22")["boards"]]
     for wrong in ({str(nos[0]): nos[1]},            # there twice

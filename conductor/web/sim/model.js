@@ -473,6 +473,9 @@
   const ARRAY_LEN = 64;
   const NO_REFRESH = 0xff;
   const MAX_BOARDS = 60;
+  const MAX_BOARD_ID = MAX_BOARDS;      // look.py's MAX_BOARD_ID
+  const UNRELIABLE_SWITCHES = 4;        // look.py's UNRELIABLE_SWITCHES
+  const UNRELIABLE_DIP_NOTE = "4+ switches on - reported unreliable; set another ID by hand";
   const COLOR_COUNT = 16;
 
   // production site's colour chart 260921 - see conductor/look.py for
@@ -1129,6 +1132,70 @@
     return ids;
   }
 
+  // conductor/look.py's dip_popcount()/unreliable_dip(): how many DIP
+  // switches an address turns on (switch n = bit n-1, so 27 = 11011 is
+  // four), and whether that is a pattern the operator reported flaky on
+  // the bus (2026-09-27).
+  function dipPopcount(dipId) {
+    let n = Number(dipId) & 0xFF, count = 0;
+    while (n) { count += n & 1; n >>>= 1; }
+    return count;
+  }
+  function unreliableDip(dipId) {
+    return Number.isFinite(Number(dipId)) && dipPopcount(dipId) >= UNRELIABLE_SWITCHES;
+  }
+
+  // conductor/look.py's unit_board_ids() `dips`: the ranks, with the
+  // boards whose switches were changed on the garment taking their own
+  // address. Only those move, so the gap one leaves stays a gap. The sim
+  // has no unit assignment, so one map is one bus here - which is why the
+  // "board is in both maps" and MAX_BOARDS problems of the Python cannot
+  // arise and are not mirrored; every problem a DIP ID can raise is.
+  //
+  // Returns { ok, ids, problems } rather than just the ids, because the
+  // Python RAISES on a bad one and server.py's state() then falls back to
+  // the ranks AND puts the problems on the item. Silently reverting here
+  // would draw a page the real Conductor never draws (found in review).
+  function applyDips(map, ids, dipsForItem) {
+    const result = Object.assign({}, ids);
+    const problems = [];
+    const boards = Object.keys(dipsForItem || {}).map(Number)
+      .sort((a, b) => a - b);
+    boards.forEach(no => {
+      if (!(no in result)) return;      // not a board of this bus: ignored
+      const raw = dipsForItem[no];
+      // Python int(x): truncate a number, parse a strict whole-number
+      // string, else it is not a number at all (state.js's pyIntCoerce).
+      const dip = typeof raw === "number"
+        ? (Number.isFinite(raw) ? Math.trunc(raw) : null)
+        : pyIntStrict(raw);
+      if (dip === null) {
+        problems.push(`board ${no}: the DIP ID set by hand (${pyRepr(raw)}) is not a number`);
+        return;
+      }
+      if (dip < 1 || dip > MAX_BOARD_ID) {
+        problems.push(`board ${no}: DIP ${dip} is outside 1-${MAX_BOARD_ID}`);
+        return;
+      }
+      result[no] = dip;
+    });
+    // Then the duplicates, over the ids as far as they were applied -
+    // sorted by address, each naming its boards, exactly as the Python.
+    const holders = {};
+    Object.keys(result).forEach(noStr => {
+      const address = result[noStr];
+      (holders[address] = holders[address] || []).push(Number(noStr));
+    });
+    Object.keys(holders).map(Number).sort((a, b) => a - b).forEach(address => {
+      if (holders[address].length > 1) {
+        const named = holders[address].sort((a, b) => a - b).join(", ");
+        problems.push(`DIP ${address} would be used twice (boards ${named})`);
+      }
+    });
+    if (problems.length) return { ok: false, ids: null, problems };
+    return { ok: true, ids: result, problems };
+  }
+
   function dipSheet(map, ids) {
     const counts = {};
     map.scales.forEach(s => { counts[s.board_no] = (counts[s.board_no] || 0) + 1; });
@@ -1168,7 +1235,9 @@
   }
 
   const look = {
-    PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS,
+    PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS, MAX_BOARD_ID,
+    UNRELIABLE_SWITCHES, UNRELIABLE_DIP_NOTE, dipPopcount, unreliableDip,
+    applyDips,
     defaultShift, kind, nameParts, mapItem, normalizeName, nameProblem,
     parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,

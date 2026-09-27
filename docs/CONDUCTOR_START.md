@@ -62,7 +62,7 @@ python -m conductor serve --open
 すべて `showdata/` フォルダ(リポジトリ直下、Git の管理外):
 
 - `showdata/files/` … 取り込んだ CSV(`LookNN_map.csv`、`LookNN_color_NAME_grid.csv`)
-- `showdata/show.json` … タイムライン、遷移の設定、機体の割り当て、LOOK 番号と型番、基板番号の書き換え、音楽ファイル名
+- `showdata/show.json` … タイムライン、遷移の設定、機体の割り当て、LOOK 番号と型番、基板番号の書き換え、手で指定した DIP ID(`dips`)、音楽ファイル名
 - `showdata/music/` … アップロードしたショーの音楽ファイル。
   **音源を差し替えたら Timeline タブの Simulator for designers… で作り直して演出家に渡す**
 - `showdata/history.json` … Undo / Redo の履歴
@@ -90,6 +90,46 @@ python -m conductor serve --open
   `.csv.txt` は自動で処理される
 - 取り込みのあとのメッセージに**拾った全ファイルの行方**が出る
   (入った / 別名で入った / もう入っていた / 断った)
+
+### DIP ID を手で指定するとき(2026-09-27)
+
+Designs タブの **BOARDS AND DIP SWITCHES** で、**DIP ID の欄をクリックして
+数字を入れる**(Enter か、欄の外をクリックで確定)。SWITCHES ON はその場で
+付いて回る。手で入れた ID には **set by hand** の札が付き、その **×** で
+ランクに戻る(欄を空にしても同じ)。Undo / Redo が効く。
+
+- **既定は「番号の小さい順に 1, 2, 3…」**(ランク)。27 枚の衣装なら DIP 1〜27
+- **使うのは「衣装側でスイッチを変えたとき」だけ**。例:AZ271SD1301(LOOK 25)の
+  DIP 27 のボードを 28 に変えた(2026-09-27)。27 枚しかないので、ランクでは
+  28 と言えない。手で入れると **そのボードだけ**がランクから外れ、
+  機体のボード一覧は **1〜26 と 28**(27 は空き)になる ― 機体側はこの
+  飛んだ一覧をそのまま扱う(`group_count` は一覧の最大値)
+- **他の衣装と衝突する ID は断られる**(同じ機体に載る衣装をまとめて見る):
+  `DIP 26 would be used twice on radxa-03 (boards 117, 118)`
+- 入れられるのは **1〜60**(バスの上限)
+- **DIP スイッチが 4 本以上 ON の ID は通信が不安定との報告**があり、
+  その行に琥珀色で注記が出る(`4+ switches on — reported unreliable;
+  set another ID by hand`)。同じ文が Timeline タブの警告一覧
+  (Upload の手前)にも出る。**警告だけで、ショーは止まらない** ―
+  各衣装のスイッチは既定どおりに設定済みなので、直す時間があるときだけ
+  別の ID を入れる。1〜60 で該当するのは 15, 23, 27, 29, 30, 31, 39, 43,
+  45, 46, 47, 51, 53, 54, 55, 57, 58, 59, 60
+- 手で入れた ID は `showdata/show.json` の `dips` に入り、Save show… /
+  Simulator for designers… の JSON にも載る。**バンドルが `dips` を
+  持たないとき(空の `{}` も同じ)は、この PC のものがそのまま残る** ―
+  スイッチはここに立っているボードの話で、届いたタイムラインの話では
+  ないため。中身のある `dips` を持つバンドルだけが置き換える(`boards`
+  と同じ規則)
+- **基板番号(BOARD NO.)を書き換えると、手で入れた DIP ID もその
+  ボードに付いて移る**(同じ 1 ステップ。Undo で両方戻る)
+- 画面を使わずに入れるには(本番 PC で、`AZ271SD1301` のボード 118 を 28 に):
+
+  ```
+  curl -X POST http://127.0.0.1:8765/api/boards -H "Content-Type: application/json" ^
+       -d "{\"item\":\"AZ271SD1301\",\"dips\":{\"118\":28}}"
+  ```
+
+  戻すときは `28` の代わりに `null`。
 
 ### 演出家の bundle を読むとき(Load bundle…、2026-09-27)
 

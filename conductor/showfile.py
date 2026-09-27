@@ -67,7 +67,7 @@ import unicodedata
 
 from . import timeline
 from .look import (ARRAY_LEN, MARKER, NO_REFRESH, Design, LookError, LookMap,
-                   compile_design, unit_board_ids)
+                   compile_design, resolve_dips, unit_board_ids)
 from .sequence import FRAME_S, NO_DELAY, compile_delays
 
 DELAY_UNIT_MS = round(FRAME_S * 1000)   # 10: what a unit table's frame is
@@ -123,14 +123,17 @@ def design_label(look_map: LookMap, design: Design, partial: bool) -> str:
 def build_unit_show(unit: str, maps: "list[LookMap]",
                     designs: "dict[tuple[str, str], Design]",
                     cues: "list[dict]", refresh: float, duration: float,
-                    name: str = "show",
+                    name: str = "show", dips: "dict | None" = None,
                     clear_after_show: bool = False) -> dict:
     """One unit's show file. `designs` is keyed (item lower-cased, file);
-    `cues` are the timeline's cues for the items in `maps`.
+    `cues` are the timeline's cues for the items in `maps`. `dips` is
+    show.json's own {item: {board_no: DIP set by hand}} - the unit's
+    `boards` list then carries those addresses instead of the ranks, gaps
+    and all (conductor/look.py's unit_board_ids()).
 
     `clear_after_show` (show.json's own key) is carried into the file
     AFTER the id is computed - see below."""
-    ids = unit_board_ids(maps)
+    ids = unit_board_ids(maps, resolve_dips(maps, dips), unit=unit)
     by_item = {(m.item or m.name).lower(): m for m in maps}
     addresses = sorted(ids.values())
 
@@ -215,7 +218,7 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
 def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
           load_design, cues: "list[dict]", refresh: float, duration: float,
           cue_problems: "dict[str, list[str]]", name: str = "show",
-          only: "list[str] | None" = None,
+          only: "list[str] | None" = None, dips: "dict | None" = None,
           clear_after_show: bool = False
           ) -> "tuple[dict[str, dict], list[str], list[str]]":
     """({unit: show file}, problems, warnings). Nothing is built while the
@@ -241,6 +244,11 @@ def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
     blocks, so START can never be handed a fleet built from half a
     timeline. "the timeline has no cues" blocks either way - there is
     nothing to write for anyone.
+
+    `dips` is show.json's own {item: {board_no: the DIP ID that board's
+    switches really have} - passed straight to build_unit_show(), so the
+    addresses a unit's file carries are the same ones the page shows,
+    whichever units this write targets.
     """
     targeted = None if only is None else set(only)
 
@@ -294,7 +302,7 @@ def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
             designs = {(c["item"].lower(), c["design"]):
                        load_design(c["design"]) for c in unit_cues}
             shows[unit] = build_unit_show(unit, unit_maps, designs, unit_cues,
-                                          refresh, duration, name,
+                                          refresh, duration, name, dips=dips,
                                           clear_after_show=clear_after_show)
         except (OSError, LookError) as exc:
             note(unit, f"{unit}: {exc}")

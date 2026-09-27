@@ -33,7 +33,10 @@ all of the unit's maps together (unit_board_ids), not per garment.
 board_no is the board's own serial number, not its bus address: within
 a look the boards are addressed 1, 2, 3... in ascending board_no (by
 rank, so a gap in the numbers leaves no gap in the addresses), and that
-address is what the DIP switches are set to (dip_sheet()).
+address is what the DIP switches are set to (dip_sheet()). A board whose
+switches were changed on the garment itself can be given its own address
+by hand - unit_board_ids()' `dips`, show.json's `dips` - and then only
+that board moves, leaving a gap in the unit's list.
 
 socket N is array index N (P1-P60 of the NUMBER_BRAND layout the UI
 already sends). A socket with no scale stays 0xFF - "do not refresh".
@@ -58,7 +61,38 @@ MARKER = 0xFE              # array start/end (V1.1)
 NO_REFRESH = 0xFF          # pad / leave this segment as it is
 SOCKETS = range(1, 61)
 MAX_BOARDS = 60            # one unit's bus, by the project's own limit
+# The highest bus address (DIP setting) a board may carry. The DIP switch
+# is eight binary switches, so 255 addresses are expressible - but every
+# frame carries group_count = the highest address in use (ui/runner.py's
+# _group_count()), and the bus holds at most MAX_BOARDS boards, so an
+# address above that would tell the bus master to poll past the project's
+# own limit. Only a hand-set DIP (unit_board_ids' `dips`) can reach past
+# the number of boards at all; ranks never do.
+MAX_BOARD_ID = MAX_BOARDS
 COLOR_COUNT = 16
+
+# A DIP ID with this many switches ON has been reported unreliable on the
+# bus (the operator, 2026-09-27: the board that was DIP 27 - 11011, four
+# switches - was changed to 28 - 11100, three). Nothing refuses such an
+# address: the garments' switches are already set for the rank numbering,
+# so this only warns, and the operator sets another ID by hand.
+UNRELIABLE_SWITCHES = 4
+UNRELIABLE_DIP_NOTE = ("4+ switches on - reported unreliable; set another "
+                       "ID by hand")
+
+
+def dip_popcount(dip_id: int) -> int:
+    """How many DIP switches are ON for a bus address (dip_sheet()'s own
+    rule: switch n = bit n-1, so 27 = 11011 is four switches)."""
+    return bin(int(dip_id) & 0xFF).count("1")
+
+
+def unreliable_dip(dip_id: int) -> bool:
+    """True for an address whose switches the operator reported flaky."""
+    try:
+        return dip_popcount(dip_id) >= UNRELIABLE_SWITCHES
+    except (TypeError, ValueError):
+        return False
 
 # The 16 colours as the operator should SEE them: the production site's
 # colour chart 260921 (vglabjp.synology.me, "表示色 = 実機見本(肉眼)色"),
@@ -1117,8 +1151,57 @@ def check(look_map: LookMap, design: Design, partial: bool = False
     return problems
 
 
-def unit_board_ids(maps: "list[LookMap]") -> "dict[int, int]":
-    """board_no -> bus address across every item one unit carries."""
+def resolve_dips(maps: "list[LookMap]",
+                 dips: "dict | None") -> "dict[int, int]":
+    """{item: {board_no: dip}} -> the one {board_no: dip} of that bus.
+
+    show.json keeps the hand-set DIP IDs per item, keyed by the board
+    number as the page shows it (the map CSV's own, after the `boards`
+    renumbering). One unit may carry several items, and its addresses run
+    across all of them, so they are merged here - each item's setting kept
+    only for a board that item really carries, so a number left behind by
+    an older CSV can never land on another garment's board.
+
+    The VALUES are passed through untouched: unit_board_ids() is the one
+    place that judges them, so a hand-edited show.json is reported rather
+    than quietly half-applied.
+    """
+    merged: "dict[int, int]" = {}
+    for look_map in maps:
+        own = (dips or {}).get(look_map.item or look_map.name) or {}
+        if not isinstance(own, dict):
+            continue
+        for board_no, dip in own.items():
+            try:
+                board_no = int(board_no)
+            except (TypeError, ValueError):
+                continue        # not a board number at all: nothing to set
+            if board_no in look_map.board_nos:
+                merged[board_no] = dip
+    return merged
+
+
+def unit_board_ids(maps: "list[LookMap]", dips: "dict[int, int] | None" = None,
+                   unit: "str | None" = None) -> "dict[int, int]":
+    """board_no -> bus address across every item one unit carries.
+
+    The addresses are ranks - 1, 2, 3... in ascending board_no, so a gap
+    in the numbers leaves none in the addresses - which is what the DIP
+    switches are normally set to.
+
+    `dips` is the operator's override, {board_no: the number that board's
+    switches REALLY have}, for a board whose DIP switch was changed on the
+    garment itself (AZ271SD1301's DIP 27 -> 28, 2026-09-27). Only the
+    overridden boards move: the rest keep their rank, so the gap the
+    overridden one left stays a gap and the unit's list may read 1..26 +
+    28 for a 27-board garment. The unit code drives a gapped list already
+    (ui/runner.py's _apply_job_boards(), group_count = the highest
+    address). A board `dips` names that is not on this bus is ignored -
+    resolve_dips() drops those it can see, and one left over from a
+    newer CSV is a setting waiting for its board, not an error.
+
+    `unit` only names the bus in a problem.
+    """
     owner: "dict[int, str]" = {}
     problems = []
     for look_map in maps:
@@ -1130,9 +1213,33 @@ def unit_board_ids(maps: "list[LookMap]") -> "dict[int, int]":
     if len(owner) > MAX_BOARDS:
         problems.append(f"{len(owner)} boards on one unit, but a bus holds "
                         f"at most {MAX_BOARDS}")
+    ids = {no: rank for rank, no in enumerate(sorted(owner), start=1)}
+    where = f" on {unit}" if unit else ""
+    for board_no, dip in sorted((dips or {}).items()):
+        if board_no not in ids:
+            continue
+        try:
+            address = int(dip)
+        except (TypeError, ValueError):
+            problems.append(f"board {board_no}: the DIP ID set by hand "
+                            f"({dip!r}) is not a number")
+            continue
+        if not 1 <= address <= MAX_BOARD_ID:
+            problems.append(f"board {board_no}: DIP {address} is outside "
+                            f"1-{MAX_BOARD_ID}")
+            continue
+        ids[board_no] = address
+    holders: "dict[int, list[int]]" = {}
+    for board_no, address in ids.items():
+        holders.setdefault(address, []).append(board_no)
+    for address in sorted(holders):
+        if len(holders[address]) > 1:
+            boards = ", ".join(str(no) for no in sorted(holders[address]))
+            problems.append(f"DIP {address} would be used twice{where} "
+                            f"(boards {boards})")
     if problems:
         raise LookError(problems)
-    return {no: rank for rank, no in enumerate(sorted(owner), start=1)}
+    return ids
 
 
 def compile_unit(pairs: "list[tuple[LookMap, Design]]", partial: bool = False

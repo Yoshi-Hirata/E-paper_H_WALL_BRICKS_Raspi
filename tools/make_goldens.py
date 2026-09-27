@@ -970,6 +970,44 @@ def _small_project_cases() -> list:
                 "labels": {}, "boards": {}, "music": None}
     projects.append(("transition_span_over_max", {"files": files, "show": show_over}))
 
+    # A DIP ID set by hand (show.json's `dips`): Sample's third board, 20,
+    # would rank as address 3; its switches really read 28, so the bus is
+    # 1, 2, 28 - the gap the rank left stays a gap. The board's row also
+    # carries dip_by_hand for the page's "set by hand" badge.
+    show_dip = {"duration": 120.0, "refresh_s": 7.0,
+               "cues": [{"id": "a", "item": "Sample", "at": 0,
+                        "design": "Sample_color_pattern01_grid.csv"}],
+               "transitions": {}, "labels": {}, "boards": {},
+               "dips": {"Sample": {"20": 28}}, "music": None}
+    projects.append(("dip_set_by_hand", {"files": files, "show": show_dip}))
+
+    # 15 is 1111: four switches on, which the operator reported unreliable
+    # (2026-09-27). The address is used all the same - nothing refuses one -
+    # and the show carries the warning the page draws in amber.
+    show_flaky = {"duration": 120.0, "refresh_s": 7.0,
+                 "cues": [{"id": "a", "item": "Sample", "at": 0,
+                          "design": "Sample_color_pattern01_grid.csv"}],
+                 "transitions": {}, "labels": {}, "boards": {},
+                 "dips": {"Sample": {"20": 15}}, "music": None}
+    projects.append(("dip_four_switches_on", {"files": files, "show": show_flaky}))
+
+    # A refused DIP ID: 2 is board 18's rank, so setting board 20 to it puts
+    # two boards on one address. The whole bus falls back to the ranks and
+    # the problems go on the item - never two boards drawn at one address
+    # (the sim used to revert silently, with nothing said).
+    show_clash = {"duration": 120.0, "refresh_s": 7.0, "cues": [],
+                 "transitions": {}, "labels": {}, "boards": {},
+                 "dips": {"Sample": {"20": 2}}, "music": None}
+    projects.append(("dip_used_twice", {"files": files, "show": show_clash}))
+
+    # One unusable entry in a hand-edited show.json: board 20's setting is
+    # out of range (61 > MAX_BOARD_ID), and board 17's - a perfectly good 5 -
+    # keeps its badge rather than being thrown away with it.
+    show_bad = {"duration": 120.0, "refresh_s": 7.0, "cues": [],
+               "transitions": {}, "labels": {}, "boards": {},
+               "dips": {"Sample": {"17": 5, "20": 61}}, "music": None}
+    projects.append(("dip_out_of_range", {"files": files, "show": show_bad}))
+
     return projects
 
 

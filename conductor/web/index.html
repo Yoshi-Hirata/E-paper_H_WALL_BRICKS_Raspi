@@ -70,6 +70,13 @@ aside h2, .card h2 { font-size: 11px; letter-spacing: .1em; color: var(--dim);
 .item .lab.look { width: 40px; flex: none; }
 .item .lab.model { flex: 1; font-weight: 500; font-size: 12px; }
 td input.bno { width: 56px; padding: 1px 4px; font: inherit; }
+/* The DIP ID: normally the board's rank, typed over when the switches on
+   the garment itself were changed. Narrower than a board number (1-60)
+   and bold, because it is what the switches are compared against. */
+td input.dip { width: 40px; padding: 1px 4px; font: inherit; font-weight: 700; }
+td input.dip.byhand { border-color: var(--accent); }
+.byhand-tag { font-size: 11px; letter-spacing: .04em; color: var(--accent); }
+.byhand-tag button { font: inherit; padding: 0 3px; }
 .item .where { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 .item .where select { margin-top: 0; flex: 1; min-width: 0; }
 .item .where button { font-size: 11px; padding: 2px 8px; flex: none; }
@@ -1000,9 +1007,13 @@ function renderContent() {
         ${item.boards.map((b, i) => `<tr data-board="${b.board_no}" class="pick ${ui.board === b.board_no ? "hl" : ""}">
           <td><span class="sw" style="background:${tint(i, item.boards.length)}"></span><input class="bno" data-board-no="${b.source_no}" value="${String(b.board_no).padStart(3, "0")}" title="The board this garment really carries (the map CSV says ${String(b.source_no).padStart(3, "0")})">${b.source_no !== b.board_no
             ? ` <span class="meta">CSV ${String(b.source_no).padStart(3, "0")}</span>` : ""}</td>
-          <td><b>${b.dip_id}</b></td><td>${esc(b.switches_on)}</td><td>${b.scales}</td></tr>`).join("")}
+          <td><input class="dip${b.dip_by_hand ? " byhand" : ""}" data-dip-board="${b.board_no}" value="${b.dip_id}" title="${b.dip_by_hand
+            ? "Set by hand: the number this board's switches really have" : "The board's rank among the bus's numbers - type over it if its switches were changed"}">${b.dip_by_hand
+            ? ` <span class="byhand-tag">set by hand <button data-dip-clear="${b.board_no}" title="Back to the rank">×</button></span>` : ""}
+            ${b.dip_unreliable ? `<div class="warn">⚠ 4+ switches on — reported unreliable; set another ID by hand</div>` : ""}</td>
+          <td>${esc(b.switches_on)}</td><td>${b.scales}</td></tr>`).join("")}
         </tbody></table>
-        <div class="meta" style="margin-top:6px">Click a row to highlight that board's scales. If the garment carries other boards than its map CSV says, type their numbers here; DIP IDs follow the numbers, smallest first.</div>
+        <div class="meta" style="margin-top:6px">Click a row to highlight that board's scales. If the garment carries other boards than its map CSV says, type their numbers here; DIP IDs follow the numbers, smallest first — click a DIP ID to set the number the board's switches really have.</div>
       </div>
     </div>`;
 }
@@ -5051,6 +5062,15 @@ document.addEventListener("click", async e => {
   if (set) { ui[set.dataset.set] = set.dataset.value; renderContent(); return; }
   const dr = !e.target.closest("select, input") && e.target.closest(".dsg[data-design]");
   if (dr) { ui.design = dr.dataset.design; ui.mode = "design"; renderContent(); return; }
+  // The "✕" on a hand-set DIP ID: back to the board's rank. A null drops
+  // the override (server.py's set_dips()), and it is one Undo step.
+  const dipClear = e.target.closest("[data-dip-clear]");
+  if (dipClear) {
+    const answer = await api("/api/boards", { item: ui.item, dips: { [dipClear.dataset.dipClear]: null } });
+    if (answer?.error) toast(answer.error);
+    ui.board = null; refresh();
+    return;
+  }
   const row = !e.target.closest("input") && e.target.closest("tr[data-board]");
   if (row) { const b = Number(row.dataset.board); ui.board = ui.board === b ? null : b; renderContent(); return; }
 
@@ -5118,7 +5138,7 @@ document.addEventListener("click", async e => {
 });
 // Enter ends the typing in a label or a board number (leaving the field saves it).
 document.addEventListener("keydown", e => {
-  if (e.key === "Enter" && e.target.matches?.("input.lab, input.bno")) e.target.blur();
+  if (e.key === "Enter" && e.target.matches?.("input.lab, input.bno, input.dip")) e.target.blur();
 });
 document.addEventListener("change", async e => {
   const id = e.target.id;
@@ -5297,6 +5317,15 @@ document.addEventListener("change", async e => {
     const no = Number(e.target.value);
     if (!Number.isInteger(no) || no < 1) { toast("A board number is a whole number"); renderContent(); return; }
     const answer = await api("/api/boards", { item: ui.item, boards: { [e.target.dataset.boardNo]: no } });
+    if (answer?.error) toast(answer.error);
+    ui.board = null; refresh();
+  } else if (e.target.dataset.dipBoard) {
+    // The number the board's switches really have. Emptying the cell is
+    // the same as the badge's "✕": back to the rank.
+    const raw = e.target.value.trim();
+    const dip = raw === "" ? null : Number(raw);
+    if (dip !== null && !(Number.isInteger(dip) && dip >= 1)) { toast("A DIP ID is a whole number"); renderContent(); return; }
+    const answer = await api("/api/boards", { item: ui.item, dips: { [e.target.dataset.dipBoard]: dip } });
     if (answer?.error) toast(answer.error);
     ui.board = null; refresh();
   } else if (e.target.dataset.label) {

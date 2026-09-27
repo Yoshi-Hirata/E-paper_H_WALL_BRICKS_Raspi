@@ -309,6 +309,93 @@ def test_unit_addresses_run_across_all_its_items():
     assert sheet == {17: 3, 18: 4, 20: 5}
 
 
+# ---- a DIP ID set by hand (show.json's `dips`) ----
+# AZ271SD1301 (LOOK 25) carries 27 boards, map numbers 92-118, so the ranks
+# are DIP 1-27. The operator changed the board that was DIP 27 to DIP 28 on
+# the garment itself (2026-09-27), which no rank can say.
+
+def dip_map(count: int, first: int = 92) -> LookMap:
+    """A `count`-board garment, one scale each, numbered from `first`."""
+    text = "side,row,col,board_no,socket\n" + "".join(
+        f"front,0,{n + 1},{first + n},1\n" for n in range(count))
+    return LookMap.parse(io.StringIO(text), name="d.csv", item="AZ271SD1301")
+
+
+def test_dip_popcount_counts_the_switches_that_are_on():
+    # switch n = bit n-1, dip_sheet()'s own rule: 27 is 11011 (four
+    # switches, the pattern the operator reported unreliable) and 28 is
+    # 11100 (three).
+    assert look_mod.dip_popcount(1) == 1
+    assert look_mod.dip_popcount(27) == 4
+    assert look_mod.dip_popcount(28) == 3
+    assert look_mod.dip_popcount(60) == 4
+    assert look_mod.unreliable_dip(27) and not look_mod.unreliable_dip(28)
+    # Every address in 1-60 the rule flags, computed the same way the page
+    # and the sim compute it.
+    flagged = [n for n in range(1, look_mod.MAX_BOARD_ID + 1)
+               if look_mod.unreliable_dip(n)]
+    assert flagged == [15, 23, 27, 29, 30, 31, 39, 43, 45, 46, 47, 51, 53,
+                       54, 55, 57, 58, 59, 60]
+
+
+def test_a_dip_set_by_hand_moves_only_that_board():
+    look_map = dip_map(27)
+    plain = unit_board_ids([look_map])
+    assert plain[118] == 27 and len(plain) == 27
+    ids = unit_board_ids([look_map], {118: 28})
+    # The other 26 keep their rank, so the gap DIP 27 left stays a gap.
+    assert sorted(ids.values()) == list(range(1, 27)) + [28]
+    assert ids[117] == 26 and ids[118] == 28
+    sheet = {l["board_no"]: l for l in look_map.dip_sheet(ids)}
+    assert sheet[118]["dip_id"] == 28
+    assert sheet[118]["switches_on"] == "3 4 5"        # 28 = 11100
+
+
+def test_a_dip_already_on_the_bus_is_refused_by_name():
+    look_map = dip_map(27)
+    problems = problems_of(
+        lambda: unit_board_ids([look_map], {118: 26}, unit="radxa-03"))
+    assert problems == ["DIP 26 would be used twice on radxa-03 "
+                        "(boards 117, 118)"]
+    # ...and without a unit named, the same without the "on <unit>".
+    assert "DIP 26 would be used twice (boards 117, 118)" in problems_of(
+        lambda: unit_board_ids([look_map], {118: 26}))
+
+
+def test_a_dip_outside_the_addressable_range_is_refused():
+    look_map = dip_map(3)
+    for wrong, said in ((0, "outside 1-60"), (61, "outside 1-60"),
+                        (look_mod.MAX_BOARD_ID + 40, "outside 1-60")):
+        assert said in problems_of(
+            lambda: unit_board_ids([look_map], {92: wrong}))[0]
+    assert "is not a number" in problems_of(
+        lambda: unit_board_ids([look_map], {92: "x"}))[0]
+
+
+def test_a_dip_set_for_a_board_this_bus_does_not_carry_is_ignored():
+    # A number left behind by an older CSV is a setting waiting for its
+    # board, not a reason to refuse the show.
+    look_map = dip_map(3)
+    assert unit_board_ids([look_map], {999: 28}) == {92: 1, 93: 2, 94: 3}
+
+
+def test_dips_are_resolved_per_item_across_one_bus():
+    top = LookMap.parse(io.StringIO(MAP), name="top.csv",
+                        item="Look20-Top")              # boards 17, 18, 20
+    skirt = LookMap.parse(io.StringIO(SKIRT_MAP), name="skirt.csv",
+                          item="Look20-Skirt")          # boards 1, 2
+    # The Skirt's entry also names board 20 (the TOP's) and the Top's names
+    # a board nobody carries: both are dropped, so a number left behind by
+    # an older CSV can never land on another garment's board.
+    dips = {"Look20-Top": {"20": 30, "777": 9},
+            "Look20-Skirt": {"1": 29, "20": 7}}
+    merged = look_mod.resolve_dips([skirt, top], dips)
+    assert merged == {1: 29, 20: 30}
+    ids = unit_board_ids([skirt, top], merged, unit="radxa-02")
+    # Ranks would be 1,2 (skirt) and 3,4,5 (top); two of them were typed.
+    assert ids == {1: 29, 2: 2, 17: 3, 18: 4, 20: 30}
+
+
 def test_one_board_cannot_belong_to_two_items():
     top, _ = parse()
     clash = LookMap.parse(
