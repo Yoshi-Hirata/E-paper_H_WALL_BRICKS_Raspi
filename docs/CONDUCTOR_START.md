@@ -127,6 +127,27 @@ Designs タブの **BOARDS AND DIP SWITCHES** で、**DIP ID の欄をクリッ�
 
   戻すときは `28` の代わりに `null`。
 
+### 演出家の bundle を読むとき(Load bundle…、2026-09-27)
+
+Timeline タブの **Load bundle…**(演出家のシミュレーターの Save project… で
+書き出したファイル)は、配色とタイムラインを演出家のものに置き換える。ただし:
+
+- **配線(`*_map.csv`)はこの PC のものが残る**。bundle には演出家が使っていた
+  写しが入っているが、配線は配線ナビから再生成したこちらのものが正しいので、
+  **bundle の map は書き込まれない**。中身が違っていたときは結果のメッセージに
+  **琥珀色で 1 行**出る:
+  `AZ271SD1307_map.csv: the workspace's wiring is kept (the bundle's copy differs)
+  - regenerate from the wiring site if the garment changed`
+  → その衣装が本当に変わったのなら、**配線ナビから map を出し直して**入れること
+  (bundle を読み直しても配線は入らない)
+- **意図して map を差し替えるときは手で**:Designs タブでその `*_map.csv` を
+  **Delete** してから **Add CSV**(上の CSV 取り込みの規則どおり)
+- **まだこの PC に無い衣装の map は、そのまま入る**(新しい LOOK は配線ごと届く)
+- 配色(grid)は**同名なら上書きされる**(Undo では戻らない)。上書きした数と、
+  残した配線の数(`1 wiring file kept`)が結果に出る
+- 古いレイアウト向けに描かれた配色は、**残った配線**と突き合わせて
+  「made for another layout」と名指しされる(Designs タブの CHECK)
+
 ### Timeline でデザインを置くとき(2026-09-27)
 
 - トラックの空いているところを**クリック**すると、そこにその衣装の次のデザインが

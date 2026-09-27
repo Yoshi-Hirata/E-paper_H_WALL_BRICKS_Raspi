@@ -793,6 +793,9 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   const ARRAY_LEN = 64;
   const NO_REFRESH = 0xff;
   const MAX_BOARDS = 60;
+  const MAX_BOARD_ID = MAX_BOARDS;      // look.py's MAX_BOARD_ID
+  const UNRELIABLE_SWITCHES = 4;        // look.py's UNRELIABLE_SWITCHES
+  const UNRELIABLE_DIP_NOTE = "4+ switches on - reported unreliable; set another ID by hand";
   const COLOR_COUNT = 16;
 
   // production site's colour chart 260921 - see conductor/look.py for
@@ -1449,6 +1452,39 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     return ids;
   }
 
+  // conductor/look.py's dip_popcount()/unreliable_dip(): how many DIP
+  // switches an address turns on (switch n = bit n-1, so 27 = 11011 is
+  // four), and whether that is a pattern the operator reported flaky on
+  // the bus (2026-09-27).
+  function dipPopcount(dipId) {
+    let n = Number(dipId) & 0xFF, count = 0;
+    while (n) { count += n & 1; n >>>= 1; }
+    return count;
+  }
+  function unreliableDip(dipId) {
+    return Number.isFinite(Number(dipId)) && dipPopcount(dipId) >= UNRELIABLE_SWITCHES;
+  }
+
+  // conductor/look.py's unit_board_ids() `dips`: the ranks, with the
+  // boards whose switches were changed on the garment taking their own
+  // address. Only those move, so the gap one leaves stays a gap. The sim
+  // has no unit assignment, so one map is one bus here.
+  function applyDips(map, ids, dipsForItem) {
+    const result = Object.assign({}, ids);
+    Object.keys(dipsForItem || {}).forEach(noStr => {
+      const no = Number(noStr), dip = Number(dipsForItem[noStr]);
+      if (!(no in result)) return;
+      if (!Number.isInteger(dip) || dip < 1 || dip > MAX_BOARD_ID) return;
+      result[no] = dip;
+    });
+    // A duplicate would be a LookError in Python; the sim has no problems
+    // channel for a bus, so it keeps the ranks rather than draw two
+    // boards at one address.
+    const used = Object.keys(result).map(k => result[k]);
+    if (new Set(used).size !== used.length) return Object.assign({}, ids);
+    return result;
+  }
+
   function dipSheet(map, ids) {
     const counts = {};
     map.scales.forEach(s => { counts[s.board_no] = (counts[s.board_no] || 0) + 1; });
@@ -1488,7 +1524,9 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   }
 
   const look = {
-    PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS,
+    PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS, MAX_BOARD_ID,
+    UNRELIABLE_SWITCHES, UNRELIABLE_DIP_NOTE, dipPopcount, unreliableDip,
+    applyDips,
     defaultShift, kind, nameParts, mapItem, normalizeName, nameProblem,
     parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,
@@ -2087,6 +2125,22 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     return result;
   }
 
+  // Workspace._own_dips, restricted to one item: {board_no: the DIP ID
+  // that board's switches really have}. All-or-nothing like the Python.
+  function ownDipsFor(show, item) {
+    const perItem = show && show.dips && typeof show.dips === "object"
+      && !Array.isArray(show.dips) ? show.dips[item] : null;
+    if (!perItem || typeof perItem !== "object" || Array.isArray(perItem)) return {};
+    const result = {};
+    for (const noKey of Object.keys(perItem)) {
+      const no = pyIntCoerce(noKey);
+      const dip = pyIntCoerce(perItem[noKey]);
+      if (no === null || dip === null) return {};
+      result[no] = dip;
+    }
+    return result;
+  }
+
   function buildState(project) {
     project = project || {};
     const files = project.files && typeof project.files === "object" ? project.files : {};
@@ -2200,10 +2254,14 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     });
 
     // ---- board addressing (never shared: the sim has no unit assignment) ----
-    Object.keys(maps).forEach(key => {
+    // Sorted, because server.py walks its unit groups in sorted order and
+    // the DIP warnings below go on the show in the order they are found.
+    const dipWarnings = [];
+    Object.keys(maps).sort().forEach(key => {
       const map = maps[key];
       const entry = items[key];
-      const ids = look.boardIds(map);
+      const byHand = ownDipsFor(show, entry.item);
+      const ids = look.applyDips(map, look.boardIds(map), byHand);
       entry.boards = look.dipSheet(map, ids);
       const was = {};
       const own = ownBoardsFor(show, entry.item);
@@ -2211,6 +2269,12 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       entry.boards.forEach(board => {
         board.source_no = Object.prototype.hasOwnProperty.call(was, board.board_no)
           ? was[board.board_no] : board.board_no;
+        board.dip_by_hand = Object.prototype.hasOwnProperty.call(byHand, board.board_no);
+        board.dip_unreliable = look.unreliableDip(board.dip_id);
+        if (board.dip_unreliable) {
+          dipWarnings.push(`${entry.item} board ${board.board_no}: DIP `
+            + `${board.dip_id} has ${look.UNRELIABLE_DIP_NOTE}`);
+        }
       });
     });
 
@@ -2276,7 +2340,10 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     timeline.applyTransitions(cues, transitions);
     timeSweeps(cues, maps);
     const validated = timeline.validate(cues, facts, duration, refresh);
-    const cueProblems = validated.problems, warnings = validated.warnings;
+    const cueProblems = validated.problems;
+    // server.py's state(): the DIP switch warnings ride on the show's own
+    // warning list, after the timeline's.
+    const warnings = validated.warnings.concat(dipWarnings);
     const cueEnds = timeline.ends(cues, refresh, duration);
     cues.forEach(cue => {
       const t = timeline.times(cue, refresh);

@@ -9,12 +9,17 @@
   --bg: #f4f4f6; --panel: #ffffff; --ink: #1d1d24; --dim: #6b6b78;
   --line: #dcdce3; --accent: #0a62c9; --ok: #12834a; --err: #c62828;
   --warn: #a15c00; --select: #e6f0fc; --garment: #ececf0; --hold: #dfe7f3;
+  /* The ink that reads on an amber SURFACE (--warn as a background), which
+     is not --bg or --ink: in light --warn is dark amber and wants white on
+     it (5.2:1), in dark it is light amber and wants near-black (10:1). */
+  --warn-ink: #ffffff;
   --ph-outline: none;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #15161a; --panel: #1e2026; --ink: #ececf1; --dim: #9a9aa8;
     --line: #33353f; --accent: #6db3ff; --ok: #5fd896; --err: #ff7b7b;
     --warn: #ffb860; --select: #243347; --garment: #2a2c35; --hold: #2b3444;
+    --warn-ink: #15161a;
     --ph-outline: #fff; }
 }
 * { box-sizing: border-box; }
@@ -133,6 +138,14 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
      refusal or a failed command says so, and one hidden behind a
      fullscreen board is a message the operator never gets. */
   z-index: 90; }
+/* An amber toast: something landed, and part of it needs reading rather
+   than the usual glance (Load bundle… keeping a garment's wiring).
+   The SURFACE goes amber, never the text: this toast is already inverted
+   (--bg text on --ink), and amber text on it reads at 1.45:1 in dark and
+   3.23:1 in light - unreadable (review). --warn-ink on --warn is 5.2:1
+   light / 10:1 dark. The id sets both, so the class has to be as specific
+   to win. */
+#toast.warn { background: var(--warn); color: var(--warn-ink); }
 .empty { color: var(--dim); padding: 60px 0; text-align: center; }
 
 /* ---- timeline ---- */
@@ -713,8 +726,11 @@ async function api(path, body) {
                                          body: JSON.stringify(body) } : undefined);
   return res.json();
 }
-function toast(text) {
-  const t = $("#toast"); t.textContent = text; t.style.display = "block";
+// tone: "" (the usual) or "warn" - amber, for a result the operator has to
+// read rather than glance at. Set on every call, so an amber one is never
+// left behind on the next plain message.
+function toast(text, tone) {
+  const t = $("#toast"); t.textContent = text; t.className = tone || ""; t.style.display = "block";
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", 6000);
 }
 const clock = s => { const n = Math.round(Math.abs(s)); return (s < 0 ? "-" : "") + Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0"); };
@@ -1503,7 +1519,7 @@ function renderTimeline() {
       <div class="group">
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
         <label class="filebtn" tabindex="0" role="button" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
-        <label class="filebtn" tabindex="0" role="button" title="Load a project sent by the designers: their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
+        <label class="filebtn" tabindex="0" role="button" title="Load a project sent by the designers: their CSVs are added to the workspace (existing designs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments and the wiring files (*_map.csv) here are kept - replace a map by hand instead (Delete, then Add CSV).">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
         <a class="filebtn" id="tl-simulator" href="/api/simulator?music=1" download title="Downloads the single-file simulator with the show's current music embedded - hand this file to the director's team; rebuild it here whenever the music changes">Simulator for designers…</a>
       </div>
       <div class="meta">Click an empty spot on a track to add a cue, or press <b>+</b> at the end of its row ·
@@ -2358,7 +2374,7 @@ async function loadBundleFile(file) {
   // A version the page does not speak yet: say so and stop before the
   // confirm dialog even asks - there is nothing useful to confirm.
   if (data.version !== 1) { toast(`Bundle version ${data.version} is not supported (want 1)`); return; }
-  if (!confirm(`Load the project ${file.name} sent by the designers? Their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.`)) return;
+  if (!confirm(`Load the project ${file.name} sent by the designers? Their CSVs are added to the workspace (existing designs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments and the wiring files (*_map.csv) here are kept.`)) return;
   if (ui.playing) stopPlayback(false);
   try {
     const result = await api("/api/bundle/import", data);
@@ -2366,6 +2382,12 @@ async function loadBundleFile(file) {
     else {
       const bits = [`${result.cues ?? 0} cue(s)`, `${result.saved?.length ?? 0} file(s) saved`];
       if (result.overwritten?.length) bits.push(`${result.overwritten.length} overwritten`);
+      // The wiring this workspace already had: kept, never taken from the
+      // bundle (the maps here are regenerated from the 配線ナビ). Counted
+      // in the summary whether or not the bundle's copy differed.
+      const kept = result.kept || [];
+      const keptDiffers = kept.filter(k => k.why);
+      if (kept.length) bits.push(`${kept.length} wiring file${kept.length === 1 ? "" : "s"} kept`);
       if (result.music) bits.push(`music: ${result.music} — pick the audio file again on this PC`);
       // The refused sentences and warnings can each run long (one line per
       // bad file / per problem) - the full text always goes to the
@@ -2379,14 +2401,27 @@ async function loadBundleFile(file) {
       // the name in the designer's own list.
       const renamed = Object.entries(result.renamed || {});
       if (renamed.length) lines.push("Renamed: " + renamed.map(([a, b]) => `${a} → ${b}`).join(" · "));
+      // One line per garment whose wiring the bundle disagreed with - the
+      // one case the operator has to decide about, so it is named (amber)
+      // rather than left to the count. A map that matched byte for byte
+      // says nothing.
+      if (keptDiffers.length) lines.push(keptDiffers.map(k => `${k.name}: ${k.why}`).join(" · ")
+        + " - regenerate from the wiring site if the garment changed");
       if (result.refused?.length) lines.push("Refused: " + result.refused.join(" · "));
       if (result.warnings?.length) lines.push("Warnings: " + result.warnings.join(" · "));
       const full = lines.join(" · ");
+      const tone = keptDiffers.length ? "warn" : "";
       if (full.length > 240) {
         console.warn(full);
-        toast(lines[0] + ` (${(result.refused?.length || 0)} refused, ${(result.warnings?.length || 0)} warning(s) - see console)`);
+        // lines[0] carries the kept COUNT, so a long result still says the
+        // wiring stayed; the amber and this tail say it was not the
+        // bundle's.
+        const tail = [`${(result.refused?.length || 0)} refused`,
+                      `${(result.warnings?.length || 0)} warning(s)`];
+        if (keptDiffers.length) tail.push("the bundle's wiring differs - regenerate from the wiring site if the garment changed");
+        toast(lines[0] + ` (${tail.join(", ")} - see console)`, tone);
       } else {
-        toast(full);
+        toast(full, tone);
       }
     }
   } catch (err) { toast("Import failed: " + err.message); }
