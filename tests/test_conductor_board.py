@@ -1197,6 +1197,13 @@ _PAGE_PROBE = """
       out.clearNowExists = !!btn();
       out.clearNowEnabled = btn() ? !btn().disabled : null;
       out.clearNowWhat = (document.querySelector("#write-choice-clear") || {}).textContent;
+      // ...and where it sits: full width, under the two destinations, not a
+      // third column squeezed in beside them.
+      var choices = document.querySelector(".dlg-choices").getBoundingClientRect();
+      var box = document.querySelector("#write-choice-clear").getBoundingClientRect();
+      out.clearBoxBox = { below: box.top >= choices.bottom - 1,
+                          asWide: box.width >= choices.width - 2,
+                          onScreen: box.height > 20 && box.width > 200 };
       window.confirm = function (msg) { out.clearNowAsked = msg; return true; };
       btn().click();
       await wait(1200);
@@ -1456,6 +1463,10 @@ def test_the_clear_now_button_asks_first_and_then_sends(page):
     assert page["clearNowEnabled"] is True
     assert "Deletes slots 1–18" in page["clearNowWhat"], page["clearNowWhat"]
     assert "keep the look they are showing" in page["clearNowWhat"]
+    # It is the one thing in the dialog that takes something away, so it sits
+    # full width UNDER the two destinations rather than beside them.
+    assert page["clearBoxBox"] == {"below": True, "asWide": True,
+                                   "onScreen": True}, page["clearBoxBox"]
     asked = page["clearNowAsked"] or ""
     assert "Delete slots 1–18 on" in asked, asked
     assert "nothing goes white" in asked and "uploaded again first" in asked

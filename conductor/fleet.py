@@ -404,8 +404,11 @@ class Fleet:
         self._stop_told: "set[str]" = set()    # told once; not a tug of war
         # Units already asked to clear their slots after THIS run, and the
         # ones whose agent is too old to know how ("unit too old for
-        # clear"). Both are per run: reset by every START and STOP, so
-        # the next evening asks again.
+        # clear"). Both are per run: forgotten by every START, and per
+        # unit by an Upload that lands on it (the pictures are back, so
+        # this show's end may ask again). Deliberately NOT forgotten by
+        # STOP - the end of the run and the STOP behind it are the same
+        # show ending, and the unit is asked once for the two of them.
         self._clear_told: "set[str]" = set()
         self._clear_too_old: "set[str]" = set()
         # Units currently left alone because they play their own demo -
