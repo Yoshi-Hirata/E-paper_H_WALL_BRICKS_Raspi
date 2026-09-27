@@ -48,6 +48,20 @@ def test_a_picked_file_is_judged_by_its_name_before_it_is_read():
     assert body.index("isMacMetadata(f.name)") < body.index("await f.text()")
 
 
+def test_the_amber_toast_paints_its_surface_not_its_text():
+    """The toast is inverted (--bg text on --ink), so amber TEXT on it is
+    unreadable - 1.45:1 in dark, 3.23:1 in light (review of 5444e3a). The
+    surface goes amber instead, with the ink paired to it in each scheme
+    (--warn-ink: 5.2:1 light, 10:1 dark)."""
+    rule = PAGE[PAGE.index("#toast.warn {"):]
+    rule = rule[:rule.index("}")]
+    assert "background: var(--warn)" in rule, rule
+    assert "color: var(--warn-ink)" in rule, rule
+    assert "color: var(--warn)" not in rule, rule
+    # Defined for both schemes, or one of them falls back to nothing.
+    assert PAGE.count("--warn-ink:") == 2, PAGE.count("--warn-ink:")
+
+
 def _without_comments(source: str) -> str:
     """Line comments out - every check here is about what the code does,
     and the comments quote the very words being looked for."""

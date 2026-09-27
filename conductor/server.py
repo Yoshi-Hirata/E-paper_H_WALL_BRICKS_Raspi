@@ -994,10 +994,14 @@ class Workspace:
         board 150 back to the stale layout without a word. `kept` entries
         are {name, why}: `why` is empty when the bundle's bytes are the
         same file (nothing happened, nothing to say) and
-        BUNDLE_WIRING_KEPT when they differ, which the page shows. The
-        operator replaces a map deliberately, by hand (Delete, then Add
-        CSV). A bundle map for a garment this workspace does NOT have yet
-        is written as before: a new garment arrives with its wiring.
+        BUNDLE_WIRING_KEPT when they differ, which the page shows. A kept
+        map is in none of `saved`, `overwritten` or `renamed` - nothing of
+        the bundle's landed under any name (its composed spelling is still
+        used to rewrite the timeline's references, since that is the
+        spelling the file here has). The operator replaces a map
+        deliberately, by hand (Delete, then Add CSV). A bundle map for a
+        garment this workspace does NOT have yet is written as before: a
+        new garment arrives with its wiring.
         """
         if not isinstance(payload, dict):
             raise ValueError("not a bundle file")
@@ -1090,11 +1094,17 @@ class Workspace:
             # Windows, where "look22_map.csv" in a bundle IS the
             # "Look22_map.csv" already here (look.fold_name).
             on_disk = self._on_disk()            # folded name -> the name here
-        existing = set(on_disk.values())
         saved: "list[str]" = []
         overwritten: "list[str]" = []
         kept: "list[dict]" = []
         kept_folded: "set[str]" = set()
+        # The bundle's own spellings of the maps that were kept: dropped
+        # from the `renamed` this call REPORTS, because nothing of theirs
+        # was written under any name. The composing itself still has to
+        # happen (it is what rewrote the cues, transitions, units, labels
+        # and boards above onto the spelling this workspace keeps), so it
+        # is `renamed` the reply loses, not the rewrite.
+        kept_cleans: "set[str]" = set()
         for name, text in to_save:
             if self.kind(name) == "map":
                 here = on_disk.get(look_fold_name(name))
@@ -1103,6 +1113,7 @@ class Workspace:
                     # bundle calls it: two entries of one map (two
                     # spellings, two cases) are one file here and one line
                     # for the operator to read.
+                    kept_cleans.add(name)
                     if look_fold_name(here) not in kept_folded:
                         kept_folded.add(look_fold_name(here))
                         same = _same_csv(self._existing_text(here), text)
@@ -1115,17 +1126,29 @@ class Workspace:
                 raise ValueError(
                     f"could not save {name}: {exc} - {len(saved)} file(s) "
                     f"already saved, {len(refused)} refused before this")
-            if saved_name in existing:
-                overwritten.append(saved_name)
+            # Folded, like everything else about "the same file": a design
+            # whose name differs from the one here only in case IS that
+            # file on NTFS, and reporting it as a plain save (as an exact
+            # `in existing` did) told the operator a design had been added
+            # when it had in fact replaced one. Named by the spelling on
+            # disk, which is the file that was written.
+            folded = look_fold_name(saved_name)
+            if folded in on_disk:
+                overwritten.append(on_disk[folded])
             saved.append(saved_name)
+            # ...and a second entry of this same bundle landing on it is an
+            # overwrite too, not a second design.
+            on_disk.setdefault(folded, saved_name)
         # The CHECK below (and every one the page runs afterwards) reads
         # the CSVs on disk, so a design drawn for the bundle's stale
         # layout is judged against the wiring that was KEPT - which is the
         # point: it is flagged here rather than at the run-through.
         cue_count, warnings = self._apply_show_changes(changes, cues)
         music = payload.get("music") or show.get("music")
+        renamed_here = {old: new for old, new in renamed.items()
+                        if new not in kept_cleans}
         return {"ok": True, "saved": saved, "refused": refused,
-                "renamed": renamed,
+                "renamed": renamed_here,
                 "overwritten": overwritten, "kept": kept, "cues": cue_count,
                 "warnings": warnings, "units_kept": units_kept,
                 "boards_kept": boards_kept,

@@ -28,6 +28,7 @@ import io
 import json
 import sys
 import threading
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -306,6 +307,59 @@ def test_a_map_is_kept_once_per_garment_however_the_bundle_spells_it(tmp_path):
     assert result["saved"] == []
     assert (ws.files / MAP_NAME).read_text(encoding="utf-8") == MAP
     assert sorted(p.name for p in ws.files.glob("*.csv")) == [MAP_NAME]
+
+
+def test_a_kept_map_is_reported_as_kept_and_nothing_else(tmp_path):
+    # A decomposed map name (a Mac's NFD) still has to be COMPOSED, because
+    # that spelling is what rewrites the cues/units/labels onto the garment
+    # this workspace keeps - but reporting it under "Renamed" would say a
+    # file had been saved under another name when nothing of the bundle's
+    # was written at all (review of 0407f69).
+    composed_item = "ガラ"
+    decomposed_item = unicodedata.normalize("NFD", composed_item)
+    assert decomposed_item != composed_item
+    composed_map = f"{composed_item}_map.csv"
+    grid = f"{decomposed_item}_color_pattern01_grid.csv"
+    ws = Workspace(tmp_path / "ws")
+    ws.save(composed_map, MAP)
+    result = ws.import_bundle(make_bundle(
+        files={f"{decomposed_item}_map.csv": MAP.replace("17,60", "17,59"),
+               grid: GRID},
+        cues=[{"id": "c0", "item": decomposed_item, "at": 0.0, "design": grid}],
+        units={decomposed_item: "radxa-03"}))
+    assert [k["name"] for k in result["kept"]] == [composed_map]
+    assert result["kept"][0]["why"]
+    # In none of the three lists: it was not saved, not overwritten, and
+    # not renamed onto anything.
+    assert composed_map not in result["saved"]
+    assert result["overwritten"] == []
+    assert result["renamed"] == {grid: f"{composed_item}_color_pattern01_grid.csv"}
+    assert f"{decomposed_item}_map.csv" not in result["renamed"]
+    # ...and the timeline still followed the composed spelling, so the cue
+    # resolves against the map that stayed.
+    entry = item(ws.state(), composed_item)
+    assert entry["unit"] == "radxa-03"
+    assert ws.state()["show"]["cues"][0]["problems"] == []
+    assert (ws.files / composed_map).read_text(encoding="utf-8") == MAP
+
+
+def test_a_design_that_lands_on_another_case_of_its_name_is_an_overwrite(tmp_path):
+    # Pre-existing, found in the same review: on the operator's Windows PC
+    # "…_Pattern_grid.csv" IS "…_pattern_grid.csv" (look.fold_name), so a
+    # bundle design under the other case replaces the file here - and an
+    # exact `in existing` reported it as a plain save, which reads as "a
+    # design was added" when one was replaced. Designs still overwrite;
+    # only the report was wrong.
+    ws = Workspace(tmp_path / "ws")
+    here = "Look22_color_Pattern01_grid.csv"
+    ws.save(MAP_NAME, MAP)
+    ws.save(here, GRID)
+    changed = GRID.replace("0x03", "0x02")
+    result = ws.import_bundle(make_bundle(
+        files={"Look22_color_pattern01_grid.csv": changed}, cues=[]))
+    # Named by the spelling on disk - that is the file that was written.
+    assert result["overwritten"] == [here]
+    assert len(item(ws.state(), "Look22")["designs"]) == 1
 
 
 def test_the_geometry_check_runs_against_the_kept_wiring(tmp_path):

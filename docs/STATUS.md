@@ -39,8 +39,10 @@ AZ271SG1036 のソケットが 1 つ移った)。オペレーターは再生成�
 - **その衣装の map がまだ無ければ従来どおり書く**(新しい衣装は配線ごと届く)
 - **配色(grid)は従来どおり上書きして報告する**(`overwritten`)。bundle は
   演出家のプロジェクトそのもので、オペレーターがそれを頼んだのだから
-- 返り値に **`kept`(`[{name, why}]`)**が増えた。`overwritten` には
-  残した map は入らない。`export_bundle` とシミュレーターは変更なし
+- 返り値に **`kept`(`[{name, why}]`)**が増えた。残した map は
+  **`saved` / `overwritten` / `renamed` のどれにも入らない**(何も書いていない。
+  ただし NFC に直した綴り自体は、キュー・units・labels の書き換えには使う ――
+  こちらのファイルの綴りがそれだから)。`export_bundle` とシミュレーターは変更なし
   (bundle には map が入ったままなので、空のワークスペースを bundle から作れる)
 - **CHECK は残った(ワークスペースの)map に対して走る** ―― 古いレイアウト向けに
   描かれた配色は、そのまま「made for another layout」で名指しされる。
@@ -48,12 +50,20 @@ AZ271SG1036 のソケットが 1 つ移った)。オペレーターは再生成�
 
 ページ(`conductor/web/index.html`、Load bundle… の結果だけ):
 
-- 集計に **`1 wiring file kept`**、違っていた衣装は**琥珀色で 1 行**:
+- 集計に **`1 wiring file kept`**、違っていた衣装は**琥珀色の帯で 1 行**
+  (トーストは元から反転色なので、文字を琥珀にするとコントラストが
+  1.45:1(ダーク)/ 3.23:1(ライト)で読めない ―― レビュー指摘。
+  **地を `--warn`、文字を新しい `--warn-ink`** にして 5.2:1 / 10.6:1):
   `Look22_map.csv: the workspace's wiring is kept (the bundle's copy differs)
   - regenerate from the wiring site if the garment changed`
 - 確認ダイアログとツールチップも「配線はここのものが残る」に直した。
   **意図して差し替えるときは Designs タブで Delete → Add CSV**
   ([CONDUCTOR_START.md §5](CONDUCTOR_START.md))
+
+ついでに直した(同レビュー、以前からの取りこぼし):bundle の配色が
+**大文字小文字だけ違う名前**で届くと、NTFS では既にあるファイルを置き換えるのに
+`overwritten` に出ず「追加された」と読めていた。`overwritten` は
+**ディスク側の綴り**で報告する(上書きすること自体は従来どおり)。
 
 テスト:`tests/test_bundle.py`(同一 map は黙って kept / 違う map は理由付きで
 kept・バイト列は不変・配色は従来どおり上書き / 新しい衣装の map は書く /

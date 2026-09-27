@@ -9,12 +9,17 @@
   --bg: #f4f4f6; --panel: #ffffff; --ink: #1d1d24; --dim: #6b6b78;
   --line: #dcdce3; --accent: #0a62c9; --ok: #12834a; --err: #c62828;
   --warn: #a15c00; --select: #e6f0fc; --garment: #ececf0; --hold: #dfe7f3;
+  /* The ink that reads on an amber SURFACE (--warn as a background), which
+     is not --bg or --ink: in light --warn is dark amber and wants white on
+     it (5.2:1), in dark it is light amber and wants near-black (10:1). */
+  --warn-ink: #ffffff;
   --ph-outline: none;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #15161a; --panel: #1e2026; --ink: #ececf1; --dim: #9a9aa8;
     --line: #33353f; --accent: #6db3ff; --ok: #5fd896; --err: #ff7b7b;
     --warn: #ffb860; --select: #243347; --garment: #2a2c35; --hold: #2b3444;
+    --warn-ink: #15161a;
     --ph-outline: #fff; }
 }
 * { box-sizing: border-box; }
@@ -127,9 +132,13 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
      fullscreen board is a message the operator never gets. */
   z-index: 90; }
 /* An amber toast: something landed, and part of it needs reading rather
-   than the usual glance (Load bundle… keeping a garment's wiring). The id
-   sets the colour, so the class has to be as specific to win. */
-#toast.warn { color: var(--warn); font-size: 13px; }
+   than the usual glance (Load bundle… keeping a garment's wiring).
+   The SURFACE goes amber, never the text: this toast is already inverted
+   (--bg text on --ink), and amber text on it reads at 1.45:1 in dark and
+   3.23:1 in light - unreadable (review). --warn-ink on --warn is 5.2:1
+   light / 10:1 dark. The id sets both, so the class has to be as specific
+   to win. */
+#toast.warn { background: var(--warn); color: var(--warn-ink); }
 .empty { color: var(--dim); padding: 60px 0; text-align: center; }
 
 /* ---- timeline ---- */
