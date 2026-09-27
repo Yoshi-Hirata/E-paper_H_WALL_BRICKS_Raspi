@@ -123,12 +123,16 @@ def design_label(look_map: LookMap, design: Design, partial: bool) -> str:
 def build_unit_show(unit: str, maps: "list[LookMap]",
                     designs: "dict[tuple[str, str], Design]",
                     cues: "list[dict]", refresh: float, duration: float,
-                    name: str = "show", dips: "dict | None" = None) -> dict:
+                    name: str = "show", dips: "dict | None" = None,
+                    clear_after_show: bool = False) -> dict:
     """One unit's show file. `designs` is keyed (item lower-cased, file);
     `cues` are the timeline's cues for the items in `maps`. `dips` is
     show.json's own {item: {board_no: DIP set by hand}} - the unit's
     `boards` list then carries those addresses instead of the ranks, gaps
-    and all (conductor/look.py's unit_board_ids())."""
+    and all (conductor/look.py's unit_board_ids()).
+
+    `clear_after_show` (show.json's own key) is carried into the file
+    AFTER the id is computed - see below."""
     ids = unit_board_ids(maps, resolve_dips(maps, dips), unit=unit)
     by_item = {(m.item or m.name).lower(): m for m in maps}
     addresses = sorted(ids.values())
@@ -198,13 +202,24 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
             "boards": addresses, "cues": unit_cues}
     digest = hashlib.sha1(json.dumps(show, sort_keys=True).encode()).hexdigest()
     show["id"] = digest[:10]
+    # Added AFTER the digest on purpose: ticking "Clear pictures after the
+    # show" must not change the show's IDENTITY. Nothing about the
+    # pictures changes, so a fleet that already holds this timeline goes
+    # on holding it - no "✗ old version" on ten tiles, no re-Upload of
+    # every picture, and no supervision reload the evening of the show.
+    # The conductor sends POST /show/clear itself when the run ends or is
+    # stopped; this key is the unit's OWN fallback, for a show that ends
+    # with the PC gone, and it reaches the unit with the next Upload.
+    if clear_after_show:
+        show["clear_after_show"] = True
     return show
 
 
 def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
           load_design, cues: "list[dict]", refresh: float, duration: float,
           cue_problems: "dict[str, list[str]]", name: str = "show",
-          only: "list[str] | None" = None, dips: "dict | None" = None
+          only: "list[str] | None" = None, dips: "dict | None" = None,
+          clear_after_show: bool = False
           ) -> "tuple[dict[str, dict], list[str], list[str]]":
     """({unit: show file}, problems, warnings). Nothing is built while the
     timeline still has a problem: a show goes out whole or not at all.
@@ -236,6 +251,7 @@ def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
     whichever units this write targets.
     """
     targeted = None if only is None else set(only)
+
     problems: "list[str]" = []
     warnings: "list[str]" = []
     # The units a warning is about: not written here, and not built
@@ -286,7 +302,8 @@ def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
             designs = {(c["item"].lower(), c["design"]):
                        load_design(c["design"]) for c in unit_cues}
             shows[unit] = build_unit_show(unit, unit_maps, designs, unit_cues,
-                                          refresh, duration, name, dips=dips)
+                                          refresh, duration, name, dips=dips,
+                                          clear_after_show=clear_after_show)
         except (OSError, LookError) as exc:
             note(unit, f"{unit}: {exc}")
     if problems:

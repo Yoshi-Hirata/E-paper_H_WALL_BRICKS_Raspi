@@ -18,6 +18,80 @@
 
 ## 2. 直近で完成したもの
 
+**ショーのあと、絵をスロットから消す(2026-09-27 本番後)**
+
+現象:ショーのあと、STOP を押してから衣装の Radxa を抜いた(基板はまだ
+バッテリーで生きていた)。**約 1 分後に親基板が工場出荷時の自動巡回を再開し、
+スロット 0〜18 を順に映した ― 本番の絵を勝手に再生した。** USB が抜けたあとは
+0x17 を送る手段が無いので、**衣装を抜く時点で絵がスロットに残っていてはいけない。**
+
+**Units タブ ③ START の隣に「Clear pictures after the show」**(既定オフ、
+ツールチップ「ショー終了後にスロット 1〜18 を削除。Radxa を外した後の
+自動巡回で本番の絵が出ないようにする」)。`show.json` の `clear_after_show` に
+ショーごと保存され(undo 可、import/export も運ぶ)、run の状態にも写る。
+
+- **入れて走らせると**、run が終了したとき、および **STOP の 30 秒後**に、Conductor が
+  そのショーを持つ各機体へ **`POST /show/clear`**(新設)を出す。**HOLD では出さない**
+- **STOP は 30 秒待つ**(`CLEAR_AFTER_STOP_S`。2026-09-27 のレビュー指摘)。STOP は
+  演出家が**途中で止める**ときにも押すボタンで、消去は ① Upload(約 3 分)なしには
+  戻せない。この窓の間に **③ START / ② Show preset / RESUME / NEXT / シーク /
+  ① Upload** のどれかがあれば取り消される。確認ダイアログがそれを言い、
+  大時計の下に残り秒数が出る:
+  `Pictures will be cleared on every unit in 21 s — press ③ START (or ② Show preset)
+  to keep them. Clearing cannot be undone: the show has to be uploaded again.`
+  **時間で終わったときは待たない** ― もう終わっているから
+- **終了は「再生して終わりまで来た」ときだけ**(同レビュー)。`seek` は `duration` を
+  含んで丸めるので、時計だけを見ていると「最後のルックを見るために終わりへ飛ぶ」が
+  消去を始めてしまった。**終わり(の 1 秒前より後)へ着地した T0 では消さない**、かつ
+  **最後の T0 移動から 30 秒**は消さない。**終わり際の HOLD / RESUME / シークは
+  この run の自動消去を切る**ので、大時計の下に
+  `… auto-clear off for this run, use STOP …` と出す(黙って消えないだけでは
+  理由が分からない ― 再レビュー指摘)
+- **消え終わったら残り秒数の表示は消える**(再レビュー指摘)。`_fire_armed_clear()` が
+  `_clear_at` / `_clear_armed` を片付けていなかったので `clear_in_s` が 0 のまま残り、
+  パネルの一行が `… in 0 s` で固まって **`① Upload writes them again` を隠していた**。
+  届かなかった機体だけは armed に残す(それが再試行)
+- **二重依頼は無視**(同レビュー)。機体自身の STOP が 1 つ積み、数 ms 後に Conductor の
+  指示が来る。進行中の消去と同じものなら**何もしない** ― やり直すと 288 対を頭から
+  歩き直し、空にしたスロットの NAK が「失敗」に数えられる
+- **届かなかった機体は次のポーリングでもう一度**(同レビュー)。相手が理由を答えた
+  場合(古い・別のショー・デモ中)は答えなので繰り返さない
+- 機体は**最後のキューの guard(§4.2 の `_guard_floor`)が過ぎるのを待ってから**、
+  生きている全基板の**スロット 1〜18** を `delete_slot`(0x14、ACK 確認、
+  リトライは色保存と同じ段)で 1 つずつ削除する。**スロット 0(白)と 19
+  (手動・デモ)は触らない。0x15 全消去は使わない**
+- **何も描き直さない**(依頼者の指示):0x1D も STANDBY の白も送らず、
+  スロット 0 も表示しない。**Radxa がつながっている間、衣装は最後のルックを
+  映し続ける。** 機体は REMOTE のまま(定期 0x17 も動き続ける)
+- 1 枚でも削除されたら焼き込みの状態が **`cleared`**(`show-burn.json` に残るので
+  再起動後も同じ)になり、③ START と ② Show preset は **force でも**
+  `pictures were cleared after the last show - Upload again` で断る。
+  戻す道は **① Upload をやり直す**(キャッシュも 0x1B の既済も delay table の
+  既済も消えているので全部書き直す)
+- **③ START を押せば消去は譲る**:まだ 1 枚も削除していなければ何も起きなかった
+  ことになり(START は従来どおり通る)、すでに削除していれば処理中のスロットを
+  終えて止まり `cleared partially — Upload again` になる
+- タイル **Pictures** 行:琥珀の `clearing 54/288` → 灰の `pictures cleared`
+  (依頼者が求めたものなので緑ではない)。NOW → NEXT の見出しも
+  `SHOW ENDED — pictures cleared`。**全機体が `pictures cleared` になってから
+  Radxa を抜く**(手順は [CONDUCTOR_START.md](CONDUCTOR_START.md) §6c)
+- **チェックを忘れたとき / 1 台だけ**:**Write to units…** ダイアログの
+  **「After the show — clear the pictures」→ Clear pictures now**。Upload と同じ
+  WHICH LOOKs の選択が効き、ショー中・HOLD 中は押せない
+- **できれば ① Upload の前にチェックを入れる**(同レビュー)。当日は Conductor が
+  指示を出すのでどちらでも効くが、**機体自身にこの設定が入るのは次の Upload のとき**
+  (絵は変わらないのでショーの id も変わらない = タイルが `✗ old version` に
+  ならない)。ショー中に PC を失っても機体が自分で消すようにしたいなら Upload の前に。
+  チェックの隣に `— tick before ① Upload for the units to clear on their own` と出る
+- 古いエージェント(`/show/clear` が 404)は
+  `unit too old for clear - power the boards off before unplugging` として
+  その機体のタイルに出し、**他の機体の消去は止めない**
+- ⚠ **ショーのあと機体の KEY2 を押さない・再起動しない**(どちらも待機の白を
+  描く)。最後のルックを残したまま片付けるなら、抜く前に基板の電源を切る
+- 消去の実時間(フェイクバスの回数を実測コスト 50〜250 ms に換算):
+  16 基板 × 18 スロット = **288 回で約 14〜72 秒**、22 基板なら
+  396 回で **約 20〜99 秒**(ガードの待ち 30 秒はこれとは別に前に付く)
+
 **DIP ID を手で指定できる(2026-09-27、リハーサル前)**
 
 バスアドレスは「その機体が載せる基板番号を小さい順に並べたときの順位」

@@ -46,6 +46,23 @@ a show.
                        else - never "burning", "cancelled" or "none"
     POST /show/hold    stop scheduling; POST /show/stop ends the run
                        (and gives up on a burn still in progress)
+    POST /show/clear   {"show": <id>}  take this show's pictures back OUT
+                       of slots 1-18 (acked 0x14 per board and slot,
+                       never 0x15), so the garment's factory autoplay has
+                       nothing of the show left to cycle through once the
+                       Radxa is unplugged. NOTHING is repainted: the
+                       garment keeps the last look it was shown for as
+                       long as it has power. Refused while a run is
+                       running or holding ("stop the show first"), and
+                       for a demo stored on the unit. Progress is
+                       status.clear ({"state": "none" | "clearing" |
+                       "cleared" | "failed" | "partial", "done", "total",
+                       "failed"}); a clear that deleted anything at all
+                       turns status.show.burn into "cleared", so
+                       /show/run and /show/preset refuse until the
+                       pictures are uploaded again. Asking twice is free.
+                       An agent older than this answers 404 - the
+                       conductor reads that as "too old to clear"
 
     POST /demo/save    {"name", "loop", "show"} write a standalone show
                        into the unit's own menu (ui/demos.py); refused
@@ -194,7 +211,8 @@ class _Handler(BaseHTTPRequestHandler):
                 # must not retime or replace it under someone's feet;
                 # hold/stop still work, since those are exactly how the
                 # PC takes the unit back.
-                if (self.path in ("/show/load", "/show/preset", "/show/run")
+                if (self.path in ("/show/load", "/show/preset", "/show/run",
+                                  "/show/clear")
                         and player.is_demo):
                     if player.state in (RUNNING, HOLDING):
                         raise RemoteError("a show is running - stop it first")
@@ -213,6 +231,8 @@ class _Handler(BaseHTTPRequestHandler):
                     player.hold()
                 elif self.path == "/show/stop":
                     player.stop()
+                elif self.path == "/show/clear":
+                    player.clear_pictures(body.get("show"))
                 else:
                     return self._answer(404, {"error": "not found"})
             elif (player is not None and player.running

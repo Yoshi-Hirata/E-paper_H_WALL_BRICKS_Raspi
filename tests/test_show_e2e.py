@@ -131,7 +131,10 @@ class ShowUnit:
         self.session, self.runner, self.bus = make_session()
         self.player = ShowPlayer(self.session, store=store, save_s=0.02,
                                  margin_s=0.3, grace_s=0.2, tick_s=0.02,
-                                 setup_s=0.6, setup_board_s=0.0)
+                                 setup_s=0.6, setup_board_s=0.0,
+                                 # The real 30 s window a STOP's clear waits
+                                 # out, compressed like every other wait here.
+                                 clear_after_stop_s=0.2)
         self.session.on_release = self.player.stop
         self.agent = Agent(self.session, port=port, host="127.0.0.1",
                            name=name, player=self.player)
@@ -165,7 +168,8 @@ def stage(tmp_path):
     ws.assign("Look22", "radxa-01")
     units = {"radxa-01": ShowUnit("radxa-01", tmp_path / "u1"),
              "radxa-02": ShowUnit("radxa-02", tmp_path / "u2")}
-    fleet = Fleet({n: u.address for n, u in units.items()}, poll_s=0.05)
+    fleet = Fleet({n: u.address for n, u in units.items()}, poll_s=0.05,
+                  clear_after_stop_s=0.2, clear_after_move_s=0.2)
     fleet.start()
     assert wait_until(lambda: all(len(l._samples) >= 3
                                   for l in fleet.links.values()))
@@ -324,3 +328,124 @@ def test_a_running_show_refuses_loose_cues_but_not_the_panic_white(stage):
     fleet.stop_show()
     results = fleet.simple(list(units), "/standby")
     assert all(r["ok"] and r["phase"] == "standby" for r in results.values())
+
+# ---- "Clear pictures after the show", end to end ----
+# 2026-09-27: the operator pressed STOP and unplugged the Radxa from a
+# garment whose boards were still on battery. A minute later the master board
+# restarted the factory autoplay and cycled slots 0-18 - it replayed the
+# show's pictures on its own. The checkbox next to (3) START is the answer.
+
+DELETE = 0x14
+
+
+def deleted(unit):
+    return sorted((f.dest, f.data[0]) for f in unit.bus.requested
+                  if f.cmd == DELETE)
+
+
+def test_the_checkbox_travels_into_every_show_file_without_moving_its_id(tmp_path):
+    ws = workspace(tmp_path)
+    ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1),
+                         cue("b", "Look20-Skirt", 0, S1)], refresh=1.0)
+    plain = ws.compile_show()[0]["radxa-02"]
+    assert "clear_after_show" not in plain      # absent = false, as before
+    ws.set_clear_after_show(True)
+    assert ws.state()["show"]["clear_after_show"] is True
+    ticked = ws.compile_show()[0]["radxa-02"]
+    assert ticked["clear_after_show"] is True
+    # The pictures did not change, so the show did not: a fleet already
+    # holding this timeline is not asked to take it all again the evening
+    # of the show, and no tile reads "old version".
+    assert ticked["id"] == plain["id"]
+    # Undoable like any other edit of the show, and off writes no key.
+    assert ws.undo() is True
+    assert "clear_after_show" not in ws.compile_show()[0]["radxa-02"]
+
+
+def test_stop_clears_every_unit_and_repaints_nothing(stage):
+    ws, fleet, units, _ = stage
+    ws.set_clear_after_show(True)
+    fleet.upload(timeline(ws, second_at=6))
+    assert burned(fleet, units)
+    assert fleet.clear_wanted() is True
+    fleet.start_show(lead_s=0.3)
+    assert wait_until(lambda: all(u.player.applied == "q00"
+                                  for u in units.values()), timeout=8)
+    painted = {n: len(u.shows) for n, u in units.items()}
+    fleet.stop_show()
+    for name, unit in units.items():
+        assert wait_until(lambda u=unit: u.session.clear_record()["state"]
+                          == "cleared", timeout=15), name
+        # Slots 1-18 on every board of that garment, and nothing else.
+        boards = ws.compile_show()[0][name]["boards"]
+        assert deleted(unit) == sorted((b, s) for b in boards
+                                      for s in range(1, 19))
+        # Nothing was repainted on the way out: the garments are still
+        # showing the last look they were given (the operator's rule).
+        assert len(unit.shows) == painted[name]
+        assert unit.player.status()["burn"]["state"] == "cleared"
+    # ...and START now refuses, on every unit, until the pictures go back.
+    assert wait_until(lambda: all("cleared" in p for p in
+                                  fleet._burn_problems(list(units)))
+                      and fleet._burn_problems(list(units)), timeout=8)
+    with pytest.raises(ValueError, match="pictures were cleared after the "
+                                         "last show"):
+        fleet.start_show(lead_s=0.3, force=True)
+    # An Upload is the way back.
+    fleet.upload(timeline(ws, second_at=6))
+    assert burned(fleet, units)
+    fleet.start_show(lead_s=0.3)
+    assert fleet.run is not None
+
+
+def test_the_end_of_the_show_clears_it_with_nobody_pressing_anything(stage):
+    ws, fleet, units, _ = stage
+    ws.set_clear_after_show(True)
+    fleet.upload(timeline(ws, second_at=3, duration=4))
+    assert burned(fleet, units)
+    fleet.start_show(lead_s=0.3)
+    assert wait_until(lambda: all(u.player.state == "ended"
+                                  for u in units.values()), timeout=12)
+    # Supervision notices the end (CLEAR_AFTER_END_S past the duration) and
+    # asks every unit, without an operator in the loop.
+    for name, unit in units.items():
+        assert wait_until(lambda u=unit: u.session.clear_record()["state"]
+                          == "cleared", timeout=20), name
+    assert any("clearing the pictures" in line for line in fleet.corrections)
+
+
+def test_a_start_inside_the_stop_window_keeps_the_pictures(stage):
+    # The director's mid-show abort, taken back: STOP then START, and the
+    # show runs again without a three-minute re-Upload (review, 2026-09-27).
+    ws, fleet, units, _ = stage
+    ws.set_clear_after_show(True)
+    fleet.upload(timeline(ws, second_at=20, duration=60))
+    assert burned(fleet, units)
+    fleet.start_show(lead_s=0.3)
+    assert wait_until(lambda: all(u.player.applied == "q00"
+                                  for u in units.values()), timeout=8)
+    fleet.stop_show()
+    assert fleet.clear_armed_in_s() is not None
+    fleet.start_show(lead_s=0.3)             # "no, carry on"
+    assert fleet.clear_armed_in_s() is None
+    time.sleep(1.0)                          # longer than the 0.2 s window
+    for unit in units.values():
+        assert unit.session.clear_record()["state"] == "none"
+        assert deleted(unit) == []
+        assert unit.player.status()["burn"]["state"] == "burned"
+    assert fleet.run is not None              # ...and the show is running
+
+
+def test_the_box_left_unticked_changes_nothing(stage):
+    ws, fleet, units, _ = stage
+    fleet.upload(timeline(ws, second_at=3, duration=4))
+    assert burned(fleet, units)
+    fleet.start_show(lead_s=0.3)
+    assert wait_until(lambda: all(u.player.state == "ended"
+                                  for u in units.values()), timeout=12)
+    fleet.stop_show()
+    time.sleep(1.0)
+    for unit in units.values():
+        assert unit.session.clear_record()["state"] == "none"
+        assert deleted(unit) == []
+        assert unit.player.status()["burn"]["state"] == "burned"

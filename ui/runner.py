@@ -36,9 +36,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
-from epaper.commands import (TEST_SLOT, clear_pipeline, get_version,
-                             save_color, save_pipeline, show_single,
-                             slot_config, stop)
+from epaper.commands import (TEST_SLOT, clear_pipeline, delete_slot,
+                             get_version, save_color, save_pipeline,
+                             show_single, slot_config, stop)
 from epaper.protocol import (ACK_INVALID_CMD, ACK_SUCCESS, ADDR_BUS_MASTER,
                              DEV_NUMBER_BRAND)
 
@@ -766,6 +766,15 @@ class DemoRunner:
         board holds, so the next burn must not skip it."""
         self._burn_cache.pop((board, slot), None)
 
+    def _forget_slot(self, board: int, slot: int) -> None:
+        """The slot has just been DELETED on this board (0x14): its
+        picture, its 0x1B config and its delay table are all gone with
+        it, so nothing here may go on claiming the board holds them -
+        the next Upload has to write all three again."""
+        self._burn_cache.pop((board, slot), None)
+        self._cfg_done.discard((board, slot))
+        self._delays_sent.pop((board, slot), None)
+
     def absent_snapshot(self) -> "set[int]":
         """A copy of `absent` for other threads (ui/showplay.py's burn
         gate, ui/app.py's DEMO screen): the worker changes the set in
@@ -1388,6 +1397,95 @@ class DemoRunner:
         if gone:
             self.emit(f"{len(gone)} board{'' if len(gone) == 1 else 's'} "
                       f"absent ({self._fmt_boards(gone)}) - skipped")
+
+    # ---- taking the pictures back out of the slots (0x14) ----
+
+    def _clear_ready(self, guard_due: "float | None") -> bool:
+        """True when a queued clear may start: no guard STOP is still
+        owed and the last cue's guard floor has passed.
+
+        That floor is the same one the heartbeat waits for (see
+        _remote_guard_clear()) - a cue's own refresh plus its sweep plus
+        the margin, measured from its LAST broadcast. A 0x14 landing
+        inside a repaint is the one thing a clear must never do, so it
+        waits for exactly the instant that says the glass is finished,
+        and the owed guard STOP goes out first (the loop below sends it,
+        then comes round to this).
+        """
+        if guard_due is not None or self._guard_owed is not None:
+            return False
+        floor = self._guard_floor
+        return floor is None or time.monotonic() >= floor
+
+    def _run_clear(self, bus, groups: int, session, clear_job: dict,
+                   began: "float | None" = None) -> None:
+        """Delete the show's pictures from their slots, acked, one
+        (board, slot) at a time - the same retry ladder as a save.
+
+        Why: after the show on 2026-09-27 the operator pressed STOP and
+        unplugged the Radxa from a garment whose boards were still on
+        battery. About a minute later the master board restarted the
+        FACTORY AUTOPLAY and cycled slots 0-18 - it replayed the show's
+        pictures on its own, on the floor, with nothing left able to stop
+        it. So the pictures must not be in the slots any more by the time
+        the garment is unplugged.
+
+        Nothing here REPAINTS anything: no 0x1D, no standby, slot 0 is
+        never shown. The garment goes on holding the last look it was
+        given for as long as it has power - the operator's rule
+        (2026-09-27): "as long as the Radxa stays connected the garment
+        keeps showing its last design". Only the slots the autoplay
+        would cycle through are emptied.
+
+        Slot 0 (the standby white) and slot 19 (the manual / demo
+        one-shot) are left alone, and 0x15 (全消去) is FORBIDDEN and
+        never sent - docs/SPECIFICATION.md 2.4 and host/epaper/commands.py,
+        which does not even build the frame.
+
+        Interruptible between slots: a START cancels the clear
+        (ui/showplay.py's run()), and this finishes the slot it is on,
+        says so and stops. What is already deleted stays deleted, so the
+        burn record reads "cleared partially" and both gates ask for an
+        Upload - never a half-cleared garment quietly started again.
+        """
+        epoch, slots = clear_job["epoch"], clear_job["slots"]
+        began = time.monotonic() if began is None else began
+        pairs = [(board, slot) for board in self.boards for slot in slots]
+        session.clear_started(epoch, len(pairs))
+        live = len(self.live)
+        self.emit(f"clear: slots {self._fmt_boards(slots)} on {live} "
+                  f"board{'' if live == 1 else 's'}...")
+        done, failed = 0, []
+        for n, (board, slot) in enumerate(pairs):
+            if self._stop.is_set() or not session.clear_current(epoch):
+                # Superseded (a START, a fresh Upload) or taken off the
+                # port. A superseded clear's state is the canceller's to
+                # write - clear_cancelled() no-ops on a stale epoch - so
+                # only the port case reports itself here.
+                why = ("the port was taken" if self._stop.is_set()
+                       else "a new run started")
+                session.clear_cancelled(epoch, f"interrupted: {why}")
+                self.emit(f"clear interrupted: {done - len(failed)}/"
+                          f"{len(pairs)} slots deleted, {len(pairs) - n} left")
+                return
+            if board not in self.live:
+                failed.append((board, slot))
+            elif self._request(bus, delete_slot(board, slot, groups),
+                               f"delete @{board:02d} slot {slot}",
+                               self.save_attempts):
+                self._forget_slot(board, slot)
+            else:
+                failed.append((board, slot))
+                self._forget_board(board)
+            done += 1
+            session.clear_progress(epoch, done, failed)
+        session.clear_finished(epoch, failed)
+        if failed:
+            hurt = sorted({board for board, _ in failed})
+            self.emit(f"clear failed: {len(failed)} slots on boards "
+                      f"{self._fmt_boards(hurt)}")
+        self.emit(f"clear done: {done - len(failed)}/{done} in "
+                  f"{time.monotonic() - began:.1f} s")
 
     def _guard_for(self, session) -> float:
         """Seconds after a fire before the guard STOP may go out.
@@ -2078,6 +2176,43 @@ class DemoRunner:
                                            began=burn_began)
                             continue
 
+                        # The show is over and its pictures are to come
+                        # back out of the slots (ui/showplay.py's
+                        # clear_after_show). Taken only once no guard STOP
+                        # is owed and the last cue's guard floor has
+                        # passed: a 0x14 must never land inside a repaint.
+                        # Until then the job simply stays queued and this
+                        # loop goes on doing its guard work - the wait
+                        # below is shortened to that floor, so the clear
+                        # starts at it rather than a poll later.
+                        clear_job = (session.take_clear_job()
+                                     if self._clear_ready(guard_due) else None)
+                        if clear_job is not None:
+                            clear_began = time.monotonic()
+                            if needs_setup:
+                                if not self._setup(bus, groups):
+                                    if self.error != "no boards answering":
+                                        session.clear_cancelled(
+                                            clear_job["epoch"],
+                                            self.error or "setup failed")
+                                        session.failed_with(self.error
+                                                            or "setup failed")
+                                        break
+                                    # Every board probed, none answered:
+                                    # a garment with no power cannot
+                                    # autoplay either, so this is worth
+                                    # saying and not worth failing over -
+                                    # the walk below puts every pair down
+                                    # as absent and the PC shows the list.
+                                    self.emit("no boards answering: the "
+                                              "clear deletes nothing")
+                                else:
+                                    needs_setup = False
+                                    self.error = None
+                            self._run_clear(bus, groups, session, clear_job,
+                                            began=clear_began)
+                            continue
+
                         if (needs_setup and session.phase == READY
                                 and session.due() is None):
                             # ui/showplay.py's _send() arms the cue and
@@ -2152,6 +2287,14 @@ class DemoRunner:
                         wait = self.link_poll
                         if guard_due is not None:
                             wait = min(wait, max(0.0, guard_due - now))
+                        if (session.clear_pending()
+                                and self._guard_floor is not None
+                                and self._guard_floor > now):
+                            # A clear held back only by the guard floor
+                            # starts AT it, not at the next poll: the
+                            # operator is standing over the garment
+                            # waiting to unplug it.
+                            wait = min(wait, self._guard_floor - now)
                         if (self._remote_guard_due is not None
                                 and self._remote_guard_due > now):
                             # Only while it is still ahead: a heartbeat
@@ -2176,6 +2319,16 @@ class DemoRunner:
             session.burn_cancelled(pending["epoch"],
                                    "the worker was stopped first")
             self.emit("burn never started: the worker was stopped first")
+        waiting = session.take_clear_job()
+        if waiting is not None:
+            # Queued and never started, so not one slot was deleted: the
+            # pictures are exactly as they were and cancel_clear()'s own
+            # "nothing happened" reading is the honest one. Said out
+            # loud, because the operator is waiting for "pictures
+            # cleared" before unplugging the garment.
+            session.clear_cancelled(waiting["epoch"],
+                                    "the worker was stopped first")
+            self.emit("clear never started: the worker was stopped first")
         self.emit("stopped")
 
     # ---- worker ----

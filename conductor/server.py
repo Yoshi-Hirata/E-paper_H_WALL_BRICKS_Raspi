@@ -94,9 +94,19 @@ DEMO_NAME_MESSAGE = (f"A-Z, 0-9 and symbols, up to {DEMO_NAME_MAX} characters "
                      "(the unit's screen cannot show Japanese)")
 _DEMO_NAME_OK = re.compile(r"^[\x20-\x7e]+$")     # printable ASCII only
 _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-# Parts of show.json that never reach a unit: the operator's own notes
-# about the show (see Workspace.revision).
-_REVISION_IGNORES = {"music", "labels"}
+# Parts of show.json that must not make the page say "changed since Upload"
+# (see Workspace.revision). The music and the LOOK / model labels never reach
+# a unit at all - they are the operator's own notes about the show.
+#
+# `clear_after_show` is the one exception that DOES reach a unit, and is here
+# on purpose (2026-09-27). Nothing about the pictures changes with it: the
+# show keeps its id (conductor/showfile.py adds the key after the digest), so
+# an Upload would rewrite nothing, and the conductor sends POST /show/clear
+# itself when the run ends - it never depends on the unit's own copy, which is
+# only the fallback for a show that ends with the PC gone. Counting it would
+# turn ten green chips amber and ask for a three-minute re-Upload, the evening
+# of the show, for a flag the clear does not need.
+_REVISION_IGNORES = {"music", "labels", "clear_after_show"}
 # A CSV's name is conductor/look.py's business now (normalize_name /
 # name_problem, the same rule the designers' simulator applies): this one
 # is only for the MUSIC blob, which is a file on disk and nothing else -
@@ -863,6 +873,33 @@ class Workspace:
             before = self._load_show()
             self._commit(before, dict(before, **changes))
 
+    def set_clear_after_show(self, on) -> None:
+        """"Clear pictures after the show" (show.json's
+        `clear_after_show`, undoable like any other edit of the show).
+
+        Per show and remembered with it, because it is a property of the
+        EVENING, not of this browser: the pictures come back out of slots
+        1-18 when the run ends or is stopped, so a garment unplugged with
+        its boards still on battery cannot replay the show from its own
+        factory autoplay (2026-09-27). Absent means false, which is what
+        every show file written before this behaves as.
+        """
+        if not isinstance(on, bool):
+            raise ValueError("clear_after_show must be true or false")
+        with self._lock:
+            before = self._load_show()
+            if bool(before.get("clear_after_show")) == on:
+                return                          # nothing changed: not a step
+            after = dict(before)
+            if on:
+                after["clear_after_show"] = True
+            else:
+                # Removed rather than written as false: a show.json
+                # without the key is exactly the old behaviour, and the
+                # file says only what somebody chose.
+                after.pop("clear_after_show", None)
+            self._commit(before, after)
+
     def set_transition(self, design: str, sequence_id, span_s) -> None:
         """A design's own transition (show.json, undoable): every cue that
         wears it and is not itself "custom" sweeps this way. Natural, or
@@ -991,6 +1028,9 @@ class Workspace:
             "duration": float(show.get("duration", timeline.DEFAULT_DURATION_S)),
             "refresh_s": float(show.get("refresh_s", timeline.REFRESH_S)),
             "cues": timeline.clean(show.get("cues")),
+            # Travels with the show, because it is part of how this
+            # evening is run (see Workspace.set_clear_after_show).
+            "clear_after_show": bool(show.get("clear_after_show")),
             "transitions": show.get("transitions") or {},
             "labels": show.get("labels") or {},
             "units": show.get("units") or {},
@@ -1034,6 +1074,16 @@ class Workspace:
                 raise ValueError(f"a refresh takes between {low:.0f} and "
                                  f"{high:.0f} s")
             changes["refresh_s"] = refresh
+        # A show file written before this key existed simply does not
+        # mention it and keeps whatever this workspace is set to - the
+        # same "leave it alone" rule refresh_s has. The designers'
+        # bundles never carry it (their simulator has no notion of the
+        # fleet), so import_bundle() goes on ignoring it for free: this
+        # only ever fires on a key that is really there.
+        if "clear_after_show" in payload:
+            if not isinstance(payload["clear_after_show"], bool):
+                raise ValueError("clear_after_show: must be true or false")
+            changes["clear_after_show"] = payload["clear_after_show"]
         if "transitions" in payload:
             if not isinstance(payload["transitions"], dict):
                 raise ValueError("transitions: must be an object")
@@ -1664,7 +1714,9 @@ class Workspace:
         Not the whole of show.json: the music and the LOOK / model labels
         are the operator's own notes about the show and never leave this
         PC, so loading a track or renaming a look would otherwise turn
-        every chip red for nothing (found in review).
+        every chip red for nothing (found in review). "Clear pictures
+        after the show" is left out for the same reason though it does
+        reach a unit - see _REVISION_IGNORES.
 
         Why not the compiled show ids themselves: compiling builds every
         picture of every board (measured 2026-09-25: 364 ms for a two-unit
@@ -1855,7 +1907,9 @@ class Workspace:
         return showfile.build(maps, assigned, lambda name: designs[name],
                               cues, refresh, duration, cue_problems,
                               name=self.root.name, only=only,
-                              dips=show.get("dips"))
+                              dips=show.get("dips"),
+                              clear_after_show=bool(
+                                  show.get("clear_after_show")))
 
     # ---- the state the page draws ----
 
@@ -2047,6 +2101,11 @@ class Workspace:
             if name is not None:
                 unit_cues[name].append(cue)
         return {"show": {"duration": duration, "refresh_s": refresh,
+                         # The checkbox next to ③ START: delete slots
+                         # 1-18 on every unit when the run ends or is
+                         # stopped (Workspace.set_clear_after_show).
+                         "clear_after_show": bool(
+                             show.get("clear_after_show")),
                          # The current default, so the page never has a
                          # refresh number of its own: it labels the "show
                          # default" choice with refresh_s and offers the
@@ -2512,6 +2571,9 @@ class Handler(BaseHTTPRequestHandler):
                                             body.get("cues", []),
                                             body.get("refresh_s"))
                 return self._json({"ok": True})
+            if self.path == "/api/show/clear_after":
+                self.workspace.set_clear_after_show(body.get("on"))
+                return self._json({"ok": True})
             if self.path == "/api/show/import":
                 cues, warnings = self.workspace.import_show(body)
                 return self._json({"ok": True, "cues": cues,
@@ -2714,6 +2776,21 @@ class Handler(BaseHTTPRequestHandler):
                                             whole=not warnings)
             return self._json({"units": results, "problems": problems,
                                "warnings": warnings, "name": name})
+        if command == "clear_pictures":
+            # "Clear pictures now" (the WRITE TO UNITS dialog): delete
+            # slots 1-18 on the units of this timeline. Never during a
+            # run - those slots are what the next trigger reads from, and
+            # unlike Upload there is no `force`: a clear is never a way
+            # back into a running show. The units refuse it too.
+            if fleet.run is not None:
+                raise ValueError("stop the show first")
+            # No compile: nothing is built or written here, and the units
+            # this can touch are the ones the fleet already believes hold
+            # this conductor's show. A one-LOOK choice is checked against
+            # those, the same way and with the same message.
+            only = _only_units(body.get("units"), fleet.shows)
+            results = fleet.clear_pictures(only=only)
+            return self._json({"units": results})
         if command == "delete_demo":
             slug = _demo_slug(body.get("slug"))
             results = fleet.delete_demo(slug)

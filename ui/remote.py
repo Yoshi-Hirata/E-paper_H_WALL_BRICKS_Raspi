@@ -42,6 +42,19 @@ threads and the runner's worker, which owns the serial port:
                     it belongs to and adds "none" (nothing burned for
                     the loaded show since the unit started).
 
+  a clear           the other end of a burn: clear() takes the show's
+                    pictures back OUT of slots 1-18 once the show is
+                    over (ui/showplay.py's `clear_after_show`), so the
+                    garment's factory autoplay has nothing of the show
+                    left to cycle through after the Radxa is unplugged.
+                    Acked 0x14 per (board, slot), never 0x15; status()
+                    ["clear"] is the progress and a clear that deleted
+                    anything at all turns the burn record into
+                    "cleared" - the START and PRESET gates then ask for
+                    an Upload. NOTHING is repainted by it: the garment
+                    keeps the last look it was shown for as long as it
+                    has power.
+
 The monotonic clock is used for fire times because the wall clock can
 step - timesyncd is active on the units whenever they see the internet
 - and a step in the middle of a show would move every cue.
@@ -209,6 +222,28 @@ class RemoteSession:
         self.burn_complete = False
         self._burn_job: dict | None = None
         self._burn_epoch = 0
+
+        # The clear after a show (see the module docstring). None means
+        # "no clear has been asked for since the unit started", which is
+        # every ordinary evening; the states are
+        #   "clearing"  the worker is deleting the slots
+        #   "cleared"   every slot of every live board is empty
+        #   "failed"    some slots could not be deleted (`clear_failed`)
+        #   "partial"   interrupted - a START, or the worker taken off
+        #               the port - so some slots are empty and some are
+        #               not. Either way the burn record reads "cleared"
+        #               the moment one slot has really gone.
+        self.clear_state: str | None = None
+        self.clear_done = 0
+        self.clear_total = 0
+        self.clear_deleted = 0         # slots really deleted, for the gate
+        self.clear_failed: "list[tuple[int, int]]" = []
+        self.clear_reason: str | None = None
+        self._clear_job: dict | None = None
+        self._clear_epoch = 0
+        # Which slots the clear in hand is about, so a second ask for the
+        # SAME ones is a no-op rather than a restart - see clear().
+        self._clear_slots: "list[int] | None" = None
 
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -402,6 +437,17 @@ class RemoteSession:
             self.burn_reason = None
             self.burn_complete = False
             self._burn_job = {"cues": cues, "dev_type": dev_type, "epoch": epoch}
+            # A burn supersedes any clear outright: a queued one must not
+            # delete the pictures this is writing, and a finished one is
+            # no longer what the slots hold - a re-Upload is exactly how
+            # the operator undoes a clear, so nothing of it may survive
+            # into the new burn's state.
+            self._clear_epoch += 1
+            self._clear_job = None
+            self._clear_slots = None
+            self.clear_state = self.clear_reason = None
+            self.clear_done = self.clear_total = self.clear_deleted = 0
+            self.clear_failed = []
         if not self.runner.remote and self.runner.start_remote(self) is False:
             # Not "failed": nothing was even attempted, so the failed
             # list would be empty and the PC would offer a force over
@@ -498,10 +544,197 @@ class RemoteSession:
                 return None, False
             return self._burn_dict_locked(), self.burn_complete
 
+    # ---- called by the player: taking the pictures back out (0x14) ----
+
+    def clear(self, slots) -> None:
+        """Queue a clear of `slots` (1-18) on every board of the garment.
+
+        The worker waits for the last cue's guard before the first 0x14 -
+        a delete landing inside a repaint is the one thing this must not
+        do - and then deletes one (board, slot) at a time, acked, with
+        the same retry ladder as a save (ui/runner.py's _run_clear()).
+
+        Nothing is REPAINTED: no 0x1D, no standby, slot 0 is not shown.
+        The garment keeps the last look it was given for as long as it
+        has power; what is taken away is only what the factory autoplay
+        would find in the slots once the Radxa is gone. 0x15 (全消去) is
+        forbidden and never used (docs/SPECIFICATION.md 2.4).
+        """
+        if self.busy():
+            raise RemoteError("unit is busy (firmware update, scan or reboot)")
+        slots = sorted({int(s) for s in slots})
+        if not slots:
+            raise RemoteError("no slots to clear")
+        for slot in slots:
+            if not 1 <= slot <= 18:
+                raise RemoteError(f"slot {slot} is not a show slot (1-18): "
+                                  f"0 is the standby white and 19 the "
+                                  f"manual slot, and neither is cleared")
+        with self._lock:
+            if self.clear_state == "clearing" and self._clear_slots == slots:
+                # The same clear is already queued or on the bus. Asking
+                # twice happens by design - the unit's own STOP queues one
+                # and the conductor's POST /show/clear lands a few ms
+                # later - and bumping the epoch here would abort that walk
+                # part way and start all 288 pairs again, with every slot
+                # the first walk already emptied answering NAK and reading
+                # as a failure (review, 2026-09-27).
+                return
+            self._clear_epoch += 1
+            epoch = self._clear_epoch
+            self.clear_state = "clearing"
+            self.clear_done = self.clear_total = self.clear_deleted = 0
+            self.clear_failed = []
+            self.clear_reason = None
+            self._clear_slots = list(slots)
+            self._clear_job = {"slots": slots, "epoch": epoch}
+        if not self.runner.remote and self.runner.start_remote(self) is False:
+            self.clear_cancelled(epoch, "bus busy: the previous worker has "
+                                        "not finished")
+            return
+        self._wake.set()
+
+    def cancel_clear(self, reason: "str | None" = None) -> None:
+        """Give up on a clear - a START taking the pictures back.
+
+        The line is whether the WORKER HAS THE JOB, not whether a slot
+        has been recorded as deleted yet:
+
+        * still queued - the job is taken off the queue here and not one
+          0x14 ever went out, so the slots are exactly as they were: the
+          state goes back to None and START passes its gate as it always
+          did;
+        * already on the bus - the worker stops after the slot it is on,
+          and that slot can land AFTER this returns. So the pictures stop
+          being something START may run the moment the job was taken,
+          whether or not a delete has been recorded: the state is
+          "partial" and the burn record "cleared" ("cleared partially" as
+          its reason). Deciding this on `clear_deleted` instead left a
+          window of one 0x14 - 50-250 ms on the relay - in which START
+          was waved through and a slot then went anyway, so the garment's
+          first look was missing on one board.
+        """
+        with self._lock:
+            self._clear_epoch += 1
+            queued, self._clear_job = self._clear_job, None
+            if self.clear_state != "clearing":
+                return              # finished, failed, or never asked for
+            if queued is not None:
+                self.clear_state = self.clear_reason = None
+                self._clear_slots = None
+                self.clear_done = self.clear_total = self.clear_deleted = 0
+                self.clear_failed = []
+            else:
+                self.clear_state = "partial"
+                self.clear_reason = reason or "interrupted"
+                self._mark_cleared_locked()
+        self._wake.set()
+
+    def clear_current(self, epoch: int) -> bool:
+        """False once a cancel_clear() or a newer clear() has superseded
+        the one the worker is still working through."""
+        with self._lock:
+            return self._clear_epoch == epoch
+
+    def clear_pending(self) -> bool:
+        """True while a clear is queued and has not been taken yet - the
+        worker shortens its idle wait for it, so a clear held back only
+        by the guard floor starts the moment that passes."""
+        with self._lock:
+            return self._clear_job is not None
+
+    def take_clear_job(self) -> "dict | None":
+        with self._lock:
+            job, self._clear_job = self._clear_job, None
+            return job
+
+    def clear_started(self, epoch: int, total: int) -> None:
+        """How many (board, slot) pairs this clear is about - the worker
+        knows the garment's list, the caller does not."""
+        with self._lock:
+            if epoch != self._clear_epoch:
+                return
+            self.clear_total = int(total)
+
+    def clear_progress(self, epoch: int, done: int, failed) -> None:
+        with self._lock:
+            if epoch != self._clear_epoch:
+                return
+            self.clear_done = done
+            self.clear_failed = list(failed)
+            self.clear_deleted = done - len(self.clear_failed)
+            if self.clear_deleted:
+                # The FIRST slot that really goes is what makes the show
+                # unrunnable: said here rather than at the end, so a
+                # START landing in the middle of a clear is refused on
+                # "cleared" instead of running a garment whose pictures
+                # are half gone (the operator's rule, 2026-09-27).
+                self._mark_cleared_locked()
+
+    def clear_finished(self, epoch: int, failed) -> None:
+        """The worker walked the whole list: `failed` is every (board,
+        slot) it could not delete - refused by the board, or absent."""
+        with self._lock:
+            if epoch != self._clear_epoch:
+                return
+            self.clear_failed = list(failed)
+            self.clear_done = self.clear_total
+            self.clear_deleted = self.clear_done - len(self.clear_failed)
+            self.clear_state = "failed" if failed else "cleared"
+            self.clear_reason = None
+            self._mark_cleared_locked()
+
+    def clear_cancelled(self, epoch: int, reason: str) -> None:
+        """The worker gave up on the clear it was working through, or
+        never got to start it (the port taken, a shutdown, no bus at
+        all). A cancel_clear() has already written its own verdict, so a
+        superseded epoch is a no-op here."""
+        with self._lock:
+            if epoch != self._clear_epoch:
+                return              # superseded: the newer state stands
+            # Nothing is left for a worker to pick up: the state below is
+            # the last word on this clear.
+            self._clear_job = None
+            self.clear_state = "partial"
+            self.clear_reason = reason
+            if self.clear_deleted:
+                self._mark_cleared_locked()
+        self._wake.set()
+
+    def _mark_cleared_locked(self) -> None:
+        """The pictures are out of the slots, so the burn record says so:
+        both gates (ui/showplay.py's _burn_gate(), the PC's own) then
+        refuse with "Upload again", and a restart reads the same thing
+        back off show-burn.json. A PARTIAL clear carries its own reason,
+        which is what the PC's tile turns into "cleared partially"."""
+        self.burn_state = "cleared"
+        self.burn_complete = True
+        self.burn_done = self.burn_total
+        self.burn_failed = []
+        self.burn_reason = ("cleared partially"
+                           if self.clear_state == "partial" else None)
+
+    def clear_record(self) -> dict:
+        """What the PC and the LCD read. Always a dict (state "none"
+        until one is asked for), unlike `burn`: an agent too old to
+        clear has no "clear" key at all, and the conductor tells that
+        apart by the 404 its POST /show/clear gets."""
+        with self._lock:
+            return self._clear_dict_locked()
+
+    def _clear_dict_locked(self) -> dict:
+        out = {"state": self.clear_state or "none",
+               "done": self.clear_done, "total": self.clear_total,
+               "failed": [list(pair) for pair in self.clear_failed]}
+        if self.clear_reason:
+            out["reason"] = self.clear_reason
+        return out
+
     def _burn_dict_locked(self) -> dict:
         """The burn as the PC and the LCD read it. "reason" is only
-        there when there is one (a cancelled burn), so a plain burned /
-        failed / burning dict keeps the exact shape it always had."""
+        there when there is one (a cancelled burn, or a clear that was
+        interrupted part way), so a plain burned / failed / burning /
+        cleared dict keeps the exact shape it always had."""
         burn = {"done": self.burn_done, "total": self.burn_total,
                 "failed": [list(bs) for bs in self.burn_failed],
                 "state": self.burn_state}
@@ -569,9 +802,14 @@ class RemoteSession:
         list (set_boards()) is not one of these - it puts nothing on the
         bus of its own, and the probing sweep it causes opens with a
         stop anyway.
+
+        A queued CLEAR is one of these: its 0x14s are about to take the
+        bus, and it is itself waiting for the guard floor - a heartbeat
+        sent into that window buys nothing and only delays it.
         """
         with self._lock:
-            return self._job is not None or self._burn_job is not None
+            return (self._job is not None or self._burn_job is not None
+                    or self._clear_job is not None)
 
     def prepared(self, cue_id: str, saved, failed, seconds: float) -> None:
         with self._lock:
@@ -706,4 +944,10 @@ class RemoteSession:
                 # between two readings of the same one.
                 "bus_stall": _with_age(runner.bus_stall),
                 "burn": burn,
+                # Taking the pictures back out of slots 1-18 after the
+                # show (see the module docstring): {"state", "done",
+                # "total", "failed"}, state "none" until one is asked
+                # for. Never null, so the PC can tell "this agent does
+                # not clear at all" (no key) from "nothing to clear yet".
+                "clear": self._clear_dict_locked(),
             }
