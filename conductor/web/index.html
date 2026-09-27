@@ -361,6 +361,16 @@ input[type=range] { width: 100%; }
 .nn-arr { text-align: center; color: var(--dim); }
 .nn-arr b { display: block; font-size: 19px; color: var(--ink); line-height: 1.1; }
 .nn-state .ok { color: var(--ok); } .nn-state .warnx { color: var(--warn); } .nn-state .err { color: var(--err); }
+/* The unit's own marks (verifyMark, stallMark) ride on this cell as well as
+   on the tile, and were inheriting the row's grey there: amber and red mean
+   the same thing in both places or they mean nothing (2026-09-28). */
+.nn-state .vf { font-weight: 600; margin-left: 6px; }
+.nn-state .vf.re { color: var(--warn); } .nn-state .vf.no { color: var(--err); }
+/* "restart these units before START", under ③ START and in the dialog. Only
+   there when it has something to say: an empty warning line still costs its
+   own margin, and both panels are tight. */
+#show-degraded, #write-degraded { margin-top: 6px; }
+#show-degraded:empty, #write-degraded:empty { display: none; }
 .nn-vit { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nn-vit.amber { color: var(--warn); } .nn-vit.red { color: var(--err); font-weight: 600; }
 .nn-bags { margin-top: 4px; }
@@ -3076,6 +3086,10 @@ function writeDialogHtml() {
       <button id="write-close" title="Close (Esc)">Close ✕</button>
     </div>
     <div class="meta sub">The same timeline, two destinations. Pick the one that matches what today is.</div>
+    <!-- A degraded bus is not a reason to refuse the write - it is a reason
+         to restart the unit BEFORE it, so the three minutes are not spent
+         twice. Kept live by paintWrite(). -->
+    <div class="warn" id="write-degraded">${esc(degradedNote())}</div>
     ${writeOnlyHtml()}
     <div class="dlg-choices">
       <div class="choice ${s.uploadWhy ? "off" : ""}" id="write-choice-upload">
@@ -3161,6 +3175,10 @@ function paintWrite() {
   if (when) when.textContent = uploadWhenText(s);
   const head = $("#write-head-meta");
   if (head) head.textContent = writeHeadMeta(s);
+  // A unit can go degraded, or be restarted clean, while the dialog stands
+  // open - which is exactly what the operator is being asked to do.
+  const degraded = $("#write-degraded");
+  if (degraded) degraded.textContent = degradedNote();
   const uploadOnly = $("#write-upload-only"), demoOnly = $("#write-demo-only");
   if (uploadOnly) uploadOnly.textContent = uploadOnlyText(s);
   if (demoOnly) demoOnly.textContent = demoOnlyText(s);
@@ -3555,6 +3573,32 @@ const SHOWBOARD = (() => {
   // unit that started less than RESTART_S ago says so, because a restart is
   // what explains a unit that lost its pictures mid-show.
   const LAG_BAD_MS = 200, RTT_SLOW_MS = 100, RESTART_S = 600;
+  // How many blocked serial writes stop being bad luck and start being a
+  // unit in the state 2026-09-28's failed rehearsal found: LOOK23's master
+  // came up while the garment's 12 V was off ("no boards answering", 0/112
+  // burnt, the USB port re-opened three times), the boards came back, the
+  // Upload wrote 112/112 - and from 80 s after START EVERY write blocked
+  // 225-390 ms. Cues q03-q06 were late and the heartbeats went on stalling
+  // 359 ms for minutes after the show. A clean restart of the same unit,
+  // with the boards already powered, ran every cue +1..6 ms. So: one stall
+  // is the old amber mark (a board busy repainting), a STREAK of them with a
+  // fresh one among them is a unit to restart before the show, and the mark
+  // says so instead of leaving the operator to count amber numbers.
+  //
+  // The count is the unit's own, reset when its worker starts (ui/runner.py
+  // clears bus_stall in _run_remote), so it is "this session's", never the
+  // lifetime of the Radxa.
+  //
+  // Read the two numbers for what they are: the count is CUMULATIVE over
+  // the whole worker session, and only the LAST stall has an age. So five
+  // stalls with a fresh one among them is "it is still happening", never
+  // "five in the last two minutes" - and neither number says how bad each
+  // write was. That is what STALL_DEGRADED_MS is for: the 2026-09-28
+  // fingerprint was 225-390 ms on EVERY write, while a board merely busy
+  // repainting blocks 50-60 ms. An ordinary 50-60 ms stall stays amber
+  // however many of them there are; only a unit whose last write blocked
+  // 150 ms or more is a unit to restart (PM decision).
+  const STALL_STREAK_N = 5, STALL_FRESH_S = 120, STALL_DEGRADED_MS = 150;
   // Which way a cue sweeps, as one character - conductor/sequence.py's six.
   const ARROWS = { natural: "■", center: "◎", top_down: "↓",
                    bottom_up: "↑", left_right: "→", right_left: "←" };
@@ -3802,7 +3846,48 @@ const SHOWBOARD = (() => {
     + "clock is known at all (half a round trip) - a lag inside that is not "
     + "a lag. Blank for a moment after START, a seek, RESUME or NEXT, until "
     + "the unit has been polled on the new T0.";
-  function vitals(u, boardNos) {
+  // A blocked write to the unit's own serial port (ui/runner.py's
+  // STALL_LOG_MS), read twice over: as the single event it has always been,
+  // and as a streak. `running` is "a run is in flight right now" - the
+  // wording on a tile may not change under the operator's eyes mid-show, so
+  // the red guidance ("restart this unit") is for the idle time when it can
+  // actually be acted on; during the show the same unit keeps today's amber
+  // number, which is the truth either way.
+  //
+  // null when there is nothing to say. `ms` back to null is the unit's own
+  // all-clear (a show broadcast went out cleanly), and it takes `at` with
+  // it, so a unit that recovered is quiet even with the count still high.
+  const STALL_WHY = "The board on the USB cable did not take the frame at"
+    + " once — it was busy; the picture may not have landed.";
+  // What the OPERATOR can see, in the words this page prints: the tile's
+  // own Boards row and the unit's log line on it, not anything out of the
+  // unit's journal. "REMOTE" is not a word on this page - the phase chip
+  // says `standby`, then `ready`.
+  const DEGRADED_WHY = "Every frame to this unit is being delayed. A garment"
+    + " master whose 12 V or USB came up roughly can stay in this state and"
+    + " hold up every write by about 360 ms — that is how q03-q06 ran late on"
+    + " 2026-09-28. Power the garment's boards FIRST, then restart this unit,"
+    + " and wait for its tile: Boards 16 / 16, the log line"
+    + " “panels online: 16/16”, the phase chip on standby and then ready."
+    + " ① Upload after that, until Pictures says “written”. See"
+    + " docs/CONDUCTOR_START.md §6 本番前の起動手順.";
+  function busStall(u, running) {
+    const s = u && u.bus_stall;
+    if (!s || !s.ms) return null;
+    const ms = Math.round(s.ms);
+    const count = Number(s.count) || 0;
+    const ago = typeof s.ago_s === "number" ? s.ago_s : null;
+    const fresh = ago !== null && ago <= STALL_FRESH_S;
+    if (!running && count >= STALL_STREAK_N && fresh && ms >= STALL_DEGRADED_MS)
+      return { degraded: true, count, ms, ago, short: "bus degraded",
+               text: `bus degraded (${count} stalls) — restart this unit before START`,
+               title: DEGRADED_WHY };
+    return { degraded: false, count, ms, ago,
+             text: `bus stalled ${ms} ms`, short: `bus stalled ${ms} ms`,
+             title: STALL_WHY + (ago === null ? "" : ` ${Math.round(ago)} s ago.`)
+               + (count > 1 ? ` ${count} times this run.` : "") };
+  }
+  function vitals(u, boardNos, running) {
     const plain = (text, tone) => ({ text, parts: [{ text }], tone,
                                      offline: true, missing: false });
     if (!u) return plain("no unit assigned", "red");
@@ -3811,15 +3896,21 @@ const SHOWBOARD = (() => {
     const known = lag !== null && lag !== undefined;
     const bar = typeof u.sync_ms === "number" ? " ±" + Math.round(u.sync_ms) : "";
     const b = boardsOf(u, boardNos);
-    const bits = [
-      { text: u.name },
+    // Right behind the unit's own name, ahead of the numbers: .nn-vit
+    // ellipsises, and the one thing on this line that has to be ACTED on
+    // must not be the thing that falls off the end of it.
+    const stall = busStall(u, running);
+    const bits = [{ text: u.name }];
+    if (stall && stall.degraded)
+      bits.push({ text: stall.short, title: stall.title });
+    bits.push(
       { text: "lag " + (known ? (lag >= 0 ? "+" : "") + Math.round(lag) + bar + " ms" : "—"),
         title: LAG_WHY },
       { text: "rtt " + (u.rtt_ms === null || u.rtt_ms === undefined ? "—" : Math.round(u.rtt_ms) + " ms"),
         title: "The round trip to this unit on the show's WLAN." },
       { text: "boards " + (b.have === null ? "?" : b.have) + "/" + (b.want || "?"),
         title: "Boards of THIS garment that are answering, out of the ones "
-          + "its map has - not the whole unit's, which may carry two garments." }];
+          + "its map has - not the whole unit's, which may carry two garments." });
     if (u.late_ms !== null && u.late_ms !== undefined)
       bits.push({ text: "fired " + (u.late_ms >= 0 ? "+" : "") + Math.round(u.late_ms) + " ms",
                   title: "How late this unit sent its last cue, by its own clock." });
@@ -3828,7 +3919,8 @@ const SHOWBOARD = (() => {
                     : "restarted " + Math.round(u.uptime_s / 60) + " min ago",
                   title: "This unit came up less than ten minutes ago - which is "
                     + "what explains one that lost its pictures mid-show." });
-    const bad = b.missing || (known && Math.abs(lag) > LAG_BAD_MS);
+    const bad = b.missing || (known && Math.abs(lag) > LAG_BAD_MS)
+      || !!(stall && stall.degraded);
     const slow = !bad && typeof u.rtt_ms === "number" && u.rtt_ms > RTT_SLOW_MS;
     return { text: bits.map(x => x.text).join(" · "), parts: bits,
              tone: bad ? "red" : slow ? "amber" : "",
@@ -3836,8 +3928,9 @@ const SHOWBOARD = (() => {
   }
 
   return { AMBER_S, RED_S, FIRED_S, LAG_BAD_MS, RTT_SLOW_MS, RESTART_S, ARROWS,
+           STALL_STREAK_N, STALL_FRESH_S, STALL_DEGRADED_MS,
            mmss, secs, arrow, tone, isBag, phase, atRest, rowAt, rowText,
-           ahead, firedAgo, header, boardsOf, vitals };
+           ahead, firedAgo, header, boardsOf, busStall, vitals };
 })();
 // <<< /SHOWBOARD >>>
 
@@ -4112,8 +4205,8 @@ function paintBoard() {
       + (txt.count === null ? "" : ` <span class="c ${txt.tone}">−${txt.count} s</span>`);
     const u = c.r.unit ? (fleet?.units || []).find(x => x.name === c.r.unit) || null : null;
     c.state.innerHTML = u && u.online
-      ? esc(lateText(u)) + verifyMark(u) + stallMark(u) : "";
-    const v = SHOWBOARD.vitals(u, c.r.boardNos);
+      ? esc(lateText(u)) + verifyMark(u) + stallMark(u, { short: true }) : "";
+    const v = SHOWBOARD.vitals(u, c.r.boardNos, showMidRun());
     // Each value carries its own tooltip - which way the lag's sign runs,
     // above all - so the line is spans rather than text. Rewritten only
     // when it says something different, since most ticks it does not.
@@ -4203,6 +4296,13 @@ function renderFleet() {
         <button class="big stop" id="show-stop">STOP (panels keep their image)</button>
       </div>
       <div class="warn" id="show-hint" style="margin-top:6px"></div>
+      <!-- Its own line, not part of the hint above: that one is a chain of
+           one-of-these reasons, and a degraded bus is true alongside any of
+           them (2026-09-28). START is NOT refused - a degraded unit still
+           shows every cue, only late - so this says it rather than blocks.
+           Its margin is in the stylesheet, behind :empty, so the line costs
+           nothing on the evenings it has nothing to say. -->
+      <div class="warn" id="show-degraded"></div>
       <div class="meta" id="show-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.showLog || "")}</div>
       <div class="meta" id="show-fix"></div>
     </div>
@@ -4352,6 +4452,8 @@ function showClockText() {
         + "are showing until then.)"
     : loaded < want
     ? `${want - loaded} unit(s) do not hold this show yet - they are corrected automatically once they answer.` : "";
+  const degraded = $("#show-degraded");
+  if (degraded) degraded.textContent = degradedNote();
   // The LOOK row above is drawn from this workspace's own timeline (state.show),
   // not from whatever a unit actually holds - while some units are still behind
   // (the hint above already says so) that is worth spelling out, since the two
@@ -4621,19 +4723,65 @@ function verifyMark(u) {
     return `<span class="vf re" title="The first broadcast was not taken${at}; the unit sent it again and that one landed.${cue}">re-sent</span>`;
   return "";
 }
+// A show is in flight right now - the one moment the words on a tile must
+// not change under the operator's eyes. A HOLD counts: the director is
+// standing in the middle of the show either way, and nothing can be
+// restarted until it is over.
+//
+// ...and so does a UNIT that says it is running, even with no run here: a
+// conductor restarted mid-show adopts the run a poll or two later (or never,
+// if the units came back unsynced), and in that gap the cues are still
+// firing. "Restart this unit" must not appear over a garment that is on
+// stage (M2).
+//
+// Three things a unit's own `show` is NOT evidence of (N1-N3):
+// * a DEMO. One unit playing its own standalone demo from KEY1 - in a
+//   showroom, on a stand - would otherwise silence this feature across the
+//   whole fleet, for hours. A demo reads "running" exactly like a show does
+//   (conductor/fleet.py's _playing_demo), so it has to be excluded by name.
+// * an OFFLINE unit's last answer, which is kept as it was and may say
+//   "running" about a show that ended before the PC was even plugged in.
+// * "holding" being anything other than mid-show - the same rule as the
+//   conductor's own clause above.
+const showMidRun = () => ["running", "holding"].includes((fleet?.run || {}).state)
+  || (fleet?.units || []).some(u => u.online && u.show && !u.show.demo
+       && ["running", "holding"].includes(u.show.state));
 // A write to the unit's own serial port that BLOCKED (ui/runner.py's
-// STALL_LOG_MS). Amber, in the same family as "re-sent": it is not a
-// lost cue by itself, but it is the fingerprint of the board that stops
-// taking USB while it repaints - the one thing that explains a cue that
-// never appeared at all.
-function stallMark(u) {
-  const s = u.bus_stall;
-  if (!s || !s.ms) return "";
-  const ago = s.ago_s == null ? "" : ` ${esc(Math.round(s.ago_s))} s ago.`;
-  const more = s.count > 1 ? ` ${esc(s.count)} times this run.` : "";
-  return `<span class="vf re" title="The board on the USB cable did not take the`
-    + ` frame at once — it was busy; the picture may not have landed.${ago}${more}">`
-    + `bus stalled ${esc(Math.round(s.ms))} ms</span>`;
+// STALL_LOG_MS). One of them is amber, in the same family as "re-sent": it
+// is not a lost cue by itself, but it is the fingerprint of the board that
+// stops taking USB while it repaints - the one thing that explains a cue
+// that never appeared at all. A STREAK of them is red and says what to do
+// about it, which is a unit restart and only while nothing is running -
+// SHOWBOARD.busStall() draws that line, so the tile, the NOW -> NEXT row
+// and the notes under START and in the dialog can never disagree.
+// `short` is for the NOW -> NEXT row, whose state cell is one column of a
+// grid: the sentence that fits a tile would push the row's own numbers off
+// it, so the row gets the two words and the tile gets the instruction (M1).
+function stallMark(u, opts) {
+  const s = SHOWBOARD.busStall(u, showMidRun());
+  if (!s) return "";
+  return `<span class="vf ${s.degraded ? "no" : "re"}" title="${esc(s.title)}">`
+    + `${esc(opts && opts.short ? s.short : s.text)}</span>`;
+}
+// The online units whose bus is degraded right now, by name - for the one
+// amber line under ③ START and in WRITE TO UNITS. Empty on every ordinary
+// evening, and empty during a run (see showMidRun above).
+function degradedUnits() {
+  const mid = showMidRun();
+  return (fleet?.units || [])
+    .filter(u => u.online && (SHOWBOARD.busStall(u, mid) || {}).degraded)
+    .map(u => u.name);
+}
+// One line for all of them: the names, then what is wrong once and the one
+// thing that fixes it, in the order the operator has to do it (restart
+// first, THEN Upload - an Upload into a degraded unit works and buys
+// nothing). Said once rather than per unit, so three degraded garments do
+// not wrap the panel in three copies of the same sentence (L4).
+function degradedNote() {
+  const who = degradedUnits();
+  if (!who.length) return "";
+  return `${who.join(", ")}: bus degraded — restart `
+    + (who.length === 1 ? "the unit" : "these units") + ", then Upload";
 }
 // Taking the pictures back out of the slots after the show (ui/remote.py's
 // clear()). Amber while it runs - the operator is standing over the garment
