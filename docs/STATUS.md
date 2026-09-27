@@ -1,6 +1,6 @@
 # 現在地と再開手順
 
-最終更新: 2026-09-27
+最終更新: 2026-09-28
 
 **この文書は「次に何をするか」だけを書く。** 経緯は
 [DEVELOPMENT.md](DEVELOPMENT.md)、20 枚構成の検討は [SCALING.md](SCALING.md)、
@@ -17,6 +17,44 @@
 - テスト 246 件(Windows で全通過、Radxa の Python 3.9 でも全通過 2026-09-20)
 
 ## 2. 直近で完成したもの
+
+**詰まり続けるバスを「この機体を再起動」と言い切るようにした(2026-09-28
+リハーサル後)**
+
+**証拠(同日、LOOK23 / radxa-01、10 分あけて 2 回)。**
+*失敗した回*:衣装の基板が無電源のまま機体が立ち上がり(`no boards answering`、
+焼き込み 0/112、USB ポートを 17:26:44〜17:27:11 に 3 回開き直した)→ 基板に電源が
+戻り → Upload は 112/112 成功 → START → **その約 80 秒後から、シリアル書き込みが
+毎回 225〜390 ms ブロック**(`bus stalled … on stop/show`、タイル
+`+211.7 ms / bus stalled 359 ms`)、**q03〜q06 が遅延**、ショー後もハートビートが
+数分間 359 ms 詰まり続けた。*きれいな回*:基板に電源を入れたまま機体の UI
+サービスを再起動しただけ(standby → `panels online 16/16` → 白の standby →
+REMOTE → Upload)→ **全キュー +1〜6 ms、詰まりゼロ**、以後もきれい
+(ハートビート 81 回、stall なし)。**結論:電源・USB の立ち上がりが荒かった
+親基板は全フレームを約 360 ms 遅らせる状態に入りうる ―― 基板に電源を入れたまま
+機体を再起動すれば直る。**
+
+**Conductor 側だけの変更**(機体は本番前に再デプロイしない):
+
+- タイルの印を 2 段にした。`bus_stall.count` が **5 回以上**
+  (`SHOWBOARD.STALL_STREAK_N`。数は機体のワーカーが立ち上がるたび 0 に戻るので
+  「今のセッションで」の意味)で、**最後の 1 回が 2 分以内**(`STALL_FRESH_S`)なら
+  **赤で `bus degraded (n stalls) — restart this unit before START`**
+  (ツールチップが本番前の手順を名指しする)。5 回未満は従来どおり琥珀色の
+  `bus stalled n ms`。**ショー中(running / holding)は文言を変えない** ――
+  本番中にタイルの言葉が変わらないようにし、赤の案内は待ち時間のためのもの
+- **NOW → NEXT ボード**のその衣装の行にも赤で **`bus degraded`**
+- **③ START は止めない**(詰まっていてもキューは出る、ただ遅れる)。代わりに
+  **③ START の下**と **WRITE TO UNITS** に黄色で 1 行
+  `radxa-01: bus degraded — restart the unit, then Upload`
+- 判定は `index.html` の `SHOWBOARD.busStall()` 1 か所(`<<< SHOWBOARD >>>` の
+  純粋層)。タイル・行・2 つの注記が同じ機体について食い違えない
+- 手順は [CONDUCTOR_START.md](CONDUCTOR_START.md) §6「本番前の起動手順」に:
+  **① 衣装の 12 V を先に全部入れる → ② そのあと Radxa を入れる/再起動して
+  `panels online n/n` と白の standby を待つ → ③ `no boards answering` の機体に
+  Upload しない → ④ 機体より後から基板に電源を入れてしまった機体、
+  `bus degraded` の機体は Upload の前に再起動 → ⑤ Upload → 全タイルの
+  `pictures written n/n` を確認 → START**
 
 **ショーのあと、絵をスロットから消す(2026-09-27 本番後)**
 

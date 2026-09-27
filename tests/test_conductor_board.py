@@ -149,6 +149,39 @@ def test_the_thumbnails_are_not_redrawn_on_every_tick():
         "the live thumbnail is not repainted by fill alone"
 
 
+def test_one_bus_verdict_serves_the_tile_the_row_and_the_notes():
+    # Four places say something about a stalling bus. All four ask the same
+    # pure function, so they cannot disagree about a unit (2026-09-28).
+    mark = _function_body("stallMark")
+    assert "SHOWBOARD.busStall(u, showMidRun())" in mark
+    assert "u.bus_stall" not in mark, "the tile judges the stall itself again"
+    # Red for the streak, today's amber for one - the same two classes the
+    # landing check uses, so a unit reads the same wherever the trouble is.
+    assert 's.degraded ? "no" : "re"' in mark
+    assert "esc(s.text)" in mark and "esc(s.title)" in mark
+    assert "SHOWBOARD.vitals(u, c.r.boardNos, showMidRun())" in PAGE
+    listed = _function_body("degradedUnits")
+    assert "SHOWBOARD.busStall(u, mid)" in listed and "u.online" in listed
+    # The note's words, and the order the operator has to work in.
+    assert "bus degraded — restart the unit, then Upload" in _function_body("degradedNote")
+
+
+def test_the_note_is_shown_under_start_and_in_the_write_dialog():
+    # Its own line under ③ START: the hint above it is a chain of one-of
+    # reasons, and a degraded bus is true alongside any of them.
+    assert 'id="show-degraded"' in PAGE and 'class="warn" id="show-degraded"' in PAGE
+    assert '$("#show-degraded")' in PAGE and "degraded.textContent = degradedNote()" in PAGE
+    # ...and in WRITE TO UNITS, where the three minutes are about to be
+    # spent - kept live by paintWrite(), like every other reason in there.
+    dialog = _function_body("writeDialogHtml")
+    assert 'id="write-degraded"' in dialog and "esc(degradedNote())" in dialog
+    assert '$("#write-degraded")' in _function_body("paintWrite")
+    # START itself is NOT gated on it: a degraded unit still shows every
+    # cue, only late, and a refusal the night of the show would be worse.
+    server = (REPO / "conductor" / "server.py").read_text(encoding="utf-8")
+    assert "bus_stall" not in server and "degraded" not in server
+
+
 def test_the_board_asks_the_internet_for_nothing():
     # The show PC has no internet on the night (CONDUCTOR_START §3).
     board = PAGE[PAGE.index("<<< SHOWBOARD:"):PAGE.index("function renderFleet()")]
@@ -346,6 +379,11 @@ def _u(**kw):
     return u
 
 
+def _stall(ms=359.0, count=1, ago_s=4.0, frame="show"):
+    """A unit's `bus_stall` as ui/remote.py hands it over."""
+    return {"ms": ms, "frame": frame, "at": 1.0, "count": count, "ago_s": ago_s}
+
+
 CALLS = {
     # ---- which cue is next, per garment
     "row_before_anything": ["rowAt", L23, 10.0],
@@ -423,6 +461,32 @@ CALLS = {
     # ---- the board count on its own
     "boards_all_there": ["boardsOf", _u(), TOPS],
     "boards_one_gone": ["boardsOf", _u(live_ids=[1, 3, 4, 5, 6, 7, 8]), TOPS],
+    # ---- a bus that stalls once, and a bus that will not stop (2026-09-28)
+    "stall_none": ["busStall", _u(), False],
+    "stall_no_field_at_all": ["busStall", _u(bus_stall=None), False],
+    "stall_once": ["busStall", _u(bus_stall=_stall(ms=88.0)), False],
+    "stall_four_times": ["busStall", _u(bus_stall=_stall(count=4)), False],
+    # LOOK23 on the night: the fifth stall is where it stops being luck.
+    "stall_degraded": ["busStall", _u(bus_stall=_stall(count=5)), False],
+    "stall_degraded_many": ["busStall", _u(bus_stall=_stall(count=37)), False],
+    # ...but not mid-show: the wording may not change under the operator.
+    "stall_degraded_while_running": ["busStall", _u(bus_stall=_stall(count=37)), True],
+    # An old streak that has gone quiet: the unit is not being restarted
+    # over something that happened twenty minutes ago.
+    "stall_degraded_but_old": ["busStall", _u(bus_stall=_stall(count=37, ago_s=1200.0)), False],
+    "stall_degraded_right_on_the_edge": ["busStall", _u(bus_stall=_stall(count=37, ago_s=120.0)), False],
+    # The unit's own all-clear: a show broadcast went out cleanly, so `ms`
+    # and `at` are gone and only the count is kept (ui/runner.py).
+    "stall_cleared_itself": ["busStall",
+                             _u(bus_stall={"ms": None, "frame": None, "at": None,
+                                           "count": 37, "ago_s": None}), False],
+    "stall_no_unit": ["busStall", None, False],
+    # ---- the degraded bus on the NOW -> NEXT row
+    "vitals_degraded": ["vitals", _u(name="radxa-01", bus_stall=_stall(count=37)),
+                        TOPS, False],
+    "vitals_degraded_while_running": ["vitals", _u(name="radxa-01", bus_stall=_stall(count=37)),
+                                      TOPS, True],
+    "vitals_one_stall": ["vitals", _u(name="radxa-01", bus_stall=_stall()), TOPS, False],
 }
 
 # The row texts, one per state the board has to be right in.
@@ -456,6 +520,8 @@ try {
   out.constants = { AMBER_S: SHOWBOARD.AMBER_S, RED_S: SHOWBOARD.RED_S,
                     FIRED_S: SHOWBOARD.FIRED_S, LAG_BAD_MS: SHOWBOARD.LAG_BAD_MS,
                     RTT_SLOW_MS: SHOWBOARD.RTT_SLOW_MS, RESTART_S: SHOWBOARD.RESTART_S,
+                    STALL_STREAK_N: SHOWBOARD.STALL_STREAK_N,
+                    STALL_FRESH_S: SHOWBOARD.STALL_FRESH_S,
                     ARROWS: SHOWBOARD.ARROWS };
   for (var name in CALLS)
     out.results[name] = SHOWBOARD[CALLS[name][0]].apply(null, CALLS[name].slice(1));
@@ -792,6 +858,81 @@ def test_a_missing_board_is_counted_against_its_own_garment(board):
     assert "boards 4/4" in fine["text"], fine["text"]
 
 
+# ---- a bus that will not stop stalling (2026-09-28, LOOK23 on radxa-01)
+#
+# Two rehearsals ten minutes apart. In the first the unit came up while the
+# garment's 12 V was off ("no boards answering", 0/112 burnt, the USB port
+# re-opened three times); the boards came back, the Upload wrote 112/112,
+# and from ~80 s after START every serial write blocked 225-390 ms. Cues
+# q03-q06 were late and the heartbeats went on stalling 359 ms for minutes
+# after the show. In the second the operator restarted the unit with the
+# boards already powered: every cue +1..6 ms, and no stall since.
+
+DEGRADED_TILE = "bus degraded (37 stalls) — restart this unit before START"
+
+
+def test_five_stalls_with_a_fresh_one_is_a_unit_to_restart(board):
+    r, c = board["results"], board["constants"]
+    assert c["STALL_STREAK_N"] == 5 and c["STALL_FRESH_S"] == 120
+    # Nothing to say at all: no stall, no field, no unit.
+    for name in ("stall_none", "stall_no_field_at_all", "stall_no_unit"):
+        assert r[name] is None, name
+    # Below the streak it is today's amber number and today's words - one
+    # board busy repainting is not a unit to restart.
+    once = r["stall_once"]
+    assert once["degraded"] is False and once["text"] == "bus stalled 88 ms"
+    assert "did not take the frame at once" in once["title"]
+    four = r["stall_four_times"]
+    assert four["degraded"] is False and four["text"] == "bus stalled 359 ms"
+    assert "4 times this run" in four["title"] and "4 s ago" in four["title"]
+    # At five it turns red and says the one thing that fixes it.
+    five = r["stall_degraded"]
+    assert five["degraded"] is True
+    assert five["text"] == "bus degraded (5 stalls) — restart this unit before START"
+    assert r["stall_degraded_many"]["text"] == DEGRADED_TILE
+    # ...and the tooltip names the pre-show procedure, in the order it is
+    # to be done - the boards powered FIRST, the restart after it.
+    title = r["stall_degraded_many"]["title"]
+    assert "boards ALREADY" in title and "powered" in title
+    assert "本番前の起動手順" in title, title
+
+
+def test_a_degraded_bus_says_nothing_new_mid_show(board):
+    # The one moment the words on a tile must not change under the
+    # operator's eyes: a run in flight. The amber number is still the truth.
+    r = board["results"]
+    mid = r["stall_degraded_while_running"]
+    assert mid["degraded"] is False and mid["text"] == "bus stalled 359 ms"
+    assert "37 times this run" in mid["title"]
+
+
+def test_an_old_streak_is_not_a_unit_to_restart(board):
+    r = board["results"]
+    # Twenty minutes quiet: the count is still high, the trouble is not.
+    assert r["stall_degraded_but_old"]["degraded"] is False
+    # 120 s exactly still counts - the threshold is inclusive.
+    assert r["stall_degraded_right_on_the_edge"]["degraded"] is True
+    # The unit's own all-clear (a clean show broadcast) takes the mark down
+    # altogether, count and all: nothing is said about a unit that recovered.
+    assert r["stall_cleared_itself"] is None
+
+
+def test_the_now_next_row_carries_the_same_verdict(board):
+    r = board["results"]
+    bad = r["vitals_degraded"]
+    # Two words on a row that has four values on it already - and red,
+    # because this is the line the operator reads before START.
+    assert "bus degraded" in bad["text"], bad["text"]
+    assert bad["tone"] == "red", bad
+    part = [p for p in bad["parts"] if p["text"] == "bus degraded"]
+    assert len(part) == 1 and "本番前の起動手順" in part[0]["title"]
+    # One stall is not the row's business: the tile beside it says it.
+    assert "bus" not in r["vitals_one_stall"]["text"]
+    assert r["vitals_one_stall"]["tone"] == ""
+    # ...and mid-show the row says nothing new either.
+    assert "bus" not in r["vitals_degraded_while_running"]["text"]
+
+
 def test_an_agent_too_old_to_list_its_boards_is_not_guessed_at(board):
     r = board["results"]
     # One garment, the whole unit: the old counts do compare, so a missing
@@ -879,6 +1020,14 @@ _SHOWS = {
                          "failed": []}},
 }
 # ...and what the unit says about the clear itself, beside its show.
+_STALLS = {
+    "none": None,
+    # One blocked write: a board busy repainting, which is ordinary.
+    "once": _stall(ms=88.0, count=1, ago_s=4.0),
+    # radxa-01 on 2026-09-28: every frame blocked, and it went on for
+    # minutes after the show.
+    "degraded": _stall(ms=359.0, count=37, ago_s=4.0),
+}
 _CLEARS = {
     "none": {"state": "none", "done": 0, "total": 0, "failed": []},
     "clearing": {"state": "clearing", "done": 54, "total": 288, "failed": []},
@@ -930,6 +1079,10 @@ class _Stand:
         self.run = "none"
         self.unit_show = "none"
         self.unit_clear = "none"
+        # What radxa-01's own serial port has been doing (ui/remote.py's
+        # bus_stall), steered on its own: the 2026-09-28 unit was one of
+        # five, and only one of them was degraded.
+        self.stall = "none"
         # "Clear pictures after the show": a real setting on this stand-in, so
         # the page's checkbox can be ticked and read back the way it is on the
         # night (the server stores it with the show, not in the browser).
@@ -997,7 +1150,8 @@ class _Stand:
                     return self._json({
                         # radxa-02 is a third of a second behind this PC AND
                         # one board short - either on its own is red.
-                        "units": [_unit("radxa-01", show=show, clear=clear),
+                        "units": [_unit("radxa-01", show=show, clear=clear,
+                                        bus_stall=_STALLS[stand.stall]),
                                   _unit("radxa-02", show_lag_ms=330.0, show=show,
                                         live=2, live_ids=[17, 18], absent=[20],
                                         clear=clear),
@@ -1021,6 +1175,7 @@ class _Stand:
                     stand.run = args.get("run", stand.run)
                     stand.unit_show = args.get("show", stand.unit_show)
                     stand.unit_clear = args.get("clear", stand.unit_clear)
+                    stand.stall = args.get("stall", stand.stall)
                     if "uploaded" in args:
                         stand.uploaded = args["uploaded"] == "1"
                     if "clear_in" in args:
@@ -1279,6 +1434,40 @@ _PAGE_PROBE = """
       await wait(1600);
       out.clearAfterNote = (document.querySelector("#show-clear-after-note")
                             || {}).textContent;
+
+      // 14. A bus that will not stop stalling (2026-09-28). One blocked
+      //     write is today's amber number; a streak of them is red on the
+      //     tile, red on the garment's row, and one amber line under
+      //     (3) START and in WRITE TO UNITS - and nothing new at all while
+      //     a show is running.
+      await fetch("/test/fleet?run=none&show=ran&clear=none&stall=once");
+      await wait(1600);
+      out.oneStall = { tile: document.querySelector("#tiles .tile").textContent,
+                       note: document.querySelector("#show-degraded").textContent };
+      await fetch("/test/fleet?stall=degraded");
+      await wait(1600);
+      var badTile = document.querySelector("#tiles .tile");
+      var vit = board().querySelector(".nn-row [data-vit]");
+      out.degraded = {
+        tile: badTile.textContent,
+        red: [].map.call(badTile.querySelectorAll(".vf.no"),
+                         function (s) { return s.textContent; }),
+        title: [].map.call(badTile.querySelectorAll(".vf.no"),
+                           function (s) { return s.title; }).join(" "),
+        note: document.querySelector("#show-degraded").textContent,
+        startOn: !document.querySelector("#show-start").disabled,
+        row: vit.textContent, rowCls: vit.className };
+      document.querySelector("#show-write").click();
+      await wait(600);
+      out.degradedDialog = (document.querySelector("#write-degraded") || {}).textContent;
+      document.querySelector("#write-close").click();
+      await wait(400);
+      await fetch("/test/fleet?run=running");
+      await wait(1600);
+      out.degradedRunning = {
+        tile: document.querySelector("#tiles .tile").textContent,
+        note: document.querySelector("#show-degraded").textContent,
+        row: board().querySelector(".nn-row [data-vit]").textContent };
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -1638,3 +1827,34 @@ def test_the_clear_now_button_asks_first_and_then_sends(page):
     # ...and while a show is running the button is off, with the reason.
     assert page["clearNowWhileRunning"] is True
     assert "press STOP first" in (page["clearNowWhy"] or ""), page["clearNowWhy"]
+
+
+def test_one_stall_stays_amber_and_says_nothing_under_start(page):
+    # A board busy repainting: the number the tile has always shown, and
+    # nothing at all about restarting anything.
+    assert "bus stalled 88 ms" in page["oneStall"]["tile"], page["oneStall"]["tile"]
+    assert "bus degraded" not in page["oneStall"]["tile"]
+    assert page["oneStall"]["note"] == "", page["oneStall"]["note"]
+
+
+def test_a_degraded_bus_is_red_on_the_tile_the_row_and_both_notes(page):
+    d = page["degraded"]
+    assert d["red"] == ["bus degraded (37 stalls) — restart this unit before START"], d["red"]
+    assert "本番前の起動手順" in d["title"], d["title"]
+    # The garment's own row on the NOW -> NEXT board, red, in two words.
+    assert "bus degraded" in d["row"], d["row"]
+    assert "red" in d["rowCls"], d["rowCls"]
+    # One amber line under ③ START, and the same one in WRITE TO UNITS -
+    # both naming the unit and the order to work in.
+    assert d["note"] == "radxa-01: bus degraded — restart the unit, then Upload", d["note"]
+    assert page["degradedDialog"] == d["note"], page["degradedDialog"]
+    # START is NOT gated: a degraded unit still shows every cue, only late.
+    assert d["startOn"] is True, "START was taken away over a degraded bus"
+
+
+def test_nothing_about_it_changes_once_the_show_is_running(page):
+    r = page["degradedRunning"]
+    assert "bus degraded" not in r["tile"], r["tile"]
+    assert "bus stalled 359 ms" in r["tile"], r["tile"]
+    assert r["note"] == "", r["note"]
+    assert "bus degraded" not in r["row"], r["row"]
