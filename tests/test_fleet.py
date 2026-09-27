@@ -1974,6 +1974,32 @@ def test_a_re_upload_lets_the_pictures_be_cleared_again():
     assert ("/show/clear", {"show": "showA"}) in link.posted
 
 
+def test_a_run_adopted_from_the_units_still_clears_after_the_show():
+    # A conductor restarted mid-show finds the run on the units. They cannot
+    # say whether it asked for a clear, so the timeline this conductor holds
+    # is the only answer there is.
+    now = [1000.0]
+    fleet, link = _cleared_fleet(lambda: now[0], duration=60)
+    link.status["show"]["t0"] = 1005.0       # its own clock, offset 5 s
+    assert fleet.run is None and fleet._may_adopt
+    fleet.snapshot()                         # _adopt() runs from here
+    assert fleet.run is not None and fleet.run["adopted"] is True
+    assert fleet.run["clear_after_show"] is True
+    link.posted.clear()
+    fleet.stop_show()
+    assert ("/show/clear", {"show": "showA"}) in link.posted
+
+
+def test_a_stop_with_no_run_at_all_falls_back_to_the_timeline():
+    # The units are running something this conductor never started (and
+    # never adopted): the timeline's own answer is all there is.
+    fleet, link = _cleared_fleet(lambda: 1000.0)
+    fleet._may_adopt = False
+    assert fleet.run is None
+    fleet.stop_show()
+    assert ("/show/clear", {"show": "showA"}) in link.posted
+
+
 def test_the_unit_snapshot_passes_the_clear_through():
     fleet, link = _cleared_fleet(lambda: 1000.0)
     real = UnitLink("radxa-02", "127.0.0.1:1", clock=lambda: 0.0)

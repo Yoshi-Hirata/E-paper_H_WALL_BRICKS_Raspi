@@ -1295,12 +1295,13 @@ class Fleet:
             self._stop_told = set()
             self._demo_told = set()     # the next demo episode is announced again
             # Whether the show that is ENDING asked for its pictures to
-            # go, read before the run is thrown away. Not re-read from
-            # the timeline afterwards: the run the operator is stopping is
-            # the one whose slots these are (a run ADOPTED from the units
-            # carries no answer of its own, so the timeline's own is the
-            # only one there is).
-            clear = (bool(self.run.get("clear_after_show")) if self.run
+            # go, read before the run is thrown away: the run the operator
+            # is stopping is the one whose slots these are, not whatever
+            # the timeline has been edited to since. A STOP with no run at
+            # all (the units are running something this conductor never
+            # started) falls back to the timeline's own answer.
+            clear = (bool(self.run.get("clear_after_show"))
+                     if self.run and "clear_after_show" in self.run
                      else self.clear_wanted())
             self.run = None
             self.start_at = 0.0
@@ -1525,7 +1526,14 @@ class Fleet:
                 # a board, and the unit would sit out the show it is
                 # already in (review round 2, 2026-09-25).
                 self.run = {"t0": found[len(found) // 2], "state": "running",
-                            "held_at": None, "adopted": True, "force": True}
+                            "held_at": None, "adopted": True, "force": True,
+                            # The units cannot say whether the show that is
+                            # already running asked for its pictures to be
+                            # cleared, so the timeline this conductor holds
+                            # is the only answer there is. With nothing
+                            # uploaded it is False, which is the safe way
+                            # round: nothing is deleted on a guess.
+                            "clear_after_show": self.clear_wanted()}
                 # Whatever a SEEK remembered before this conductor came
                 # up (or restarted) is not where THIS run began - the
                 # units, not the page, decided that (found in review).

@@ -1570,6 +1570,24 @@ def test_a_clear_repaints_nothing_at_all():
     runner.stop()
 
 
+def test_the_autoplay_heartbeat_goes_on_after_a_clear():
+    # The unit stays in REMOTE idle: the pictures are gone from the slots,
+    # but the garment is still showing the last look it was given and the
+    # periodic broadcast 0x17 is what keeps the factory autoplay off it for
+    # as long as the Radxa is there (the operator's rule, 2026-09-27).
+    session, runner, bus = make_session(boards=[1], verify_fire=False,
+                                        remote_guard=0.05)
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.clear_record()["state"] == "cleared")
+    sent = runner.remote_guard_sent
+    assert wait_until(lambda: runner.remote_guard_sent > sent, timeout=5), \
+        "the heartbeat stopped once the slots were emptied"
+    # ...and every one of them is a STOP, never a paint.
+    assert not shows(bus)
+    runner.stop()
+
+
 def test_a_clear_waits_for_the_last_cue_s_guard():
     # A 0x14 landing inside a repaint is the one thing this must not do,
     # so the first delete may only go out after the guard floor the cue's
