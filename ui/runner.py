@@ -153,6 +153,39 @@ WITNESS_ANY = "any"
 USB_BOARD = ADDR_BUS_MASTER
 LINK_POLL_S = 2.0         # how often standby checks the panel link
 LINK_GUARD_S = 60.0       # how often standby re-suppresses the autoplay
+# ...and the same backstop while the show PC drives the unit. REMOTE had
+# only one 0x17: the guard after each fire. Between two cues that is
+# nothing at all - 38 s of silence between q02 (6:37) and q03 (7:45) in
+# the 2026-09-27 rehearsals - and the tops garment's master board (16
+# boards, reproduced on radxa-04 and radxa-05, never on the skirt)
+# restarted its factory autoplay in that gap (SPECIFICATION 5.4; the
+# same master was seen running the autoplay on its own with the USB out
+# the day before). A board repainting is deaf and stops servicing USB,
+# so the next cue's write BLOCKED for 40-400 ms and the cue never
+# showed. So standby's 60 s heartbeat now runs in REMOTE too - but only
+# while the worker is idle and only when it cannot land inside a
+# repaint: see _remote_guard_clear().
+# 15 s, not standby's 60: the silences that lost cues were 11-38 s long
+# once the show was about two minutes old, so a minute between stops
+# cannot be relied on to cover them. The frame costs 8 bytes and the
+# rules below mean it only ever goes out when nothing else would touch
+# the bus anyway.
+REMOTE_GUARD_S = 15.0     # how often remote re-suppresses the autoplay
+# How near a cue's trigger may be when the periodic stop goes out. A
+# broadcast 0x17 is one 8-byte frame, but the board takes it, and a
+# trigger landing in that window is exactly the collision this whole
+# change is about - so the heartbeat stands aside for the cue, never
+# the other way round, and picks up on the next pass.
+REMOTE_GUARD_HOLD_S = 5.0
+# A broadcast write that takes longer than this is worth saying out
+# loud. On a healthy port `bus.send()` is a memcpy into the CDC's
+# buffer - well under a millisecond. The lost cues of 2026-09-27 were
+# all writes that BLOCKED for 40-400 ms because the master board had
+# stopped servicing USB mid-repaint, and until now the only trace of it
+# was the fire's own lateness. Timed here, the log and /status say
+# plainly "the board was busy", which is what tells an autoplay problem
+# apart from a slow Radxa or a late command from the PC.
+STALL_LOG_MS = 50.0
 PROBE_SWEEPS = 3          # setup passes over the board list
 PROBE_SWEEP_DELAY_S = 3.0 # between passes, so a repaint can finish meanwhile
 REPROBE_INTERVAL_S = 60.0 # how often absent boards get another chance
@@ -239,6 +272,8 @@ class DemoRunner:
                  verify_witness: str = WITNESS_USB,
                  link_poll: float = LINK_POLL_S,
                  link_guard: float = LINK_GUARD_S,
+                 remote_guard: float = REMOTE_GUARD_S,
+                 remote_guard_hold: float = REMOTE_GUARD_HOLD_S,
                  link_token=device_token,
                  probe_sweeps: int = PROBE_SWEEPS,
                  probe_sweep_delay: float = PROBE_SWEEP_DELAY_S,
@@ -296,6 +331,10 @@ class DemoRunner:
                                else WITNESS_USB)
         self.link_poll = link_poll
         self.link_guard = link_guard
+        self.remote_guard = remote_guard
+        # How near a cue may be when the heartbeat goes out. A parameter
+        # only so a test can compress it along with everything else.
+        self.remote_guard_hold = remote_guard_hold
         self._link_token = link_token
         self.probe_sweeps = probe_sweeps
         self.probe_sweep_delay = probe_sweep_delay
@@ -339,6 +378,27 @@ class DemoRunner:
         # first one, or the landing check's re-send. The guard STOP is
         # measured from this, not from the fire time.
         self._last_show_at: "float | None" = None
+        # The REMOTE heartbeat (REMOTE_GUARD_S): when the next periodic
+        # broadcast 0x17 is owed, whether the one log line has been
+        # written, and how many have gone out (reported in /status as
+        # remote_guard_sent).
+        self._remote_guard_due: "float | None" = None
+        self._remote_guard_said = False
+        self.remote_guard_sent = 0
+        # The instant the last picture is certainly finished, worked out
+        # WHEN IT WAS SENT from that cue's own span and refresh. No
+        # heartbeat before it. Captured rather than recomputed: the
+        # session carries the NEXT cue's numbers moments after a fire
+        # (ui/showplay.py arms it as soon as it sees FIRED), and a
+        # shorter one would otherwise shrink the previous cue's sweep
+        # out from under the rule.
+        self._guard_floor: "float | None" = None
+        self._guard_hold_s = 0.0   # the wait that floor was made from
+        # The last broadcast write that blocked (STALL_LOG_MS), with how
+        # many have blocked in this worker: {"ms", "frame", "at",
+        # "count"}, reported in /status as bus_stall. None until one
+        # does.
+        self.bus_stall: "dict | None" = None
         self.cycle = 0
         self.failures = 0          # cycles abandoned since the demo started
         self.started_at: float | None = None
@@ -656,6 +716,9 @@ class DemoRunner:
         end = time.monotonic() + seconds
         while True:
             self._fire_before_probing(bus, groups)
+            # A sweep of a wall with absent boards runs for tens of
+            # seconds; the heartbeat is owed in that time too.
+            self._remote_guard_tick(bus, groups)
             left = end - time.monotonic()
             if left <= 0:
                 return True
@@ -896,6 +959,10 @@ class DemoRunner:
         them up if they ever appear.
         """
         bus.send(stop(0xFF, groups))
+        # This IS the "one broadcast stop when the worker takes the
+        # port" the REMOTE loop owes at start-up - it is not sent twice,
+        # and the heartbeat's first interval runs from here.
+        self._sent_broadcast_stop()
         if not self._wait_probing(bus, groups, 0.3):
             return False
         if self.explore:
@@ -1638,12 +1705,19 @@ class DemoRunner:
                 self._record_verify(session, cue_id, "idle-not-repaired",
                                     resent, board, fired["gen"])
                 return
-            bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
+            self._send_timed(bus, show_single(0xFF, slot, groups,
+                                              dev_type=dev_type),
+                             f"show slot {slot}")
             again = time.monotonic()
             self.emit(f"cue {cue_id} not applied at @{board:02d} (checked "
                       f"+{checked:.1f} s), re-sent "
                       f"+{(again - sent_at) * 1000:.0f} ms")
             self._last_show_at = sent_at = again
+            # The picture restarts here, so the heartbeat's floor moves
+            # with it - the same wait this cue was given when it first
+            # went out, not one worked out from whatever the session
+            # holds by now.
+            self._guard_floor = again + self._guard_hold_s
             resent = True
 
     def _record_verify(self, session, cue_id: str, landed: str,
@@ -1660,6 +1734,114 @@ class DemoRunner:
             verified(cue_id, landed, resent=resent, witness=board, gen=gen)
         except TypeError:
             verified(cue_id, landed, resent=resent, witness=board)
+
+    def _send_timed(self, bus, frame, what: str) -> None:
+        """Put one broadcast on the bus and time the write itself.
+
+        A healthy CDC takes a copy and returns in well under a
+        millisecond. A board that is repainting stops servicing USB and
+        the write BLOCKS instead - 40-400 ms in the 2026-09-27
+        rehearsals, and the cue that was written into that window never
+        appeared. The lateness in the fire's own log line says something
+        went slowly; only the write's own clock says it was the BOARD,
+        which is what separates an autoplay that restarted from a busy
+        Radxa or a command the PC sent late.
+
+        The stall is recorded whether or not the write then succeeded,
+        and the exception (if any) goes on to the caller untouched.
+
+        A show broadcast that goes out CLEANLY takes the mark down
+        again (`ms` back to None, the count kept): a 60 ms stall in the
+        second minute is worth a look then, not an amber mark on the
+        tile through the encore.
+        """
+        began = time.perf_counter()
+        sent = False
+        try:
+            bus.send(frame)
+            sent = True
+        finally:
+            took_ms = (time.perf_counter() - began) * 1000.0
+            previous = self.bus_stall or {}
+            if took_ms >= STALL_LOG_MS:
+                self.bus_stall = {"ms": round(took_ms, 1), "frame": what,
+                                  # Wall clock, so the unit can say how
+                                  # long ago it was (ui/remote.py's
+                                  # status() turns it into ago_s).
+                                  "at": time.time(),
+                                  "count": int(previous.get("count", 0)) + 1}
+                self.emit(f"bus stalled {took_ms:.0f} ms on {what}")
+            elif sent and previous.get("ms") and what.startswith("show"):
+                self.bus_stall = {"ms": None, "frame": None, "at": None,
+                                  "count": int(previous.get("count", 0))}
+
+    def _sent_broadcast_stop(self) -> None:
+        """Note that a broadcast 0x17 just went out, whoever sent it.
+
+        The REMOTE heartbeat counts from the LAST stop the boards heard,
+        not from its own last send: the setup sweep's opening stop and
+        the guard stop after a fire each silence the autoplay just as
+        well, and a heartbeat right behind one is a frame for nothing.
+        """
+        self._remote_guard_due = (None if self.remote_guard <= 0 else
+                                  time.monotonic() + self.remote_guard)
+
+    def _remote_guard_clear(self, session, now: float) -> bool:
+        """True when the periodic idle STOP can safely go out.
+
+        Three ways it could do harm, and one rule against each:
+
+        * inside the repaint a cue just started - `_guard_floor`, the
+          same wait the post-fire guard uses, worked out from that
+          cue's own span and refresh at the moment it was broadcast
+          (and pushed forward again by a landing check's re-send);
+        * on top of a trigger about to go out - REMOTE_GUARD_HOLD_S of
+          clearance before the next cue, which is also what keeps this
+          out of the last stretch of _fire_at()'s wait;
+        * in the middle of the writes of a prepare or a burn - those
+          hold the bus themselves, so the heartbeat waits for the queue
+          to be empty.
+
+        `_firing` is deliberately NOT a rule here. One worker thread
+        owns the bus, so the only places this is reached are that
+        thread's own waits, where the bus is free by definition - and
+        _fire_at()'s wait is where a running show spends nearly all of
+        its time. The landing check needs no rule either: it runs
+        inside the floor above, seconds after a broadcast that set it
+        tens of seconds ahead.
+        """
+        if self._guard_floor is not None and now < self._guard_floor:
+            return False
+        due = session.due()
+        if due is not None and due[1] - now < self.remote_guard_hold:
+            return False
+        return not session.pending_job()
+
+    def _remote_guard_tick(self, bus, groups: int) -> None:
+        """Send the idle autoplay guard if one is due and clear to go.
+
+        Called from every wait the remote worker makes. The idle loop is
+        NOT enough on its own: ui/showplay.py arms the next cue the
+        moment the current one applies, so `session.due()` is never None
+        during a show and the worker sits inside _fire_at()'s wait for
+        the whole stretch between two cues - which is exactly the 11-38 s
+        of silence that lost cues on 2026-09-27 (review, same day).
+        """
+        session = self.remote
+        if session is None or self._remote_guard_due is None:
+            return
+        now = time.monotonic()
+        if now < self._remote_guard_due:
+            return
+        if not self._remote_guard_clear(session, now):
+            return
+        if not self._remote_guard_said:
+            self._remote_guard_said = True
+            self.emit("remote guard: stop every "
+                      f"{self.remote_guard:g} s while idle")
+        self.remote_guard_sent += 1
+        self._send_timed(bus, stop(0xFF, groups), "stop")
+        self._sent_broadcast_stop()
 
     def _fire_at(self, bus, groups: int, session, cue_id: str, at: float,
                  slot: int, dev_type: int) -> bool:
@@ -1696,10 +1878,19 @@ class DemoRunner:
                     return False                # stopped, cancelled or moved
                 if remaining > FIRE_SPIN_S:
                     self._reprobe(bus, groups)
+                    # This wait, not the idle loop, is where a running
+                    # show spends the stretch between two cues - so the
+                    # idle autoplay guard has to go out from here too.
+                    # It stands aside for the last REMOTE_GUARD_HOLD_S
+                    # before `at`, which keeps it well clear of the spin
+                    # below (_remote_guard_clear()).
+                    self._remote_guard_tick(bus, groups)
                     self._stop.wait(min(remaining - FIRE_SPIN_S, 0.05))
                 else:
                     time.sleep(0.0005)
-            bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
+            self._send_timed(bus, show_single(0xFF, slot, groups,
+                                              dev_type=dev_type),
+                             f"show slot {slot}")
             sent_at = self._last_show_at = time.monotonic()
             # What the landing check needs to know about THIS cue, read
             # before the session is told it fired: ui/showplay.py arms
@@ -1707,6 +1898,15 @@ class DemoRunner:
             # session carries that cue's span and refresh (review round
             # 3 - the repair budget was being sized from the wrong cue).
             fired = self._cue_snapshot(session)
+            # No heartbeat until THIS cue's picture is certainly done.
+            # Read here, while the session still holds this cue: a
+            # moment later it carries the NEXT one's span, and a shorter
+            # one would shrink this sweep out from under the rule
+            # (review, 2026-09-27). Not from the snapshot above - that
+            # fills defaults in for the repair budget, and a cue that
+            # said nothing must keep the FLAT guard, not a 7 s refresh.
+            self._guard_hold_s = self._guard_for(session)
+            self._guard_floor = sent_at + self._guard_hold_s
             # The time the PC is told is this FIRST send, whatever the
             # landing check does afterwards: "how late was the cue" is
             # about when the picture was asked for, and a re-send is a
@@ -1727,6 +1927,13 @@ class DemoRunner:
 
     def _run_remote(self, session) -> None:
         guard_due = None
+        # One heartbeat clock per worker, armed by the first broadcast
+        # 0x17 this worker sends (_setup()'s own first move).
+        self._remote_guard_due = None
+        self._remote_guard_said = False
+        self.remote_guard_sent = 0
+        self._guard_floor = None
+        self.bus_stall = None
         while not self._stop.is_set():
             port = self.port or find_port()
             if not port:
@@ -1933,12 +2140,26 @@ class DemoRunner:
                             # As after every demo cycle: a shown slot runs
                             # on into the factory autoplay unless stopped.
                             guard_due = None
-                            bus.send(stop(0xFF, groups))
+                            self._send_timed(bus, stop(0xFF, groups), "stop")
+                            self._sent_broadcast_stop()
+                        else:
+                            # The heartbeat (REMOTE_GUARD_S), for a
+                            # worker with no cue in hand at all: before
+                            # START, after the last cue, on HOLD.
+                            self._remote_guard_tick(bus, groups)
                         if self._reprobe(bus, groups):
                             pass                # joined boards take the next cue
                         wait = self.link_poll
                         if guard_due is not None:
                             wait = min(wait, max(0.0, guard_due - now))
+                        if (self._remote_guard_due is not None
+                                and self._remote_guard_due > now):
+                            # Only while it is still ahead: a heartbeat
+                            # held back by the rules above would
+                            # otherwise shrink this wait to zero and
+                            # spin the loop until the block cleared.
+                            wait = min(wait,
+                                       max(0.0, self._remote_guard_due - now))
                         session.wait(wait)
             except Exception as exc:        # unplugged, permissions, ...
                 self.error = str(exc)

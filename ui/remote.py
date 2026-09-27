@@ -108,6 +108,19 @@ def _seconds(value) -> "float | None":
     return seconds
 
 
+def _with_age(stall: "dict | None") -> "dict | None":
+    """A copy of the runner's bus_stall with `ago_s` filled in, or None.
+
+    A copy, because the worker thread owns the original and goes on
+    updating it while the PC reads this one.
+    """
+    if not stall:
+        return None
+    at = stall.get("at")
+    ago = None if not at else round(max(0.0, time.time() - float(at)), 1)
+    return dict(stall, ago_s=ago)
+
+
 class RemoteSession:
     def __init__(self, runner, clock=time.monotonic, busy=None):
         self.runner = runner
@@ -546,6 +559,20 @@ class RemoteSession:
             boards, self._boards = self._boards, None
             return boards
 
+    def pending_job(self) -> bool:
+        """True while a prepare or a burn is waiting for the worker.
+
+        The worker's idle-time autoplay guard (ui/runner.py's
+        REMOTE_GUARD_S heartbeat) stands aside for one: the writes are
+        about to start and the heartbeat is only worth sending when
+        nothing else is going to touch the bus anyway. A queued board
+        list (set_boards()) is not one of these - it puts nothing on the
+        bus of its own, and the probing sweep it causes opens with a
+        stop anyway.
+        """
+        with self._lock:
+            return self._job is not None or self._burn_job is not None
+
     def prepared(self, cue_id: str, saved, failed, seconds: float) -> None:
         with self._lock:
             if cue_id != self.cue_id or self._job is not None:
@@ -664,5 +691,19 @@ class RemoteSession:
                 "group_count": runner.group_count,
                 "no_sweep": sorted(runner.no_sweep),
                 "standby_ready": bool(runner.standby_ready),
+                # How many idle autoplay guards this worker has sent
+                # (ui/runner.py's REMOTE_GUARD_S). Diagnosis only: a
+                # garment losing cues with this stuck at 0 means the
+                # heartbeat never got a clear window.
+                "remote_guard_sent": runner.remote_guard_sent,
+                # The last broadcast write that BLOCKED, and how many
+                # have (ui/runner.py's STALL_LOG_MS): {"ms", "frame",
+                # "at" (wall clock), "ago_s", "count"}. None while every
+                # write has been immediate, which is the normal answer,
+                # and `ms` back to None once a later cue went out
+                # cleanly. The age is worked out HERE, on the unit's own
+                # clock - the PC's differs, and this is one subtraction
+                # between two readings of the same one.
+                "bus_stall": _with_age(runner.bus_stall),
                 "burn": burn,
             }
