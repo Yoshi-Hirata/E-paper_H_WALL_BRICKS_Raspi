@@ -58,6 +58,60 @@
 ビルドもしない)、`tests/test_conductor_server.py`(compile / エンドポイント /
 ヘッドレスで `writeState()` を実際に走らせる 3 件)。
 
+**bundle を取り込んでも配線(`*_map.csv`)は残す(2026-09-27 オペレーター決定)**
+
+決定(原文):「バンドル取り込み時はマップを保持する仕様で実装して」
+
+きっかけ:同日、配線ナビが 2 着を変更した(AZ271SD1307 に基板 150 が増え、
+AZ271SG1036 のソケットが 1 つ移った)。オペレーターは再生成した `*_map.csv` を
+本番ワークスペースに入れたが、**13:49 に読み込んだ演出家の bundle が
+`AZ271SD1307_map.csv` を古い写しで黙って上書きした** ―― `import_bundle()` は
+「上書きして報告する」仕様だったため。配線はオペレーターのもの(配線ナビから
+再生成する)で、演出家の bundle はその出どころではない。
+
+`conductor/server.py` の `import_bundle()`:
+
+- **すでにある `*_map.csv` は書かない**。中身が同じなら黙って `kept` に数えるだけ、
+  **違えば `kept` に理由を付けて**返す(`BUNDLE_WIRING_KEPT` =
+  `the workspace's wiring is kept (the bundle's copy differs)`)。
+  大文字小文字・NFC の違いは同じファイル(`look.fold_name`)なので、
+  **1 着につき 1 行**だけ出る
+- **その衣装の map がまだ無ければ従来どおり書く**(新しい衣装は配線ごと届く)
+- **配色(grid)は従来どおり上書きして報告する**(`overwritten`)。bundle は
+  演出家のプロジェクトそのもので、オペレーターがそれを頼んだのだから
+- 返り値に **`kept`(`[{name, why}]`)**が増えた。残した map は
+  **`saved` / `overwritten` / `renamed` のどれにも入らない**(何も書いていない。
+  ただし NFC に直した綴り自体は、キュー・units・labels の書き換えには使う ――
+  こちらのファイルの綴りがそれだから)。`export_bundle` とシミュレーターは変更なし
+  (bundle には map が入ったままなので、空のワークスペースを bundle から作れる)
+- **CHECK は残った(ワークスペースの)map に対して走る** ―― 古いレイアウト向けに
+  描かれた配色は、そのまま「made for another layout」で名指しされる。
+  これが「残す」ことの意味でもある
+
+ページ(`conductor/web/index.html`、Load bundle… の結果だけ):
+
+- 集計に **`1 wiring file kept`**、違っていた衣装は**琥珀色の帯で 1 行**
+  (トーストは元から反転色なので、文字を琥珀にするとコントラストが
+  1.45:1(ダーク)/ 3.23:1(ライト)で読めない ―― レビュー指摘。
+  **地を `--warn`、文字を新しい `--warn-ink`** にして 5.2:1 / 10.6:1):
+  `Look22_map.csv: the workspace's wiring is kept (the bundle's copy differs)
+  - regenerate from the wiring site if the garment changed`
+- 確認ダイアログとツールチップも「配線はここのものが残る」に直した。
+  **意図して差し替えるときは Designs タブで Delete → Add CSV**
+  ([CONDUCTOR_START.md §5](CONDUCTOR_START.md))
+
+ついでに直した(同レビュー、以前からの取りこぼし):bundle の配色が
+**大文字小文字だけ違う名前**で届くと、NTFS では既にあるファイルを置き換えるのに
+`overwritten` に出ず「追加された」と読めていた。`overwritten` は
+**ディスク側の綴り**で報告する(上書きすること自体は従来どおり)。
+
+テスト:`tests/test_bundle.py`(同一 map は黙って kept / 違う map は理由付きで
+kept・バイト列は不変・配色は従来どおり上書き / 新しい衣装の map は書く /
+綴りが違っても 1 着 1 行 / 残った map で CHECK が効く / HTTP の返り値の形)、
+`tests/test_conductor_server.py`(intake の規則の隣)、
+`tests/test_conductor_intake.py`(本物の index.html を headless で
+Load bundle… まで走らせ、琥珀色の文面を確認)
+
 **REMOTE 中もオートプレイを止め続ける(2026-09-27 朝のリハーサル 3 回+機体入替)**
 
 現象:トップスのガーメント(16 枚)だけが、START から**約 2 分後以降**の
@@ -188,8 +242,10 @@ tooltip に規則を表示)
 
 移植していないもの:シミュレーター側の Undo/Redo・プロジェクト保存・
 Help タブ、Conductor 側の Units/Write/START など。`import_bundle()` の
-「上書きして報告する」意味は今までどおり(bundle は演出家のプロジェクト
-そのもので、オペレーターがそれを頼んだのだから)。
+「上書きして報告する」意味は**配色については**今までどおり(bundle は演出家の
+プロジェクトそのもので、オペレーターがそれを頼んだのだから)。配線
+(`*_map.csv`)だけは 2026-09-27 に「残して報告する」に変わった(§2 の
+先頭の項)。
 
 **NOW → NEXT ボード ― THE SHOW の大時計の下(2026-09-27 オペレーター決定)**
 

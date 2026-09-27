@@ -935,8 +935,8 @@ def test_a_malformed_files_body_is_a_400_not_a_500(tmp_path):
         server.server_close()
 
 
-def test_import_bundle_still_overwrites_and_reports_it(tmp_path):
-    # The one path that DOES replace what it names, on purpose
+def test_import_bundle_still_overwrites_designs_and_reports_it(tmp_path):
+    # The one path that DOES replace the DESIGNS it names, on purpose
     # (docs/SIMULATOR_FOR_DESIGNERS.md): a bundle is the designers'
     # project, and the operator asked for it. Nothing about the intake
     # rules above may change that.
@@ -954,6 +954,31 @@ def test_import_bundle_still_overwrites_and_reports_it(tmp_path):
     assert (ws.files / "Look22_color_pattern01_grid.csv").read_text(
         encoding="utf-8") == changed
     assert not list(ws.files.glob("*-2_grid.csv"))
+
+
+def test_import_bundle_keeps_the_wiring_this_workspace_already_has(tmp_path):
+    # ...and the one thing it does NOT replace (2026-09-27): the wiring is
+    # the operator's, regenerated from the 配線ナビ when the site changes a
+    # garment. A bundle carries whatever copy the designers started from,
+    # and one of them put a stale AZ271SD1307_map.csv back over that
+    # morning's board 150 without a word. The rule is now the same as
+    # intake()'s: a garment has one wiring file, and replacing it is
+    # deliberate (Delete, then Add CSV).
+    ws = Workspace(tmp_path / "ws")
+    current = MAP.replace("front,1,2,17,60,017-60", "front,1,2,17,59,017-59")
+    ws.save("Look22_map.csv", current)
+    result = ws.import_bundle({
+        "format": "epaper-show-bundle", "version": 1,
+        "files": {"Look22_map.csv": MAP,        # the designers' stale copy
+                  "Look22_color_pattern01_grid.csv": GRID},
+        "show": {"format": "epaper-show", "version": 1, "duration": 600,
+                 "cues": []}})
+    assert result["kept"] == [
+        {"name": "Look22_map.csv",
+         "why": "the workspace's wiring is kept (the bundle's copy differs)"}]
+    assert (ws.files / "Look22_map.csv").read_text(encoding="utf-8") == current
+    # The design in the same bundle arrived all the same.
+    assert result["saved"] == ["Look22_color_pattern01_grid.csv"]
 
 
 def test_designer_named_files_are_accepted_and_labelled(workspace):
