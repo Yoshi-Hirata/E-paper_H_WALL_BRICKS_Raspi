@@ -10,6 +10,7 @@ import base64
 import http.client
 import io
 import json
+import re
 import struct
 import sys
 import threading
@@ -17,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from html import unescape
 from pathlib import Path
 
 import pytest
@@ -2394,14 +2396,14 @@ def test_an_edit_during_the_write_belongs_to_the_next_one(tmp_path):
     fleet.links = {"radxa-01": StubLink("radxa-01", "stopped")}
     server = make_server(tmp_path, port=0, fleet=fleet)
     workspace = server.RequestHandlerClass.workspace
-    compile_show = workspace.compile_show
+    compile_for_write = workspace.compile_for_write
 
-    def edit_while_writing():
-        shows = compile_show()
+    def edit_while_writing(only=None):
+        compiled = compile_for_write(only)
         ws.set_timeline(600, [_cue("a", 0), _cue("b", 45)])   # the operator
-        return shows
+        return compiled
 
-    workspace.compile_show = edit_while_writing
+    workspace.compile_for_write = edit_while_writing
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -2413,7 +2415,7 @@ def test_an_edit_during_the_write_belongs_to_the_next_one(tmp_path):
         # And the one on screen has moved on since: changed, not current.
         assert timeline["revision"] != before
     finally:
-        workspace.compile_show = compile_show
+        workspace.compile_for_write = compile_for_write
         server.shutdown()
         server.server_close()
 
@@ -2720,6 +2722,66 @@ def test_the_gate_does_not_say_upload_again_about_a_timeline_that_cannot_be_uplo
         ws.set_timeline(600, [_cue("a", 45), _skirt_cue("b", 0)])
         status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
         assert status == 400 and "Upload again before the show" in payload["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_refuses_after_a_one_look_upload_that_left_a_garment_off_its_unit(tmp_path):
+    """The hole the unit counting cannot see (found in review, 2026-09-27).
+
+    A garment with cues and no unit is in nobody's marks and in
+    `timeline_units()` either, so after a one-LOOK upload of the garments
+    that DO have units there is nothing "missing" and nothing "behind" -
+    the fleet agrees with itself about a show that is missing a dress.
+    The timeline's own problems have to be read BEFORE that count, not
+    after it."""
+    ws = Workspace(tmp_path)
+    ws.save("Look22_map.csv", MAP)
+    ws.save("Look22_color_pattern01_grid.csv", GRID)
+    ws.save("Look20-Skirt_map.csv", SKIRT_MAP)
+    ws.save("Look20-Skirt_color_pattern01_grid.csv", SKIRT_GRID)
+    ws.assign("Look22", "radxa-01")             # ...and the skirt has none
+    ws.set_timeline(600, [_cue("a", 0), _skirt_cue("b", 0)])
+    server, fleet = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        status, payload = _post(port, "/api/fleet/upload",
+                                {"units": ["radxa-01"]})
+        assert status == 200 and payload["units"]["radxa-01"]["ok"]
+        assert payload["warnings"] == ["Look20-Skirt: not assigned to a unit"]
+        # radxa-01 holds exactly what is on screen, and it is the only
+        # unit the timeline names - the count comes out clean.
+        assert ws.timeline_units() == {"radxa-01"}
+        for command in ("start", "preset"):
+            status, payload = _post(port, f"/api/fleet/{command}",
+                                    {"lead_s": 3})
+            assert status == 400, command
+            assert payload["error"] == ("the timeline has problems - fix them "
+                                        "on the Timeline tab, then Upload"), command
+        assert fleet.run is None
+        # The burn gate's `force` is not an answer to this one, as it is
+        # not an answer to the split (review N1): one "yes" never answers
+        # a question the operator was not asked.
+        status, payload = _post(port, "/api/fleet/start",
+                                {"lead_s": 3, "force": True})
+        assert status == 400
+        assert payload["error"].startswith("the timeline has problems")
+        # `split_ok` does get past it - as it always has, for every
+        # timeline this gate refuses: it skips the gate whole, and what
+        # is left is the burn gate (these stubs hold no pictures).
+        status, payload = _post(port, "/api/fleet/start",
+                                {"lead_s": 3, "split_ok": True})
+        assert status == 400 and "has not taken this show yet" in payload["error"]
+        # Give the skirt a unit and the gate goes back to counting units:
+        # radxa-02 was never written at all, and giving it the skirt moved
+        # the timeline on past what radxa-01 holds.
+        ws.assign("Look20-Skirt", "radxa-02")
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert status == 400
+        assert payload["error"] == ("radxa-02, radxa-01 are not on this "
+                                    "upload - Upload for All LOOKs before "
+                                    "the show")
     finally:
         server.shutdown()
         server.server_close()
@@ -3117,3 +3179,299 @@ def test_the_page_chips_say_what_the_units_hold(page):
     # The verdict word is droppable at a narrow window, so the chips stay
     # on one row in the Timeline dock's head.
     assert 'class="verdict"' in page and "@media (max-width: 1280px)" in page
+
+
+# ---- one LOOK is written while another garment has no unit (2026-09-27) ----
+#
+# The operator asked for one bag on radxa-09 while five other garments were
+# between units, and the whole upload was refused with five "not assigned to
+# a unit" about garments that were never going to be written. What follows
+# is the workspace's own rule, then the endpoints', then the words the
+# dialog says about it.
+
+def _bag_workspace(tmp_path):
+    """Two garments with cues; only one of them has a unit - the shape of
+    the refusal above, at its smallest."""
+    ws = Workspace(tmp_path)
+    ws.save("Look22_map.csv", MAP)
+    ws.save("Look22_color_pattern01_grid.csv", GRID)
+    ws.save("Look20-Skirt_map.csv", SKIRT_MAP)
+    ws.save("Look20-Skirt_color_pattern01_grid.csv", SKIRT_GRID)
+    ws.assign("Look22", "radxa-01")             # the one garment on a Radxa
+    ws.set_timeline(600, [_cue("a", 0), _skirt_cue("b", 0)])
+    return ws
+
+
+def test_one_looks_upload_is_not_refused_over_another_garments_problems(tmp_path):
+    ws = _bag_workspace(tmp_path)
+    # A full upload is unchanged: whole or not at all, and by name.
+    shows, problems = ws.compile_show()
+    assert shows == {} and problems == ["Look20-Skirt: not assigned to a unit"]
+    # The same timeline, compiled FOR radxa-01 alone: built, with the other
+    # garment reported rather than refused.
+    shows, problems, warnings = ws.compile_for_write(["radxa-01"])
+    assert problems == []
+    assert warnings == ["Look20-Skirt: not assigned to a unit"]
+    assert list(shows) == ["radxa-01"] and shows["radxa-01"]["cues"]
+    # Whatever a one-LOOK compile waved through, the TIMELINE still has it -
+    # which is what START reads to say "fix them, then Upload" rather than
+    # sending the operator to an Upload that cannot happen.
+    assert ws.compiled["problems"] == ["Look20-Skirt: not assigned to a unit"]
+
+
+def test_a_targeted_units_own_problem_still_refuses_its_one_look_write(tmp_path):
+    # The line is "is this problem about a unit I am writing to?", never
+    # "am I writing one look only?" - a cue of the chosen LOOK that does
+    # not build is exactly what this write was going to send.
+    ws = _bag_workspace(tmp_path)
+    ws.set_timeline(600, [
+        {"id": "a", "item": "Look22", "at": 0, "design": "nosuch_grid.csv"},
+        _skirt_cue("b", 0)])
+    shows, problems, warnings = ws.compile_for_write(["radxa-01"])
+    assert shows == {}
+    assert problems == ["0:00 Look22: design nosuch_grid.csv is not loaded"]
+    assert warnings == ["Look20-Skirt: not assigned to a unit"]
+    # And a timeline with no cues is nobody's business in particular and
+    # everybody's refusal.
+    ws.set_timeline(600, [])
+    assert ws.compile_for_write(["radxa-01"])[1] == ["the timeline has no cues"]
+
+
+def test_the_endpoints_write_one_look_and_report_what_they_left_out(tmp_path):
+    _bag_workspace(tmp_path)
+    server, fleet = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        # All LOOKs: refused, and not one unit is posted to.
+        status, payload = _post(port, "/api/fleet/upload", {})
+        assert status == 200 and payload["units"] == {}
+        assert payload["problems"] == ["Look20-Skirt: not assigned to a unit"]
+        assert payload["warnings"] == []
+        assert all(not link.posted for link in fleet.links.values())
+        # The one garment that has a unit, alone: written, with the other
+        # named as a warning rather than as a refusal.
+        status, payload = _post(port, "/api/fleet/upload",
+                                {"units": ["radxa-01"]})
+        assert status == 200 and payload["problems"] == []
+        assert payload["warnings"] == ["Look20-Skirt: not assigned to a unit"]
+        assert payload["units"]["radxa-01"]["ok"]
+        assert list(payload["shows"]) == ["radxa-01"]
+        assert [p for p, _ in fleet.links["radxa-01"].posted] == ["/show/load"]
+        assert fleet.links["radxa-02"].posted == []
+        # A timeline with a garment still off its unit is not "on the
+        # units" because one LOOK of it is: no fleet-wide mark, and the
+        # per-unit one says who does hold it.
+        timeline = _get(port, "/api/fleet")["timeline"]
+        assert timeline["uploaded"] is None
+        assert list(timeline["uploaded_units"]) == ["radxa-01"]
+        # Save on the units answers the same way, with the same warning.
+        status, payload = _post(port, "/api/fleet/write_demo",
+                                {"name": "PARIS", "units": ["radxa-01"]})
+        assert status == 200 and payload["problems"] == []
+        assert payload["warnings"] == ["Look20-Skirt: not assigned to a unit"]
+        assert payload["units"]["radxa-01"]["ok"]
+        # A unit the timeline does not have is still refused by name, after
+        # the compile rather than before it, and still writes nothing.
+        status, payload = _post(port, "/api/fleet/upload",
+                                {"units": ["radxa-07"]})
+        assert status == 400
+        assert payload["error"] == "radxa-07 is not a unit of this timeline"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_page_pre_check_agrees_about_one_look_and_the_rest(page):
+    # The dialog must not disable a button the server would have taken:
+    # its reasons are counted over the units the write goes to, exactly as
+    # conductor/showfile.py's build(only=...) counts its problems.
+    assert "const mine = only ? state.show.cues.filter(" in page
+    assert "only.includes(itemByKey(c.item)?.unit))" in page
+    assert "const bad = mine.reduce((n, c) => n + c.problems.length, 0);" in page
+    # An item with cues and no unit: a refusal for All LOOKs (the server
+    # refuses that too), and the way out is named in the same breath.
+    assert "else if (!only && unassigned.length)" in page
+    assert "cues but no unit" in page
+    assert "or pick one LOOK" in page and "above to write just that one." in page
+    # ...and, with one LOOK chosen, what will not be written is said under
+    # the choice rather than in place of it.
+    assert "function notWrittenText(s)" in page
+    assert "Not written: ${s.unassigned.join(\", \")} — no unit yet" in page
+    assert "give ${s.unassigned.length === 1 ? \"it\" : \"them\"} one on the Designs tab" in page
+    # The server's own `warnings`, amber under the result - never counted
+    # as a failure, which is what `problems` are for.
+    assert "function writeWarningsHtml(r)" in page
+    assert 'class="warn">not written: ${esc(w)}' in page
+    assert "warnings: result.warnings || []," in page
+    assert "warnings: out.warnings" in page
+
+
+# ---- and the same pre-check, run: one page, no server, no fleet ----
+#
+# The checks above say the words are in the file. This one RUNS the page's
+# own writeState() over a timeline with a garment off its unit and asks the
+# operator's question: is the Upload button live? The code is lifted out of
+# conductor/web/index.html by name, so the test can only ever be about the
+# page that ships (tests/test_conductor_board.py lifts the show board the
+# same way). Behind CONDUCTOR_BROWSER_TESTS=1 like every browser test here.
+
+PAGE_SRC = (Path(__file__).resolve().parents[1]
+            / "conductor" / "web" / "index.html").read_text(encoding="utf-8")
+
+
+def _page_function(name):
+    """One top-level `function name(...) {...}` of index.html, signature
+    and all, found by counting braces from its first one."""
+    start = PAGE_SRC.index(f"function {name}(")
+    depth = 0
+    for i in range(PAGE_SRC.index("{", start), len(PAGE_SRC)):
+        depth += (PAGE_SRC[i] == "{") - (PAGE_SRC[i] == "}")
+        if depth == 0:
+            return PAGE_SRC[start:i + 1]
+    raise AssertionError(f"function {name} is never closed")
+
+
+def _page_const(name):
+    """One top-level `const name = ...;` of index.html, on its own line."""
+    for line in PAGE_SRC.splitlines():
+        if line.startswith(f"const {name} = "):
+            return line
+    raise AssertionError(f"const {name} is gone from the page")
+
+
+# Everything writeState() stands on, and nothing else.
+_WRITE_LIFTED = ["itemByKey", "BURN_S_PER_PICTURE", "DEMO_NAME_MAX",
+                 "DEMO_NAME_OK"], [
+    "trackItems", "lookGroups", "unitPlaysADemo", "writeTargets", "writeRows",
+    "writeRowByKey", "notWrittenText", "uploadOnlyText", "demoOnlyText",
+    "writeState"]
+
+_WRITE_PROBE = """<!doctype html><meta charset="utf-8"><title>write</title><body>
+<script>
+"use strict";
+%(code)s
+var state = null, fleet = null, ui = null;
+var CASES = %(cases)s;
+var out = { error: null, results: {} };
+try {
+  for (var key in CASES) {
+    state = CASES[key].state; fleet = CASES[key].fleet; ui = CASES[key].ui;
+    var s = writeState();
+    out.results[key] = { uploadWhy: s.uploadWhy, demoWhy: s.demoWhy,
+                         bad: s.bad, only: s.only, unassigned: s.unassigned,
+                         onlyText: uploadOnlyText(s), demoText: demoOnlyText(s) };
+  }
+} catch (e) { out.error = String((e && e.stack) || e); }
+var pre = document.createElement("pre");
+pre.id = "write-out";
+pre.textContent = JSON.stringify(out);
+document.body.appendChild(pre);
+</script>
+"""
+
+# The row's own title is the MODEL label; what is named as not written is
+# the ITEM, the same string the server's refusal and its amber line use.
+BAG, TOPS = "AZ271SG1036 Bag 02", "AZ271SB2303 Tops"
+BAG_ITEM, TOPS_ITEM = "AZ271SG1036", "AZ271SB2303"
+BAG_ROW = "I" + BAG_ITEM         # writeRows' key for a look-less item
+
+
+def _dlg_case(only=None, tops_unit=None, bag_problems=(), tops_problems=()):
+    """The 2026-09-27 timeline: a bag on its own Radxa and one other
+    garment, which may or may not have a unit of its own."""
+    items = [{"item": "AZ271SG1036", "model": BAG, "look": None,
+              "unit": "radxa-09", "boards": [1, 2], "map": {"scales": [[0, 0, 0]]}},
+             {"item": "AZ271SB2303", "model": TOPS, "look": "24",
+              "unit": tops_unit, "boards": [1], "map": {"scales": [[0, 0, 0]]}}]
+    cues = [{"item": "AZ271SG1036", "sent": 0, "problems": list(bag_problems)},
+            {"item": "AZ271SB2303", "sent": 30, "problems": list(tops_problems)}]
+    names = ["radxa-09"] + ([tops_unit] if tops_unit else [])
+    return {"state": {"items": items, "show": {"cues": cues, "duration": 600}},
+            "fleet": {"units": [{"name": n, "online": True} for n in names],
+                      "run": None, "shows": {}},
+            "ui": {"writeOnly": only, "demoName": "PARIS", "demoLoop": False}}
+
+
+_DLG_CASES = {
+    # The refusal the operator met, now said in the dialog instead of by
+    # the server after the press - with the way out in the same sentence.
+    "all_looks_one_off_its_unit": _dlg_case(),
+    # The fix: that same timeline, with the bag's own row chosen.
+    "one_look_off_its_unit": _dlg_case(only=BAG_ROW),
+    # Nothing to say once every garment has a unit.
+    "all_looks_all_assigned": _dlg_case(tops_unit="radxa-02"),
+    # A cue problem on ANOTHER unit's garment is not this write's business...
+    "one_look_anothers_broken_cue": _dlg_case(
+        only=BAG_ROW, tops_unit="radxa-02",
+        tops_problems=["design pattern09_grid.csv is not loaded"]),
+    # ...but one on the chosen LOOK's own cue is exactly what it would send.
+    "one_look_its_own_broken_cue": _dlg_case(
+        only=BAG_ROW, tops_unit="radxa-02",
+        bag_problems=["design pattern09_grid.csv is not loaded"]),
+    # And a full upload is still whole or not at all.
+    "all_looks_a_broken_cue": _dlg_case(
+        tops_unit="radxa-02",
+        tops_problems=["design pattern09_grid.csv is not loaded"]),
+}
+
+
+@pytest.fixture(scope="module")
+def dialog_states(tmp_path_factory):
+    from tests.test_designer_build import _dump_dom, _require_browser
+
+    tmp = tmp_path_factory.mktemp("writestate")
+    _require_browser(tmp)
+    consts, functions = _WRITE_LIFTED
+    code = "\n".join([_page_const(n) for n in consts]
+                     + [_page_function(n) for n in functions])
+    probe = tmp / "writestate.html"
+    probe.write_text(_WRITE_PROBE % {"code": code,
+                                     "cases": json.dumps(_DLG_CASES)},
+                     encoding="utf-8")
+    dom = _dump_dom(probe.as_uri(), tmp)
+    match = re.search(r'<pre id="write-out">(.*?)</pre>', dom or "", re.S)
+    assert match, f"no #write-out in the dumped DOM:\n{(dom or '')[:3000]}"
+    data = json.loads(unescape(match.group(1)))
+    assert data["error"] is None, data["error"]
+    return data["results"]
+
+
+def test_the_dialog_enables_upload_for_one_look_whose_unit_is_assigned(dialog_states):
+    one = dialog_states["one_look_off_its_unit"]
+    # The whole point: the button is live, for the unit that has a show.
+    assert one["uploadWhy"] is None and one["demoWhy"] is None
+    assert one["only"] == ["radxa-09"] and one["bad"] == 0
+    # And it says what it is not writing, on both choices - by the same
+    # name the server's amber line will use afterwards.
+    assert one["unassigned"] == [TOPS_ITEM]
+    assert f"Not written: {TOPS_ITEM} — no unit yet" in one["onlyText"]
+    assert "give it one on the Designs tab before the show" in one["onlyText"]
+    assert f"Not written: {TOPS_ITEM}" in one["demoText"]
+    assert f"Only {BAG}'s unit is written" in one["onlyText"]
+
+
+def test_the_dialog_still_refuses_a_full_upload_with_a_garment_off_its_unit(dialog_states):
+    every = dialog_states["all_looks_one_off_its_unit"]
+    assert every["uploadWhy"] == (
+        f"{TOPS_ITEM} has cues but no unit — give it one on the Designs tab,"
+        " or pick one LOOK above to write just that one.")
+    assert every["demoWhy"] == every["uploadWhy"]     # the same hole, both ways
+    assert every["only"] is None and every["onlyText"] == ""
+    # Nothing left to say once every garment has a unit of its own.
+    assert dialog_states["all_looks_all_assigned"]["uploadWhy"] is None
+
+
+def test_the_dialogs_problems_are_counted_over_the_units_it_writes_to(dialog_states):
+    # Another LOOK's broken cue: warned about by the server, not a refusal
+    # here either - the bag's show file is not built from that cue.
+    other = dialog_states["one_look_anothers_broken_cue"]
+    assert other["uploadWhy"] is None and other["bad"] == 0
+    # The chosen LOOK's own broken cue: refused, and named as that LOOK's.
+    mine = dialog_states["one_look_its_own_broken_cue"]
+    assert mine["uploadWhy"] == (
+        f"{BAG} has 1 problem — fix it on the Timeline tab"
+        " (nothing is written while one is left).")
+    # A full upload counts every cue of the timeline, as it always has.
+    assert dialog_states["all_looks_a_broken_cue"]["uploadWhy"] == (
+        "The timeline has 1 problem — fix it on the Timeline tab"
+        " (nothing is written while one is left).")
