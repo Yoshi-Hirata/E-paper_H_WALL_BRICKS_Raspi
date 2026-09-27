@@ -4323,6 +4323,13 @@ function showClockText() {
       ? `Pictures will be cleared on every unit in ${Math.ceil(clearIn)} s`
         + " — press ③ START (or ② Show preset) to keep them. Clearing cannot"
         + " be undone: the show has to be uploaded again."
+    // A HOLD or a RESUME in the final second cannot be played past, so the
+    // end of THIS run will not clear anything. Said out loud: otherwise the
+    // pictures simply stay and nothing on the page explains why.
+    : run && run.end_clear_off
+      ? "This run was moved to its end rather than played there, so its own"
+        + " end will not clear the pictures — auto-clear off for this run,"
+        + " use STOP (it waits 30 s and can be taken back)."
     : !want ? (unitsBusy
       ? "Units are running a show this conductor did not upload (it was restarted). STOP works; Upload again to take the show over."
       : "Upload the show first.")

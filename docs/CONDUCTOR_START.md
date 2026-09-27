@@ -359,6 +359,11 @@ Units タブの **THE SHOW** カード、大時計のすぐ下。**次に何が�
      **「再生して終わりまで来た」ときだけ**:**シークや NEXT で終わり(または終わりの
      1 秒前より後)へ飛んだときは消さない**。シークバーを動かした直後 30 秒は
      いつでも消さない ― 最後の数秒をシークで見ていたら絵が消える、を防ぐため
+   - **終わり際で HOLD / RESUME / シークをすると、その run は「終わりへ飛んだ」扱いに
+     なり、時間で終わっても消さなくなる。** そのときは大時計の下にこう出る:
+     `This run was moved to its end rather than played there, so its own end will
+     not clear the pictures — auto-clear off for this run, use STOP …`。
+     消したいなら **STOP を押す**(30 秒待ってから消え、その間に取り消せる)
    - **STOP のときは 30 秒待ってから**指示が出る。STOP は「途中で止める」ときにも
      押すボタンで、消してしまうと ① Upload(約 3 分)をやり直すしかないから。
      **この 30 秒の間に ③ START(や ② Show preset・RESUME・NEXT・シーク・① Upload)を

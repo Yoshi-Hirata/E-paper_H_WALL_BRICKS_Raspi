@@ -857,6 +857,12 @@ _RUNS = {
     "running_clearing": {"t0": 0.0, "state": "running", "held_at": None,
                          "force": False, "now": 5.0,
                          "clear_after_show": True},
+    # ...and one that was MOVED to its end rather than played there (a HOLD
+    # or a RESUME in the final second): its own end brings no clear, and the
+    # panel has to say so or the pictures just quietly stay.
+    "running_jumped": {"t0": 0.0, "state": "running", "held_at": None,
+                       "force": False, "now": 179.9,
+                       "clear_after_show": True, "end_clear_off": True},
 }
 # A unit's own show, as it reads once the show has been through it: "stop"
 # is what /api/fleet says AFTER a STOP - no run, but units that applied
@@ -1254,7 +1260,23 @@ _PAGE_PROBE = """
       await wait(1600);
       out.windowGone = document.querySelector("#show-hint").textContent;
 
-      // 11. The checkbox's own note, with the box ticked.
+      // 11. The countdown must GO once the clear has gone out, and let the
+      //     "Upload writes them again" hint through. The fleet reports
+      //     clear_in_s null then; the page used to be handed 0 for ever and
+      //     sat on "in 0 s", hiding the one thing left to do.
+      await fetch("/test/fleet?run=none&show=cleared&clear=cleared&clear_in=none&uploaded=1");
+      await wait(1600);
+      out.hintAfterTheClear = document.querySelector("#show-hint").textContent;
+
+      // 12. A run moved to its end rather than played there: its own end
+      //     will not clear anything, and the panel says so.
+      await fetch("/test/fleet?run=running_jumped&show=ran&clear=none");
+      await wait(1600);
+      out.hintEndClearOff = document.querySelector("#show-hint").textContent;
+
+      // 13. The checkbox's own note, with the box ticked.
+      await fetch("/test/fleet?run=none");
+      await wait(1600);
       out.clearAfterNote = (document.querySelector("#show-clear-after-note")
                             || {}).textContent;
     } catch (e) { out.error = String((e && e.stack) || e); }
@@ -1577,6 +1599,23 @@ def test_the_window_counts_down_on_the_panel(page):
     assert "uploaded again" in hint, hint
     # ...and it goes when the window does.
     assert "will be cleared on every unit" not in (page["windowGone"] or "")
+
+
+def test_the_hint_gives_way_to_upload_once_the_clear_has_gone(page):
+    # The countdown line is drawn in place of everything else on the panel,
+    # so an arming that outlived its clear sat on "in 0 s" for ever and hid
+    # the one thing left to do (review, 2026-09-27).
+    hint = page["hintAfterTheClear"] or ""
+    assert "will be cleared on every unit" not in hint, hint
+    assert "Pictures were cleared after the last show on" in hint, hint
+    assert "① Upload writes them again" in hint, hint
+
+
+def test_a_run_jumped_to_its_end_says_its_auto_clear_is_off(page):
+    hint = page["hintEndClearOff"] or ""
+    assert "auto-clear off for this run" in hint, hint
+    assert "use STOP" in hint, hint
+    assert "moved to its end rather than played there" in hint, hint
 
 
 def test_the_checkbox_carries_its_note_when_ticked(page):

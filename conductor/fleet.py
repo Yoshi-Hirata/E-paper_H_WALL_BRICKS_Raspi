@@ -587,6 +587,11 @@ class Fleet:
         if run:
             mark = run["held_at"] if run["state"] == "holding" else self._clock()
             run["now"] = round(mark - run["t0"], 2)
+            # ...and whether this run's END can still bring a clear. A HOLD
+            # or a RESUME in the final second cannot be played past, so the
+            # END path stands down for that T0 - and the operator has no way
+            # to see why the pictures then stay unless the page says so.
+            run["end_clear_off"] = self.end_clear_disabled()
         duration = self.show_duration()
         # The summary line is purely informational (unlike the strict,
         # id-matched `_burn()` that gates START below): any unit currently
@@ -1410,12 +1415,41 @@ class Fleet:
         return results
 
     def clear_armed_in_s(self) -> "float | None":
-        """Seconds until an armed STOP clear goes out, or None when none
-        is armed - what the page shows while the window runs."""
+        """Seconds until an armed STOP clear goes out, or None when none is
+        armed OR its window has already run out - the page's countdown, and
+        only ever about a window still AHEAD.
+
+        Never 0.0 for a window that has fired: the page shows this line in
+        place of everything else on the panel, so a nought stuck here read
+        "Pictures will be cleared on every unit in 0 s - press (3) START" for
+        ever and hid the "(1) Upload writes them again" the operator needed
+        (review, 2026-09-27). A unit still being retried keeps the clear
+        armed in _clear_armed, which is not a countdown.
+        """
         with self._run_lock:
             if self._clear_at is None:
                 return None
-            return max(0.0, self._clear_at - self._clock())
+            left = self._clear_at - self._clock()
+            return left if left > 0 else None
+
+    def end_clear_disabled(self) -> bool:
+        """True when this run asked for a clear after the show but its END
+        can no longer bring one - because the last T0 move landed at (or
+        within END_REACH_MARGIN_S of) the end, so the show was JUMPED to
+        rather than played to (see _reached_end_by_playing()).
+
+        A HOLD or a RESUME in the final second is enough to do it, and the
+        operator has no way to see why the pictures then stay: the page says
+        so, and STOP is the way to clear them.
+        """
+        with self._run_lock:
+            run = dict(self.run) if self.run else None
+        if not run or not run.get("clear_after_show"):
+            return False
+        landed = run.get("landed_at_s")
+        if landed is None:
+            return True                 # nothing this side saw reach anything
+        return float(landed) >= self.show_duration() - END_REACH_MARGIN_S
 
     def _cancel_armed_clear(self) -> None:
         """"The show is not over after all" - START, PRESET, RESUME, NEXT,
@@ -1441,6 +1475,21 @@ class Fleet:
         if link.name not in armed:
             return False
         self._clear_units([link.name])
+        with self._run_lock:
+            # A unit that SETTLED leaves the armed list, and the window
+            # itself closes once the list is empty. Without this the arming
+            # outlived the clear for ever: clear_armed_in_s() went on
+            # answering, /api/fleet's clear_in_s stayed put and the page's
+            # countdown line masked the "(1) Upload writes them again" hint
+            # the operator needed next (review, 2026-09-27).
+            #
+            # One that did NOT settle - offline, a timeout - stays armed on
+            # purpose: that is the retry, and it is asked again on the next
+            # poll it answers.
+            self._clear_armed = [name for name in self._clear_armed
+                                 if name not in self._clear_told]
+            if not self._clear_armed:
+                self._clear_at = None
         return True
 
     def _supervise(self, link: UnitLink) -> None:

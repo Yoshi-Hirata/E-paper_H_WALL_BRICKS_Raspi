@@ -1873,6 +1873,85 @@ def test_stop_arms_the_clear_and_sends_it_when_the_window_runs_out():
     assert len([p for p, _ in link.posted if p == "/show/clear"]) == 1
 
 
+def test_the_armed_window_closes_once_the_clear_has_gone_out():
+    # It never did: clear_armed_in_s() went on answering 0.0 for ever, so
+    # /api/fleet's clear_in_s stayed put and the page's countdown line
+    # masked the "Upload writes them again" hint (review, 2026-09-27).
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock)
+    fleet.start_show(lead_s=1.0)
+    fleet.stop_show()
+    _took_the_stop(link)
+    assert fleet.clear_armed_in_s() == CLEAR_AFTER_STOP_S
+    # A window that has elapsed but not yet fired is not a countdown either.
+    clock.past_the_stop_window()
+    assert fleet.clear_armed_in_s() is None
+    assert fleet.snapshot()["clear_in_s"] is None
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert ("/show/clear", {"show": "showA"}) in link.posted
+    # ...and the arming itself is gone, not merely overdue.
+    assert fleet._clear_at is None and fleet._clear_armed == []
+    assert fleet.clear_armed_in_s() is None
+    assert fleet.snapshot()["clear_in_s"] is None
+    # Taking back a window that has already fired says nothing: there is
+    # nothing left to take back.
+    before = list(fleet.corrections)
+    fleet._cancel_armed_clear()
+    assert fleet.corrections == before
+
+
+def test_a_unit_still_being_retried_keeps_the_clear_armed():
+    class Flaky(StubLink):
+        tried = 0
+
+        def post(self, path, body, learn=True, timeout=None):
+            if path == "/show/clear":
+                Flaky.tried += 1
+                if Flaky.tried == 1:
+                    raise RuntimeError("timed out")
+            return super().post(path, body, learn, timeout)
+
+    clock = _Clock()
+    fleet, _ = _cleared_fleet(clock)
+    fleet.links = {"radxa-02": Flaky("radxa-02", "running")}
+    link = fleet.links["radxa-02"]
+    link.status["show"]["burn"] = {"done": 10, "total": 10, "failed": [],
+                                   "state": "burned"}
+    fleet.start_show(lead_s=1.0)
+    fleet.stop_show()
+    _took_the_stop(link)
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    # It did not settle, so it stays armed - that IS the retry.
+    assert fleet._clear_armed == ["radxa-02"] and fleet._clear_at is not None
+    clock.t += SUPERVISE_EVERY_S + 1
+    fleet._supervise(link)
+    assert ("/show/clear", {"show": "showA"}) in link.posted
+    assert fleet._clear_armed == [] and fleet._clear_at is None
+
+
+def test_a_run_jumped_to_its_end_says_its_auto_clear_is_off():
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock, duration=60)
+    fleet.start_show(lead_s=0.0)
+    assert fleet.end_clear_disabled() is False
+    assert fleet.snapshot()["run"]["end_clear_off"] is False
+    # A HOLD in the final second cannot be played past, so this run's own
+    # end will never bring a clear - and nothing else on the page would
+    # explain why the pictures stay.
+    clock.t += 59.5
+    fleet.hold()
+    assert fleet.end_clear_disabled() is True
+    assert fleet.snapshot()["run"]["end_clear_off"] is True
+    # A show that does not ask for a clear has nothing to say about it.
+    fleet.shows["radxa-02"].pop("clear_after_show")
+    fleet.stop_show()
+    fleet.start_show(lead_s=0.0)
+    assert fleet.end_clear_disabled() is False
+
+
 @pytest.mark.parametrize("take_it_back", [
     lambda f: f.start_show(lead_s=1.0),
     lambda f: f.preset(),
