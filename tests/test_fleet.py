@@ -1778,3 +1778,209 @@ def test_listing_the_demos_on_demand_also_fills_the_cache_the_tiles_read():
     assert fleet.demos_of("radxa-01") is None
     fleet.list_demos()
     assert [d["name"] for d in fleet.demos_of("radxa-01")] == ["DEMO A"]
+
+# ---- clearing the pictures after the show ----
+# 2026-09-27: a garment unplugged with its boards still on battery restarted
+# the factory autoplay and cycled slots 0-18 - it replayed the show on its
+# own. When the operator ticks "Clear pictures after the show", the pictures
+# come back out of the slots as soon as the run is over.
+
+def _cleared_fleet(clock, duration=600, burn_state="burned"):
+    """One unit holding a show that asks for its pictures to be cleared."""
+    fleet = Fleet({}, clock=clock)
+    link = StubLink("radxa-02", "running")
+    link.status["show"]["burn"] = {"done": 10, "total": 10, "failed": [],
+                                   "state": burn_state}
+    link.status["clear"] = {"state": "none", "done": 0, "total": 0,
+                            "failed": []}
+    fleet.links = {"radxa-02": link}
+    fleet.shows = {"radxa-02": {"id": "showA", "cues": [],
+                                "duration": duration,
+                                "clear_after_show": True}}
+    return fleet, link
+
+
+def test_the_run_remembers_whether_its_pictures_are_to_be_cleared():
+    fleet, link = _cleared_fleet(lambda: 1000.0)
+    assert fleet.clear_wanted() is True
+    fleet.start_show(lead_s=1.0)
+    assert fleet.run["clear_after_show"] is True
+    assert fleet.snapshot()["run"]["clear_after_show"] is True
+    # A timeline that does not ask says so, and nothing is ever sent.
+    fleet.shows["radxa-02"].pop("clear_after_show")
+    fleet.stop_show()
+    link.posted.clear()
+    fleet.start_show(lead_s=1.0)
+    assert fleet.run["clear_after_show"] is False
+    fleet.stop_show()
+    assert [p for p, _ in link.posted] == ["/show/run", "/show/stop"]
+
+
+def test_stop_clears_the_pictures_when_the_run_asked_for_it():
+    fleet, link = _cleared_fleet(lambda: 1000.0)
+    fleet.start_show(lead_s=1.0)
+    link.posted.clear()
+    fleet.stop_show()
+    # After the STOP, never with it: the unit refuses a clear while its
+    # run is still running.
+    assert link.posted == [("/show/stop", {}),
+                           ("/show/clear", {"show": "showA"})]
+    assert any("clearing the pictures" in line for line in fleet.corrections)
+
+
+def test_the_end_of_the_run_clears_the_pictures_once_per_unit():
+    now = [1000.0]
+    fleet, link = _cleared_fleet(lambda: now[0], duration=60)
+    fleet.start_show(lead_s=0.0)                    # t0 = 1000
+    link.posted.clear()
+    # Still inside the show: nothing is cleared and the unit is supervised
+    # exactly as before.
+    now[0] = 1050.0
+    fleet._supervise(link)
+    assert [p for p, _ in link.posted] == []
+    # Past the end (plus the slack): the clear goes out, once.
+    now[0] = 1090.0
+    fleet._supervise(link)
+    assert link.posted == [("/show/clear", {"show": "showA"})]
+    for _ in range(3):
+        now[0] += SUPERVISE_EVERY_S + 1
+        fleet._supervise(link)
+    assert link.posted == [("/show/clear", {"show": "showA"})]
+
+
+def test_a_held_run_is_never_cleared():
+    now = [1000.0]
+    fleet, link = _cleared_fleet(lambda: now[0], duration=60)
+    fleet.start_show(lead_s=0.0)
+    fleet.hold()
+    link.posted.clear()
+    link.status["show"]["state"] = "holding"
+    now[0] = 1200.0                                 # long past the end
+    for _ in range(3):
+        now[0] += SUPERVISE_EVERY_S + 1
+        fleet._supervise(link)
+    assert "/show/clear" not in [p for p, _ in link.posted]
+
+
+def test_a_seek_never_clears_the_pictures():
+    now = [1000.0]
+    fleet, link = _cleared_fleet(lambda: now[0], duration=600)
+    fleet.start_show(lead_s=0.0)
+    link.posted.clear()
+    fleet.seek(300.0, lead_s=1.0)                   # only moves T0
+    assert [p for p, _ in link.posted] == ["/show/run"]
+    fleet.resume()
+    fleet.next_cue(lead_s=1.0)
+    assert "/show/clear" not in [p for p, _ in link.posted]
+
+
+def test_a_unit_holding_another_show_is_not_cleared():
+    fleet, link = _cleared_fleet(lambda: 1000.0)
+    fleet.start_show(lead_s=1.0)
+    # It has been reloaded with somebody else's show since: those slots
+    # are not this show's to empty.
+    link.status["show"]["id"] = "showOTHER"
+    link.posted.clear()
+    fleet.stop_show()
+    assert [p for p, _ in link.posted] == ["/show/stop"]
+    assert any("clear refused: holding another show" in line
+               for line in fleet.corrections)
+
+
+def test_a_unit_playing_its_own_demo_is_not_cleared():
+    fleet, link = _cleared_fleet(lambda: 1000.0)
+    fleet.start_show(lead_s=1.0)
+    link.status["show"]["demo"] = True
+    link.posted.clear()
+    fleet.stop_show()
+    assert "/show/clear" not in [p for p, _ in link.posted]
+
+
+def test_an_agent_too_old_to_clear_is_said_not_raised():
+    class OldAgent(StubLink):
+        def post(self, path, body, learn=True, timeout=None):
+            if path == "/show/clear":
+                raise RuntimeError("not found")     # ui/agent.py's own 404
+            return super().post(path, body, learn, timeout)
+
+    fleet = Fleet({}, clock=lambda: 1000.0)
+    old = OldAgent("radxa-02", "running")
+    new = StubLink("radxa-03", "running")
+    for link in (old, new):
+        link.status["show"]["burn"] = {"done": 10, "total": 10, "failed": [],
+                                       "state": "burned"}
+    fleet.links = {"radxa-02": old, "radxa-03": new}
+    fleet.shows = {n: {"id": "showA", "cues": [], "duration": 600,
+                       "clear_after_show": True}
+                   for n in ("radxa-02", "radxa-03")}
+    fleet.start_show(lead_s=1.0)
+    old.posted.clear(); new.posted.clear()
+    results = fleet.stop_show()
+    assert all(r["ok"] for r in results.values())   # the STOP itself is fine
+    # The old unit's refusal never holds the new one up.
+    assert new.posted == [("/show/stop", {}),
+                          ("/show/clear", {"show": "showA"})]
+    assert any("unit too old for clear - power the boards off before "
+               "unplugging" in line for line in fleet.corrections)
+
+
+def test_start_refuses_a_unit_whose_pictures_were_cleared():
+    fleet, link = _cleared_fleet(lambda: 1000.0, burn_state="cleared")
+    link.status["show"]["state"] = "stopped"
+    with pytest.raises(ValueError, match="radxa-02: pictures were cleared "
+                                         "after the last show - Upload again"):
+        fleet.start_show(lead_s=1.0)
+    # Not even `force`: there is no picture on the boards to show.
+    with pytest.raises(ValueError, match="pictures were cleared"):
+        fleet.start_show(lead_s=1.0, force=True)
+    with pytest.raises(ValueError, match="pictures were cleared"):
+        fleet.preset(force=True)
+    assert fleet.run is None
+    # A clear a START interrupted says so.
+    link.status["show"]["burn"]["reason"] = "cleared partially"
+    with pytest.raises(ValueError, match=r"pictures were cleared after the "
+                                         r"last show \(cleared partially\) - "
+                                         r"Upload again"):
+        fleet.start_show(lead_s=1.0)
+
+
+def test_clear_pictures_by_hand_needs_no_run_and_takes_one_look():
+    fleet, link = _cleared_fleet(lambda: 1000.0)
+    other = StubLink("radxa-03", "stopped")
+    other.status["show"]["burn"] = {"done": 10, "total": 10, "failed": [],
+                                    "state": "burned"}
+    fleet.links["radxa-03"] = other
+    fleet.shows["radxa-03"] = {"id": "showA", "cues": [], "duration": 600}
+    results = fleet.clear_pictures(only=["radxa-03"])
+    assert list(results) == ["radxa-03"] and results["radxa-03"]["ok"]
+    assert other.posted == [("/show/clear", {"show": "showA"})]
+    assert link.posted == []
+    # ...and by hand it may be asked for again, unlike the automatic path.
+    fleet.clear_pictures()
+    assert other.posted == [("/show/clear", {"show": "showA"})] * 2
+
+
+def test_a_re_upload_lets_the_pictures_be_cleared_again():
+    now = [1000.0]
+    fleet, link = _cleared_fleet(lambda: now[0], duration=60)
+    fleet.start_show(lead_s=0.0)
+    now[0] = 1090.0
+    fleet._supervise(link)
+    assert link.posted[-1] == ("/show/clear", {"show": "showA"})
+    fleet.upload({"radxa-02": {"id": "showA", "cues": [], "duration": 60,
+                               "clear_after_show": True}})
+    link.posted.clear()
+    fleet.stop_show()
+    assert ("/show/clear", {"show": "showA"}) in link.posted
+
+
+def test_the_unit_snapshot_passes_the_clear_through():
+    fleet, link = _cleared_fleet(lambda: 1000.0)
+    real = UnitLink("radxa-02", "127.0.0.1:1", clock=lambda: 0.0)
+    real.status = {"phase": "ready", "clear": {"state": "clearing", "done": 7,
+                                               "total": 288, "failed": []}}
+    assert real.snapshot()["clear"] == {"state": "clearing", "done": 7,
+                                        "total": 288, "failed": []}
+    # An agent too old to clear has no key at all, which is not an error.
+    real.status = {"phase": "ready"}
+    assert real.snapshot()["clear"] is None

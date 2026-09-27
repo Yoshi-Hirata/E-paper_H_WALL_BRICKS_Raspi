@@ -928,6 +928,85 @@ def test_agent_answers_a_malformed_body_instead_of_dying(agent):
     assert call(agent, "/status")[0] == 200
 
 
+def test_the_clear_endpoint_needs_a_show_player_and_says_so(agent):
+    # This agent fixture has no ShowPlayer at all, which is exactly the
+    # refusal a /show/* path must give rather than a 500.
+    agent, session, runner, bus = agent
+    code, answer = call(agent, "/show/clear", {"show": "abc"})
+    assert code == 409 and "no show player" in answer["error"]
+
+
+def test_the_clear_endpoint_deletes_the_slots_and_reports_it(tmp_path):
+    from ui.showplay import ShowPlayer
+
+    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02, grace_s=0.1)
+    agent = Agent(session, port=0, host="127.0.0.1", name="radxa-03",
+                  player=player)
+    agent.start()
+    try:
+        show = {"id": "abc1234567", "name": "t", "unit": "radxa-03",
+                "dev_type": 3, "refresh_s": 0.3, "duration": 2.0,
+                "boards": [1], "slot_capacity": 20, "clear_after_show": True,
+                "cues": [{"id": "q00", "at": 0.0, "sent": -0.3, "slot": 1,
+                          "label": "", "boards": {"1": array(1).hex()},
+                          "state": {"1": array(1).hex()}}]}
+        assert call(agent, "/show/load", show)[0] == 200
+        assert wait_until(lambda: call(agent, "/status")[1]["show"]["burn"]
+                          ["state"] == "burned", timeout=5)
+        code, answer = call(agent, "/show/clear", {"show": "abc1234567"})
+        assert code == 200
+        assert answer["show"]["clear_after_show"] is True
+        assert wait_until(lambda: call(agent, "/status")[1]["clear"]["state"]
+                          == "cleared", timeout=5)
+        status = call(agent, "/status")[1]
+        assert deletes(bus) == [(1, s) for s in range(1, 19)]
+        assert status["show"]["burn"]["state"] == "cleared"
+        # ...and START is refused afterwards, with the sentence the PC shows.
+        code, answer = call(agent, "/show/run",
+                            {"t0": time.monotonic() + 1, "show": "abc1234567",
+                             "force": True})
+        assert code == 409
+        assert "pictures were cleared after the last show" in answer["error"]
+        # The wrong show id is a refusal, not a clear of somebody else's.
+        code, answer = call(agent, "/show/clear", {"show": "nope"})
+        assert code == 409 and "loaded show is abc1234567" in answer["error"]
+    finally:
+        agent.stop()
+        player.close()
+        runner.stop()
+
+
+def test_a_clear_is_refused_over_the_wire_while_a_show_runs(tmp_path):
+    from ui.showplay import ShowPlayer
+
+    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02, grace_s=0.1)
+    agent = Agent(session, port=0, host="127.0.0.1", name="radxa-03",
+                  player=player)
+    agent.start()
+    try:
+        show = {"id": "abc1234567", "name": "t", "unit": "radxa-03",
+                "dev_type": 3, "refresh_s": 0.3, "duration": 60.0,
+                "boards": [1], "slot_capacity": 20,
+                "cues": [{"id": "q00", "at": 0.0, "sent": -0.3, "slot": 1,
+                          "label": "", "boards": {"1": array(1).hex()},
+                          "state": {"1": array(1).hex()}}]}
+        assert call(agent, "/show/load", show)[0] == 200
+        assert wait_until(lambda: call(agent, "/status")[1]["show"]["burn"]
+                          ["state"] == "burned", timeout=5)
+        assert call(agent, "/show/run", {"t0": time.monotonic() + 0.05,
+                                         "show": "abc1234567"})[0] == 200
+        assert wait_until(lambda: player.state == "running")
+        code, answer = call(agent, "/show/clear", {"show": "abc1234567"})
+        assert code == 409 and "stop the show first" in answer["error"]
+        assert deletes(bus) == []
+    finally:
+        agent.stop()
+        player.close()
+        runner.stop()
+
+
 def test_agent_connections_time_out_instead_of_leaking_threads():
     from ui.agent import _Handler
 
@@ -1409,3 +1488,251 @@ def test_a_burn_queued_while_the_worker_is_stopping_is_cancelled_not_stuck():
     assert status["state"] == "cancelled" and not complete
     assert status["reason"] == "the worker was stopped first"
     assert any("burn never started" in line for line in runner.recent(20))
+
+
+# ---- taking the pictures back out of the slots (0x14) ----
+# After the show on 2026-09-27 the operator pressed STOP and unplugged the
+# Radxa from a garment whose boards were still on battery. A minute later the
+# master board restarted the factory autoplay and cycled slots 0-18 - it
+# replayed the show's pictures on its own. So they must not be in the slots
+# any more when the garment is unplugged.
+
+DELETE = 0x14
+CLEAR_ALL = 0x15          # 全消去: FORBIDDEN, never sent (SPECIFICATION 2.4)
+
+
+class SlowDeleteBus(FakeBus):
+    """A 0x14 that takes long enough to be interrupted half way."""
+
+    def request(self, frame, retries=3, timeout=None):
+        if frame.cmd == DELETE:
+            time.sleep(0.05)
+        return super().request(frame, retries)
+
+
+def deletes(bus):
+    """Every 0x14 that went out, as (board, slot)."""
+    return [(f.dest, f.data[0]) for f in bus.requested if f.cmd == DELETE]
+
+
+def burned(session, cues):
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "burned")
+
+
+def test_a_clear_deletes_exactly_slots_1_to_18_on_every_live_board():
+    session, runner, bus = make_session(boards=[1, 2], verify_fire=False)
+    burned(session, [{"slot": 1, "boards": {1: array(1), 2: array(1)},
+                      "delays": {}}])
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.clear_record()["state"] == "cleared")
+    # Board by board, slot by slot: 2 x 18 pairs and not one outside 1-18.
+    assert deletes(bus) == [(b, s) for b in (1, 2) for s in range(1, 19)]
+    record = session.clear_record()
+    assert record["done"] == record["total"] == 36 and record["failed"] == []
+    assert any("clear: slots 1-18 on 2 boards" in line
+               for line in runner.recent(20))
+    assert any("clear done: 36/36 in " in line for line in runner.recent(20))
+    runner.stop()
+
+
+def test_a_clear_never_sends_the_forbidden_clear_all():
+    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.clear_record()["state"] == "cleared")
+    assert not [f for f in bus.sent + bus.requested if f.cmd == CLEAR_ALL]
+    runner.stop()
+
+
+def test_a_clear_repaints_nothing_at_all():
+    # The operator's rule (2026-09-27): as long as the Radxa stays
+    # connected the garment must keep showing its LAST design. So no
+    # broadcast "show slot N" of any kind - and slot 0, the standby
+    # white, above all - may go out during or after a clear.
+    session, runner, bus = make_session(boards=[1, 2], verify_fire=False)
+    burned(session, [{"slot": 1, "boards": {1: array(1), 2: array(1)},
+                      "delays": {}}])
+    session.arm("q00", 1, dev_type=3)
+    session.fire("q00", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED)
+    painted = len(shows(bus))
+    assert painted == 1                        # the cue itself, and nothing else
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.clear_record()["state"] == "cleared")
+    time.sleep(0.2)                            # ...and nothing after it either
+    assert len(shows(bus)) == painted
+    assert not [f for f in shows(bus) if f.data[0] == 0]
+    # The unit stays under remote control - not handed back to its own menu,
+    # not put into standby - so the heartbeat goes on silencing the autoplay.
+    assert session.active is True and runner.standby_ready is False
+    runner.stop()
+
+
+def test_a_clear_waits_for_the_last_cue_s_guard():
+    # A 0x14 landing inside a repaint is the one thing this must not do,
+    # so the first delete may only go out after the guard floor the cue's
+    # own broadcast set (here 0.4 s, long enough to observe).
+    session, runner, bus = make_session(boards=[1], verify_fire=False,
+                                        guard_delay=0.4)
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    session.arm("q00", 1, dev_type=3)
+    session.fire("q00", time.monotonic() + 0.02)
+    assert wait_until(lambda: session.phase == FIRED)
+    fired_at = time.monotonic()
+    session.clear([1])
+    assert wait_until(lambda: session.clear_record()["state"] == "cleared",
+                      timeout=10)
+    assert deletes(bus) == [(1, 1)]
+    assert time.monotonic() - fired_at >= 0.4
+    runner.stop()
+
+
+def test_a_slot_that_will_not_delete_is_recorded_by_board_and_slot():
+    session, runner, bus = make_session(PickyBus({2}), boards=[1, 2],
+                                        verify_fire=False)
+    # The garment has two boards and board 2 is not there - a burn that
+    # names both is what tells the runner so.
+    session.burn([{"slot": 1, "boards": {1: array(1), 2: array(1)},
+                   "delays": {}}], dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      == "failed")
+    session.clear([1, 2])
+    assert wait_until(lambda: session.clear_record()["state"] == "failed")
+    record = session.clear_record()
+    # Board 2 never answers anything, so it is absent: its pairs are the
+    # failures, and the whole list is walked either way.
+    assert record["failed"] == [[2, 1], [2, 2]]
+    assert record["done"] == record["total"] == 4
+    assert any("clear failed: 2 slots on boards 2" in line
+               for line in runner.recent(20))
+    runner.stop()
+
+
+def test_a_delete_is_acked_and_retried_like_a_save():
+    class Flaky(FakeBus):
+        """The first 0x14 of each board goes unanswered."""
+
+        def __init__(self):
+            super().__init__()
+            self.seen = set()
+
+        def request(self, frame, retries=3, timeout=None):
+            if frame.cmd == DELETE and frame.dest not in self.seen:
+                self.seen.add(frame.dest)
+                self.requested.append(frame)
+                return None                  # no ACK: the runner retries
+            return super().request(frame, retries)
+
+    session, runner, bus = make_session(Flaky(), boards=[1], verify_fire=False,
+                                        save_attempts=3)
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    session.clear([1, 2, 3])
+    assert wait_until(lambda: session.clear_record()["state"] == "cleared")
+    assert len(deletes(bus)) == 4        # three slots, and the one retry
+    assert session.clear_record()["failed"] == []
+    runner.stop()
+
+
+def test_a_clear_makes_the_burn_say_cleared_and_drops_its_cache():
+    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    burned(session, [{"slot": 1, "boards": {1: array(1)},
+                      "delays": {1: table(20)}}])
+    assert (1, 1) in runner._burn_cache
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.clear_record()["state"] == "cleared")
+    # The slot's picture, its 0x1B config and its delay table are all gone
+    # from the board, so nothing here may claim it still holds them.
+    assert (1, 1) not in runner._burn_cache
+    assert (1, 1) not in runner._cfg_done
+    assert (1, 1) not in runner._delays_sent
+    burn, complete = session.burn_record()
+    assert burn["state"] == "cleared" and complete
+    assert "reason" not in burn
+    runner.stop()
+
+
+def test_a_re_upload_after_a_clear_rewrites_every_slot():
+    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    cues = [{"slot": 1, "boards": {1: array(1)}, "delays": {}},
+            {"slot": 2, "boards": {1: array(2)}, "delays": {}}]
+    burned(session, cues)
+    n = len([f for f in bus.requested if f.cmd == SAVE])
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.clear_record()["state"] == "cleared")
+    burned(session, cues)               # the very same show, again
+    assert len([f for f in bus.requested if f.cmd == SAVE]) == n + 2
+    # ...and the clear is history: a burn supersedes it outright.
+    assert session.clear_record()["state"] == "none"
+    assert session.burn_record()[0]["state"] == "burned"
+    runner.stop()
+
+
+def test_a_clear_interrupted_by_a_start_stops_and_says_so():
+    session, runner, bus = make_session(SlowDeleteBus(), boards=[1],
+                                        verify_fire=False)
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.clear_record()["done"] > 0)
+    session.cancel_clear("a new run started")
+    assert wait_until(lambda: session.clear_record()["state"] == "partial")
+    record = session.clear_record()
+    assert 0 < record["done"] < record["total"] == 18
+    assert record["reason"] == "a new run started"
+    # Half a show's pictures is not something START may run: the burn
+    # record says "cleared" with the reason the PC turns into "cleared
+    # partially - Upload again".
+    burn, complete = session.burn_record()
+    assert burn["state"] == "cleared" and burn["reason"] == "cleared partially"
+    assert wait_until(lambda: any("clear interrupted" in line
+                                 for line in runner.recent(20)))
+    runner.stop()
+
+
+def test_a_clear_that_never_began_leaves_the_pictures_alone():
+    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    # Cancelled before the worker ever took the job: not one slot went, so
+    # nothing about the pictures has changed and START passes as before.
+    session.clear(range(1, 19))
+    session.cancel_clear("a new run started")
+    time.sleep(0.2)
+    assert session.clear_record()["state"] == "none"
+    assert session.burn_record()[0]["state"] == "burned"
+    assert deletes(bus) == []
+    runner.stop()
+
+
+def test_slot_0_and_slot_19_can_never_be_cleared():
+    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    for slot in (0, 19, 20):
+        with pytest.raises(RemoteError) as exc:
+            session.clear([slot])
+        assert "not a show slot" in str(exc.value)
+    assert deletes(bus) == []
+    runner.stop()
+
+
+def test_a_worker_stopped_mid_clear_reports_it():
+    session, runner, bus = make_session(SlowDeleteBus(), boards=[1],
+                                        verify_fire=False)
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.clear_record()["done"] > 0)
+    runner.stop()
+    record = session.clear_record()
+    assert record["state"] == "partial"
+    assert record["reason"] == "interrupted: the port was taken"
+    assert session.burn_record()[0]["state"] == "cleared"
+
+
+def test_status_carries_the_clear_and_says_none_until_one_is_asked_for():
+    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    assert session.status()["clear"] == {"state": "none", "done": 0,
+                                        "total": 0, "failed": []}
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    session.clear(range(1, 19))
+    assert wait_until(lambda: session.status()["clear"]["state"] == "cleared")
+    assert session.status()["clear"]["total"] == 18
+    runner.stop()

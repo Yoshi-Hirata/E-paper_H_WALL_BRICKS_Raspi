@@ -18,6 +18,52 @@
 
 ## 2. 直近で完成したもの
 
+**ショーのあと、絵をスロットから消す(2026-09-27 本番後)**
+
+現象:ショーのあと、STOP を押してから衣装の Radxa を抜いた(基板はまだ
+バッテリーで生きていた)。**約 1 分後に親基板が工場出荷時の自動巡回を再開し、
+スロット 0〜18 を順に映した ― 本番の絵を勝手に再生した。** USB が抜けたあとは
+0x17 を送る手段が無いので、**衣装を抜く時点で絵がスロットに残っていてはいけない。**
+
+**Units タブ ③ START の隣に「Clear pictures after the show」**(既定オフ、
+ツールチップ「ショー終了後にスロット 1〜18 を削除。Radxa を外した後の
+自動巡回で本番の絵が出ないようにする」)。`show.json` の `clear_after_show` に
+ショーごと保存され(undo 可、import/export も運ぶ)、run の状態にも写る。
+
+- **入れて走らせると**、run が終了(t ≧ duration)したとき、および **STOP** の
+  ときに、Conductor がそのショーを持つ各機体へ **`POST /show/clear`**(新設)を
+  出す。**HOLD では出さない。SEEK でも出さない**
+- 機体は**最後のキューの guard(§4.2 の `_guard_floor`)が過ぎるのを待ってから**、
+  生きている全基板の**スロット 1〜18** を `delete_slot`(0x14、ACK 確認、
+  リトライは色保存と同じ段)で 1 つずつ削除する。**スロット 0(白)と 19
+  (手動・デモ)は触らない。0x15 全消去は使わない**
+- **何も描き直さない**(依頼者の指示):0x1D も STANDBY の白も送らず、
+  スロット 0 も表示しない。**Radxa がつながっている間、衣装は最後のルックを
+  映し続ける。** 機体は REMOTE のまま(定期 0x17 も動き続ける)
+- 1 枚でも削除されたら焼き込みの状態が **`cleared`**(`show-burn.json` に残るので
+  再起動後も同じ)になり、③ START と ② Show preset は **force でも**
+  `pictures were cleared after the last show - Upload again` で断る。
+  戻す道は **① Upload をやり直す**(キャッシュも 0x1B の既済も delay table の
+  既済も消えているので全部書き直す)
+- **③ START を押せば消去は譲る**:まだ 1 枚も削除していなければ何も起きなかった
+  ことになり(START は従来どおり通る)、すでに削除していれば処理中のスロットを
+  終えて止まり `cleared partially — Upload again` になる
+- タイル **Pictures** 行:琥珀の `clearing 54/288` → 灰の `pictures cleared`
+  (依頼者が求めたものなので緑ではない)。NOW → NEXT の見出しも
+  `SHOW ENDED — pictures cleared`。**全機体が `pictures cleared` になってから
+  Radxa を抜く**(手順は [CONDUCTOR_START.md](CONDUCTOR_START.md) §6c)
+- **チェックを忘れたとき / 1 台だけ**:**Write to units…** ダイアログの
+  **「After the show — clear the pictures」→ Clear pictures now**。Upload と同じ
+  WHICH LOOKs の選択が効き、ショー中・HOLD 中は押せない
+- 古いエージェント(`/show/clear` が 404)は
+  `unit too old for clear - power the boards off before unplugging` として
+  その機体のタイルに出し、**他の機体の消去は止めない**
+- ⚠ **ショーのあと機体の KEY2 を押さない・再起動しない**(どちらも待機の白を
+  描く)。最後のルックを残したまま片付けるなら、抜く前に基板の電源を切る
+- 消去の実時間(フェイクバスの回数を実測コスト 50〜250 ms に換算):
+  16 基板 × 18 スロット = **288 回で約 14〜72 秒**、22 基板なら
+  396 回で **約 20〜99 秒**(ガードの待ち 30 秒はこれとは別に前に付く)
+
 **REMOTE 中もオートプレイを止め続ける(2026-09-27 朝のリハーサル 3 回+機体入替)**
 
 現象:トップスのガーメント(16 枚)だけが、START から**約 2 分後以降**の

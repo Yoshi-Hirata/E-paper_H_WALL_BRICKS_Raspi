@@ -1733,3 +1733,226 @@ def test_a_restored_demo_brings_its_own_board_list(tmp_path):
     finally:
         reborn.close()
         runner2.stop()
+
+# ---- clear_after_show: the pictures come back out of the slots ----
+# 2026-09-27, after the show: the operator pressed STOP and unplugged the
+# Radxa from a garment whose boards were still on battery. A minute later the
+# master board restarted the factory autoplay and cycled slots 0-18 - it
+# replayed the show's pictures on its own, with nothing left able to stop it.
+
+DELETE = 0x14
+
+
+def deleted(bus):
+    return [(f.dest, f.data[0]) for f in bus.log if f.cmd == DELETE]
+
+
+def wait_cleared(session, timeout=5.0):
+    return wait_until(lambda: session.clear_record()["state"] == "cleared",
+                      timeout)
+
+
+def test_a_show_without_the_key_clears_nothing_on_stop(rig):
+    player, session, runner, bus, _ = rig
+    player.load(make_show())                 # no clear_after_show at all
+    assert wait_burned(player)
+    player.run(time.monotonic() - 3.0)
+    assert wait_until(lambda: player.state == ENDED, timeout=5)
+    player.stop()
+    time.sleep(0.2)
+    assert session.clear_record()["state"] == "none"
+    assert deleted(bus) == []
+    assert player.status()["burn"]["state"] == "burned"
+    assert player.status()["clear_after_show"] is False
+
+
+def test_stop_clears_the_slots_when_the_show_asks_for_it(rig):
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(), clear_after_show=True)
+    player.load(show)
+    assert wait_burned(player)
+    assert player.status()["clear_after_show"] is True
+    player.run(time.monotonic() + 0.05)
+    assert wait_until(lambda: player.applied is not None, timeout=5)
+    painted = len([f for f in bus.log if f.cmd == SHOW])
+    player.stop()
+    assert wait_cleared(session)
+    # Slots 1-18 on both boards of the garment, and nothing outside them.
+    assert deleted(bus) == [(b, s) for b in (1, 2) for s in range(1, 19)]
+    # ...and the garment was never repainted on the way out: the last look
+    # it was shown is still on the glass (the operator's rule, 2026-09-27).
+    assert len([f for f in bus.log if f.cmd == SHOW]) == painted
+    assert 0 not in [f.data[0] for f in bus.log if f.cmd == SHOW]
+    burn = player.status()["burn"]
+    assert burn["state"] == "cleared" and "reason" not in burn
+
+
+def test_the_end_of_the_show_clears_the_slots_on_its_own(rig):
+    # A unit whose PC has gone: the show reaches its own duration and the
+    # player asks for the clear itself, with nobody to tell it to.
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(), clear_after_show=True)
+    player.load(show)
+    assert wait_burned(player)
+    player.run(time.monotonic() - 3.0)       # already past its duration
+    assert wait_until(lambda: player.state == ENDED, timeout=5)
+    assert wait_cleared(session)
+    assert deleted(bus) == [(b, s) for b in (1, 2) for s in range(1, 19)]
+
+
+def test_hold_never_clears_the_slots(rig):
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(sents=(-REFRESH, 30.0), duration=60),
+                clear_after_show=True)
+    player.load(show)
+    assert wait_burned(player)
+    player.run(time.monotonic() + 0.05)
+    assert wait_until(lambda: player.applied is not None, timeout=5)
+    player.hold()
+    time.sleep(0.3)
+    # A held show is one the operator means to resume: the pictures stay.
+    assert session.clear_record()["state"] == "none"
+    assert deleted(bus) == []
+    assert player.status()["burn"]["state"] == "burned"
+
+
+def test_start_and_preset_refuse_once_the_pictures_are_cleared(rig):
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(), clear_after_show=True)
+    player.load(show)
+    assert wait_burned(player)
+    player.run(time.monotonic() - 3.0)
+    assert wait_until(lambda: player.state == ENDED, timeout=5)
+    assert wait_cleared(session)
+    for call in (lambda: player.run(time.monotonic() + 1),
+                 lambda: player.preset(),
+                 lambda: player.run(time.monotonic() + 1, force=True),
+                 lambda: player.preset(force=True)):
+        with pytest.raises(RemoteError) as exc:
+            call()
+        assert "pictures were cleared after the last show" in str(exc.value)
+        assert "Upload again" in str(exc.value)
+
+
+def test_a_start_over_a_clear_that_never_began_runs_as_before(rig):
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(), clear_after_show=True)
+    player.load(show)
+    assert wait_burned(player)
+    # Queued, then taken back by the START before a single slot went: so
+    # nothing about the pictures has changed and the gate passes.
+    session.clear(range(1, 19))
+    player.run(time.monotonic() + 0.05)
+    assert wait_until(lambda: player.applied is not None, timeout=5)
+    assert deleted(bus) == []
+    assert player.status()["burn"]["state"] == "burned"
+
+
+def test_a_cleared_show_comes_back_cleared_after_a_restart(tmp_path):
+    session, runner, bus = make_session(verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02, grace_s=0.1)
+    show = dict(make_show(sents=(-REFRESH, 0.5), duration=1.0),
+                clear_after_show=True)
+    try:
+        player.load(show)
+        assert wait_burned(player)
+        player.run(time.monotonic() - 3.0)
+        assert wait_until(lambda: player.state == ENDED, timeout=5)
+        assert wait_cleared(session)
+        # Reading the status is what records it on disk.
+        assert player.status()["burn"]["state"] == "cleared"
+        record = json.loads((tmp_path / BURN_FILE).read_text(encoding="utf-8"))
+        assert record["state"] == "cleared" and record["burned"] == show["id"]
+    finally:
+        player.close()
+        runner.stop()
+
+    session2, runner2, bus2 = make_session(verify_fire=False)
+    reborn = ShowPlayer(session2, store=tmp_path, tick_s=0.02, grace_s=0.1)
+    try:
+        reborn.restore()
+        # The pictures survive a power cycle; the knowledge that they are
+        # GONE has to survive it too, or START waves a garment with empty
+        # slots through.
+        assert reborn.status()["burn"]["state"] == "cleared"
+        with pytest.raises(RemoteError) as exc:
+            reborn.run(time.monotonic() + 1)
+        assert "pictures were cleared after the last show" in str(exc.value)
+    finally:
+        reborn.close()
+        runner2.stop()
+
+
+def test_a_demo_never_clears_its_own_slots(rig):
+    # A demo plays from those very slots the next time KEY1 is pressed,
+    # and the whole point of one is that no PC writes them again.
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(), clear_after_show=True)
+    player.load(show, demo=True, name="DEMO", slug="demo")
+    assert wait_burned(player)
+    assert player.status()["clear_after_show"] is False
+    player.run(time.monotonic() - 3.0)
+    assert wait_until(lambda: player.state == ENDED, timeout=5)
+    time.sleep(0.3)
+    assert session.clear_record()["state"] == "none"
+    assert deleted(bus) == []
+    with pytest.raises(RemoteError) as exc:
+        player.clear_pictures()
+    assert "demo stored on the unit" in str(exc.value)
+
+
+def test_a_clear_is_refused_while_the_show_is_running(rig):
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(sents=(-REFRESH, 30.0), duration=60),
+                clear_after_show=True)
+    player.load(show)
+    assert wait_burned(player)
+    player.run(time.monotonic() + 0.05)
+    assert wait_until(lambda: player.state == RUNNING)
+    with pytest.raises(RemoteError) as exc:
+        player.clear_pictures()
+    assert "stop the show first" in str(exc.value)
+    player.hold()
+    with pytest.raises(RemoteError) as exc:
+        player.clear_pictures()
+    assert "stop the show first" in str(exc.value)
+    assert deleted(bus) == []
+
+
+def test_a_clear_names_the_show_it_is_about(rig):
+    player, session, runner, bus, _ = rig
+    player.load(dict(make_show(), clear_after_show=True))
+    assert wait_burned(player)
+    with pytest.raises(RemoteError) as exc:
+        player.clear_pictures("some-other")
+    assert "loaded show is abc1234567" in str(exc.value)
+    player.clear_pictures("abc1234567")
+    assert wait_cleared(session)
+
+
+def test_asking_for_a_clear_twice_is_free(rig):
+    # The conductor sends this on the run's END and again on STOP.
+    player, session, runner, bus, _ = rig
+    player.load(dict(make_show(), clear_after_show=True))
+    assert wait_burned(player)
+    player.clear_pictures()
+    assert wait_cleared(session)
+    n = len(deleted(bus))
+    player.clear_pictures()
+    time.sleep(0.2)
+    assert len(deleted(bus)) == n
+
+
+def test_a_re_upload_after_a_clear_lets_the_show_start_again(rig):
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(sents=(-REFRESH, 30.0), duration=60),
+                clear_after_show=True)
+    player.load(show)
+    assert wait_burned(player)
+    player.clear_pictures()
+    assert wait_cleared(session)
+    player.load(show)                    # (1) Upload: the way back
+    assert wait_burned(player)
+    assert session.clear_record()["state"] == "none"
+    player.run(time.monotonic() + 0.05)  # no refusal
+    assert wait_until(lambda: player.applied is not None, timeout=5)

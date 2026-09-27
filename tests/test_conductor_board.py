@@ -500,6 +500,12 @@ def _heads():
         "head_holding": one("holding", 20.0),
         "head_holding_never_flashes": one("holding", 30.4),
         "head_ended": one("ended", 121.0),
+        # "May I unplug this garment now?" is what the ENDED note answers
+        # once the pictures are being taken back out of the slots.
+        "head_ended_clearing": one("ended", 121.0, cleared="clearing"),
+        "head_ended_cleared": one("ended", 121.0, cleared="cleared"),
+        "head_ended_partly": one("ended", 121.0, cleared="partly"),
+        "head_running_while_clearing": one("running", 40.0, cleared="cleared"),
         "head_during_a_next_lead": one("running", 10.0, leadLeft=2.4),
         "head_no_cues_at_all": one("loaded", 0.0, cues=[]),
     }
@@ -835,7 +841,8 @@ def _unit(name, **kw):
          "uploaded_ago_s": 30.0,
          "saved": 3, "failed": [], "prepare_s": None, "late_ms": 6,
          "verify": None, "demo_count": 0, "unit_error": None, "log": ["ok"],
-         "show": None, "refused": None, "demos": [], "show_lag_ms": 4.0}
+         "show": None, "refused": None, "demos": [], "show_lag_ms": 4.0,
+         "clear": None}
     u.update(kw)
     return u
 
@@ -853,6 +860,18 @@ _SHOWS = {
     "none": None,
     "ran": {"id": "S1", "state": "stopped", "applied": 2, "cues": 2,
             "demo": False, "burn": {"state": "burned", "done": 6, "total": 6}},
+    # After the show, with "Clear pictures after the show" ticked: the
+    # pictures have come back out of slots 1-18 (2026-09-27).
+    "cleared": {"id": "S1", "state": "ended", "applied": 2, "cues": 2,
+                "demo": False,
+                "burn": {"state": "cleared", "done": 6, "total": 6,
+                         "failed": []}},
+}
+# ...and what the unit says about the clear itself, beside its show.
+_CLEARS = {
+    "none": {"state": "none", "done": 0, "total": 0, "failed": []},
+    "clearing": {"state": "clearing", "done": 54, "total": 288, "failed": []},
+    "cleared": {"state": "cleared", "done": 288, "total": 288, "failed": []},
 }
 
 
@@ -899,6 +918,17 @@ class _Stand:
         page = INDEX_HTML.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1)
         self.run = "none"
         self.unit_show = "none"
+        self.unit_clear = "none"
+        # "Clear pictures after the show": a real setting on this stand-in, so
+        # the page's checkbox can be ticked and read back the way it is on the
+        # night (the server stores it with the show, not in the browser).
+        self.clear_after = False
+        self.cleared = []          # units the "Clear pictures now" button hit
+        # Whether this conductor believes it has uploaded to the units. Off by
+        # default, so every assertion written before this one sees the fleet it
+        # always saw; the clear's own steps turn it on, because "which units
+        # may I clear?" is answered from exactly this.
+        self.uploaded = False
         stand = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -919,6 +949,25 @@ class _Stand:
                 self._send(json.dumps(obj).encode("utf-8"), "application/json")
 
             def do_POST(self):
+                # The body is always taken off the wire: this is a
+                # keep-alive server, and bytes left on it are read as the
+                # next request.
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = 0
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                path = self.path.split("?")[0]
+                if path == "/api/show/clear_after":
+                    stand.clear_after = bool(json.loads(raw).get("on"))
+                    return self._json({"ok": True})
+                if path == "/api/fleet/clear_pictures":
+                    body = json.loads(raw or b"{}")
+                    names = body.get("units") or ["radxa-01", "radxa-02",
+                                                  "radxa-04", "radxa-05"]
+                    stand.cleared.append(sorted(names))
+                    return self._json({"units": {n: {"ok": True}
+                                                 for n in names}})
                 self.do_GET()
 
             def do_GET(self):
@@ -926,19 +975,27 @@ class _Stand:
                 if path in ("/", "/index.html"):
                     return self._send(page.encode("utf-8"), "text/html; charset=utf-8")
                 if path == "/api/state":
-                    return self._json(state)
+                    return self._json(dict(state, show=dict(
+                        state["show"], clear_after_show=stand.clear_after)))
                 if path == "/api/fleet":
                     show = _SHOWS[stand.unit_show]
+                    clear = _CLEARS[stand.unit_clear]
                     return self._json({
                         # radxa-02 is a third of a second behind this PC AND
                         # one board short - either on its own is red.
-                        "units": [_unit("radxa-01", show=show),
+                        "units": [_unit("radxa-01", show=show, clear=clear),
                                   _unit("radxa-02", show_lag_ms=330.0, show=show,
-                                        live=2, live_ids=[17, 18], absent=[20]),
+                                        live=2, live_ids=[17, 18], absent=[20],
+                                        clear=clear),
                                   _unit("radxa-03", online=False, error="no answer"),
-                                  _unit("radxa-04", show=show), _unit("radxa-05", show=show)],
+                                  _unit("radxa-04", show=show, clear=clear),
+                                  _unit("radxa-05", show=show, clear=clear)],
                         "last_fire": None, "run": _RUNS[stand.run],
-                        "shows": {}, "corrections": [], "prepared": {},
+                        "shows": ({n: {"id": "S1", "cues": 2, "boards": []}
+                                   for n in ("radxa-01", "radxa-02",
+                                             "radxa-04", "radxa-05")}
+                                  if stand.uploaded else {}),
+                        "corrections": [], "prepared": {},
                         "start_at": 0.0, "show_duration": 180.0,
                         "burn": {"burned": 0, "total": 0}, "timeline": written})
                 if path == "/api/fleet/demos":
@@ -948,7 +1005,15 @@ class _Stand:
                                 self.path.partition("?")[2].split("&") if "=" in p)
                     stand.run = args.get("run", stand.run)
                     stand.unit_show = args.get("show", stand.unit_show)
-                    return self._json({"run": stand.run, "show": stand.unit_show})
+                    stand.unit_clear = args.get("clear", stand.unit_clear)
+                    if "uploaded" in args:
+                        stand.uploaded = args["uploaded"] == "1"
+                    return self._json({"run": stand.run, "show": stand.unit_show,
+                                       "clear": stand.unit_clear,
+                                       "uploaded": stand.uploaded})
+                if path == "/test/asked":
+                    return self._json({"clear_after": stand.clear_after,
+                                       "cleared": stand.cleared})
                 return self._json({})
 
         self.port = _free_port()
@@ -1084,6 +1149,64 @@ _PAGE_PROBE = """
       await wait(600);
       out.backInCard = !!document.querySelector("#nn-slot #nownext");
       out.backSameNode = document.querySelector("#nn-slot #nownext") === before;
+
+      // 6. "Clear pictures after the show": the checkbox beside (3) START.
+      //    It is stored with the SHOW, so ticking it posts to the server and
+      //    a reload of the state brings it back ticked.
+      await fetch("/test/fleet?run=none&show=ran&clear=none&uploaded=1");
+      await wait(1600);
+      var box = function () { return document.querySelector("#show-clear-after"); };
+      out.clearBoxExists = !!box();
+      out.clearBoxOffAtFirst = box() ? box().checked : null;
+      out.clearBoxTitle = box() ? box().parentElement.getAttribute("title") : null;
+      box().checked = true;
+      box().dispatchEvent(new Event("change", { bubbles: true }));
+      await wait(900);
+      out.clearAsked = (await (await fetch("/test/asked")).json()).clear_after;
+      out.clearBoxOnAfterRender = box() ? box().checked : null;
+      // ...and it survives a full reload of the state, which is what
+      // "stored with the show" means.
+      await refresh(); render();
+      await wait(300);
+      out.clearBoxStillOn = box() ? box().checked : null;
+
+      // 7. While the units are clearing: amber "clearing n/N" on the tile,
+      //    then a quiet "pictures cleared", and START off with the reason.
+      await fetch("/test/fleet?clear=clearing");
+      await wait(1600);
+      out.clearingTile = document.querySelector("#tiles .tile").textContent;
+      await fetch("/test/fleet?show=cleared&clear=cleared");
+      await wait(1600);
+      var tile = document.querySelector("#tiles .tile");
+      out.clearedTile = tile.textContent;
+      out.startDisabled = document.querySelector("#show-start").disabled;
+      out.presetDisabled = document.querySelector("#show-preset").disabled;
+      out.clearedHint = document.querySelector("#show-hint").textContent;
+      // The board's own ENDED note - the answer to "may I unplug this
+      // garment now?" - while the run is still there, past its end.
+      await fetch("/test/fleet?run=ended");
+      await wait(1600);
+      out.clearedBoardNote = text("[data-note]");
+      await fetch("/test/fleet?run=none");
+      await wait(1600);
+
+      // 8. "Clear pictures now", inside the WRITE TO UNITS dialog.
+      document.querySelector("#show-write").click();
+      await wait(600);
+      var btn = function () { return document.querySelector("#write-clear-now"); };
+      out.clearNowExists = !!btn();
+      out.clearNowEnabled = btn() ? !btn().disabled : null;
+      out.clearNowWhat = (document.querySelector("#write-choice-clear") || {}).textContent;
+      window.confirm = function (msg) { out.clearNowAsked = msg; return true; };
+      btn().click();
+      await wait(1200);
+      out.clearNowSent = (await (await fetch("/test/asked")).json()).cleared;
+      // ...and it is refused outright while a show is running.
+      await fetch("/test/fleet?run=running&show=ran&clear=none");
+      await wait(1600);
+      out.clearNowWhileRunning = btn() ? btn().disabled : null;
+      out.clearNowWhy = (document.querySelector("#write-clear-why") || {}).textContent;
+      document.querySelector("#write-close").click();
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -1212,3 +1335,131 @@ def test_the_stage_monitor_moves_the_one_board_and_gives_it_back(page):
     assert off["loose"], "the closed overlay is still holding (and repainting) the board"
     assert page["backInCard"], "the board did not go back into THE SHOW card"
     assert page["backSameNode"], "coming back from the stage monitor lost the board"
+
+# ---- "Clear pictures after the show" ----
+# 2026-09-27: a garment unplugged with its boards still on battery restarted
+# the factory autoplay and cycled slots 0-18 - it replayed the show's
+# pictures on its own. The page's part of the answer: one checkbox, the tile
+# rows that say where the clear has got to, and the button that does it now.
+
+def test_the_checkbox_sits_next_to_start_and_is_stored_with_the_show():
+    bar = PAGE[PAGE.index('id="show-start"'):PAGE.index('id="show-write"')]
+    assert 'id="show-clear-after"' in bar, \
+        "the checkbox is not next to (3) START"
+    assert "Clear pictures after the show" in bar
+    # Ticked from the SERVER's answer, never from a browser-local flag: it
+    # belongs to the evening, not to whoever's tab is open.
+    assert "state.show.clear_after_show" in bar
+    assert "localStorage" not in bar
+    # The operator's own Japanese tooltip, word for word.
+    assert "ショー終了後にスロット 1〜18 を削除" in PAGE
+    assert "Radxa を外した後の自動巡回で本番の絵が出ないようにする" in PAGE
+    # ...and a change posts it, then re-reads the state, so a refusal puts
+    # the tick back where the show says it belongs.
+    handler = PAGE[PAGE.index('if (id === "show-clear-after")'):]
+    handler = handler[:handler.index("if (id === \"show-manual\")")]
+    assert '"/api/show/clear_after"' in handler and "{ on }" in handler
+    assert "await refresh()" in handler
+
+
+def test_the_tile_says_where_the_clear_has_got_to():
+    body = _function_body("clearText")
+    assert '"clearing "' not in body     # ...it is a template, see below
+    assert "clearing ${esc(c.done)}" in body and "/${esc(c.total)}" in body
+    assert '"vf re"' in body, "the progress is not amber"
+    assert "pictures cleared" in body and '"vf ok"' in body
+    # Grey, not green: this is the thing the operator asked for, not a thing
+    # that went well.
+    css = PAGE[PAGE.index(".tile .vf.re"):PAGE.index(".tile .vf.re") + 400]
+    assert ".tile .vf.ok { color: var(--dim)" in css
+    # ...and the burn row says the pictures have to be uploaded again.
+    pictures = _function_body("picturesText")
+    assert '"cleared — Upload again"' in pictures
+    assert '"cleared partially — Upload again"' in pictures
+    assert "clearText(u)" in PAGE[PAGE.index("function renderTiles"):], \
+        "the tile does not show the clear at all"
+
+
+def test_start_and_preset_are_off_while_any_unit_is_cleared():
+    body = _function_body("showClockText")
+    assert "clearedUnits()" in body
+    assert '"show-start": want > 0 && !cleared.length' in body
+    assert '"show-preset"' in body and "!cleared.length" in body
+    # ...and the hint names the units and what to do about them.
+    assert "Pictures were cleared after the last show on" in body
+    assert "① Upload writes them again" in body
+    gate = _function_body("clearedUnits")
+    assert 'state === "cleared"' in gate
+
+
+def test_the_dialog_has_a_clear_pictures_now_button():
+    body = _function_body("writeClearHtml")
+    assert 'id="write-clear-now"' in body and "Clear pictures now" in body
+    assert "Deletes slots 1–18" in body
+    # It says that nothing is repainted and that an Upload is needed next.
+    assert "keep the look they are showing" in body
+    assert "Upload again before the next START" in body
+    # The same units and LOOK choice as Upload, refused while a run exists.
+    state = _function_body("writeState")
+    assert "clearTargets" in state and "clearWhy" in state
+    assert "The show is running — press STOP first." in state
+    send = _function_body("writeClearNow")
+    assert '"clear_pictures"' in send
+    assert "s.only ? { units: s.only } : {}" in send
+    assert "clearNowQuestion" in send
+    # ...and it asks first, in full.
+    question = PAGE[PAGE.index("const clearNowQuestion ="):]
+    question = question[:question.index("function writeDialogHtml")]
+    assert "nothing is repainted" in question and "nothing goes white" in question
+    assert "uploaded again first" in question
+
+
+def test_the_ended_note_says_whether_the_pictures_are_cleared(board):
+    r = board["results"]
+    # "May I unplug this garment now?" is what this line answers.
+    assert r["head_ended"]["note"] == "show ended"
+    assert r["head_ended_clearing"]["note"] == "show ended — clearing the pictures"
+    assert r["head_ended_cleared"]["note"] == "show ended — pictures cleared"
+    assert r["head_ended_partly"]["note"] == \
+        "show ended — pictures NOT cleared everywhere"
+    # Only the ENDED note: a running show's header is about the next cue.
+    assert "cleared" not in r["head_running_while_clearing"]["note"]
+
+
+@pytest.mark.parametrize("key", ["clearBoxExists", "clearNowExists"])
+def test_the_clear_controls_are_really_on_the_page(page, key):
+    assert page[key] is True, key
+
+
+def test_the_checkbox_posts_to_the_server_and_comes_back_ticked(page):
+    assert page["clearBoxOffAtFirst"] is False, "it must default to off"
+    assert "ショー終了後にスロット 1〜18 を削除" in (page["clearBoxTitle"] or "")
+    assert page["clearAsked"] is True, "ticking it never reached the server"
+    assert page["clearBoxOnAfterRender"] is True
+    # The whole point of storing it with the show: a reload finds it ticked.
+    assert page["clearBoxStillOn"] is True
+
+
+def test_the_tile_and_the_board_follow_the_clear(page):
+    assert "clearing 54/288" in page["clearingTile"], page["clearingTile"]
+    assert "pictures cleared" in page["clearedTile"], page["clearedTile"]
+    assert "cleared — Upload again" in page["clearedTile"], page["clearedTile"]
+    assert page["startDisabled"] is True, "START is still offered"
+    assert page["presetDisabled"] is True
+    assert "Pictures were cleared after the last show on" in page["clearedHint"]
+    assert "radxa-01" in page["clearedHint"]
+    assert page["clearedBoardNote"] == "show ended — pictures cleared", \
+        page["clearedBoardNote"]
+
+
+def test_the_clear_now_button_asks_first_and_then_sends(page):
+    assert page["clearNowEnabled"] is True
+    assert "Deletes slots 1–18" in page["clearNowWhat"], page["clearNowWhat"]
+    assert "keep the look they are showing" in page["clearNowWhat"]
+    asked = page["clearNowAsked"] or ""
+    assert "Delete slots 1–18 on" in asked, asked
+    assert "nothing goes white" in asked and "uploaded again first" in asked
+    assert page["clearNowSent"], "the confirm was accepted but nothing was sent"
+    # ...and while a show is running the button is off, with the reason.
+    assert page["clearNowWhileRunning"] is True
+    assert "press STOP first" in (page["clearNowWhy"] or ""), page["clearNowWhy"]

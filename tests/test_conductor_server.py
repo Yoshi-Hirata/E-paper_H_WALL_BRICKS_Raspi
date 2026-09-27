@@ -3092,3 +3092,130 @@ def test_the_page_chips_say_what_the_units_hold(page):
     # The verdict word is droppable at a narrow window, so the chips stay
     # on one row in the Timeline dock's head.
     assert 'class="verdict"' in page and "@media (max-width: 1280px)" in page
+
+# ---- "Clear pictures after the show" (show.json's clear_after_show) ----
+# 2026-09-27: a garment unplugged with its boards still on battery restarted
+# the factory autoplay and cycled slots 0-18 - it replayed the show's
+# pictures on its own. The checkbox is per SHOW, because it is a property of
+# the evening rather than of whoever's browser is open.
+
+def test_the_clear_after_show_setting_is_off_until_it_is_asked_for(workspace):
+    assert workspace.state()["show"]["clear_after_show"] is False
+    workspace.set_clear_after_show(True)
+    assert workspace.state()["show"]["clear_after_show"] is True
+    # ...and surviving a restart is the whole point of storing it here.
+    again = Workspace(workspace.root)
+    assert again.state()["show"]["clear_after_show"] is True
+    # Off writes no key at all: a show.json that never mentions it behaves
+    # exactly as every one written before this did.
+    again.set_clear_after_show(False)
+    stored = json.loads((workspace.root / "show.json").read_text(encoding="utf-8"))
+    assert "clear_after_show" not in stored
+
+
+def test_the_clear_after_show_setting_is_undoable(workspace):
+    workspace.set_timeline(600, [_cue("a", 0)])
+    workspace.set_clear_after_show(True)
+    assert workspace.undo() is True
+    assert workspace.state()["show"]["clear_after_show"] is False
+    assert workspace.state()["show"]["cues"]                # the timeline stays
+    assert workspace.redo() is True
+    assert workspace.state()["show"]["clear_after_show"] is True
+    # Setting it to what it already is is not a step of its own.
+    depth = workspace.state()["history"]["undo"]
+    workspace.set_clear_after_show(True)
+    assert workspace.state()["history"]["undo"] == depth
+
+
+def test_the_clear_after_show_setting_refuses_anything_but_a_bool(workspace):
+    for junk in ("yes", 1, None, {}):
+        with pytest.raises(ValueError, match="must be true or false"):
+            workspace.set_clear_after_show(junk)
+
+
+def test_export_and_import_carry_the_clear_after_show_setting(workspace):
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0,
+                                  "design": grid}])
+    workspace.set_clear_after_show(True)
+    exported = workspace.export_show()
+    assert exported["clear_after_show"] is True
+    other = Workspace(workspace.root.parent / "other")
+    other.import_show(exported)
+    assert other.state()["show"]["clear_after_show"] is True
+    # A show file that says nothing about it leaves this workspace's own
+    # answer alone - refresh_s's rule, and what every file written before
+    # this version is.
+    exported.pop("clear_after_show")
+    other.import_show(exported)
+    assert other.state()["show"]["clear_after_show"] is True
+    # ...and false really does turn it off.
+    other.import_show(dict(exported, clear_after_show=False))
+    assert other.state()["show"]["clear_after_show"] is False
+    with pytest.raises(ValueError, match="clear_after_show: must be true or "
+                                         "false"):
+        other.import_show(dict(exported, clear_after_show="yes"))
+
+
+def test_the_designers_bundle_never_touches_the_clear_after_show_setting(tmp_path):
+    # The simulator has no notion of the fleet, so its bundles carry no such
+    # key - and a bundle must not quietly untick the operator's box.
+    ws = Workspace(tmp_path / "ws")
+    ws.save("Look22_map.csv", MAP)
+    ws.save("Look22_color_pattern01_grid.csv", GRID)
+    ws.set_clear_after_show(True)
+    ws.import_bundle({"format": "epaper-show-bundle", "version": 1,
+                      "files": {}, "show": {"format": "epaper-show",
+                                            "version": 1, "cues": []}})
+    assert ws.state()["show"]["clear_after_show"] is True
+
+
+def test_clear_after_show_over_http(tmp_path):
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def post(path, body):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    try:
+        assert post("/api/show/clear_after", {"on": True}) == (200, {"ok": True})
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state",
+                                    timeout=5) as response:
+            assert json.loads(response.read())["show"]["clear_after_show"] is True
+        code, answer = post("/api/show/clear_after", {"on": "yes"})
+        assert code == 400 and "true or false" in answer["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_clear_pictures_is_refused_while_the_show_runs(tmp_path):
+    class StubFleet:
+        run = {"state": "running"}
+        shows = {"radxa-01": {"id": "showA"}}
+
+        def clear_pictures(self, only=None):
+            raise AssertionError("must never be reached")
+
+    server = make_server(tmp_path, port=0, fleet=StubFleet())
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/fleet/clear_pictures",
+            data=b"{}", headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(request, timeout=5)
+        assert exc.value.code == 400
+        assert "stop the show first" in json.loads(exc.value.read())["error"]
+    finally:
+        server.shutdown()
+        server.server_close()

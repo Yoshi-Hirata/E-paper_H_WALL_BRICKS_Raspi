@@ -926,6 +926,13 @@ def build_reference_state(project: dict) -> dict:
         entry["unit"] = None
     state.pop("history", None)
     state.pop("workspace", None)
+    # "Clear pictures after the show" (2026-09-27) is the operator's, about
+    # the fleet: which slots the units empty once the show is over. The
+    # designers' simulator has no units and no notion of it, exactly as it
+    # has no unit assignments and no history - so it is stripped here rather
+    # than taught to SIM.buildState(), and a bundle that never mentions the
+    # key leaves the operator's own answer alone (import_bundle()).
+    state["show"].pop("clear_after_show", None)
     music = show.get("music")
     state["music"] = {"name": music.get("name") if isinstance(music, dict) else None, "url": None}
     return state
