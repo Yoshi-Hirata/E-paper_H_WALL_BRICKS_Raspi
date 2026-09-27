@@ -129,8 +129,48 @@ tbody tr.hl { background: var(--select); outline: 1px solid var(--accent); }
 .empty { color: var(--dim); padding: 60px 0; text-align: center; }
 
 /* ---- timeline ---- */
-.tl-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; min-height: 38px;
-  border-bottom: 1px solid var(--line); }
+/* Every row ends with a "+" column, so the ruler row carries a matching
+   empty cell and the playhead wrapper stops short of it by the same amount
+   - otherwise the ticks and the red line run past the end of the tracks. */
+:root { --tl-add-w: 32px; }
+.tl-row { display: grid; grid-template-columns: 150px 1fr var(--tl-add-w); align-items: center;
+  min-height: 38px; border-bottom: 1px solid var(--line); }
+.tl-add { width: 26px; margin-left: 6px; padding: 0; line-height: 22px; font-size: 16px; font-weight: 600;
+  color: var(--dim); text-align: center; }
+.tl-add:hover { color: var(--accent); border-color: var(--accent); background: var(--select); }
+.tl-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The empty-track invitation, inside the track it is talking about - the
+   one hint line above the tracks is easy to read past. Never clickable
+   itself: the click has to land on the track underneath. */
+.tl-empty { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 8px;
+  color: var(--dim); font-size: 11.5px; pointer-events: none; }
+.tl-track.has-ghost .tl-empty { display: none; }
+/* The hover ghost: the cue a click right here would create. The
+   translucency is on a ::before, not on .cue-ghost itself - `opacity`
+   applies to the whole subtree, so a faded parent would drag the label
+   down with it and no `opacity:1` on the child could bring it back. */
+.cue-ghost { position: absolute; top: 3px; bottom: 3px; min-width: 2px;
+  pointer-events: none; z-index: 5; }
+.cue-ghost::before { content: ""; position: absolute; inset: 0; border-radius: 3px;
+  background: var(--accent); opacity: .32; }
+/* On its own panel-coloured chip: the label very often hangs over the cue
+   after the empty space, and two lines of 11px text on top of each other
+   are unreadable. */
+.cue-ghost-label { position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+  margin-left: 5px; white-space: nowrap; font-size: 11px; color: var(--accent);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+  padding: 0 5px; line-height: 1.5; }
+.cue-ghost-label.flip { left: auto; right: 100%; margin-left: 0; margin-right: 5px; }
+/* The full-size twin of the empty-track hint, in an empty CUES card. */
+.tl-firsthint { color: var(--dim); font-size: 14px; padding: 22px 2px; line-height: 1.9; }
+.tl-firsthint b { color: var(--accent); }
+/* EDIT CUE's "＋ Add next design after this cue": a link, not a third
+   button competing with Delete for the eye. */
+.cue-append { margin-top: -2px; }
+button.linkish { border: 0; background: none; padding: 0; font-size: 12.5px; color: var(--accent);
+  text-decoration: underline; text-underline-offset: 2px; }
+button.linkish:hover { filter: brightness(1.15); }
+button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 .tl-name { font-size: 13px; font-weight: 600; padding-right: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-name small { display: block; font-weight: 400; color: var(--dim); font-size: 11px; }
 .tl-track { position: relative; height: 30px; background: var(--bg); border-radius: 4px; cursor: copy; }
@@ -498,7 +538,7 @@ button.primarybtn:disabled { filter: none; }
   <div class="tabs">
     <button id="undo" title="Undo (Ctrl+Z)">↶ Undo</button><button id="redo" title="Redo (Ctrl+Y / Ctrl+Shift+Z)">Redo ↷</button>
   </div>
-  <label class="filebtn">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
+  <label class="filebtn" tabindex="0" role="button">Add CSV<input id="pick" type="file" accept=".csv" multiple></label>
   <span class="meta">or drop CSV files anywhere on the page</span>
   <span class="ws" id="ws"></span>
 </header>
@@ -671,8 +711,23 @@ function toast(text) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", 6000);
 }
 const clock = s => { const n = Math.round(Math.abs(s)); return (s < 0 ? "-" : "") + Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0"); };
-function parseClock(text) {                       // "3:20" or "200" -> seconds
-  const m = String(text).trim().match(/^(?:(\d+):)?(\d{1,4})$/);
+// The one grammar for this page's time fields, character for character
+// conductor/look.py's parse_clock() and SIM.look.parseTimeField (model.js) -
+// goldened on the JS side, and a headless test runs this copy against the
+// Python one, because index.html cannot import model.js.
+//
+//   m:ss / mm.ss   minutes, then 0-59 seconds: "3:20" and "3.20" are both
+//                  200 s. The dot spelling is the designers' own - their
+//                  simulator prints every time that way - so a cue sheet
+//                  copied off their screen can be typed in as it stands.
+//   a bare number  SECONDS, up to 4 digits: what this page's fields have
+//                  always meant, and what CLOCK_HINT tells the operator.
+//
+// [0-9] and never \d: Python's \d takes a FULL-WIDTH digit and JS's does
+// not, and the two sides may not read one string two ways.
+const CLOCK_HINT = "m:ss or mm.ss (e.g. 3:20 or 3.20); a plain number is seconds";
+function parseTimeField(text) {
+  const m = String(text).trim().match(/^(?:([0-9]{1,3})[:.])?([0-9]{1,4})$/);
   if (!m) return null;
   if (m[1] !== undefined && Number(m[2]) >= 60) return null;     // "3:75" is a typo
   return (m[1] !== undefined ? Number(m[1]) * 60 : 0) + Number(m[2]);
@@ -894,7 +949,7 @@ function renderContent() {
               </div>
             </div>`; }).join("")
             || `<div class="meta">Add design CSV files (*_color_NAME_grid.csv)</div>`}</div>
-          <div class="meta" style="margin-top:8px"><label class="filebtn">Add CSV to this item<input id="pick-own" type="file" accept=".csv" multiple></label>
+          <div class="meta" style="margin-top:8px"><label class="filebtn" tabindex="0" role="button">Add CSV to this item<input id="pick-own" type="file" accept=".csv" multiple></label>
             <span style="margin-left:6px">whatever look the files are named after, they are saved as ${esc(item.item)}_… and belong to this item alone</span></div>
         </div>
         ${design ? `<div class="card"><h2>COLOURS USED</h2><table><tbody>
@@ -922,6 +977,81 @@ function fileList(item) {
 // ---- tab 2: the timeline ----
 function trackItems() { return state.items.filter(i => i.map && i.map.scales.length); }
 function cuesOf(item) { return state.show.cues.filter(c => c.item === item.item).sort((a, b) => a.sent - b.sent); }
+// ---- placing a design: what, where, and how far a drag moves ----
+// The gap left between one design finishing being drawn and the next one
+// starting, when a design is APPENDED rather than placed by hand (the "+" at
+// the end of a track row, and EDIT CUE's "Add next design after this cue").
+// It is the SAME number conductor/timeline.py's validate() requires between
+// two sends (GAP_AFTER_REFRESH_S), so an append with its own idea of "a
+// reasonable gap" would quietly place cues the server then rejects.
+const APPEND_GAP_S = 1.0;
+const MAX_SHOW_DURATION_S = 99 * 60 + 59;      // the Show length field's ceiling
+const DRAG_SNAP_S = 1, DRAG_SNAP_SHIFT_S = 5;
+// The design a fresh placement gets: this item's first one no cue is already
+// wearing, skipping the ones that do not compile at all.
+function nextUnusedDesign(item) {
+  const mine = cuesOf(item);
+  const usable = item.designs.filter(d => designState(d) !== "bad");
+  const pool = usable.length ? usable : item.designs;
+  return pool.find(d => !mine.some(c => c.design === d.name)) || pool[0] || null;
+}
+// The design that FOLLOWS `afterName` in this item's list, wrapping - what
+// "add the next design after this cue" means.
+function designAfter(item, afterName) {
+  const list = item.designs || [];
+  if (!list.length) return null;
+  const i = list.findIndex(d => d.name === afterName);
+  return i < 0 ? list[0] : list[(i + 1) % list.length];
+}
+// The earliest legal moment after `cue`: when its own picture has finished
+// being drawn (the server's own `complete`), plus the gap, snapped up to a
+// whole second. CEIL, not round: complete + gap is the model's legal floor,
+// not a target to land near, and rounding falls BELOW it for every refresh
+// whose fraction is under .5 - an ordinary 7.4 s refresh gives 8.4, which
+// rounds to 8 and is then flagged "at least 8.4 s is needed". The toFixed(3)
+// first is because complete is a sum of floats and 8.400000000001 must not
+// ceil to 9.
+function appendTimeAfter(cue) { return Math.ceil(+(cue.complete + APPEND_GAP_S).toFixed(3)); }
+// The "+" at the end of a track row, and EDIT CUE's own link. `cue` is the
+// cue to follow, or null for "this item has nothing yet".
+async function appendDesignAfter(itemKey, cue) {
+  const item = state.items.find(i => i.item === itemKey);
+  if (!item) return;
+  const design = cue ? designAfter(item, cue.design) : nextUnusedDesign(item);
+  if (!design) { toast(itemName(item) + " has no design CSV yet"); return; }
+  const at = cue ? appendTimeAfter(cue) : 0;
+  if (at > MAX_SHOW_DURATION_S) {
+    toast(`The show cannot run past ${clock(MAX_SHOW_DURATION_S)}, so there is no room after ${clock(cue.complete)}.`);
+    return;
+  }
+  // A design placed at (or past) the end of the show would never be seen, so
+  // the show grows to fit it - said out loud, because Show length is a number
+  // the operator set on purpose and a silent change to it is the kind of
+  // thing nobody notices until the run-through.
+  let duration = state.show.duration;
+  if (at >= duration) {
+    duration = Math.min(MAX_SHOW_DURATION_S, Math.round(at + Math.max(state.show.refresh_s, APPEND_GAP_S)));
+    toast(`Show length extended to ${clock(duration)} to fit the new design.`);
+  }
+  const id = "c" + Math.random().toString(36).slice(2, 10);
+  ui.cue = id; ui.playhead = Math.min(at, duration); ui.editorOpen = true;
+  await saveShow([...state.show.cues, { id, item: item.item, at, design: design.name,
+                                        partial: designState(design) === "partial" }], duration);
+}
+// Where on this track a pointer at `clientX` would place a design: snapped to
+// a whole second (5 with Shift), and 0:00 - the preset - when there is not
+// even time for one refresh before it. The hover ghost and the click that
+// follows it BOTH come here, or the ghost would promise one time and the
+// click deliver another.
+function trackTimeAt(track, clientX, shiftKey) {
+  const box = track.getBoundingClientRect();
+  const D = state.show.duration;
+  if (!box.width || !D) return 0;
+  const snap = shiftKey ? DRAG_SNAP_SHIFT_S : DRAG_SNAP_S;
+  const raw = Math.max(0, Math.min(D, (clientX - box.left) / box.width * D));
+  const at = Math.round(raw / snap) * snap;
+  return at < state.show.refresh_s ? 0 : at;
+}
 const seqLabel = id => state.sequences.find(s => s.id === id)?.label || id;
 // The cue's effective sweep: what actually delays the scales, whether it comes
 // from the design's default or the cue's own override. Defensive against a
@@ -1211,7 +1341,7 @@ function renderCueEditor(cue, item) {
     </div>
     <div class="cue-row">
       <div class="lbl">Start</div>
-      <div class="ctl" title="${esc(startWhy)}"><input type="text" id="cue-start" value="${clock(cue.at)}" ${isPreset ? "disabled" : ""}></div>
+      <div class="ctl" title="${esc(startWhy)}"><input type="text" id="cue-start" title="${esc(CLOCK_HINT)}" value="${clock(cue.at)}" ${isPreset ? "disabled" : ""}></div>
       <div class="why">${esc(startWhy)}</div>
     </div>
     <div class="cue-row">
@@ -1243,7 +1373,7 @@ function renderCueEditor(cue, item) {
     <div class="cue-computed">Picture complete at ${clock(cue.complete)} (Start + ${esc(completeWhy(cue, refr))})</div>
     <div class="cue-row">
       <div class="lbl">End</div>
-      <div class="ctl" title="${esc(endWhy)}"><input type="text" id="cue-end" value="${clock(endInfo.value)}" ${isLast ? "disabled" : ""}></div>
+      <div class="ctl" title="${esc(endWhy)}"><input type="text" id="cue-end" title="${esc(CLOCK_HINT)}" value="${clock(endInfo.value)}" ${isLast ? "disabled" : ""}></div>
       <div class="why">${esc(endWhy)}</div>
     </div>
     <div class="cue-design">
@@ -1251,6 +1381,8 @@ function renderCueEditor(cue, item) {
         `<option value="${esc(d.name)}" ${d.name === cue.design ? "selected" : ""}>${esc(designLabel(d))} · ${esc(d.name)}</option>`).join("")}</select></label>
       <label><input type="checkbox" id="cue-partial" ${cue.partial ? "checked" : ""}> partial</label>
     </div>
+    <div class="cue-append"><button type="button" id="cue-append" class="linkish"
+      title="Place this item's next design as soon as this one has finished, at ${esc(clock(appendTimeAfter(cue)))}">＋ Add next design after this cue</button></div>
     ${cue.problems.length ? `<ul class="problems">${cue.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
   </div>`;
 }
@@ -1288,10 +1420,20 @@ function renderTimeline() {
         style="left:${pct(cue.sent)};width:calc(${pct(cue.complete)} - ${pct(cue.sent)})"></div>`;
       blocks += `<div class="cue-hold${sel}${cue.problems.length ? " bad" : ""}" data-cue="${cue.id}"
         title="${esc(cue.design)}" style="left:${pct(cue.complete)};width:calc(${pct(until)} - ${pct(cue.complete)})">
-        <span class="chips">${chips}</span>${cue.problems.length ? "⚠ " : ""}${esc(design ? designLabel(design) : "?")}${cue.partial ? " (partial)" : ""}</div>`;
+        <span class="chips">${chips}</span>${cue.problems.length ? "⚠ " : ""}${cue.at <= 0 ? "PRESET · " : ""}${esc(design ? designLabel(design) : "?")}${cue.partial ? " (partial)" : ""}</div>`;
     });
+    // An item with nothing on it says so INSIDE its own track, where the
+    // click that would fix it has to happen.
+    const emptyHint = cues.length ? ""
+      : `<div class="tl-empty">click here to place the first design at ${clock(0)}</div>`;
+    const last = cues[cues.length - 1];
+    const addTitle = last
+      ? `Add the next design after the last cue (at ${clock(appendTimeAfter(last))})`
+      : `Add the first design (at ${clock(0)})`;
     rows += `<div class="tl-row"><div class="tl-name" title="${esc(itemFull(item))}">${esc(itemName(item))}<small>${esc(item.model || item.item)}</small><small>${esc(item.unit || "no unit")} · ${item.boards.length} boards</small></div>
-      <div class="tl-track" data-track="${esc(item.item)}">${blocks}</div></div>`;
+      <div class="tl-track" data-track="${esc(item.item)}">${blocks}${emptyHint}</div>
+      <button type="button" class="tl-add" data-add="${esc(item.item)}" title="${esc(addTitle)}"
+        aria-label="${esc(itemName(item))}: ${esc(addTitle)}">+</button></div>`;
   }
 
   const cue = show.cues.find(c => c.id === ui.cue) || null;
@@ -1301,9 +1443,9 @@ function renderTimeline() {
   const music = state.music || null;
   const musicHtml = music
     ? `<span class="meta">${esc(music.name)} (${fmtSize(music.size)})</span>
-       <label class="filebtn" title="Upload another audio file for the show (MP3, WAV, OGG, M4A; up to 64 MB)">Replace music<input type="file" id="tp-music-replace" accept="audio/*"></label>
+       <label class="filebtn" tabindex="0" role="button" title="Upload another audio file for the show (MP3, WAV, OGG, M4A; up to 64 MB)">Replace music<input type="file" id="tp-music-replace" accept="audio/*"></label>
        <button id="tp-music-remove" class="danger">Remove</button>`
-    : `<label class="filebtn" title="Upload the show's audio (MP3, WAV, OGG, M4A; up to 64 MB): playback then follows the music">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`;
+    : `<label class="filebtn" tabindex="0" role="button" title="Upload the show's audio (MP3, WAV, OGG, M4A; up to 64 MB): playback then follows the music">Load music<input type="file" id="tp-music-load" accept="audio/*"></label>`;
   const playBtns = `<button id="tp-play" title="Play/Pause (Space)">${ui.playing ? "⏸ Pause" : "▶ Play"}</button>
         <button id="tp-stop" title="Stop and rewind to 0:00">⏹ Stop</button>
         <span class="meta" id="tp-time">${clock(ui.playhead)} / ${clock(D)}</span>`;
@@ -1341,7 +1483,7 @@ function renderTimeline() {
 
   root.innerHTML = `
     <div class="toolbar">
-      <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px"></div>
+      <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px" title="${esc(CLOCK_HINT)}; at most ${clock(MAX_SHOW_DURATION_S)}"></div>
       <div class="group"><span>Default refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
         title="Seconds from the command to the finished picture, the transition's sweep included, used by every cue that does not set its own (${defaultRefreshS().toFixed(1)} s on the latest firmware: a ${panelRepaintS().toFixed(1)} s panel repaint with a 1 s sweep inside it; 16 s on older boards)"><span>s</span></div>
       <div class="group">
@@ -1349,11 +1491,12 @@ function renderTimeline() {
       </div>
       <div class="group">
         <a class="filebtn" href="/api/show/export" download title="Download the whole show (timeline, transitions, labels, unit assignments) as a JSON file">Save show…</a>
-        <label class="filebtn" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
-        <label class="filebtn" title="Load a project sent by the designers: their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
+        <label class="filebtn" tabindex="0" role="button" title="Restore the timeline, transitions, labels and unit assignments from a saved JSON file (the music file is uploaded separately; Undo restores the current show)">Load show…<input type="file" id="tl-load-show" accept=".json,application/json"></label>
+        <label class="filebtn" tabindex="0" role="button" title="Load a project sent by the designers: their CSVs are added to the workspace (existing CSVs with the same name are replaced and Undo does not restore them) and their timeline replaces the current one. The unit assignments here are kept.">Load bundle…<input type="file" id="tl-load-bundle" accept=".json,application/json"></label>
         <a class="filebtn" id="tl-simulator" href="/api/simulator?music=1" download title="Downloads the single-file simulator with the show's current music embedded - hand this file to the director's team; rebuild it here whenever the music changes">Simulator for designers…</a>
       </div>
-      <div class="meta">Click an empty spot on a track to add a cue · drag a cue to move it (5 s steps) · click it to edit below ·
+      <div class="meta">Click an empty spot on a track to add a cue, or press <b>+</b> at the end of its row ·
+        drag a cue to move it (1 s steps, 5 s with Shift) · click it to edit below ·
         hatched = refreshing · solid = held until End · Esc deselects</div>
     </div>
     ${show.refresh_s < defaultRefreshS() && !refreshHintDismissed() ? `<div class="warn" style="display:flex;align-items:center;gap:10px">
@@ -1366,9 +1509,9 @@ function renderTimeline() {
       <div class="tl-left">
         <div class="card">
           <div class="tl-wrap">
-            <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div></div>
+            <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div><div></div></div>
             ${rows}
-            <div style="position:absolute;left:150px;right:0;top:0;bottom:0;pointer-events:none"><div id="playhead">
+            <div style="position:absolute;left:150px;right:var(--tl-add-w);top:0;bottom:0;pointer-events:none"><div id="playhead">
               <div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler · ← → 1 s · Shift 5 s · Home 0:00">
                 <svg width="14" height="12" viewBox="0 0 14 12"><path d="M1 1 H13 L7 11 Z" fill="var(--err)" stroke="var(--ph-outline)" stroke-width="1"/></svg>
                 <span id="ph-time"></span>
@@ -1391,7 +1534,11 @@ function renderTimeline() {
             <td>${esc(d ? designLabel(d) : c.design)}${c.partial ? " (partial)" : ""}</td>
             <td>${sw.sequence !== "natural" && sw.span_s > 0 ? `${esc(seqLabel(sw.sequence))} ${sw.span_s.toFixed(1)} s${c.transition === "custom" ? " (custom)" : " (design)"}` : "—"}</td>
             <td>${c.problems.length ? `<span style="color:var(--err)">${esc(c.problems.join(" / "))}</span>` : `<span class="okline">OK</span>`}</td></tr>`; }).join("")
-            || `<tr><td class="meta" colspan="8">No cues yet</td></tr>`}
+            // A brand-new show's biggest question is "where do I start?", and
+            // the CUES card is the widest empty space on the screen to answer
+            // it in - the same sentence the empty tracks carry, full size.
+            || `<tr><td colspan="8"><div class="tl-firsthint">Nothing placed yet - click the start of a track above
+              to place the first design at ${clock(0)}, or press <b>+</b> at the end of that track's row to place it for you.</div></td></tr>`}
           </tbody></table>
           <div class="meta" style="margin-top:6px">Shortest interval per unit in THIS show, one send to the next (every picture is already written into its slot at Upload; a send is just a trigger, whatever the unit's board count): ${(() => {
             // Per unit: its slowest picture + the gap (state.show.min_interval,
@@ -4575,17 +4722,30 @@ document.addEventListener("click", async e => {
     const c = state.show.cues.find(x => x.id === ui.cue);
     ui.tab = "items"; ui.item = c.item; ui.design = c.design; ui.mode = "design"; ui.board = null; render(); return;
   }
+  // The per-row "+": a real <button>, so it is in the tab order and answers
+  // Enter and Space without a handler of its own.
+  const add = e.target.closest("button.tl-add[data-add]");
+  if (add) {
+    clearGhost();
+    const item = state.items.find(i => i.item === add.dataset.add);
+    const cues = item ? cuesOf(item) : [];
+    await appendDesignAfter(add.dataset.add, cues[cues.length - 1] || null);
+    return;
+  }
+  if (e.target.id === "cue-append") {
+    const c = state.show.cues.find(x => x.id === ui.cue);
+    if (c) await appendDesignAfter(c.item, c);
+    return;
+  }
   const track = e.target.closest("[data-track]");
   if (track) {
     const item = state.items.find(i => i.item === track.dataset.track);
-    if (!item.designs.length) { toast(item.item + " has no design CSV yet"); return; }
-    const box = track.getBoundingClientRect();
-    let at = Math.round((e.clientX - box.left) / box.width * state.show.duration / 5) * 5;
-    if (at < state.show.refresh_s) at = 0;                     // too early to finish a refresh: the preset
-    const mine = cuesOf(item);
-    const next = item.designs.find(d => !mine.some(c => c.design === d.name)) || item.designs[0];
+    const next = nextUnusedDesign(item);
+    if (!next) { toast(itemName(item) + " has no design CSV yet"); return; }
+    const at = trackTimeAt(track, e.clientX, e.shiftKey);
     const id = "c" + Math.random().toString(36).slice(2, 10);
     ui.cue = id; ui.playhead = at; ui.editorOpen = true;
+    clearGhost();
     await saveShow([...state.show.cues, { id, item: item.item, at, design: next.name,
                                           partial: designState(next) === "partial" }]);
     return;
@@ -4683,8 +4843,12 @@ document.addEventListener("change", async e => {
   else if (id === "tl-load-show") { const f = e.target.files[0]; e.target.value = ""; await loadShowFile(f); }
   else if (id === "tl-load-bundle") { const f = e.target.files[0]; e.target.value = ""; await loadBundleFile(f); }
   else if (id === "duration") {
-    const seconds = parseClock(e.target.value);
-    if (seconds === null || seconds < 1) { toast("Enter the length as m:ss"); renderTimeline(); return; }
+    const typed = parseTimeField(e.target.value);
+    if (typed === null || typed < 1) { toast("Enter the length as " + CLOCK_HINT); renderTimeline(); return; }
+    // 99:59 is what the clock can show and what every time field here is
+    // read against; a longer show would print times the page cannot draw.
+    const seconds = Math.min(MAX_SHOW_DURATION_S, typed);
+    if (seconds !== typed) toast(`The show cannot run past ${clock(MAX_SHOW_DURATION_S)} - set to that.`);
     ui.playhead = Math.min(ui.playhead, seconds); await saveShow(state.show.cues, seconds);
   } else if (id === "refresh") {
     const seconds = Number(e.target.value);
@@ -4699,8 +4863,8 @@ document.addEventListener("change", async e => {
     // cue's Complete on this item is saved anyway and flagged as a problem
     // by the server; it is never silently clamped.
     if (id === "cue-start") {
-      const seconds = parseClock(e.target.value);
-      if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
+      const seconds = parseTimeField(e.target.value);
+      if (seconds === null) { toast("Enter the time as " + CLOCK_HINT); renderTimeline(); return; }
       const onItem = item ? cuesOf(item) : [];
       const idx = onItem.findIndex(c => c.id === cue.id);
       const prev = idx > 0 ? onItem[idx - 1] : null;
@@ -4712,8 +4876,8 @@ document.addEventListener("change", async e => {
     // End moves the NEXT cue's Start on this item, in the same save - refused
     // outright (no save) if it would land before this picture is complete.
     if (id === "cue-end") {
-      const seconds = parseClock(e.target.value);
-      if (seconds === null) { toast("Enter the time as m:ss (e.g. 3:20)"); renderTimeline(); return; }
+      const seconds = parseTimeField(e.target.value);
+      if (seconds === null) { toast("Enter the time as " + CLOCK_HINT); renderTimeline(); return; }
       if (seconds < cue.complete) { toast(`End cannot be before the picture is complete (${clock(cue.complete)})`); renderTimeline(); return; }
       const onItem = item ? cuesOf(item) : [];
       const idx = onItem.findIndex(c => c.id === cue.id);
@@ -4952,11 +5116,26 @@ document.addEventListener("pointercancel", endPhDrag);
 window.addEventListener("blur", endPhDrag);
 // Space toggles play/pause, except while typing, over a control that owns the
 // key, or off the Timeline tab (there is nothing to play/pause to look at).
+// A <label class="filebtn"> IS the button its name says it is - the
+// <input type=file> inside it is display:none - so it carries tabindex and
+// role="button", and has to answer Enter and Space the way the <button>s
+// beside it do. Without this the only way to reach "Add CSV", "Load
+// show…" or "Load music" was a mouse.
+document.addEventListener("keydown", e => {
+  if (e.key !== "Enter" && e.key !== " " && e.code !== "Space") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const btn = e.target.closest?.("label.filebtn");
+  const input = btn && btn.querySelector("input[type=file]");
+  if (!input) return;
+  e.preventDefault();          // Space must not also scroll, or start the show
+  input.click();
+});
 document.addEventListener("keydown", e => {
   if (e.key !== " " && e.code !== "Space") return;
   if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (["input", "select", "textarea", "button"].includes(tag)) return;
+  if (e.target.closest?.("label.filebtn")) return;   // that label IS a button
   if (ui.tab !== "timeline") return;
   e.preventDefault();
   togglePlayback();
@@ -5004,35 +5183,175 @@ document.addEventListener("mouseover", e => {
 // Into one item: a file belongs to the item its name begins with, so two garments of the
 // same shape get the same names from the designer. Imported here, a file is renamed to
 // this item (Look22_color_pattern01_grid.csv -> Look22-2_color_pattern01_grid.csv).
+// The renaming is the SERVER's now (Workspace.intake's `item`), because
+// two of its rules cannot be applied here: numbering a name this garment
+// already holds needs to know what is on disk, and refusing another
+// garment's *_map.csv needs to know which garments exist. Renaming one
+// here used to replace this garment's wiring with another garment's,
+// throw the original away, and report it as a success - the hundreds of
+// CHECK problems that followed were the only hint.
 async function uploadOwn(item, fileList) {
-  const files = [], refused = [];
+  await upload(fileList, "", item.item);
+}
+// A refusal/rename list short enough to read in a toast - the simulator's
+// briefly() (designer-app.js): a dropped folder can hold a hundred files,
+// and nobody wants them named one by one across three lines of the screen.
+function briefly(entries, format, limit) {
+  const n = limit || 3;
+  const shown = entries.slice(0, n).map(format).join("; ");
+  return entries.length > n ? `${shown} +${entries.length - n} more` : shown;
+}
+// Every file that was picked is accounted for out loud. The server never
+// overwrites (Workspace.intake): a second design of a name already here is
+// numbered "-2" and says so, the same bytes again are "already there", and
+// a second wiring file is refused - all three are things the operator has
+// to see, not quietly different outcomes of the same drop.
+// What a Mac does to a file name on the way here, and what it puts
+// beside a file in a zip - conductor/look.py's mac_safe_name() /
+// is_mac_metadata(), which the server applies to whatever gets sent.
+// They are here as well because the check that matters happens BEFORE
+// the bytes are read, and only the page has the bytes to not read.
+const macSafeName = name => {
+  let n = String(name);
+  try { n = n.normalize("NFC"); } catch {}
+  return /\.csv\.txt$/i.test(n) ? n.replace(/\.txt$/i, "") : n;
+};
+const isMacMetadata = name => {
+  let n = String(name);
+  try { n = n.normalize("NFC"); } catch {}
+  return n.split(/[\\/]/).some(p => p.startsWith("._") || p === ".DS_Store"
+                                    || p.toUpperCase() === "__MACOSX");
+};
+// Read the picked File objects, refusing what cannot be a CSV BY NAME
+// first. Never after: a dropped folder can hold a 2 GB video, and
+// reading one as text to find out it is not a CSV is the one mistake
+// this must not make (the simulator's addFilesFromBlobs, same rule).
+// Anything already shaped {name, text} is passed through - uploadOwn()
+// and Load bundle… hand over text they have their own reasons for.
+async function readPickedFiles(fileList, refused) {
+  const files = [], metadata = [];
   for (const f of fileList) {
-    // Two matches, not one alternation: _map and _color_…grid are read
-    // whatever their case, but _HW is the wiring site's own button and is
-    // spelled in capitals (conductor/look.py's _HW_NAME is case-
-    // sensitive). A single /i regex here renamed "…_1_hw.csv" onto the
-    // item and the server then refused it (review of 3fd1a42).
-    const rest = f.name.match(/(_map|_color_.+grid).*\.csv$/i)
-              || f.name.match(/_.+_HW.*\.csv$/);
-    if (rest) files.push({ name: item.item + f.name.slice(rest.index), text: await f.text() });
-    else refused.push(f.name);
+    if (!(f.text instanceof Function)) { files.push(f); continue; }
+    if (isMacMetadata(f.name)) { metadata.push(String(f.name)); continue; }
+    if (!/\.csv$/i.test(macSafeName(f.name))) { refused.push(`${f.name}: not a .csv file`); continue; }
+    try { files.push({ name: f.name, text: await f.text() }); }
+    catch { refused.push(`${f.name}: could not be read`); }
   }
-  const note = refused.length ? `Not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv (the wiring site writes _HW in capitals): ${refused.join(", ")}` : "";
-  if (files.length) upload(files, note); else toast(note);
+  if (metadata.length) console.info("set aside, macOS metadata:", metadata);
+  return files;
 }
-async function upload(fileList, note) {
-  const files = [];
-  for (const f of fileList) files.push(f.text instanceof Function ? { name: f.name, text: await f.text() } : f);
-  if (!files.length) return;
-  const result = await api("/api/files", { files });
+// A dropped FOLDER, and folders inside it: File.name never carries a
+// path, so this flattens the entry tree first. Dropping a folder whose
+// CSVs sit one level down used to do nothing at all, which looks exactly
+// like dropping a folder the page rejected.
+function traverseEntry(entry) {
+  return new Promise(resolve => {
+    if (entry.isFile) entry.file(file => resolve([file]), () => resolve([]));
+    else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const all = [];
+      const readMore = () => reader.readEntries(async entries => {
+        if (!entries.length) { const nested = await Promise.all(all.map(traverseEntry)); resolve(nested.flat()); return; }
+        all.push(...entries); readMore();
+      }, () => resolve([]));
+      readMore();
+    } else resolve([]);
+  });
+}
+// Called straight from the drop handler and synchronous up to its first
+// await: a DataTransfer's items are dead the moment the handler returns,
+// so the entries must be taken out of it now, not after a read.
+async function filesFromDataTransfer(dt) {
+  if (dt.items && dt.items[0] && dt.items[0].webkitGetAsEntry) {
+    const entries = [...dt.items].map(i => i.webkitGetAsEntry()).filter(Boolean);
+    const groups = await Promise.all(entries.map(traverseEntry));
+    const flat = groups.flat();
+    // webkitGetAsEntry() exists on browsers that hand back nothing for a
+    // drag they still put in dt.files (Safari, and some drags on Chrome).
+    // Falling through to dt.files is the difference between "your files
+    // arrived" and a drop that silently did nothing at all.
+    if (flat.length) return flat;
+  }
+  return [...dt.files];
+}
+// Every file that was picked is accounted for out loud. The server never
+// overwrites (Workspace.intake): a second design of a name already here is
+// numbered "-2" and says so, the same bytes again are "already there", and
+// a second wiring file is refused - all three are things the operator has
+// to see, not quietly different outcomes of the same drop.
+async function upload(fileList, note, item) {
   const parts = note ? [note] : [];
-  if (result.saved?.length) parts.push(`${result.saved.length} file(s) imported`);
-  if (result.refused?.length) parts.push("Not imported: " + result.refused.join(" / "));
-  toast(parts.join(" · ") || result.error || "");
-  refresh();
+  const refusedHere = [];
+  const files = await readPickedFiles(fileList, refusedHere);
+  const result = files.length
+    ? await api("/api/files", item ? { files, item } : { files })
+    : { saved: [] };
+  // Lists, not maps keyed by the picked name: a folder drop can hold two
+  // "pattern.csv" one directory apart, and a map would report one of them.
+  const renamed = result.renamed || [];
+  const skipped = result.skipped || [];
+  const refused = refusedHere.concat(result.refused || []);
+  const onto = item ? " to " + (itemFull(itemByKey(item)) || item) : "";
+  if (result.saved?.length) parts.push(`${result.saved.length} file(s) imported${onto}`);
+  if (renamed.length) parts.push("saved as " + briefly(renamed, r => `${r.from} → ${r.to}`));
+  if (skipped.length) parts.push(`${skipped.length} already there: `
+    + briefly(skipped, r => r.from === r.as ? r.from : `${r.from} (as ${r.as})`));
+  if (refused.length) parts.push(`${refused.length} refused: ` + briefly(refused, x => x));
+  toast(parts.join(" · ") || result.error || "No CSV files found");
+  if (files.length) refresh();
 }
+// ---- the hover ghost --------------------------------------------------
+// "Click an empty spot on a track" was true and invisible: nothing on the
+// screen said a click would do anything until it already had. Moving the
+// pointer over empty track space now draws the cue that click would create -
+// at the same snapped moment, showing the same design - so the gesture is
+// discovered by hovering rather than by reading the hint line.
+//
+// One ghost at a time, pointer-events:none (so it can never become e.target
+// and confuse the checks under it), and it lives inside the track's own
+// innerHTML, which every renderTimeline() replaces wholesale.
+function clearGhost() {
+  document.querySelectorAll(".cue-ghost").forEach(g => g.remove());
+  document.querySelectorAll(".tl-track.has-ghost").forEach(t => t.classList.remove("has-ghost"));
+}
+function moveGhost(e) {
+  const track = e.target.closest?.(".tl-track");
+  // Never while a cue is being dragged or the playhead scrubbed (both are
+  // pointer gestures that pass right over empty track space), and never on
+  // top of an existing cue, where a click selects rather than places.
+  if (!track || drag || seeking || e.target.closest(".cue-hold, .cue-band")) { clearGhost(); return; }
+  const item = state.items.find(i => i.item === track.dataset.track);
+  const design = item && nextUnusedDesign(item);   // exactly what the click would place
+  if (!design) { clearGhost(); return; }
+  const D = state.show.duration;
+  const t = trackTimeAt(track, e.clientX, e.shiftKey);
+  let ghost = track.querySelector(".cue-ghost");
+  if (!ghost) {
+    clearGhost();
+    ghost = document.createElement("div");
+    ghost.className = "cue-ghost";
+    ghost.appendChild(document.createElement("span")).className = "cue-ghost-label";
+    track.appendChild(ghost);
+    track.classList.add("has-ghost");
+  }
+  ghost.style.left = (100 * t / D).toFixed(3) + "%";
+  ghost.style.width = (100 * Math.min(Math.max(0, D - t), state.show.refresh_s) / D).toFixed(3) + "%";
+  ghost.dataset.at = String(t);
+  const label = ghost.firstChild;
+  label.textContent = `+ ${designLabel(design)} at ${clock(t)}`;
+  // The label hangs off the right of the band and flips to its left when it
+  // would otherwise run past the end of the track. MEASURED, not guessed
+  // from t: a design name is anywhere from 6 to 40 characters, so a fixed
+  // "past 80% of the show" threshold flips too early for a short name and
+  // lets a long one run tens of pixels past the card.
+  label.classList.remove("flip");
+  if (label.getBoundingClientRect().right > track.getBoundingClientRect().right) label.classList.add("flip");
+}
+document.addEventListener("pointerleave", clearGhost);
+
 let drag = null;
 document.addEventListener("pointerdown", e => {
+  clearGhost();
   const block = e.target.closest(".cue-hold");
   if (!block || e.button !== 0) return;
   const cue = state.show.cues.find(c => c.id === block.dataset.cue);
@@ -5040,12 +5359,17 @@ document.addEventListener("pointerdown", e => {
   drag = { cue, block, x: e.clientX, left: block.offsetLeft, track: block.parentElement.getBoundingClientRect(), moved: false };
 });
 document.addEventListener("pointermove", e => {
-  if (!drag) return;
+  if (!drag) { moveGhost(e); return; }
   const dx = e.clientX - drag.x;
   if (!drag.moved && Math.abs(dx) < 5) return;
   drag.moved = true; drag.block.classList.add("dragging");
   drag.block.style.left = (drag.left + dx) + "px";
-  const at = Math.max(5, Math.min(state.show.duration, Math.round((drag.cue.at + dx / drag.track.width * state.show.duration) / 5) * 5));
+  // A whole second, 5 with Shift - the same steps the ruler's own arrow keys
+  // use. A fixed 5 s made "one second later than the cue above" impossible
+  // to express by hand at all.
+  const snap = e.shiftKey ? DRAG_SNAP_SHIFT_S : DRAG_SNAP_S;
+  const at = Math.max(DRAG_SNAP_S, Math.min(state.show.duration,
+    Math.round((drag.cue.at + dx / drag.track.width * state.show.duration) / snap) * snap));
   drag.at = at; drag.block.title = clock(at);
   const label = $("#ph-label"); if (label) label.textContent = clock(at) + " (moving)";
 });
@@ -5128,7 +5452,13 @@ const carriesFiles = e => [...(e.dataTransfer?.types || [])].includes("Files");
 addEventListener("dragenter", e => { if (!carriesFiles(e)) return; e.preventDefault(); depth++; $("#drop").classList.add("on"); });
 addEventListener("dragleave", e => { if (!carriesFiles(e)) return; if (--depth <= 0) { depth = 0; $("#drop").classList.remove("on"); } });
 addEventListener("dragover", e => e.preventDefault());
-addEventListener("drop", e => { e.preventDefault(); depth = 0; $("#drop").classList.remove("on"); if (carriesFiles(e)) upload(e.dataTransfer.files); });
+addEventListener("drop", async e => {
+  e.preventDefault(); depth = 0; $("#drop").classList.remove("on");
+  if (!carriesFiles(e)) return;
+  // filesFromDataTransfer() must see the DataTransfer before this
+  // handler returns - it is synchronous up to its own first await.
+  upload(await filesFromDataTransfer(e.dataTransfer));
+});
 
 refresh();
 pollFleet();

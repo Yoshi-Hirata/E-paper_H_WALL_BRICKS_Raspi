@@ -1467,103 +1467,40 @@
   //    dropped when what is left is a .csv;
   //  - HFS+/APFS hand names back in NFD; ASCII names do not care, but a
   //    designer's own file name might - normalise to NFC first.
-  function macSafeName(name) {
-    let n = String(name);
-    try { n = n.normalize("NFC"); } catch {}
-    if (/\.csv\.txt$/i.test(n)) n = n.replace(/\.txt$/i, "");
-    return n;
-  }
-  function isMacMetadata(name) {
-    const n = String(name);
-    return /^\._/.test(n) || n === ".DS_Store" || /^__MACOSX$/i.test(n);
-  }
-  // A CSV that is not NAMED the wiring site's way (2026-09-25: a designer's
-  // Mac offered "AZ271SD1305_1_HW.csv") is read by its FIRST LINE instead:
-  //   side,row,col,board_no,socket,…  -> that garment's map
-  //   side,row,shift,1,2,3,…          -> a design grid of that garment
-  // and saved under the conventional name, so everything downstream (the
-  // Conductor included) still sees *_map.csv / *_color_NAME_grid.csv. The
-  // garment is the one named up front (the per-item button) or the item
-  // whose model starts the file name; with neither, the file is refused
-  // with a reason that says how to name it.
-  function sniffCsvKind(text) {
-    const first = String(text).replace(/^\uFEFF/, "").split(/\r?\n/).find(l => l.trim()) || "";
-    const cols = first.split(",").map(c => c.trim().toLowerCase());
-    if (cols[0] !== "side" || cols[1] !== "row") return null;
-    if (cols.includes("board_no") && cols.includes("socket")) return "map";
-    if (cols[2] === "shift" && cols.length > 3 && cols.slice(3).every(c => /^\d+$/.test(c))) return "grid";
-    return null;
+  // Both live in model.js now (SIM.look), with conductor/look.py's own
+  // mac_safe_name()/is_mac_metadata() as their other half and the
+  // goldens holding the two together: the Conductor sees the same
+  // dropped files this page does, and had no rule of its own until then.
+  const macSafeName = name => globalThis.SIM.look.macSafeName(name);
+  const isMacMetadata = name => globalThis.SIM.look.isMacMetadata(name);
+  // Both the header sniff and the conventional name it leads to live in
+  // model.js now (SIM.look), with conductor/look.py's sniff_csv_kind() /
+  // conventional_name() as their other half: the Conductor reads a
+  // designer's oddly-named CSV exactly the way this page does, and the
+  // goldens fail if the two ever drift. `items` is the garments this
+  // project knows about - the only way to tell where an item's model
+  // number ends and a 配色案名 begins.
+  function conventionalName(name, text, itemHint) {
+    return globalThis.SIM.look.conventionalName(
+      name, text, itemHint, state.items.map(i => i.item));
   }
   // NFC, and deliberately NOT NFKC (2026-09-26, the operator's call): the
   // 配線ナビ goes on writing 配色案名 with full-width characters, so
   // "AZ271SD1305_１_HW.csv" IS the file's name and is kept exactly as it
   // is - folding it to "_1_" here would only make this page disagree with
-  // the site and with the show PC about what the file is called. NFC is
-  // composition alone: a name a Mac hands over decomposed (NFD - "が" as
-  // か + ゛) and the same name typed on Windows become one string, so they
-  // are one design rather than two that look identical in the list.
-  // conductor/server.py's workspace_name() is the other half, and
-  // SIM.look.normalizeName/nameProblem is the rule both of them share.
+  // the site and with the show PC about what the file is called.
+  // conductor/server.py's workspace_name() is the other half.
   const nfc = s => globalThis.SIM.look.normalizeName(s);
-  function conventionalName(name, text, itemHint) {
-    const n = nfc(name);
-    // The SAME refusal the Conductor would give (review of a6b610b):
-    // this page used to accept anything NFC left and write it into a
-    // bundle, and the show PC then threw the file out - a design the
-    // operator could neither use nor fix. Checked before the name is
-    // read as anything, so a bad name is never half-accepted.
-    const bad = globalThis.SIM.look.nameProblem(n);
-    if (bad) return { error: bad };
-    if (globalThis.SIM.look.kind(n) !== null) return { name: n };
-    if (!/\.csv$/i.test(n)) return { error: refuseReason(n) };
-    const kind = sniffCsvKind(text);
-    if (!kind) return { error: "neither a map (first line side,row,col,board_no,socket,…) nor a design grid (side,row,shift,1,2,…)" };
-    const stem = n.replace(/\.csv$/i, "");
-    // The garment whose model starts the file name, if any - the target
-    // when no garment was named up front, and in either case the prefix
-    // to strip off the design name ("AZ271SD1305_1_HW" -> "1_HW").
-    const hit = state.items.map(i => i.item).filter(k => stem === k || stem.toLowerCase().startsWith(k.toLowerCase() + "_"))
-      .sort((a, b) => b.length - a.length)[0] || null;
-    const item = itemHint || hit;
-    if (!item) return { error: "which garment? name it MODEL_…csv, or use that garment's own Add CSV" };
-    if (kind === "map") return { name: `${item}_map.csv`, readAs: "map" };
-    // Strip the prefix of the garment the file is going TO when it carries
-    // it ("AZ271SD1305_B.csv" picked on AZ271SD1305 is design "B", not the
-    // whole file of item AZ271SD1305_B); otherwise the longest known model.
-    const pre = [itemHint, hit].filter(Boolean).find(k => stem.toLowerCase().startsWith(k.toLowerCase() + "_"))
-      || (hit && hit.toLowerCase() === stem.toLowerCase() ? hit : null);
-    let design = pre ? stem.slice(pre.length).replace(/^_/, "") : stem;
-    // Keep whatever a file name may keep - letters, digits, and the
-    // punctuation a 配色案名 actually uses ("柄・A", "（A）", "柄＋A"): the
-    // old \p{L}\p{N} filter folded all three onto "柄-A" and lost two of
-    // the three designs (review of a6b610b). Only what
-    // SIM.look.nameProblem() refuses is replaced.
-    // eslint-disable-next-line no-control-regex
-    design = design.replace(/[\x00-\x1f\x7f-\x9f/\\／＼:*?"<>|]+/g, "-")
-      .replace(/^[-_.\s]+|[-_.\s]+$/g, "") || "design";
-    // "_grid" / "_map" / "_color_" inside a design name would be read as the
-    // file-name grammar's own markers ("HW_grid_4" -> design "HW" for every
-    // file), so they are spelled with a dash inside the name.
-    design = design.replace(/_grid/gi, "-grid").replace(/_map(?=$|[_-])/gi, "-map").replace(/_color_/gi, "-color-");
-    return { name: `${item}_color_${design}_grid.csv`, readAs: "design " + design };
-  }
   // Several files of ONE pick that resolve to the same saved name (a
   // designer's "AZ271SD1305_4.csv" and "AZ271SD1305_4 (1).csv", or two
   // names that differ only in characters the design name cannot keep): a
   // design grid gets "-2", "-3"… on its design name so nothing is lost; a
   // second MAP for the same garment is refused, a garment has one wiring.
+  // SIM.look.uniqueSaveName only READS `taken`; the claim is made here.
   function uniqueSaveName(name, taken) {
-    if (!taken.has(name)) { taken.add(name); return name; }
-    // Both spellings of a design name: <item>_color_<name>_grid.csv and
-    // the site's own <item>_<name>_HW.csv.
-    const m = name.match(/^(.*_color_)(.+?)(_grid.*\.csv)$/i)
-      || name.match(/^([^_]+_)(.+?)(_HW\.csv)$/i);
-    if (!m) return null;
-    for (let n = 2; n < 100; n++) {
-      const candidate = `${m[1]}${m[2]}-${n}${m[3]}`;
-      if (!taken.has(candidate)) { taken.add(candidate); return candidate; }
-    }
-    return null;
+    const saveAs = globalThis.SIM.look.uniqueSaveName(name, taken);
+    if (saveAs !== null) taken.add(saveAs);
+    return saveAs;
   }
   async function addFilesFromBlobs(files) {
     // Non-CSV names are refused BY NAME, like the per-item path, instead of
@@ -1586,7 +1523,7 @@
       if (c.error) { refused.push({ name: String(f.name), error: c.error }); continue; }
       const saveAs = uniqueSaveName(c.name, takenNames);
       if (saveAs === null) { refused.push({ name: String(f.name), error: `would overwrite ${c.name} from this same pick (a garment has one map)` }); continue; }
-      if (c.readAs || saveAs !== name) readAs.push(`${name} → ${saveAs}${c.readAs ? " (" + c.readAs + ")" : ""}`);
+      if (c.read_as || saveAs !== name) readAs.push(`${name} → ${saveAs}${c.read_as ? " (" + c.read_as + ")" : ""}`);
       list.push({ name: saveAs, text });
     }
     const result = list.length ? globalThis.SIM.app.addFiles(list) : { saved: [], refused: [] };
@@ -1608,17 +1545,12 @@
   // wrong prefix; a name that is neither a *_map.csv nor a
   // *_color_NAME_grid.csv is refused, because there is nothing to rename it
   // to. Returns null for "cannot belong to any item".
-  function renameOntoItem(itemKey, name) {
-    const raw = nfc(name);         // composed, never width-folded (above)
-    // Two matches, not one alternation: _map and _color_…grid are read
-    // whatever their case, but _HW is the site's own button and is spelled
-    // in capitals (SIM.look.kind agrees). AZ271SD1301_1_HW.csv picked on
-    // another garment becomes <item>_1_HW.csv; "…_1_hw.csv" is not a
-    // design at all and must not be renamed as if it were.
-    const m = raw.match(/(_map|_color_.+grid).*\.csv$/i)
-           || raw.match(/_.+_HW.*\.csv$/);
-    return m ? itemKey + raw.slice(m.index) : null;
-  }
+  // In model.js now (SIM.look.renameOntoItem), with
+  // conductor/look.py's rename_onto_item() as its other half: the
+  // Conductor renames a per-item pick on the SERVER, and both sides
+  // have to land on the same name.
+  const renameOntoItem = (itemKey, name) =>
+    globalThis.SIM.look.renameOntoItem(itemKey, name);
   async function addFilesToItemFromBlobs(itemKey, files) {
     const list = [], refused = [], became = [], skipped = [];
     // Nothing added through a garment's own Add CSV ever overwrites what the
@@ -1643,7 +1575,7 @@
           && existing[onto] === text.replace(/\r\n?/g, "\n")) { skipped.push(`${name0} (already there as ${onto})`); continue; }
       const saveAs = uniqueSaveName(onto, takenNames);
       if (saveAs === null) { refused.push({ name: String(f.name), error: `would overwrite ${onto} from this same pick (a garment has one map)` }); continue; }
-      if (saveAs !== name0) became.push(`${name0} → ${saveAs}${c.readAs ? " (" + c.readAs + ")" : ""}`);
+      if (saveAs !== name0) became.push(`${name0} → ${saveAs}${c.read_as ? " (" + c.read_as + ")" : ""}`);
       list.push({ name: saveAs, text });
     }
     const result = list.length ? globalThis.SIM.app.addFilesToItem(itemKey, list)
@@ -1796,11 +1728,9 @@
   // Says what is wrong with THIS name (adversarial review F6: it used to
   // take the name and ignore it, so a dropped .xlsx and a mis-named CSV got
   // the same sentence, and the .xlsx one did not describe the problem).
-  function refuseReason(name) {
-    return /\.csv$/i.test(String(name))
-      ? "not a *_map.csv, *_color_NAME_grid.csv or *_HW.csv (the wiring site writes _HW in capitals)"
-      : "not a .csv file";
-  }
+  // The words themselves are in model.js (SIM.look), so the Conductor
+  // refuses the same file with the same sentence.
+  const refuseReason = name => globalThis.SIM.look.refuseReason(name);
   // A refusal/rename list, short enough to read in a toast: a dropped folder
   // can hold a hundred files nobody wants named one by one.
   function briefly(entries, format, limit) {
@@ -1926,7 +1856,7 @@
         const ownerOfMap = globalThis.SIM.look.kind(raw) === "map" ? globalThis.SIM.look.mapItem(raw) : null;
         if (ownerOfMap && ownerOfMap.toLowerCase() !== itemKey.toLowerCase()
             && state.items.some(i => i.item.toLowerCase() === ownerOfMap.toLowerCase())) {
-          refused.push({ name: raw, error: "another garment's map - use the header's Add CSV for it" });
+          refused.push({ name: raw, error: globalThis.SIM.look.ANOTHER_GARMENTS_MAP });
           continue;
         }
         // Two picked files that would land on the same name (F3): the first

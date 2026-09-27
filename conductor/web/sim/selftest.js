@@ -145,6 +145,29 @@
         : `names ${c.filename} got ${short(got)} want ${short(c.expect)}`;
     },
 
+    // Taking a picked file in: the Mac-name repairs, the "-2"
+    // numbering, the header sniff and the conventional name it leads
+    // to (2026-09-27). Each of these decides what a dropped file is
+    // SAVED as, so a disagreement with conductor/look.py means the same
+    // CSV becomes two different designs on the two machines.
+    intake(c) {
+      const look = SIM.look;
+      let got;
+      if (c.op === "macSafeName") got = look.macSafeName(c.name);
+      else if (c.op === "isMacMetadata") got = look.isMacMetadata(c.name);
+      else if (c.op === "uniqueSaveName") got = look.uniqueSaveName(c.name, new Set(c.taken));
+      else if (c.op === "foldName") got = look.foldName(c.name);
+      else if (c.op === "csvExtension") got = look.csvExtension(c.name);
+      else if (c.op === "parseTimeField") got = look.parseTimeField(c.input);
+      else if (c.op === "renameOntoItem") got = look.renameOntoItem(c.item, c.name);
+      else if (c.op === "sniffCsvKind") got = look.sniffCsvKind(c.text);
+      else if (c.op === "conventionalName") got = look.conventionalName(c.name, c.text, c.itemHint, c.items);
+      else return `intake: unknown op ${c.op}`;
+      const shown = c.name !== undefined ? c.name : (c.input !== undefined ? c.input : c.text);
+      return deepEqual(got, c.expect) ? null
+        : `intake.${c.op}(${short(shown)}) got ${short(got)} want ${short(c.expect)}`;
+    },
+
     map(c, fixtures) {
       const text = fixtures[c.fixture];
       if (text === undefined) return `map ${c.fixture}: fixture text missing`;
