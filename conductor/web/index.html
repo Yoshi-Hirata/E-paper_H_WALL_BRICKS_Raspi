@@ -252,6 +252,9 @@ input[type=range] { width: 100%; }
    the show will run, but that unit is not in the state it should be. */
 .tile .vf { font-size: 11px; font-weight: 600; margin-left: 6px; }
 .tile .vf.re { color: var(--warn); } .tile .vf.no { color: var(--err); }
+/* "pictures cleared": the thing the operator asked for, not a fault - so it
+   is a quiet grey, not the green of a thing that went well. */
+.tile .vf.ok { color: var(--dim); font-weight: 500; }
 .tile .l { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 .go { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 10px; }
 .go button.big { padding: 7px 16px; font-weight: 600; }
@@ -453,6 +456,18 @@ button.primarybtn:disabled { filter: none; }
 /* "Which LOOKs": the radio group above the two choices. One row per LOOK
    the timeline reaches, in LOOK order - the operator points at the look
    they are checking, not at a unit name they would have to look up. */
+/* "After the show - clear the pictures": under the two destinations, in the
+   same box style but full width, because it is the one thing in here that
+   takes something away rather than writing it. */
+.dlg-clear { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px;
+             padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.dlg-clear.off { background: var(--bg); }
+.dlg-clear.off h3, .dlg-clear.off .what { opacity: .6; }
+.dlg-clear h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.dlg-clear .what { font-size: 13px; }
+.dlg-clear .why { font-size: 12.5px; color: var(--err); }
+.dlg-clear .why:empty { display: none; }
+.dlg-clear button.big { align-self: flex-start; }
 .dlg-only { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px 9px; }
 .dlg-only .only-h { font-size: 11px; letter-spacing: .1em; color: var(--dim); text-transform: uppercase; }
 .dlg-only .only-rows { display: grid; gap: 1px; margin-top: 4px; max-height: 176px; overflow-y: auto; }
@@ -2742,7 +2757,23 @@ function writeState() {
     : offline.length
       ? `${offline.join(", ")} not answering — ${offline.length === 1 ? "it" : "they"} will come back FAILED; write again once online.`
     : null;
+  // "Clear pictures now" is the one thing in here that is not a write: it
+  // needs no timeline and no pictures, only units this conductor has
+  // actually uploaded to - those are the slots it may empty. Refused while
+  // a run exists (the slots are what the next trigger reads from) and,
+  // unlike Upload, with no `force`: a clear is never a way back into a
+  // running show.
+  const uploaded = Object.keys(fleet?.shows || {});
+  const clearOnly = only ? only.filter(u => uploaded.includes(u)) : null;
+  const clearTargets = clearOnly || uploaded;
+  const clearWhy = run ? "The show is running — press STOP first."
+    : !uploaded.length
+      ? "No unit holds this show — there is nothing here to clear."
+    : clearOnly && !clearOnly.length
+      ? "That LOOK's unit does not hold this conductor's show."
+    : demoPlaying;
   return { cues, bad, targets, run, busy, name, note, offline,
+           clearTargets, clearWhy,
            only, onlyTitle: row ? row.title : null,
            onlyShared: !!row && row.shared,
            seconds: Math.max(1, ...targets.map(t => t.seconds), 1),
@@ -2856,7 +2887,8 @@ function writeProgressHtml() {
   const only = ui.writeResult?.only || null;
   return writeTargets().filter(t => !only || only.includes(t.unit)).map(t => {
     const u = byName[t.unit];
-    return `<div class="row"><span>${esc(t.unit)}</span><b>${u ? picturesText(u) : "—"}</b></div>`;
+    return `<div class="row"><span>${esc(t.unit)}</span><b>${
+      u ? picturesText(u) + clearText(u) : "—"}</b></div>`;
   }).join("");
 }
 const LCD_STEPS = (name, seconds) => `On each unit: <b>KEY2</b> opens the menu → `
@@ -2880,9 +2912,41 @@ function writeResultHtml() {
         Upload again with <b>All LOOKs</b> before the show. (The choice above is back on All LOOKs.)</div>`
         : `<div class="meta">The show is driven from this PC: ② Show preset, then ③ START on the Units tab.</div>`}`
       : ""}
+    ${r.kind === "clear" ? `<div class="meta" style="margin-top:6px">Pictures, as the tiles show them:</div>
+      <div id="write-progress">${writeProgressHtml()}</div>
+      <div class="warn">The garments keep the look they are showing. <b>① Upload before the
+        next START</b> — and wait for “pictures cleared” on every tile before unplugging a Radxa.</div>`
+      : ""}
     ${r.kind === "demo" && r.ok ? `<div class="lcd">${LCD_STEPS(r.name, r.seconds)}</div>` : ""}
   </div>`;
 }
+// The third thing this dialog can do, and the only one that takes something
+// away: delete slots 1-18 on the units of this timeline, now, by hand. It
+// lives under the two choices rather than beside them because it is not a
+// destination - it is what the checkbox next to ③ START does automatically
+// at the end of the show, for the evening somebody forgot to tick it (or a
+// unit that was out of reach when the run ended).
+function writeClearHtml(s) {
+  const who = s.clearTargets.length ? s.clearTargets.join(", ") : "—";
+  return `<div class="dlg-clear ${s.clearWhy ? "off" : ""}" id="write-choice-clear">
+    <h3>After the show — clear the pictures</h3>
+    <div class="what">Deletes slots 1–18 on every board of <b id="write-clear-who">${esc(who)}</b>.
+      The garments keep the look they are showing — nothing is repainted — but their
+      factory autoplay then has nothing of the show left to replay after the Radxa
+      is unplugged. <b>Upload again before the next START.</b></div>
+    <div class="why" id="write-clear-why">${esc(s.clearWhy || "")}</div>
+    <button class="big" id="write-clear-now" ${s.clearWhy ? "disabled" : ""}>Clear pictures now</button>
+  </div>`;
+}
+// Said in full before anything is deleted: what goes, what stays, and what
+// it costs (an Upload before the next START).
+const clearNowQuestion = who =>
+  `Delete slots 1–18 on ${who}?\n\n`
+  + "The garments keep the look they are showing right now — nothing is repainted, "
+  + "and nothing goes white. What goes is only what those boards would replay on "
+  + "their own, from the factory autoplay, once the Radxa is unplugged.\n\n"
+  + "START and ② Show preset will refuse afterwards: the pictures have to be "
+  + "uploaded again first.";
 function writeDialogHtml() {
   const s = writeState();
   const running = !!s.run;
@@ -2933,6 +2997,7 @@ function writeDialogHtml() {
         <button class="big primarybtn" id="write-demo" ${s.demoWhy || s.nameWhy ? "disabled" : ""}>Save on the units</button>
       </div>
     </div>
+    ${writeClearHtml(s)}
     ${writeResultHtml()}
   </div></div>`;
 }
@@ -3029,6 +3094,16 @@ function paintWrite() {
   if (name) name.disabled = !!s.demoWhy;
   $("#write-choice-upload")?.classList.toggle("off", !!s.uploadWhy);
   $("#write-choice-demo")?.classList.toggle("off", !!s.demoWhy);
+  // A START landing under an open dialog must disable "Clear pictures now"
+  // on the same poll the tiles show the run on - the whole point of
+  // painting instead of re-rendering.
+  const clearWhy = $("#write-clear-why"), clearNow = $("#write-clear-now"),
+        clearWho = $("#write-clear-who");
+  if (clearWhy) clearWhy.textContent = s.clearWhy || "";
+  if (clearNow) clearNow.disabled = !!s.clearWhy;
+  if (clearWho) clearWho.textContent = s.clearTargets.length
+    ? s.clearTargets.join(", ") : "—";
+  $("#write-choice-clear")?.classList.toggle("off", !!s.clearWhy);
   const progress = $("#write-progress");
   if (progress) progress.innerHTML = writeProgressHtml();
   paintChips();
@@ -3092,6 +3167,27 @@ async function writeUpload() {
                      // and the radio goes back to All LOOKs, so the next
                      // Upload is the whole show unless it is chosen again.
                      next: s.only && out.some };
+  if (s.only) ui.writeOnly = null;
+  renderWriteDialog();
+}
+async function writeClearNow() {
+  if (commandInFlight) return;
+  const s = writeState();
+  if (s.clearWhy) { toast(s.clearWhy); return; }
+  if (!confirm(clearNowQuestion(s.clearTargets.join(", ")))) return;
+  const result = await fleetCommand("clear_pictures",
+                                    s.only ? { units: s.only } : {},
+                                    s.only ? `Clear pictures now (${s.onlyTitle})`
+                                           : "Clear pictures now", "show");
+  if (!result) return;
+  const out = writeOutcome(result);
+  ui.writeResult = { kind: "clear", ok: out.all, only: s.only,
+                     title: out.all ? "Clearing the pictures"
+                       : out.some ? `Clearing on ${out.ok} of ${out.total} units`
+                                  + " — the rest refused"
+                       : "Nothing was cleared",
+                     at: new Date().toLocaleTimeString(), units: result.units,
+                     problems: result.problems, error: result.error };
   if (s.only) ui.writeOnly = null;
   renderWriteDialog();
 }
@@ -3278,6 +3374,15 @@ const UPLOAD_TITLE = "Writes every picture into the boards now (one per cue, "
   + "cue, or editing one in place, only rewrites its own slot (seconds); "
   + "inserting or removing a cue earlier in the show rewrites every slot "
   + "after it (~3 min per unit). START waits for every unit to finish writing.";
+// The checkbox next to ③ START. Japanese, because it is the operator's own
+// tooltip and it is about what happens to the garment after the show - the
+// one thing that went wrong on 2026-09-27 (a garment unplugged with its
+// boards still on battery restarted the factory autoplay and replayed the
+// show's pictures on its own). Stored with the show, not in this browser.
+const CLEAR_AFTER_TITLE = "ショー終了後にスロット 1〜18 を削除。"
+  + "Radxa を外した後の自動巡回で本番の絵が出ないようにする。"
+  + "\n\nThe garment keeps the look it is showing (nothing is repainted) - "
+  + "but after this, START needs an Upload again.";
 // ---- THE SHOW's NOW -> NEXT board ---------------------------------------
 // Under the big clock: one header line saying what fires next and in how
 // many seconds, then one row per garment - what it is wearing now, how it
@@ -3458,6 +3563,19 @@ const SHOWBOARD = (() => {
   //   names     cue id -> what to call that garment ("LOOK 26 Tops")
   //   agoS      firedAgo()'s answer
   //   leadLeft  seconds left of a NEXT the operator just pressed, or null
+  //   cleared   what became of the pictures after the show, when the
+  //             operator asked for them to go (the checkbox next to
+  //             ③ START): null (not asked for, which is most evenings),
+  //             "clearing", "cleared", or "partly" - some unit's slots
+  //             are not empty. Only the ENDED note says it: it is the
+  //             answer to "may I unplug this garment now?".
+  function clearedNote(cleared) {
+    if (cleared === "clearing") return "show ended — clearing the pictures";
+    if (cleared === "cleared") return "show ended — pictures cleared";
+    if (cleared === "partly")
+      return "show ended — pictures NOT cleared everywhere";
+    return null;
+  }
   function header(now) {
     const out = { cap: "NEXT", time: "", count: null, tone: "", fired: false,
                   garments: [], following: [], note: "" };
@@ -3471,7 +3589,7 @@ const SHOWBOARD = (() => {
     const first = (now.groups || [])[0] || null;
     if (now.phase === "ended") {
       out.cap = "SHOW ENDED";
-      out.note = out.note || "show ended";
+      out.note = out.note || clearedNote(now.cleared) || "show ended";
       return out;
     }
     if (!first) {
@@ -3798,7 +3916,8 @@ function paintBoard() {
   const h = SHOWBOARD.header({ phase: how, t, duration: D, startAt: fleetStartAt(),
                                groups: SHOWBOARD.ahead(all, t), names,
                                agoS: SHOWBOARD.firedAgo(all, t),
-                               leadLeft: leadMs > 0 ? leadMs / 1000 : null });
+                               leadLeft: leadMs > 0 ? leadMs / 1000 : null,
+                               cleared: clearedPhase() });
   const H = BOARD.head;
   if (H) {
     H.cap.textContent = h.cap;
@@ -3934,6 +4053,9 @@ function renderFleet() {
         <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"} title="${esc(UPLOAD_TITLE)}">① Upload</button>
         <button class="big" id="show-preset">② Show preset (the 0:00 look)</button>
         <button class="big fire" id="show-start">③ START</button>
+        <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
+          id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
+          Clear pictures after the show</label>
         <button class="big" id="show-write" title="The other way to put this timeline on the units: stored in each unit's own menu, played from KEY1 with no PC at all. Opens the same &quot;Write to units…&quot; dialog as the Timeline tab.">④ Save on units (plays without this PC)</button>
         <label class="meta">START / NEXT / MOVE take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
         <span style="flex:1"></span>
@@ -4030,7 +4152,14 @@ function showClockText() {
   // themselves came back unsynced). STOP must work then more than ever.
   const unitsBusy = fleet.units.some(u => u.online && u.show && ["running", "holding"].includes(u.show.state));
   const demoCueBad = state.show.cues.reduce((n, c) => n + c.problems.length, 0);
-  const able = { "show-preset": want > 0 && !run && !unitsBusy, "show-start": want > 0,
+  // The units whose pictures were deliberately deleted after the last show:
+  // there is nothing in their slots to trigger, so START and ② Show preset
+  // are off until the operator uploads again (the same rule the burn state
+  // has always had - the conductor refuses it too, this is only saying so
+  // before the click).
+  const cleared = clearedUnits();
+  const able = { "show-preset": want > 0 && !run && !unitsBusy && !cleared.length,
+                 "show-start": want > 0 && !cleared.length,
                  "show-hold": running, "show-resume": holding,
                  "show-next-cue": (running && upcoming.length > 0) || holding, "show-stop": !!run || unitsBusy,
                  // Enabled during a run too: it asks first and sends
@@ -4062,7 +4191,14 @@ function showClockText() {
   const hint = $("#show-hint");
   if (hint) hint.textContent = !want ? (unitsBusy
       ? "Units are running a show this conductor did not upload (it was restarted). STOP works; Upload again to take the show over."
-      : "Upload the show first.") : loaded < want
+      : "Upload the show first.")
+    // Said before the "n units do not hold this show" line, because this
+    // one is the reason START is off and the other one corrects itself.
+    : cleared.length
+      ? `Pictures were cleared after the last show on ${cleared.join(", ")} `
+        + "- ① Upload writes them again. (The garments keep the look they "
+        + "are showing until then.)"
+    : loaded < want
     ? `${want - loaded} unit(s) do not hold this show yet - they are corrected automatically once they answer.` : "";
   // The LOOK row above is drawn from this workspace's own timeline (state.show),
   // not from whatever a unit actually holds - while some units are still behind
@@ -4102,6 +4238,14 @@ function picturesText(u) {
   const note = burn.record ? ` · burn record ${esc(burn.record)}` : "";
   if (burn.state === "failed") return `✗ ${esc(picturesLost(burn))}` + note;
   if (burn.state === "burned") return "written" + note;
+  // Taken back OUT of the slots after the show, on purpose (the checkbox
+  // next to ③ START). Not a fault - but START and ② Show preset refuse
+  // until they are written again, and the row has to say so. "partly" is a
+  // clear a START interrupted: some slots are empty and some are not.
+  if (burn.state === "cleared")
+    return (burn.reason === "cleared partially"
+            ? "cleared partially — Upload again"
+            : "cleared — Upload again") + note;
   if (burn.state === "cancelled")
     return `✗ not written (cancelled${burn.reason ? ": " + esc(burn.reason) : ""})`
       + " — Upload again";
@@ -4134,6 +4278,28 @@ function picturesLost(burn) {
 // then goes out plain and the refusal names every such unit. The server
 // refuses the failed case without `force` too: the dialog is a courtesy,
 // not the only guard.
+// The units whose pictures were CLEARED after the last show (the checkbox
+// next to ③ START): their slots are empty on purpose, so there is nothing
+// for a trigger to show and no answer to any question would change that -
+// only an Upload will. Named, so the hint under the buttons can say which.
+function clearedUnits() {
+  return (fleet?.units || [])
+    .filter(u => u.show && (u.show.burn || {}).state === "cleared")
+    .map(u => u.name);
+}
+// What became of the pictures across the whole fleet, in one word, for the
+// NOW -> NEXT board's ENDED note - which is the operator's answer to "may I
+// unplug this garment now?". null unless a clear was actually asked for.
+// "partly" is the honest reading of anything unfinished: a unit whose slots
+// could not all be deleted, a clear a START interrupted, or simply a unit
+// that never reported one while its neighbours did.
+function clearedPhase() {
+  const units = (fleet?.units || []).filter(u => u.online && u.show && !u.show.demo);
+  const states = units.map(u => ((u.clear || {}).state) || "none");
+  if (!states.some(s => s !== "none")) return null;
+  if (states.some(s => s === "clearing")) return "clearing";
+  return states.every(s => s === "cleared") ? "cleared" : "partly";
+}
 function burnFailedQuestion(question) {
   const reporting = (fleet?.units || []).filter(u => u.show && "burn" in u.show);
   if (reporting.some(u => !u.show.burn || !["burned", "failed"].includes(u.show.burn.state))) return null;
@@ -4317,6 +4483,41 @@ function stallMark(u) {
     + ` frame at once — it was busy; the picture may not have landed.${ago}${more}">`
     + `bus stalled ${esc(Math.round(s.ms))} ms</span>`;
 }
+// Taking the pictures back out of the slots after the show (ui/remote.py's
+// clear()). Amber while it runs - the operator is standing over the garment
+// waiting to unplug it, and that is the one number they want - then a quiet
+// grey "pictures cleared": it is not a fault, it is the thing they asked
+// for. Nothing at all until a clear has been asked for, which is every
+// evening the box is left unticked, and nothing for an agent too old to
+// have the key (its 404 is reported as a refusal on the tile instead).
+function clearText(u) {
+  const c = u.clear;
+  if (!c || typeof c !== "object" || !c.state || c.state === "none") return "";
+  if (c.state === "clearing")
+    return `<span class="vf re" title="Deleting slots 1-18 so the factory`
+      + ` autoplay cannot replay the show after the Radxa is unplugged.`
+      + ` The garment keeps the look it is showing.">clearing ${esc(c.done)}`
+      + `/${esc(c.total)}</span>`;
+  if (c.state === "cleared")
+    return `<span class="vf ok" title="Slots 1-18 are empty: if these boards`
+      + ` autoplay after the Radxa is gone they show white, not the show.`
+      + ` START needs an Upload again.">pictures cleared</span>`;
+  if (c.state === "failed") {
+    const boards = [...new Set((c.failed || []).map(p => p[0]))].sort((a, b) => a - b);
+    const named = boards.slice(0, 3).join(", ")
+      + (boards.length > 3 ? ` +${boards.length - 3} more` : "");
+    return `<span class="vf no" title="Those slots still hold the show's`
+      + ` pictures — power those boards off before unplugging.">`
+      + `${esc(c.failed.length)} slots not cleared`
+      + (boards.length ? ` (board${boards.length === 1 ? "" : "s"} ${esc(named)})` : "")
+      + `</span>`;
+  }
+  if (c.state === "partial")
+    return `<span class="vf no" title="The clear was interrupted${c.reason ? " — " + esc(c.reason) : ""}:`
+      + ` some slots are empty and some still hold the show. Clear again, or`
+      + ` power the boards off before unplugging.">cleared partially</span>`;
+  return "";
+}
 function renderTiles() {
   showClockText();
   const box = $("#tiles");
@@ -4339,7 +4540,7 @@ function renderTiles() {
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version")
             + (unitHoldsRevision(u.name) === false ? " (older timeline)" : "") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
-      <div class="row"><span>Pictures</span><b>${picturesText(u)}${restartMark(u)}</b></div>
+      <div class="row"><span>Pictures</span><b>${picturesText(u)}${restartMark(u)}${clearText(u)}</b></div>
       <div class="row"><span>On unit</span><b>${demosOnUnitHtml(u)}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
       ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}
@@ -4674,6 +4875,7 @@ document.addEventListener("click", async e => {
   if (e.target.id === "write-back") { closeWriteDialog(); return; }
   if (e.target.id === "write-upload") { await writeUpload(); return; }
   if (e.target.id === "write-demo") { await writeDemo(); return; }
+  if (e.target.id === "write-clear-now") { await writeClearNow(); return; }
   if (e.target.id === "demo-refresh") { await refreshDemos(); return; }
   const delDemo = e.target.closest("[data-demo-delete]");
   if (delDemo) {
@@ -4802,6 +5004,23 @@ document.addEventListener("change", async e => {
     // gesture the browser was waiting for.
     showMusic.blocked = false;
     showMusicTick();
+    return;
+  }
+  // "Clear pictures after the show". Stored with the SHOW (show.json,
+  // undoable), not in this browser: it is a property of the evening, so it
+  // has to survive a reload, another operator's tab and the page being
+  // opened on a second PC. Refreshed from the server afterwards, so a
+  // refusal puts the tick back where it belongs rather than leaving the
+  // box saying something the show does not.
+  if (id === "show-clear-after") {
+    const on = e.target.checked;
+    try {
+      await api("/api/show/clear_after", { on });
+    } catch (err) {
+      toast(`Could not save it: ${err.message}`);
+    }
+    await refresh();
+    render();
     return;
   }
   if (id === "show-manual") {
