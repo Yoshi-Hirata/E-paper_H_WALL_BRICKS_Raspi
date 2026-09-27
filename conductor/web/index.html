@@ -4311,9 +4311,10 @@ function verifyMark(u) {
 function stallMark(u) {
   const s = u.bus_stall;
   if (!s || !s.ms) return "";
+  const ago = s.ago_s == null ? "" : ` ${esc(Math.round(s.ago_s))} s ago.`;
   const more = s.count > 1 ? ` ${esc(s.count)} times this run.` : "";
   return `<span class="vf re" title="The board on the USB cable did not take the`
-    + ` frame at once — it was busy; the picture may not have landed.${more}">`
+    + ` frame at once — it was busy; the picture may not have landed.${ago}${more}">`
     + `bus stalled ${esc(Math.round(s.ms))} ms</span>`;
 }
 function renderTiles() {

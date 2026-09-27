@@ -379,6 +379,39 @@ def test_the_remote_guard_stops_the_autoplay_while_the_worker_is_idle():
     assert status["remote_guard_sent"] >= 4
 
 
+def test_the_remote_guard_goes_out_in_the_gap_between_two_cues():
+    """THE case this exists for (review, 2026-09-27). A running show
+    never reaches the idle loop: ui/showplay.py arms the next cue the
+    moment the current one applies, so session.due() is never None and
+    the worker sits inside _fire_at()'s wait for the whole stretch
+    between two cues - which is exactly the 11-38 s of silence the
+    master board restarted its autoplay in."""
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.1, remote_guard=0.1,
+                         remote_guard_hold=0.2)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    fired = session.fired_at
+    # ...and the next cue is armed at once, a second off, the way a show
+    # does it. The worker is inside _fire_at() from here until it fires.
+    at2 = time.monotonic() + 1.0
+    session.arm("c2", 2)
+    session.fire("c2", at2)
+    assert wait_until(lambda: session.phase == FIRED and session.cue_id == "c2",
+                      timeout=5.0)
+    runner.stop()
+    beats = [t for t in bus.broadcast_stops if fired < t < at2]
+    assert beats, "no autoplay guard at all in the gap between two cues"
+    assert runner.remote_guard_sent >= 1
+    # Not inside c1's repaint, and not in the run-up to c2 either.
+    assert min(beats) >= fired + 0.1 - 0.02
+    assert max(beats) <= at2 - 0.2 + 0.02
+    # ...and c2 still went out on time.
+    assert 0 <= (session.fired_at - at2) * 1000 < 50
+
+
 def test_the_remote_guard_stands_aside_for_a_cue_and_its_repaint():
     """The two ways a heartbeat could do harm: landing on top of a
     trigger about to go out (REMOTE_GUARD_HOLD_S of clearance), and
@@ -497,6 +530,27 @@ def test_a_stop_that_blocks_is_named_stop_and_the_stalls_add_up():
     runner.stop()
     assert stall["frame"] == "stop" and stall["count"] >= 2
     assert stall["ms"] >= 70
+
+
+def test_a_clean_cue_takes_the_stall_mark_down_but_keeps_the_count():
+    """A 60 ms stall in the second minute is worth looking at then, not
+    an amber mark on the tile through the encore (review, 2026-09-27)."""
+    bus = StallingBus(0.12, SHOW)
+    runner = make_runner(bus, guard_delay=0.05)
+    session = RemoteSession(runner)
+    session.arm("c1", 3)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    assert session.status()["bus_stall"]["ms"] >= 100
+    assert session.status()["bus_stall"]["ago_s"] is not None
+    bus.block_s = 0.0                       # the board is free again
+    session.arm("c2", 4)
+    session.fire("c2", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED and session.cue_id == "c2",
+                      timeout=5.0)
+    stall = session.status()["bus_stall"]
+    runner.stop()
+    assert stall["ms"] is None and stall["count"] == 1
 
 
 def test_a_bus_that_takes_the_frame_at_once_reports_no_stall():

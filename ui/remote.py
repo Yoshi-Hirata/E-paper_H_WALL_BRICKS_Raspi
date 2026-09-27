@@ -108,6 +108,19 @@ def _seconds(value) -> "float | None":
     return seconds
 
 
+def _with_age(stall: "dict | None") -> "dict | None":
+    """A copy of the runner's bus_stall with `ago_s` filled in, or None.
+
+    A copy, because the worker thread owns the original and goes on
+    updating it while the PC reads this one.
+    """
+    if not stall:
+        return None
+    at = stall.get("at")
+    ago = None if not at else round(max(0.0, time.time() - float(at)), 1)
+    return dict(stall, ago_s=ago)
+
+
 class RemoteSession:
     def __init__(self, runner, clock=time.monotonic, busy=None):
         self.runner = runner
@@ -685,8 +698,12 @@ class RemoteSession:
                 "remote_guard_sent": runner.remote_guard_sent,
                 # The last broadcast write that BLOCKED, and how many
                 # have (ui/runner.py's STALL_LOG_MS): {"ms", "frame",
-                # "at" (wall clock), "count"}. None while every write
-                # has been immediate, which is the normal answer.
-                "bus_stall": runner.bus_stall,
+                # "at" (wall clock), "ago_s", "count"}. None while every
+                # write has been immediate, which is the normal answer,
+                # and `ms` back to None once a later cue went out
+                # cleanly. The age is worked out HERE, on the unit's own
+                # clock - the PC's differs, and this is one subtraction
+                # between two readings of the same one.
+                "bus_stall": _with_age(runner.bus_stall),
                 "burn": burn,
             }
