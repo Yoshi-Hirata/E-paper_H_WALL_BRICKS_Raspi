@@ -7,7 +7,11 @@ hand over a folder. This is the conductor side of that exchange: every
 file name and the show are validated up front (whole or nothing - a bad
 bundle writes nothing), the CSVs then save the same way /api/files does
 (reporting which ones already existed as `overwritten` - Undo does not
-bring those bytes back), and the timeline replaces itself exactly the
+bring those bytes back), except a garment's WIRING: a *_map.csv this
+workspace already holds is kept and reported in `kept`, never taken from
+the bundle (2026-09-27 - the maps here are regenerated from the 配線ナビ
+when the site changes a garment, and a bundle put a stale one back over
+that morning's change). The timeline replaces itself exactly the
 way /api/show/import does, in one undo step, except that a bundle with
 no unit/board changes of its own (the normal case - the designers'
 simulator has no notion of either) leaves the operator's assignments and
@@ -33,7 +37,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conductor.server import Workspace, make_server
-from tests.test_look import GRID, MAP
+from tests.test_look import GRID, MAP, OLD_LAYOUT_MAP, _old_layout_grid
 
 FIXTURE_PATH = (Path(__file__).resolve().parent
                 / "fixtures" / "sim" / "bundle_v1.json")
@@ -222,11 +226,106 @@ def test_bundle_units_null_entry_cannot_wipe_all_assignments(tmp_path):
 
 def test_bundle_import_reports_overwritten_files(tmp_path):
     ws = Workspace(tmp_path / "ws")
-    ws.save(MAP_NAME, MAP)                      # already there before the bundle
+    ws.save(GRID_NAME, GRID)                    # already there before the bundle
     result = ws.import_bundle(make_bundle())
-    assert result["overwritten"] == [MAP_NAME]
-    assert GRID_NAME not in result["overwritten"]
+    assert result["overwritten"] == [GRID_NAME]
     assert sorted(result["saved"]) == [GRID_NAME, MAP_NAME]
+    # The map was not here, so it arrived with the bundle and is not an
+    # overwrite either (the kept-wiring rule below is about the other case).
+    assert MAP_NAME not in result["overwritten"]
+    assert result["kept"] == []
+
+
+# ---- the wiring here is the operator's (2026-09-27) ----
+#
+# The 配線ナビ changed two garments that morning and the operator installed
+# the regenerated maps; a designer's bundle loaded at 13:49 put its own
+# stale AZ271SD1307_map.csv straight back over one of them, silently,
+# because a bundle overwrites by design. Designs still do. Wiring does not.
+
+def test_a_bundles_map_for_a_garment_already_here_is_kept_silently(tmp_path):
+    ws = Workspace(tmp_path / "ws")
+    ws.save(MAP_NAME, MAP)                      # the operator's own wiring
+    result = ws.import_bundle(make_bundle())    # the bundle carries the same
+    # Byte for byte the file that is here: nothing happened, so nothing is
+    # said about it beyond the count.
+    assert result["kept"] == [{"name": MAP_NAME, "why": ""}]
+    assert result["overwritten"] == []
+    assert MAP_NAME not in result["saved"]      # it was not written at all
+    assert result["saved"] == [GRID_NAME]
+    assert (ws.files / MAP_NAME).read_text(encoding="utf-8") == MAP
+
+
+def test_a_bundles_differing_map_is_kept_with_the_reason(tmp_path):
+    ws = Workspace(tmp_path / "ws")
+    # This morning's wiring: one socket moved, exactly the 2026-09-27 change.
+    current = MAP.replace("front,1,2,17,60,017-60", "front,1,2,17,59,017-59")
+    ws.save(MAP_NAME, current)
+    ws.save(GRID_NAME, GRID)
+    changed_design = GRID.replace("0x03", "0x02")
+    result = ws.import_bundle(make_bundle(files={MAP_NAME: MAP,        # stale
+                                                 GRID_NAME: changed_design}))
+    assert result["kept"] == [
+        {"name": MAP_NAME,
+         "why": "the workspace's wiring is kept (the bundle's copy differs)"}]
+    # The wiring on disk is untouched - the bundle's copy never landed.
+    assert (ws.files / MAP_NAME).read_text(encoding="utf-8") == current
+    assert MAP_NAME not in result["saved"]
+    assert MAP_NAME not in result["overwritten"]
+    # ...and the designs came in exactly as before, overwrite and all.
+    assert result["saved"] == [GRID_NAME]
+    assert result["overwritten"] == [GRID_NAME]
+    assert (ws.files / GRID_NAME).read_text(encoding="utf-8") == changed_design
+
+
+def test_a_bundles_map_for_a_new_garment_is_written(tmp_path):
+    # A garment this workspace has never seen arrives with its wiring -
+    # otherwise a new LOOK from the designers would land with designs and
+    # no map at all.
+    ws = Workspace(tmp_path / "ws")
+    result = ws.import_bundle(make_bundle())
+    assert result["kept"] == []
+    assert sorted(result["saved"]) == [GRID_NAME, MAP_NAME]
+    assert (ws.files / MAP_NAME).read_text(encoding="utf-8") == MAP
+    assert item(ws.state(), "Look22")["map"] is not None
+
+
+def test_a_map_is_kept_once_per_garment_however_the_bundle_spells_it(tmp_path):
+    # Windows cannot tell "look22_map.csv" from "Look22_map.csv" (fold_name),
+    # so both are THIS garment's wiring - kept, and named once, rather than
+    # one of them quietly replacing it and the other reported twice.
+    ws = Workspace(tmp_path / "ws")
+    ws.save(MAP_NAME, MAP)
+    other = MAP.replace("front,1,2,17,60,017-60", "front,1,2,17,58,017-58")
+    result = ws.import_bundle(make_bundle(files={MAP_NAME: other,
+                                                "look22_map.csv": other},
+                                          cues=[]))
+    assert result["kept"] == [
+        {"name": MAP_NAME,
+         "why": "the workspace's wiring is kept (the bundle's copy differs)"}]
+    assert result["saved"] == []
+    assert (ws.files / MAP_NAME).read_text(encoding="utf-8") == MAP
+    assert sorted(p.name for p in ws.files.glob("*.csv")) == [MAP_NAME]
+
+
+def test_the_geometry_check_runs_against_the_kept_wiring(tmp_path):
+    # The reason keeping the map is not merely tidy: a design drawn for the
+    # layout the bundle still believes in has to be flagged against the
+    # wiring that is actually here. The CHECK reads the CSVs on disk, so
+    # keeping the map is what makes it the current one.
+    ws = Workspace(tmp_path / "ws")
+    map_name, grid_name = "AZ271SD1301_map.csv", "AZ271SD1301_color_old_grid.csv"
+    ws.save(map_name, OLD_LAYOUT_MAP)            # the current, taller wiring
+    stale = OLD_LAYOUT_MAP.replace("front,33,10", "front,18,10") \
+                          .replace("back,34,10", "back,18,10")
+    result = ws.import_bundle(make_bundle(
+        files={map_name: stale, grid_name: _old_layout_grid()}, cues=[]))
+    assert [k["name"] for k in result["kept"]] == [map_name]
+    assert result["kept"][0]["why"]
+    assert (ws.files / map_name).read_text(encoding="utf-8") == OLD_LAYOUT_MAP
+    designs = item(ws.state(), "AZ271SD1301")["designs"]
+    problems = next(d for d in designs if d["name"] == grid_name)["problems"]
+    assert any("made for another layout" in p for p in problems), problems
 
 
 def test_bundle_music_name_does_not_touch_the_real_music_file(tmp_path):
@@ -523,9 +622,23 @@ def test_bundle_import_via_http(tmp_path):
         assert result["ok"] is True
         assert result["cues"] == 1
         assert sorted(result["saved"]) == [GRID_NAME, MAP_NAME]
+        assert result["kept"] == []
         state = json.loads(urllib.request.urlopen(
             f"{base}/api/state", timeout=5).read())
         assert state["show"]["cues"][0]["item"] == "Look22"
+        # The same bundle again, now that the garment has its wiring here:
+        # `kept` crosses the wire as a list of {name, why} (the page reads
+        # `why` to decide what to say), and the design is overwritten as
+        # ever.
+        request = urllib.request.Request(
+            f"{base}/api/bundle/import",
+            data=json.dumps(make_bundle()).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            again = json.loads(response.read())
+        assert again["kept"] == [{"name": MAP_NAME, "why": ""}]
+        assert again["saved"] == [GRID_NAME]
+        assert again["overwritten"] == [GRID_NAME]
     finally:
         server.shutdown()
         server.server_close()
