@@ -39,10 +39,71 @@
   止めない(本番 2 日前、各衣装のスイッチは既定どおりに設定済み)
 - 表の DIP ID 欄はクリックして入力。手で入れた ID は **set by hand** の札と
   **×**(ランクに戻る)。Undo / Redo が効く。Save show… / バンドルにも載り、
-  **バンドルが `dips` を持たないときはこの PC のものが残る**(`boards` と同じ)
+  **バンドルが `dips` を持たない(空でも同じ)ときはこの PC のものが残る**
+  (`boards` と同じ)
+- `dips` の鍵は**画面に出ている基板番号**なので、**BOARD NO. を書き換えると
+  DIP ID もそのボードに付いて移る**(同じ 1 ステップ)。レビューで見つかった
+  実害:118 を 119 に振り直すと `dips` が `{"118": 28}` のまま残り、その
+  ボードはランク 27 に戻る一方でスイッチは 28 のまま ― キューは何も描かず、
+  本当に 27 のボードがそれを受け取る。117→118・118→130 のように別のボードの
+  番号に重なる振り直しでは、古い鍵が**別のボードの設定**になっていた
+- ランクと同じ値の設定も**捨てずに残す**(スイッチが何を指しているかという
+  事実であって、no-op ではない)。外すのは **×**(`null`)だけ
 - 使い方は [CONDUCTOR_START.md](CONDUCTOR_START.md) の
   「DIP ID を手で指定するとき」、制約の出所は
   [SPECIFICATION.md](SPECIFICATION.md) 5.9
+
+**1 ルックだけの書き込みは、他の衣装の問題では断らない(2026-09-27 オペレーター報告)**
+
+現象:バッグ **AZ271SG1036(radxa-09)だけ**を書こうとしたのに、他の 5 着が
+一時的に機体未割り当てだったせいで `… not assigned to a unit` 5 件で
+**アップロード全体が断られ**、radxa-09 には 1 バイトも届かなかった。
+選択的な書き込み(ダイアログの **Which LOOKs** = 1 ルック)では、他の衣装の
+問題はその機体のショーファイルとは無関係 ―― その機体には他の衣装のキューも
+基板も map も入らないし、その衣装の機体には**そもそも post しない**。
+
+直したもの:
+
+- `conductor/showfile.py` の **`build(only=…)`**:`only`(選んだルックの機体)が
+  ある時は、**対象機体の衣装についての問題だけ**が拒否理由になる。他の衣装の
+  問題は **`warnings`** として返す(3 つ目の戻り値)。`only` 無し(All LOOKs)は
+  従来どおり **whole or not at all** で、ゲートの文言もそのまま。
+  「the timeline has no cues」は両方で拒否。map 自体が読めない CSV
+  (`broken`)も両方で拒否 ― どの機体の話かを言える材料が無い
+- `Workspace.compile_for_write(only)` = `compile_show()` に warnings を足したもの。
+  `compile_show()` の戻りは 2 要素のまま。`Workspace.compiled` には
+  **problems + warnings の両方**を入れる(START の「the timeline has problems」は
+  タイムライン全体についての問いなので、1 ルックが見逃した問題もそこに数える)
+- `/api/fleet/upload` と `/api/fleet/write_demo` は **`warnings` を返す**。
+  `units` のシェイプ検査はコンパイル**前**(それがコンパイルの範囲を決めるから)、
+  機体名の照合はコンパイル**後**でメッセージは同じ
+- **warnings が 1 件でもある書き込みは fleet 全体の印を付けない**
+  (`mark_written(whole=False)`)。いま All LOOKs で Upload しても断られる
+  タイムラインを「units は最新」と言ってはいけない。機体ごとの印は残るので
+  「どの機体が今の版を持っているか」は従来どおり分かる
+- ダイアログ(`writeState()`):問題を**書き込む機体のキューだけ**数える。
+  All LOOKs では未割り当ての衣装を名指しして断り、逃げ道を同じ文に入れる
+  (`… has cues but no unit — give it one on the Designs tab, or pick one LOOK
+  above to write just that one.`)。1 ルック選択中は Upload が押せて、
+  両方の選択肢の下に `Not written: <衣装名> — no unit yet` と出る
+  (**サーバの拒否文・amber 行と同じ「衣装名」で呼ぶ**。型番ラベルは
+  ラジオの行が言う)。結果欄の warnings は赤ではなく **amber**
+  (`not written: …`)で、「n / n 書けた」の判定には数えない
+- **START / ② Show preset の門(`_one_timeline`)は、機体を数える前に
+  タイムラインの problems を見る**(レビュー指摘、同日)。
+  **機体を持たない衣装は誰の印にも `timeline_units()` にも現れない**ので、
+  機体を持つ衣装だけを 1 ルック Upload した直後は
+  missing も behind も空 ―― 門が黙って通り、衣装 1 着が抜けたショーが
+  走りかけていた(プローブでは焼き込みの門にだけ引っかかっていた)。
+  順序を入れ替えただけで文言は同じ(`the timeline has problems - fix them on
+  the Timeline tab, then Upload`)。`force` はこの門の答えにならないのも同じ。
+  **`split_ok` は従来どおり門ごと飛ばす**(この門が断るどのタイムラインでも
+  同じ挙動。オペレーターが明示的に「承知」と答えた場合のみ)
+
+テスト:`tests/test_showfile.py`(他機体の壊れたキューは warning で、その機体は
+ビルドもしない)、`tests/test_conductor_server.py`(compile / エンドポイント /
+**1 ルック Upload のあと START と PRESET が断る** / ヘッドレスで
+`writeState()` を実際に走らせる 3 件)。
 
 **bundle を取り込んでも配線(`*_map.csv`)は残す(2026-09-27 オペレーター決定)**
 
@@ -820,7 +881,10 @@ Conductor でも Timeline でも別物として正しく扱われるので実害
 「機体の小さな画面だけで判断すると取り違えうる」に限られる。CHECK に警告を
 足すには `check()`(map 1 枚 + 柄 1 枚)には無い**同じ衣装の柄どうしの比較**が
 要り、`showfile.build()` 側に足すと警告の返し口が無く**ショー全体を止めて**
-しまう。入れるなら専用の warnings 経路を作ってからにすること。
+しまう。入れるなら専用の warnings 経路を作ってからにすること
+(2026-09-27:`build()` は `warnings` を返すようになった ― ただし今は
+「1 ルックの書き込みが対象外の衣装について報告する」ためだけの経路で、
+All LOOKs では 1 件も出ない。CHECK の警告に使うならそこから設計すること)。
 
 **古いレイアウトの柄 CSV を名指しで断るようにした + 配線ナビの
 「HW 用 CSV」名をそのまま読む(2026-09-26)**

@@ -1148,21 +1148,52 @@
   // conductor/look.py's unit_board_ids() `dips`: the ranks, with the
   // boards whose switches were changed on the garment taking their own
   // address. Only those move, so the gap one leaves stays a gap. The sim
-  // has no unit assignment, so one map is one bus here.
+  // has no unit assignment, so one map is one bus here - which is why the
+  // "board is in both maps" and MAX_BOARDS problems of the Python cannot
+  // arise and are not mirrored; every problem a DIP ID can raise is.
+  //
+  // Returns { ok, ids, problems } rather than just the ids, because the
+  // Python RAISES on a bad one and server.py's state() then falls back to
+  // the ranks AND puts the problems on the item. Silently reverting here
+  // would draw a page the real Conductor never draws (found in review).
   function applyDips(map, ids, dipsForItem) {
     const result = Object.assign({}, ids);
-    Object.keys(dipsForItem || {}).forEach(noStr => {
-      const no = Number(noStr), dip = Number(dipsForItem[noStr]);
-      if (!(no in result)) return;
-      if (!Number.isInteger(dip) || dip < 1 || dip > MAX_BOARD_ID) return;
+    const problems = [];
+    const boards = Object.keys(dipsForItem || {}).map(Number)
+      .sort((a, b) => a - b);
+    boards.forEach(no => {
+      if (!(no in result)) return;      // not a board of this bus: ignored
+      const raw = dipsForItem[no];
+      // Python int(x): truncate a number, parse a strict whole-number
+      // string, else it is not a number at all (state.js's pyIntCoerce).
+      const dip = typeof raw === "number"
+        ? (Number.isFinite(raw) ? Math.trunc(raw) : null)
+        : pyIntStrict(raw);
+      if (dip === null) {
+        problems.push(`board ${no}: the DIP ID set by hand (${pyRepr(raw)}) is not a number`);
+        return;
+      }
+      if (dip < 1 || dip > MAX_BOARD_ID) {
+        problems.push(`board ${no}: DIP ${dip} is outside 1-${MAX_BOARD_ID}`);
+        return;
+      }
       result[no] = dip;
     });
-    // A duplicate would be a LookError in Python; the sim has no problems
-    // channel for a bus, so it keeps the ranks rather than draw two
-    // boards at one address.
-    const used = Object.keys(result).map(k => result[k]);
-    if (new Set(used).size !== used.length) return Object.assign({}, ids);
-    return result;
+    // Then the duplicates, over the ids as far as they were applied -
+    // sorted by address, each naming its boards, exactly as the Python.
+    const holders = {};
+    Object.keys(result).forEach(noStr => {
+      const address = result[noStr];
+      (holders[address] = holders[address] || []).push(Number(noStr));
+    });
+    Object.keys(holders).map(Number).sort((a, b) => a - b).forEach(address => {
+      if (holders[address].length > 1) {
+        const named = holders[address].sort((a, b) => a - b).join(", ");
+        problems.push(`DIP ${address} would be used twice (boards ${named})`);
+      }
+    });
+    if (problems.length) return { ok: false, ids: null, problems };
+    return { ok: true, ids: result, problems };
   }
 
   function dipSheet(map, ids) {

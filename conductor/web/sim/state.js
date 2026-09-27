@@ -105,7 +105,10 @@
   }
 
   // Workspace._own_dips, restricted to one item: {board_no: the DIP ID
-  // that board's switches really have}. All-or-nothing like the Python.
+  // that board's switches really have}. PER ENTRY, not all-or-nothing like
+  // ownBoardsFor: one unusable entry in a hand-edited show.json must not
+  // take the "set by hand" badge off every other board (server.py says
+  // why). An unusable one is dropped here and reported by applyDips.
   function ownDipsFor(show, item) {
     const perItem = show && show.dips && typeof show.dips === "object"
       && !Array.isArray(show.dips) ? show.dips[item] : null;
@@ -114,7 +117,7 @@
     for (const noKey of Object.keys(perItem)) {
       const no = pyIntCoerce(noKey);
       const dip = pyIntCoerce(perItem[noKey]);
-      if (no === null || dip === null) return {};
+      if (no === null || dip === null) continue;
       result[no] = dip;
     }
     return result;
@@ -240,7 +243,11 @@
       const map = maps[key];
       const entry = items[key];
       const byHand = ownDipsFor(show, entry.item);
-      const ids = look.applyDips(map, look.boardIds(map), byHand);
+      // A refused DIP ID falls the whole bus back to the ranks and puts the
+      // problems on the item - server.py's state() does exactly this when
+      // unit_board_ids() raises.
+      const derived = look.applyDips(map, look.boardIds(map), byHand);
+      const ids = derived.ok ? derived.ids : null;
       entry.boards = look.dipSheet(map, ids);
       const was = {};
       const own = ownBoardsFor(show, entry.item);
@@ -255,6 +262,7 @@
             + `${board.dip_id} has ${look.UNRELIABLE_DIP_NOTE}`);
         }
       });
+      if (!derived.ok) entry.problems = entry.problems.concat(derived.problems);
     });
 
     // ---- sweep sequences, for the page's own sweep preview ----

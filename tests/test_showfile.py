@@ -162,6 +162,30 @@ def test_a_unit_drives_the_gapped_board_list_a_hand_set_dip_leaves(tmp_path):
     assert runner.boards_source == "show"
 
 
+# ---- whole or not at all, and what "whole" is for a one-LOOK write ----
+
+def test_a_one_look_build_leaves_another_units_broken_cue_alone(tmp_path):
+    """build(only=...) is the write's own definition of "whole": the units
+    of the LOOK the operator picked. A problem about a garment on another
+    unit is a warning - that unit is not posted to, and its cues, boards
+    and map go into no show file being built here. It is not built either:
+    its cue names a design that never loaded, and building it would be
+    reaching for a design that is not there (2026-09-27)."""
+    ws = workspace(tmp_path)
+    ws.assign("Look20-Skirt", "radxa-03")       # two units, one broken cue
+    ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1),
+                         cue("b", "Look20-Skirt", 0, "nosuch_grid.csv")],
+                    refresh=1.0)
+    # A full upload is unchanged: nothing is built while that is left.
+    assert ws.compile_show() == (
+        {}, ["0:00 Look20-Skirt: design nosuch_grid.csv is not loaded"])
+    shows, problems, warnings = ws.compile_for_write(["radxa-02"])
+    assert problems == []
+    assert warnings == ["0:00 Look20-Skirt: design nosuch_grid.csv is not loaded"]
+    assert list(shows) == ["radxa-02"]
+    assert [c["label"] for c in shows["radxa-02"]["cues"]] == ["Look20-Top P01"]
+
+
 # ---- what the unit's own screen can draw ----
 
 def test_a_full_width_or_japanese_design_name_reaches_the_unit_as_ascii(tmp_path):

@@ -204,24 +204,70 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
 def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
           load_design, cues: "list[dict]", refresh: float, duration: float,
           cue_problems: "dict[str, list[str]]", name: str = "show",
-          dips: "dict | None" = None
-          ) -> "tuple[dict[str, dict], list[str]]":
-    """({unit: show file}, problems). Nothing is built while the
-    timeline still has a problem: a show goes out whole or not at all."""
+          only: "list[str] | None" = None, dips: "dict | None" = None
+          ) -> "tuple[dict[str, dict], list[str], list[str]]":
+    """({unit: show file}, problems, warnings). Nothing is built while the
+    timeline still has a problem: a show goes out whole or not at all.
+
+    `only` is the write's own definition of "whole" - the units of the
+    one LOOK the operator picked in the dialog's "Which LOOKs"
+    (conductor/fleet.py's `upload(only=...)`, which posts to nobody
+    else). A problem about an item on ANOTHER unit cannot be about that
+    unit's show file: it is not built from those cues, those boards or
+    that garment's map, and the unit is not written to at all. So with
+    `only` a problem is blocking when it belongs to a TARGETED unit's
+    item, and a `warning` - reported, not refused - when it does not.
+
+    Which is the whole point (2026-09-27): the operator asked for one bag
+    on radxa-09 while the other five garments were between units, and the
+    upload was refused with five "not assigned to a unit" about garments
+    that were never going to be written. An unassigned item has no unit
+    at all, so it can never be a targeted one's, and its cues can never
+    reach a unit either way.
+
+    A full upload (`only` None) keeps the rule as it was: every problem
+    blocks, so START can never be handed a fleet built from half a
+    timeline. "the timeline has no cues" blocks either way - there is
+    nothing to write for anyone.
+
+    `dips` is show.json's own {item: {board_no: the DIP ID that board's
+    switches really have} - passed straight to build_unit_show(), so the
+    addresses a unit's file carries are the same ones the page shows,
+    whichever units this write targets.
+    """
+    targeted = None if only is None else set(only)
     problems: "list[str]" = []
+    warnings: "list[str]" = []
+    # The units a warning is about: not written here, and not built
+    # either - a cue of theirs may name a design that never loaded.
+    warned: "set[str]" = set()
+
+    def unit_of(item: str) -> "str | None":
+        look_map = maps.get(item.lower())
+        return assigned.get(look_map.item if look_map is not None else item)
+
+    def note(unit: "str | None", text: str) -> None:
+        if targeted is None or (unit is not None and unit in targeted):
+            problems.append(text)
+            return
+        warnings.append(text)
+        if unit is not None:
+            warned.add(unit)
+
     for cue in cues:
         for problem in cue_problems.get(cue["id"], []):
-            problems.append(f"{timeline.format_clock(cue['at'])} "
-                            f"{cue['item']}: {problem}")
+            note(unit_of(cue["item"]),
+                 f"{timeline.format_clock(cue['at'])} "
+                 f"{cue['item']}: {problem}")
     used = {cue["item"].lower() for cue in cues}
     for key in sorted(used):
         look_map = maps.get(key)
         if look_map is not None and not assigned.get(look_map.item):
-            problems.append(f"{look_map.item}: not assigned to a unit")
+            note(None, f"{look_map.item}: not assigned to a unit")
     if not cues:
         problems.append("the timeline has no cues")
     if problems:
-        return {}, problems
+        return {}, problems, warnings
 
     by_unit: "dict[str, list[LookMap]]" = {}
     for key, look_map in maps.items():
@@ -230,6 +276,8 @@ def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
             by_unit.setdefault(unit, []).append(look_map)
     shows = {}
     for unit, unit_maps in sorted(by_unit.items()):
+        if unit in warned:
+            continue        # a problem of its own, and not this write's
         keys = {(m.item or m.name).lower() for m in unit_maps}
         unit_cues = [c for c in cues if c["item"].lower() in keys]
         if not unit_cues:
@@ -240,5 +288,7 @@ def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
             shows[unit] = build_unit_show(unit, unit_maps, designs, unit_cues,
                                           refresh, duration, name, dips=dips)
         except (OSError, LookError) as exc:
-            problems.append(f"{unit}: {exc}")
-    return (shows, problems) if not problems else ({}, problems)
+            note(unit, f"{unit}: {exc}")
+    if problems:
+        return {}, problems, warnings
+    return shows, problems, warnings

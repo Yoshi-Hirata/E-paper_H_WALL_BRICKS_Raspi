@@ -17524,6 +17524,681 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, {
    }
   },
   {
+   "expect": {
+    "items": [
+     {
+      "boards": [
+       {
+        "board_no": 17,
+        "dip_by_hand": false,
+        "dip_id": 1,
+        "dip_unreliable": false,
+        "scales": 2,
+        "source_no": 17,
+        "switches_on": "1"
+       },
+       {
+        "board_no": 18,
+        "dip_by_hand": false,
+        "dip_id": 2,
+        "dip_unreliable": false,
+        "scales": 1,
+        "source_no": 18,
+        "switches_on": "2"
+       },
+       {
+        "board_no": 20,
+        "dip_by_hand": true,
+        "dip_id": 3,
+        "dip_unreliable": false,
+        "scales": 1,
+        "source_no": 20,
+        "switches_on": "1 2"
+       }
+      ],
+      "designs": [
+       {
+        "colors": {
+         "back|0|2": 5,
+         "front|0|1": 15,
+         "front|1|1": 3,
+         "front|1|2": 0
+        },
+        "label": "P01",
+        "name": "Sample_color_pattern01_grid.csv",
+        "partial_problems": [],
+        "pattern": 1,
+        "problems": [],
+        "shifts": {
+         "back|0": 0.0,
+         "front|0": 0.0,
+         "front|1": 0.5
+        },
+        "transition": {
+         "sequence": "natural",
+         "span_s": 0.0
+        },
+        "undecided": []
+       }
+      ],
+      "item": "Sample",
+      "look": "",
+      "map": {
+       "name": "Sample_map.csv",
+       "scales": [
+        [
+         "front",
+         1,
+         1,
+         17,
+         1
+        ],
+        [
+         "front",
+         1,
+         2,
+         17,
+         60
+        ],
+        [
+         "front",
+         0,
+         1,
+         20,
+         5
+        ],
+        [
+         "back",
+         0,
+         2,
+         18,
+         12
+        ]
+       ],
+       "shifts": {},
+       "sides": [
+        "front",
+        "back"
+       ],
+       "warnings": []
+      },
+      "model": "",
+      "problems": [
+       "DIP 2 would be used twice (boards 18, 20)"
+      ],
+      "sequences": {
+       "bottom_up": [
+        1,
+        1,
+        0,
+        0
+       ],
+       "center": [
+        0,
+        1,
+        1,
+        1
+       ],
+       "left_right": [
+        1,
+        0,
+        1,
+        0
+       ],
+       "right_left": [
+        0,
+        1,
+        0,
+        0
+       ],
+       "top_down": [
+        0,
+        0,
+        1,
+        1
+       ]
+      },
+      "unit": null
+     }
+    ],
+    "music": {
+     "name": null,
+     "url": null
+    },
+    "orphans": [],
+    "palette": [
+     {
+      "name": "White",
+      "rgb": [
+       137,
+       173,
+       195
+      ]
+     },
+     {
+      "name": "Yellow",
+      "rgb": [
+       180,
+       174,
+       64
+      ]
+     },
+     {
+      "name": "Blue",
+      "rgb": [
+       0,
+       92,
+       182
+      ]
+     },
+     {
+      "name": "Red",
+      "rgb": [
+       114,
+       71,
+       59
+      ]
+     },
+     {
+      "name": "Black",
+      "rgb": [
+       26,
+       55,
+       87
+      ]
+     },
+     {
+      "name": "Green",
+      "rgb": [
+       67,
+       131,
+       114
+      ]
+     },
+     {
+      "name": "Turquoise",
+      "rgb": [
+       118,
+       148,
+       76
+      ]
+     },
+     {
+      "name": "Almond",
+      "rgb": [
+       119,
+       122,
+       101
+      ]
+     },
+     {
+      "name": "Light Pink",
+      "rgb": [
+       112,
+       112,
+       112
+      ]
+     },
+     {
+      "name": "Sky Blue",
+      "rgb": [
+       36,
+       115,
+       179
+      ]
+     },
+     {
+      "name": "Orange",
+      "rgb": [
+       129,
+       82,
+       66
+      ]
+     },
+     {
+      "name": "Yellow Green",
+      "rgb": [
+       134,
+       174,
+       89
+      ]
+     },
+     {
+      "name": "Olive Gray",
+      "rgb": [
+       60,
+       131,
+       116
+      ]
+     },
+     {
+      "name": "Brown",
+      "rgb": [
+       126,
+       85,
+       63
+      ]
+     },
+     {
+      "name": "Dark Brown",
+      "rgb": [
+       108,
+       99,
+       75
+      ]
+     },
+     {
+      "name": "Smoke Blue",
+      "rgb": [
+       56,
+       119,
+       147
+      ]
+     }
+    ],
+    "sequences": [
+     {
+      "id": "natural",
+      "label": "Socket order (P01 to P60)"
+     },
+     {
+      "id": "center",
+      "label": "Centre outward"
+     },
+     {
+      "id": "top_down",
+      "label": "Top to bottom"
+     },
+     {
+      "id": "bottom_up",
+      "label": "Bottom to top"
+     },
+     {
+      "id": "left_right",
+      "label": "Left to right (audience)"
+     },
+     {
+      "id": "right_left",
+      "label": "Right to left (audience)"
+     }
+    ],
+    "show": {
+     "cues": [],
+     "duration": 120.0,
+     "gap_s": 1.0,
+     "min_interval": {
+      "(Sample)": 8.0
+     },
+     "panel_repaint_s": 7.0,
+     "refresh_default": 8.0,
+     "refresh_s": 7.0,
+     "warnings": []
+    },
+    "transitions": {},
+    "units": []
+   },
+   "kind": "state",
+   "name": "dip_used_twice",
+   "project": {
+    "files": {
+     "Sample_color_pattern01_grid.csv": "side,row,shift,1,2,3\nfront,1,0.5,0x03,0x00,0\nfront,0,0,0x0F,0,0\nback,0,0,0,0x05,0\n",
+     "Sample_map.csv": "side,row,col,board_no,socket,label\nfront,1,1,17,1,017-01\nfront,1,2,17,60,017-60\nfront,0,1,20,5,020-05\nback,0,2,18,12,018-12\n"
+    },
+    "show": {
+     "boards": {},
+     "cues": [],
+     "dips": {
+      "Sample": {
+       "20": 2
+      }
+     },
+     "duration": 120.0,
+     "labels": {},
+     "music": null,
+     "refresh_s": 7.0,
+     "transitions": {}
+    }
+   }
+  },
+  {
+   "expect": {
+    "items": [
+     {
+      "boards": [
+       {
+        "board_no": 17,
+        "dip_by_hand": true,
+        "dip_id": 1,
+        "dip_unreliable": false,
+        "scales": 2,
+        "source_no": 17,
+        "switches_on": "1"
+       },
+       {
+        "board_no": 18,
+        "dip_by_hand": false,
+        "dip_id": 2,
+        "dip_unreliable": false,
+        "scales": 1,
+        "source_no": 18,
+        "switches_on": "2"
+       },
+       {
+        "board_no": 20,
+        "dip_by_hand": true,
+        "dip_id": 3,
+        "dip_unreliable": false,
+        "scales": 1,
+        "source_no": 20,
+        "switches_on": "1 2"
+       }
+      ],
+      "designs": [
+       {
+        "colors": {
+         "back|0|2": 5,
+         "front|0|1": 15,
+         "front|1|1": 3,
+         "front|1|2": 0
+        },
+        "label": "P01",
+        "name": "Sample_color_pattern01_grid.csv",
+        "partial_problems": [],
+        "pattern": 1,
+        "problems": [],
+        "shifts": {
+         "back|0": 0.0,
+         "front|0": 0.0,
+         "front|1": 0.5
+        },
+        "transition": {
+         "sequence": "natural",
+         "span_s": 0.0
+        },
+        "undecided": []
+       }
+      ],
+      "item": "Sample",
+      "look": "",
+      "map": {
+       "name": "Sample_map.csv",
+       "scales": [
+        [
+         "front",
+         1,
+         1,
+         17,
+         1
+        ],
+        [
+         "front",
+         1,
+         2,
+         17,
+         60
+        ],
+        [
+         "front",
+         0,
+         1,
+         20,
+         5
+        ],
+        [
+         "back",
+         0,
+         2,
+         18,
+         12
+        ]
+       ],
+       "shifts": {},
+       "sides": [
+        "front",
+        "back"
+       ],
+       "warnings": []
+      },
+      "model": "",
+      "problems": [
+       "board 20: DIP 61 is outside 1-60"
+      ],
+      "sequences": {
+       "bottom_up": [
+        1,
+        1,
+        0,
+        0
+       ],
+       "center": [
+        0,
+        1,
+        1,
+        1
+       ],
+       "left_right": [
+        1,
+        0,
+        1,
+        0
+       ],
+       "right_left": [
+        0,
+        1,
+        0,
+        0
+       ],
+       "top_down": [
+        0,
+        0,
+        1,
+        1
+       ]
+      },
+      "unit": null
+     }
+    ],
+    "music": {
+     "name": null,
+     "url": null
+    },
+    "orphans": [],
+    "palette": [
+     {
+      "name": "White",
+      "rgb": [
+       137,
+       173,
+       195
+      ]
+     },
+     {
+      "name": "Yellow",
+      "rgb": [
+       180,
+       174,
+       64
+      ]
+     },
+     {
+      "name": "Blue",
+      "rgb": [
+       0,
+       92,
+       182
+      ]
+     },
+     {
+      "name": "Red",
+      "rgb": [
+       114,
+       71,
+       59
+      ]
+     },
+     {
+      "name": "Black",
+      "rgb": [
+       26,
+       55,
+       87
+      ]
+     },
+     {
+      "name": "Green",
+      "rgb": [
+       67,
+       131,
+       114
+      ]
+     },
+     {
+      "name": "Turquoise",
+      "rgb": [
+       118,
+       148,
+       76
+      ]
+     },
+     {
+      "name": "Almond",
+      "rgb": [
+       119,
+       122,
+       101
+      ]
+     },
+     {
+      "name": "Light Pink",
+      "rgb": [
+       112,
+       112,
+       112
+      ]
+     },
+     {
+      "name": "Sky Blue",
+      "rgb": [
+       36,
+       115,
+       179
+      ]
+     },
+     {
+      "name": "Orange",
+      "rgb": [
+       129,
+       82,
+       66
+      ]
+     },
+     {
+      "name": "Yellow Green",
+      "rgb": [
+       134,
+       174,
+       89
+      ]
+     },
+     {
+      "name": "Olive Gray",
+      "rgb": [
+       60,
+       131,
+       116
+      ]
+     },
+     {
+      "name": "Brown",
+      "rgb": [
+       126,
+       85,
+       63
+      ]
+     },
+     {
+      "name": "Dark Brown",
+      "rgb": [
+       108,
+       99,
+       75
+      ]
+     },
+     {
+      "name": "Smoke Blue",
+      "rgb": [
+       56,
+       119,
+       147
+      ]
+     }
+    ],
+    "sequences": [
+     {
+      "id": "natural",
+      "label": "Socket order (P01 to P60)"
+     },
+     {
+      "id": "center",
+      "label": "Centre outward"
+     },
+     {
+      "id": "top_down",
+      "label": "Top to bottom"
+     },
+     {
+      "id": "bottom_up",
+      "label": "Bottom to top"
+     },
+     {
+      "id": "left_right",
+      "label": "Left to right (audience)"
+     },
+     {
+      "id": "right_left",
+      "label": "Right to left (audience)"
+     }
+    ],
+    "show": {
+     "cues": [],
+     "duration": 120.0,
+     "gap_s": 1.0,
+     "min_interval": {
+      "(Sample)": 8.0
+     },
+     "panel_repaint_s": 7.0,
+     "refresh_default": 8.0,
+     "refresh_s": 7.0,
+     "warnings": []
+    },
+    "transitions": {},
+    "units": []
+   },
+   "kind": "state",
+   "name": "dip_out_of_range",
+   "project": {
+    "files": {
+     "Sample_color_pattern01_grid.csv": "side,row,shift,1,2,3\nfront,1,0.5,0x03,0x00,0\nfront,0,0,0x0F,0,0\nback,0,0,0,0x05,0\n",
+     "Sample_map.csv": "side,row,col,board_no,socket,label\nfront,1,1,17,1,017-01\nfront,1,2,17,60,017-60\nfront,0,1,20,5,020-05\nback,0,2,18,12,018-12\n"
+    },
+    "show": {
+     "boards": {},
+     "cues": [],
+     "dips": {
+      "Sample": {
+       "17": 5,
+       "20": 61
+      }
+     },
+     "duration": 120.0,
+     "labels": {},
+     "music": null,
+     "refresh_s": 7.0,
+     "transitions": {}
+    }
+   }
+  },
+  {
    "expect": "031e49c4b4dc379d",
    "kind": "state-digest",
    "name": "starter-AZ271SB2303",

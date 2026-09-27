@@ -277,18 +277,16 @@ def _demo_slug(raw) -> str:
     return slug
 
 
-def _only_units(raw, shows: "dict[str, dict]") -> "list[str] | None":
+def _only_units(raw) -> "list[str] | None":
     """The `units` of an Upload / Save on the units: which units of the
     compiled show this write is for ("Which LOOKs" in the page's dialog),
     or None for all of them - absent means all, which is what every
     client before this field sent and what the page sends for "All
     LOOKs".
 
-    A name that is not a unit of THIS timeline is refused by name rather
-    than quietly dropped: the page builds the list from the timeline it
-    is showing, so a mismatch means the two disagree about what is where
-    (a stale page, another operator's edit) - exactly the moment to stop
-    rather than write a look to nothing and report success."""
+    Read BEFORE the show is compiled, because it is what the compile is
+    FOR: a one-LOOK write only refuses on the problems of its own units
+    (Workspace.compile_for_write)."""
     if raw is None:
         return None
     if not isinstance(raw, list) or not all(isinstance(u, str) for u in raw):
@@ -296,14 +294,24 @@ def _only_units(raw, shows: "dict[str, dict]") -> "list[str] | None":
     names = list(dict.fromkeys(raw))
     if not names:
         raise ValueError("no unit chosen - pick a LOOK, or All LOOKs")
-    # Nothing compiled at all (a timeline with a problem): the write is
-    # already going nowhere and the problems are the answer - saying
-    # "radxa-01 is not a unit of this timeline" on top of them would send
-    # the operator looking for the wrong thing.
-    for name in names if shows else ():
+    return names
+
+
+def _check_only_units(names: "list[str] | None",
+                      shows: "dict[str, dict]") -> None:
+    """A name that is not a unit of THIS timeline is refused by name
+    rather than quietly dropped: the page builds the list from the
+    timeline it is showing, so a mismatch means the two disagree about
+    what is where (a stale page, another operator's edit) - exactly the
+    moment to stop rather than write a look to nothing and report success.
+
+    Nothing compiled at all (a timeline with a problem): the write is
+    already going nowhere and the problems are the answer - saying
+    "radxa-01 is not a unit of this timeline" on top of them would send
+    the operator looking for the wrong thing."""
+    for name in (names or ()) if shows else ():
         if name not in shows:
             raise ValueError(f"{name} is not a unit of this timeline")
-    return names
 
 
 def _design_transition(entry) -> dict:
@@ -590,11 +598,22 @@ class Workspace:
 
     @staticmethod
     def _own_dips(show: dict, item: str) -> "dict[int, int]":
+        """Per entry, not all-or-nothing like _own_boards(): resolve_dips()
+        drops one unusable key and keeps the rest, so this - which is what
+        tells the page which cells to badge - has to agree, or a single
+        typo in a hand-edited show.json would take the badge off a board
+        whose address really was set by hand (found in review)."""
         try:
-            return {int(no): int(dip) for no, dip in
-                    show.get("dips", {}).get(item, {}).items()}
-        except (AttributeError, TypeError, ValueError):
+            entries = show.get("dips", {}).get(item, {}).items()
+        except (AttributeError, TypeError):
             return {}
+        own: "dict[int, int]" = {}
+        for no, dip in entries:
+            try:
+                own[int(no)] = int(dip)
+            except (TypeError, ValueError):
+                continue        # unusable: unit_board_ids() says so instead
+        return own
 
     @staticmethod
     def _unit_dips(show: dict, maps: "list[LookMap]") -> "dict[int, int]":
@@ -619,6 +638,22 @@ class Workspace:
                   for s in look_map.scales]
         return replace(look_map, scales=scales)
 
+    @staticmethod
+    def _shown_boards(look_map: LookMap,
+                      own: "dict[int, int]") -> "dict[int, int]":
+        """{board_no in the CSV: the number the PAGE shows for it} under the
+        renumbering `own` - _renumbered()'s own rule, including its refusal:
+        a mapping that would put two boards on one number is ignored whole,
+        so the page shows the CSV's numbers. This is what `dips` is keyed
+        on, so set_boards() can carry a hand-set DIP over to the board's
+        new number."""
+        moved = {old: new for old, new in own.items()
+                 if old in look_map.board_nos and new != old}
+        result = {no: moved.get(no, no) for no in look_map.board_nos}
+        if len(set(result.values())) != len(result):
+            return {no: no for no in look_map.board_nos}
+        return result
+
     def _map_path(self, item: str) -> "Path | None":
         for path in sorted(self.files.glob("*.csv")):
             named = _MAP_ITEM.match(path.name)
@@ -639,6 +674,9 @@ class Workspace:
             own = {old: new for old, new in
                    self._own_boards(before, item).items()
                    if old in look_map.board_nos}
+            # What the page shows TODAY, before this call changes it: the
+            # key `dips` is written under, carried over at the end.
+            shown_before = self._shown_boards(look_map, own)
             try:
                 own.update({int(old): int(new) for old, new in boards.items()})
             except (AttributeError, TypeError, ValueError):
@@ -655,17 +693,48 @@ class Workspace:
             every = dict(before.get("boards", {}))
             every[item] = {str(old): new for old, new in sorted(own.items())
                            if new != old}
-            self._commit(before, dict(before, boards=every))
+            after = dict(before, boards=every)
+            # `dips` is keyed on the number the PAGE shows, which is what
+            # this call changes - so a DIP set by hand has to be carried
+            # over to the board's new number, in the same step. Renumbering
+            # 118 -> 119 used to leave `dips` saying {"118": 28}: the board
+            # went back to its rank while its switches still read 28, the
+            # cue painted nothing, and the board really at 27 took it. And
+            # where a renumbering moved one board ONTO another's old number
+            # (117 -> 118, 118 -> 130), the stale key silently became a
+            # different board's setting (found in review).
+            was = self._own_dips(before, item)
+            if was:
+                shown_after = self._shown_boards(look_map, own)
+                moved = {shown_before[no]: shown_after[no]
+                         for no in look_map.board_nos}
+                carried = {moved[no]: dip for no, dip in sorted(was.items())
+                           if no in moved}
+                kept = dict(before.get("dips", {}))
+                if carried:
+                    kept[item] = {str(no): dip
+                                  for no, dip in sorted(carried.items())}
+                else:               # every setting was for a board this map
+                    kept.pop(item, None)    # no longer has: nothing to carry
+                after["dips"] = kept
+            self._commit(before, after)
 
     def set_dips(self, item: str, dips: dict) -> None:
         """{board_no: the DIP ID that board's switches really have}.
 
         The board number is the one the page shows (the map CSV's own,
-        after set_boards()). A DIP of None - or one that equals the rank
-        the board would have anyway - drops the override: that is the "✕"
-        on the page's badge. Every other item on the same unit is taken
-        into account, so a number already in use on that bus is refused
-        here rather than at Upload.
+        after set_boards(), which carries these settings over when it
+        changes one). A DIP of None drops the override - that is the "✕"
+        on the page's badge, and the only way back to the rank. Every
+        other item on the same unit is taken into account, so a number
+        already in use on that bus is refused here rather than at Upload.
+
+        A setting that happens to EQUAL the board's rank is kept, not
+        discarded (found in review): it is a statement about what the
+        switches on that board read, and dropping it would let a later
+        renumbering - or another garment joining the unit and shifting
+        every rank - move that board's address away from the hardware
+        with nothing recorded to stop it.
         """
         with self._lock:
             before = self._load_show()
@@ -708,11 +777,7 @@ class Workspace:
                 unit_board_ids(on_unit, merged, unit=unit)
             except LookError as exc:
                 raise ValueError(exc.problems[0])
-            # A setting that only restates the rank is not a setting.
-            ranks = unit_board_ids(on_unit, unit=unit)
-            every[item] = {str(no): dip for no, dip in sorted(own.items())
-                           if ranks.get(no) != dip}
-            if not every[item]:
+            if not every[item]:         # the last one was reverted with None
                 every.pop(item)
             if every == (before.get("dips") or {}):
                 return                      # nothing changed: not a step
@@ -1622,7 +1687,8 @@ class Workspace:
 
     def mark_written(self, what: str, rev: "str | None" = None,
                      units: "list[str] | None" = None,
-                     all_units: "list[str] | None" = None) -> None:
+                     all_units: "list[str] | None" = None,
+                     whole: bool = True) -> None:
         """Remember `rev` (the revision the write actually carried, taken
         before it started) under `what` ("upload", or "demo:<NAME>"), for
         the `units` it reached.
@@ -1641,7 +1707,14 @@ class Workspace:
         claiming the timeline is on the units would be the chip lying
         about the one thing it exists to answer; the fleet-wide mark is
         dropped instead, and the per-unit ones say who does hold this
-        revision."""
+        revision.
+
+        `whole=False` says the write itself could not have carried the
+        whole timeline however many units it reached - it left something
+        out (showfile.build's `warnings`: a garment with cues and no unit
+        at all). The fleet-wide mark is read as "a full Upload would send
+        the units what they already hold", and a full Upload of such a
+        timeline is still refused, so it must not be set here."""
         rev = self.revision() if rev is None else rev
         if units is None:
             self.marks[what] = rev
@@ -1655,7 +1728,8 @@ class Workspace:
         # START refuse for a garment that was taken out weeks ago.
         for unit in [u for u in per_unit if u not in targets]:
             del per_unit[unit]
-        if targets and all(per_unit.get(unit) == rev for unit in targets):
+        if whole and targets and all(per_unit.get(unit) == rev
+                                     for unit in targets):
             self.marks[what] = rev
         else:
             self.marks.pop(what, None)
@@ -1703,15 +1777,33 @@ class Workspace:
 
     def compile_show(self) -> "tuple[dict[str, dict], list[str]]":
         """The whole timeline -> ({unit: show file}, problems)."""
+        shows, problems, _ = self.compile_for_write()
+        return shows, problems
+
+    def compile_for_write(self, only: "list[str] | None" = None
+                          ) -> "tuple[dict[str, dict], list[str], list[str]]":
+        """({unit: show file}, problems, warnings) - compile_show() with
+        the write's own reach named. `only` is the units of the one LOOK
+        the dialog's "Which LOOKs" picked: a problem about an item on
+        another unit is then a warning rather than a refusal, because
+        that unit is not written to at all (showfile.build's own rule).
+        `None` is the whole timeline, whole or not at all."""
         # Taken before the work, so what is remembered below is the state
         # this compile was OF, not one an edit landed on meanwhile.
         rev = self.revision()
-        shows, problems = self._compile_show()
-        self.compiled = {"revision": rev, "problems": list(problems),
+        shows, problems, warnings = self._compile_show(only)
+        # Both halves, because `compiled` answers a question about the
+        # TIMELINE and not about this write: START reads it to tell "the
+        # units disagree" from "the timeline does not even build" (the
+        # _one_timeline gate), and a problem a one-LOOK compile merely
+        # warned about is exactly the second thing.
+        self.compiled = {"revision": rev,
+                         "problems": list(problems) + list(warnings),
                          "units": sorted(shows)}
-        return shows, problems
+        return shows, problems, warnings
 
-    def _compile_show(self) -> "tuple[dict[str, dict], list[str]]":
+    def _compile_show(self, only: "list[str] | None" = None
+                      ) -> "tuple[dict[str, dict], list[str], list[str]]":
         with self._lock:
             paths = sorted(self.files.glob("*.csv"))
             show = self._migrate_align(self._load_show())
@@ -1755,10 +1847,15 @@ class Workspace:
         _time_sweeps(cues, maps)
         cue_problems, _ = timeline.validate(cues, facts, duration, refresh)
         if broken:
-            return {}, broken
+            # A map that will not parse is not one garment's business: the
+            # item is missing from `maps` altogether, so nothing here can
+            # say which unit it would have been on. Blocking, `only` or
+            # not - it is a repair, not a write.
+            return {}, broken, []
         return showfile.build(maps, assigned, lambda name: designs[name],
                               cues, refresh, duration, cue_problems,
-                              name=self.root.name, dips=show.get("dips"))
+                              name=self.root.name, only=only,
+                              dips=show.get("dips"))
 
     # ---- the state the page draws ----
 
@@ -2450,7 +2547,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _one_timeline(self, fleet) -> None:
         """Refuse a START / PRESET that would run the fleet on two
-        different timelines, or on one it has moved past.
+        different timelines, on one it has moved past, or on one that does
+        not build at all.
 
         This is the other half of "Which LOOKs": the dialog says "START
         needs every unit of the timeline to hold this upload", and this
@@ -2476,6 +2574,23 @@ class Handler(BaseHTTPRequestHandler):
         if not marks:
             return
         rev = self.workspace.revision()
+        # A timeline that does not build is refused BEFORE the units are
+        # counted, because the count can come out clean while the show is
+        # still full of holes: a garment with cues and no unit at all is
+        # in no unit's marks and in `timeline_units()` either, so a
+        # one-LOOK upload of the garments that DO have units leaves
+        # nothing missing and nothing behind (found in review,
+        # 2026-09-27 - the probe only tripped over the burn gate, by
+        # luck). Read off the last compile, and only while it is still a
+        # compile of what is on screen; `problems` there is everything
+        # the timeline has, warnings a one-LOOK write waved through
+        # included (compile_for_write). "Upload again" is no use when an
+        # Upload could not happen (N2), so this says what to do instead.
+        compiled = self.workspace.compiled
+        if (compiled and compiled["revision"] == rev
+                and (compiled["problems"] or not compiled["units"])):
+            raise ValueError("the timeline has problems - fix them on the "
+                             "Timeline tab, then Upload")
         # Both halves of "every unit of the timeline holds this upload":
         # the units that hold an OLDER one, and the units this timeline
         # needs that were never written at all - a one-LOOK upload from
@@ -2488,14 +2603,6 @@ class Handler(BaseHTTPRequestHandler):
         behind = sorted(unit for unit, mark in known.items() if mark != rev)
         if not missing and not behind:
             return
-        # "Upload again" is no use when an Upload could not happen: the
-        # timeline itself does not build (N2). Read off the last compile,
-        # and only while it is still a compile of what is on screen.
-        compiled = self.workspace.compiled
-        if (compiled and compiled["revision"] == rev
-                and (compiled["problems"] or not compiled["units"])):
-            raise ValueError("the timeline has problems - fix them on the "
-                             "Timeline tab, then Upload")
         if not missing and len(set(known.values())) == 1:
             # They agree with each other, and all disagree with the
             # timeline on screen: the ordinary "edited and forgot to
@@ -2508,6 +2615,18 @@ class Handler(BaseHTTPRequestHandler):
         raise ValueError(
             f"{named} {'is' if len(missing) + len(behind) == 1 else 'are'} "
             "not on this upload - Upload for All LOOKs before the show")
+
+    def _all_units(self, shows: "dict[str, dict]") -> "list[str]":
+        """Every unit this timeline needs - what mark_written() measures a
+        fleet-wide "the units hold this" against.
+
+        The compiled shows AND what show.json says the timeline reaches:
+        a one-LOOK write may compile past a problem on another unit
+        (showfile.build's warnings), and that unit is then missing from
+        `shows` while very much still being in the show. Counting only the
+        compiled ones would let one written LOOK claim the whole
+        timeline - the one thing the chip exists to answer."""
+        return sorted(set(shows) | self.workspace.timeline_units())
 
     def _fleet_command(self, command: str, body: dict) -> None:
         fleet = self.fleet
@@ -2543,8 +2662,9 @@ class Handler(BaseHTTPRequestHandler):
             # take seconds, and an edit landing in between belongs to the
             # next upload, not to this one.
             rev = self.workspace.revision()
-            shows, problems = self.workspace.compile_show()
-            only = _only_units(body.get("units"), shows)
+            only = _only_units(body.get("units"))
+            shows, problems, warnings = self.workspace.compile_for_write(only)
+            _check_only_units(only, shows)
             results = (fleet.upload(shows, force=bool(body.get("force")),
                                     only=only)
                        if shows else {})
@@ -2556,8 +2676,10 @@ class Handler(BaseHTTPRequestHandler):
             written = sorted(u for u, r in results.items() if r["ok"])
             if written:
                 self.workspace.mark_written("upload", rev, units=written,
-                                            all_units=sorted(shows))
+                                            all_units=self._all_units(shows),
+                                            whole=not warnings)
             return self._json({"units": results, "problems": problems,
+                               "warnings": warnings,
                                "shows": {u: s["id"] for u, s in shows.items()}})
         if command == "write_demo":
             name = _demo_name(body.get("name"))
@@ -2574,20 +2696,24 @@ class Handler(BaseHTTPRequestHandler):
             # back into a running show.
             if fleet.run is not None:
                 raise ValueError("stop the show first")
-            # The same "whole show or not at all" rule as Upload: a
-            # timeline with a problem writes nothing, and the page shows
-            # exactly the problems Upload itself would have refused on.
+            # The same "whole show or not at all" rule as Upload, and the
+            # same reach: a timeline with a problem writes nothing, and a
+            # one-LOOK Save answers for its own units only - the page
+            # shows exactly the problems Upload itself would have refused
+            # on, and the same warnings about what was left out.
             rev = self.workspace.revision()      # see the upload above
-            shows, problems = self.workspace.compile_show()
-            only = _only_units(body.get("units"), shows)
+            only = _only_units(body.get("units"))
+            shows, problems, warnings = self.workspace.compile_for_write(only)
+            _check_only_units(only, shows)
             results = (fleet.write_demo(name, loop, shows, only=only)
                        if shows else {})
             written = sorted(u for u, r in results.items() if r["ok"])
             if written:
                 self.workspace.mark_written(f"demo:{name}", rev, units=written,
-                                            all_units=sorted(shows))
+                                            all_units=self._all_units(shows),
+                                            whole=not warnings)
             return self._json({"units": results, "problems": problems,
-                               "name": name})
+                               "warnings": warnings, "name": name})
         if command == "delete_demo":
             slug = _demo_slug(body.get("slug"))
             results = fleet.delete_demo(slug)
