@@ -62,6 +62,13 @@ DEMO_SAVE_TIMEOUT_S = TIMEOUT_S * 4    # /demo/save includes an eMMC write
 # the safety net for a demo written by another PC, or a unit that came
 # back. Every tile shows the cached answer, so no tile costs a request.
 DEMO_LIST_EVERY_S = 10.0
+# How long past the show's own length a run has to be before the automatic
+# clear is asked for (see Fleet._clear_after_end). The unit waits for its
+# own guard floor - the last cue's refresh and sweep - before the first
+# 0x14, so this only has to be past the END, not past the repaint; the
+# slack is there so a clock a hair ahead cannot clear a show still on its
+# last cue.
+CLEAR_AFTER_END_S = 5.0
 
 # The PC's reference clock. Not time.monotonic(): on Windows that ticks
 # every 15.6 ms (measured 2026-09-21: round trips of exactly 0, 15 or
@@ -106,6 +113,19 @@ def pictures_not_written(burn: dict) -> str:
             f"pictures not written"
             + (f" on board{'' if len(boards) == 1 else 's'} {named}"
                if boards else ""))
+
+
+def _too_old_for_clear(exc: Exception) -> bool:
+    """Is this the 404 of an agent that has no /show/clear at all?
+
+    UnitLink._exchange() turns a non-200 into a RuntimeError carrying the
+    body's own "error" - which for any unknown path on the unit's agent is
+    the literal "not found" (ui/agent.py) - or "HTTP 404" when the body
+    said nothing. Either one means "too old", never a refusal this
+    conductor should hold the other nine units up over.
+    """
+    text = str(exc).lower()
+    return "not found" in text or "404" in text
 
 
 def default_units() -> "dict[str, str]":
@@ -320,6 +340,13 @@ class UnitLink:
                 # that window is lost rather than late - this is the
                 # only place that says so out loud.
                 "bus_stall": status.get("bus_stall"),
+                # Taking the show's pictures back out of slots 1-18 once
+                # the show is over (ui/remote.py's clear()): {"state",
+                # "done", "total", "failed"}, state "none" until one is
+                # asked for. Missing altogether from an agent too old to
+                # clear - which is also the one that answers 404 to
+                # POST /show/clear (see Fleet._clear_units).
+                "clear": status.get("clear"),
                 # How many demos the unit says it holds, in its own poll
                 # answer (None from an agent too old to count them). What
                 # those demos ARE is the fleet's cached /demo/list, added
@@ -375,6 +402,12 @@ class Fleet:
         self._may_adopt = True
         self._stopped = False
         self._stop_told: "set[str]" = set()    # told once; not a tug of war
+        # Units already asked to clear their slots after THIS run, and the
+        # ones whose agent is too old to know how ("unit too old for
+        # clear"). Both are per run: reset by every START and STOP, so
+        # the next evening asks again.
+        self._clear_told: "set[str]" = set()
+        self._clear_too_old: "set[str]" = set()
         # Units currently left alone because they play their own demo -
         # said once per episode (added when the demo starts, dropped the
         # moment it is not running/holding any more), never every poll.
@@ -688,10 +721,14 @@ class Fleet:
         on anyway, missing boards and all; the unit itself still refuses
         a `force` over a LIVE board that would not take the write).
 
+        ...or had its pictures CLEARED after the last show (always
+        blocking, `force` and all: they were deliberately deleted and
+        the only way back in is an Upload - 2026-09-27).
+
         Unit-side contract (ui/showplay.py, 2026-09-25): a new agent
         always sends a "burn" dict for a loaded show, state one of
-        "burning" | "burned" | "failed" | "cancelled" | "none"; an old
-        agent has no "burn" key at all."""
+        "burning" | "burned" | "failed" | "cancelled" | "none" |
+        "cleared"; an old agent has no "burn" key at all."""
         problems = []
         for name in names:
             found = self._burn(name)
@@ -716,6 +753,14 @@ class Fleet:
                                     f"({done}/{total}) - wait or STOP it")
                 else:
                     problems.append(f"{name}: still writing {done}/{total}")
+            elif state == "cleared":
+                # Taken back out of the slots after the last show, on
+                # purpose. Not a fault and not something `force` may wave
+                # through: there is no picture on the boards to show.
+                why = burn.get("reason")
+                problems.append(
+                    f"{name}: pictures were cleared after the last show"
+                    f"{' (' + str(why) + ')' if why else ''} - Upload again")
             elif state == "failed":
                 if force:
                     continue
@@ -735,6 +780,93 @@ class Fleet:
                 problems.append(f"{name}: pictures not written ({state}) "
                                 "- Upload again")
         return problems
+
+    # ---- clearing the pictures after the show ----
+    # After the show on 2026-09-27 the operator pressed STOP and unplugged
+    # the Radxa from a garment whose boards were still on battery. About a
+    # minute later the master board restarted the factory autoplay and
+    # cycled slots 0-18 - it replayed the show on its own. Once the USB is
+    # gone nothing can stop it, so when the operator asks for it (the
+    # checkbox next to (3) START, show.json's `clear_after_show`) the
+    # pictures come back OUT of the slots the moment the run is over.
+    #
+    # Nothing is repainted by it - the garment keeps the last look it was
+    # shown for as long as it has power, which is the operator's own rule.
+
+    def clear_wanted(self) -> bool:
+        """Does the uploaded timeline ask for its pictures to be cleared
+        when the show is over? (Any of the shows saying so is enough -
+        one Upload writes them all from one timeline.)"""
+        return any(bool(show.get("clear_after_show"))
+                   for show in self.shows.values())
+
+    def clear_pictures(self, only: "list[str] | None" = None
+                       ) -> "dict[str, dict]":
+        """The operator's own "Clear pictures now" (the WRITE TO UNITS
+        dialog): delete slots 1-18 on the units of this timeline, or on
+        `only` of them - exactly upload()'s own choice of targets.
+
+        The caller refuses it while a show is running or holding
+        ("stop the show first"); the units would refuse it anyway.
+        """
+        targets = self._targets()
+        if only is not None:
+            targets = [name for name in only if name in targets]
+        return self._clear_units(targets, once=False)
+
+    def _clear_units(self, names, once: bool = True) -> "dict[str, dict]":
+        """POST /show/clear to each of `names` that is holding this
+        conductor's show. A unit playing its own standalone demo is left
+        alone, and so is one that holds some other show - its slots are
+        not this show's to empty.
+
+        `once` (the automatic path, on END and on STOP) skips a unit
+        already asked for this run, so a supervision tick does not send
+        it every three seconds; the manual button passes once=False.
+
+        An agent too old for the endpoint answers 404, which is NOT an
+        error that may hold the other units up: that unit is remembered
+        and its tile says "unit too old for clear - power the boards off
+        before unplugging".
+        """
+        def action(link):
+            unit = (link.status or {}).get("show") or {}
+            show = self.shows.get(link.name)
+            if show is None:
+                raise RuntimeError("not holding this show")
+            if self._playing_demo(link):
+                raise RuntimeError("playing a demo - press STOP first")
+            if unit.get("id") != show["id"]:
+                raise RuntimeError("holding another show")
+            try:
+                link.post("/show/clear", {"show": show["id"]})
+            except Exception as exc:        # noqa: BLE001 - see below
+                if _too_old_for_clear(exc):
+                    self._clear_too_old.add(link.name)
+                    raise RuntimeError(
+                        "unit too old for clear - power the boards off "
+                        "before unplugging") from None
+                raise
+            self._clear_too_old.discard(link.name)
+            return {}
+
+        wanted = [name for name in names
+                  if not (once and name in self._clear_told)]
+        if not wanted:
+            return {}
+        if once:
+            self._clear_told.update(wanted)
+        results = self._each(wanted, action)
+        for name, result in sorted(results.items()):
+            if not result.get("ok"):
+                self.corrections.append(
+                    f"{time.strftime('%H:%M:%S')} {name}: clear refused: "
+                    f"{result.get('error')}")
+            else:
+                self.corrections.append(f"{time.strftime('%H:%M:%S')} "
+                                        f"{name}: clearing the pictures")
+        del self.corrections[:-20]
+        return results
 
     def show_duration(self) -> float:
         """The longest `duration` among the uploaded shows, 0.0 when none
@@ -791,6 +923,13 @@ class Fleet:
         # the old one may no longer even be inside it (found in review).
         with self._run_lock:
             self.start_at = 0.0
+            # The pictures are back in the slots, so the clear that
+            # emptied them is history: a unit written here may be asked to
+            # clear again when this show ends.
+            for name in targets:
+                if results.get(name, {}).get("ok"):
+                    self._clear_told.discard(name)
+                    self._clear_too_old.discard(name)
             if force and self.run is not None:
                 # The operator has just asked, under a running show, for
                 # the pictures to be written again (the page's confirm) -
@@ -1038,8 +1177,15 @@ class Fleet:
         with self._run_lock:
             self._may_adopt, self._stopped = False, False
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",
-                        "held_at": None, "force": bool(force)}
+                        "held_at": None, "force": bool(force),
+                        # Mirrored onto the run so the page can see what
+                        # THIS run will do when it is over, whatever the
+                        # timeline is edited to meanwhile.
+                        "clear_after_show": self.clear_wanted()}
             self.start_at = 0.0
+            # A new run: nobody has been asked to clear anything yet, and
+            # a unit that was too old last time may have been updated.
+            self._clear_told, self._clear_too_old = set(), set()
             self._t0_moved()
         return self._send_run(self._targets())
 
@@ -1148,10 +1294,27 @@ class Fleet:
             self._may_adopt, self._stopped = False, True
             self._stop_told = set()
             self._demo_told = set()     # the next demo episode is announced again
+            # Whether the show that is ENDING asked for its pictures to
+            # go, read before the run is thrown away. Not re-read from
+            # the timeline afterwards: the run the operator is stopping is
+            # the one whose slots these are (a run ADOPTED from the units
+            # carries no answer of its own, so the timeline's own is the
+            # only one there is).
+            clear = (bool(self.run.get("clear_after_show")) if self.run
+                     else self.clear_wanted())
             self.run = None
             self.start_at = 0.0
             self._t0_moved()
-        return self.simple(targets, "/show/stop")
+        results = self.simple(targets, "/show/stop")
+        if clear:
+            # After the STOP, never with it: the unit refuses a clear
+            # while the run is still running, and the slots are what the
+            # next trigger would have read from. A unit that could not be
+            # stopped is asked anyway - it refuses, says why, and the
+            # tile shows it rather than the operator finding out from the
+            # garment an hour later.
+            self._clear_units(targets)
+        return results
 
     def _supervise(self, link: UnitLink) -> None:
         """After every poll: is this unit running what it should, on the
@@ -1185,6 +1348,13 @@ class Fleet:
             return
         show = self.shows.get(link.name)
         if show is None or link.offset is None:
+            return
+        if run["state"] == "running" and self._clear_after_end(link, run, show):
+            # The show is over on the clock and asked for its pictures to
+            # go. Done from here rather than from a timer, because this is
+            # the one place that already runs for every unit after every
+            # poll - and a unit that was out of reach at the end is asked
+            # on the first poll it answers.
             return
         if self._playing_demo(link):
             # Playing its own standalone demo (the same player the fleet's
@@ -1269,6 +1439,39 @@ class Fleet:
             self.corrections.append(
                 f"{time.strftime('%H:%M:%S')} {link.name}: {why}")
             del self.corrections[:-20]
+
+    def _clear_after_end(self, link: UnitLink, run: dict, show: dict) -> bool:
+        """Ask this unit to clear its slots, if the run is over and asked
+        for it. True when there is nothing else to supervise about it.
+
+        "Over" is CLEAR_AFTER_END_S past the show's own length - the same
+        kind of slack _supervise() already uses to stop correcting a
+        finished show, and enough for the last cue's own repaint and the
+        guard behind it (the unit waits for its guard floor itself before
+        the first 0x14, so this need only be past the end, not past the
+        repaint).
+
+        A HOLD is not an end: a held show is one the operator means to
+        resume, and the pictures have to stay where they are. Nor is a
+        SEEK - it only moves T0, and the branch below reads the clock,
+        not the seeking.
+
+        Asked ONCE per unit and run, exactly like the missed STOP above:
+        the slots are then empty (or emptying), so nothing a /show/run
+        correction could say to that unit would be taken anyway. A unit
+        that was out of reach at the end is the operator's own "Clear
+        pictures now" button (the WRITE TO UNITS dialog), not a request
+        this retries every two seconds into a connection timeout.
+        """
+        if not run.get("clear_after_show"):
+            return False
+        if link.name in self._clear_told:
+            return True
+        over = float(show.get("duration", 0)) + CLEAR_AFTER_END_S
+        if self._clock() - run["t0"] < over:
+            return False
+        self._clear_units([link.name])
+        return True
 
     def _post_or_refused(self, link: UnitLink, now: float, path: str,
                          body: dict, what: str) -> bool:

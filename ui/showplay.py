@@ -262,6 +262,16 @@ class ShowPlayer:
         # retried on every poll - the next load() tries again.
         self._burn_record_error: "str | None" = None
         self._burn_none_why = "(the burn never started)"
+        # The show asked for its pictures to be deleted once it is over
+        # (show.json's `clear_after_show`, carried in the show file):
+        # which show id a clear has already been asked for, so the ENDED
+        # tick asks once and not every 200 ms. Cleared by load() and by
+        # run().
+        self._clear_asked: "str | None" = None
+        # ...and the hand-off from _plan() (which holds the lock) to
+        # _loop(), which does the asking outside it - clear() may have to
+        # take the port, exactly like _send().
+        self._clear_due = False
         # restore() found this unit in the middle of a show: ui/main.py
         # must not paint the standby white over the picture the garment
         # is still holding (real unit, 2026-09-25 - 16 s of probing and
@@ -323,6 +333,11 @@ class ShowPlayer:
             self._burn_id, self._burn_disk, self._burn_saved = None, None, None
             self._burn_record_error = None       # one more try, this show
             self._burn_none_why = "(the burn never started)"
+            # A fresh Upload is how the operator undoes a clear: nothing
+            # of the last one may survive into this show's state. The
+            # session's own clear is dropped by burn() below, which is
+            # also what makes a clear queued a moment ago never run.
+            self._clear_asked, self._clear_due = None, False
             self._forget_burn_record()
             self.show = show
             self.is_demo = bool(demo)
@@ -396,6 +411,7 @@ class ShowPlayer:
             if self.session.busy():
                 raise RemoteError("unit is busy (firmware update, scan "
                                   "or reboot)")
+            self._take_back_the_pictures()
             self._burn_gate(force)
             self._epoch += 1
             self.t0, self.synced = float(t0), True
@@ -453,6 +469,7 @@ class ShowPlayer:
             if self.session.busy():
                 raise RemoteError("unit is busy (firmware update, scan "
                                   "or reboot)")
+            self._take_back_the_pictures()
             self._burn_gate(force)
             self._epoch += 1
             self._run_no += 1
@@ -476,6 +493,93 @@ class ShowPlayer:
         self._send(show, first, fire_at, epoch)   # may take the port
         self._wake.set()
 
+    # ---- the clear after the show (show file's `clear_after_show`) ----
+
+    def clear_after_show(self) -> bool:
+        """Does this show ask for its pictures to be deleted once it is
+        over? (conductor/showfile.py carries show.json's key into the
+        show file; a file without it behaves exactly as before.)
+
+        Never for a standalone DEMO. A demo plays from those very slots
+        the next time somebody presses KEY1, so a menu row that empties
+        itself after one play is not what "clear after the show" means -
+        and the whole point of a demo is that it needs no PC to write
+        them again.
+        """
+        show = self.show
+        return (show is not None and not self.is_demo
+                and bool(show.get("clear_after_show")))
+
+    def clear_pictures(self, show_id: "str | None" = None) -> None:
+        """Delete this show's pictures from slots 1-18 (the conductor's
+        POST /show/clear, and this player's own end-of-show when the show
+        file asks for it).
+
+        Nothing is repainted: the garment keeps the last look it was
+        shown for as long as it has power (the operator's rule,
+        2026-09-27). Refused while a run is RUNNING or HOLDING - those
+        slots are what the next trigger reads from.
+
+        Asking twice is free: a show whose pictures are already gone
+        returns without touching the bus, which is what lets the
+        conductor send this on the run's END and again on STOP.
+        """
+        with self._lock:
+            if self.show is None:
+                raise RemoteError("no show loaded")
+            if show_id is not None and show_id != self.show["id"]:
+                raise RemoteError(f"loaded show is {self.show['id']}, "
+                                  f"not {show_id}")
+            if self.state in (RUNNING, HOLDING):
+                raise RemoteError("stop the show first")
+            if self.is_demo:
+                raise RemoteError("this is a demo stored on the unit - "
+                                  "clearing its slots would empty the menu "
+                                  "row; delete the demo instead")
+            burn, _ = self._burn_record_locked()
+            if (burn or {}).get("state") == "cleared":
+                return                          # already done
+            self._clear_asked = self.show["id"]
+            self._clear_due = False
+            # The clear is about THIS show, so the record that comes out
+            # of it is this show's. Said here because a show RESTORED
+            # from disk has no LIVE burn paired with it (restore() never
+            # re-burns), and without this the tile and both gates would
+            # go on reading the "burned" on disk from before the clear.
+            self._burn_id = self.show["id"]
+        self.session.clear(range(SHOW_SLOT_MIN, SHOW_SLOT_MAX + 1))
+        self._wake.set()
+
+    def _take_back_the_pictures(self) -> None:
+        """A START or a PRESET wants the slots again (lock held).
+
+        Called BEFORE the burn gate on purpose. A clear that never began
+        is dropped here and the gate then passes exactly as it always
+        did; one that has already deleted a slot stops after the slot it
+        is on and leaves the burn record "cleared", so the gate refuses -
+        START must never run a garment half its pictures were taken from.
+        """
+        self.session.cancel_clear("a new run started")
+        self._clear_asked, self._clear_due = None, False
+
+    def _take_clear_due(self) -> bool:
+        """_plan() decided the show is over and its pictures are to go;
+        _loop() does the asking, outside the lock."""
+        with self._lock:
+            due, self._clear_due = self._clear_due, False
+            return due
+
+    def _clear_when_over_locked(self) -> None:
+        """The show has just reached ENDED: queue the clear if this show
+        asked for one and it has not been asked for already (a restored
+        show whose pictures are gone comes back "cleared" and the ask is
+        a no-op anyway)."""
+        if not self.clear_after_show():
+            return
+        if self._clear_asked == self.show["id"]:
+            return
+        self._clear_due = True
+
     def _burn_gate(self, force: bool = False) -> None:
         """Refuse to run/preset unless the loaded show's pictures are in
         their slots - called with the lock held. Only "burned" passes
@@ -484,11 +588,25 @@ class ShowPlayer:
         when a LIVE board refused the write (the operator's "START
         anyway"). `force` never passes "burning", "cancelled", "none",
         or a burn the bus gave up on part way (nothing says what was
-        never reached)."""
+        never reached).
+
+        A clear after the show is its own refusal, ahead of the burn's:
+        the pictures were deliberately taken out of the slots and the
+        only way back in is an Upload - `force` never passes it."""
+        clear = self.session.clear_record()
+        if clear.get("state") == "clearing":
+            raise RemoteError(f"the pictures are being deleted after the "
+                              f"show ({clear['done']}/{clear['total']}) - "
+                              f"Upload again")
         burn, complete = self._burn_record_locked()
         state = burn["state"]
         if state == "burned":
             return
+        if state == "cleared":
+            why = burn.get("reason")
+            raise RemoteError("pictures were cleared after the last show"
+                              + (f" ({why})" if why else "")
+                              + " - Upload again")
         if state == "burning":
             raise RemoteError(f"still writing the pictures: "
                               f"{burn['done']}/{burn['total']}")
@@ -570,8 +688,10 @@ class ShowPlayer:
         self._wake.set()
 
     def stop(self) -> None:
+        was_running = False
         with self._lock:
             self._epoch += 1
+            was_running = self.state in (RUNNING, HOLDING, ENDED)
             if self.state in (RUNNING, HOLDING):
                 self._disarm()
             if self.show is not None:
@@ -587,6 +707,15 @@ class ShowPlayer:
             self._verify_seen = None
             self._persist()
         self.session.cancel_burn()   # give up on a burn still in flight
+        # STOP is the other end of the show, and the one the operator
+        # actually presses before unplugging a garment: if this show asked
+        # for its pictures to come back out of the slots, this is where it
+        # happens (HOLD deliberately does not - the show is not over).
+        if was_running and self.clear_after_show():
+            try:
+                self.clear_pictures()
+            except RemoteError as exc:
+                self.note = str(exc)
         self._wake.set()
 
     def close(self) -> None:
@@ -652,7 +781,12 @@ class ShowPlayer:
             if record.get("burned") != show["id"]:
                 return None
             state = record.get("state", "burned")
-            if state not in ("burned", "failed"):
+            # "cleared" too: a unit restarted after the show must come
+            # back still knowing its slots were emptied, or START would
+            # wave a garment with no pictures through (the pictures are
+            # what survives a power cycle; the knowledge that they do not
+            # any more has to survive it as well).
+            if state not in ("burned", "failed", "cleared"):
                 return None
             failed = [(int(b), int(slot)) for b, slot in record.get("failed", [])]
             if state == "failed" and not failed:
@@ -1059,6 +1193,7 @@ class ShowPlayer:
                 # reached a dead board and would be retried for ever.
                 self._disarm()
                 self.state = ENDED
+                self._clear_when_over_locked()
                 self._persist()
                 return self.tick_s, None
             if (session.phase == FAILED and self._owns(session.cue_id)
@@ -1134,6 +1269,7 @@ class ShowPlayer:
                     and current is not None and self.applied == current["id"]
                     and now > duration):
                 self.state = ENDED
+                self._clear_when_over_locked()
                 self._persist()
             if action is not None and session.phase == FAILED:
                 self._retry_at = now_mono + self.retry_s
@@ -1148,6 +1284,11 @@ class ShowPlayer:
                 wait, action = self._plan()
                 if action is not None:
                     self._send(*action)
+                # The show reached its end and asked for its pictures to
+                # go: done here, outside the lock, because clear() may
+                # have to take the port (exactly like _send()).
+                if self._take_clear_due():
+                    self.clear_pictures()
             except RemoteError as exc:
                 # A refused prepare (the session holds a cue about to
                 # fire, or the unit is busy): look again next tick, not a
@@ -1186,7 +1327,14 @@ class ShowPlayer:
                    # "writing pictures n/N" (ui/remote.py's burn()) - what
                    # the PC gates START on and the LCD/Units tile show.
                    # Never None for a loaded show (module docstring).
-                   "burn": self._burn_record_locked()[0]}
+                   "burn": self._burn_record_locked()[0],
+                   # Whether THIS show asked for its pictures to come
+                   # back out of the slots when it is over: what the unit
+                   # believes, which is the show file it holds (the
+                   # conductor sends POST /show/clear itself, so this is
+                   # the unit's own fallback for a show that ends with
+                   # the PC gone).
+                   "clear_after_show": self.clear_after_show()}
             if self.t0 is not None and self.state in (RUNNING, ENDED):
                 now = self._clock() - self.t0
                 out["now"] = round(now, 2)
