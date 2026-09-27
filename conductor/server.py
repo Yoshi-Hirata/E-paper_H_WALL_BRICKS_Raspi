@@ -2354,7 +2354,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _one_timeline(self, fleet) -> None:
         """Refuse a START / PRESET that would run the fleet on two
-        different timelines, or on one it has moved past.
+        different timelines, on one it has moved past, or on one that does
+        not build at all.
 
         This is the other half of "Which LOOKs": the dialog says "START
         needs every unit of the timeline to hold this upload", and this
@@ -2380,6 +2381,23 @@ class Handler(BaseHTTPRequestHandler):
         if not marks:
             return
         rev = self.workspace.revision()
+        # A timeline that does not build is refused BEFORE the units are
+        # counted, because the count can come out clean while the show is
+        # still full of holes: a garment with cues and no unit at all is
+        # in no unit's marks and in `timeline_units()` either, so a
+        # one-LOOK upload of the garments that DO have units leaves
+        # nothing missing and nothing behind (found in review,
+        # 2026-09-27 - the probe only tripped over the burn gate, by
+        # luck). Read off the last compile, and only while it is still a
+        # compile of what is on screen; `problems` there is everything
+        # the timeline has, warnings a one-LOOK write waved through
+        # included (compile_for_write). "Upload again" is no use when an
+        # Upload could not happen (N2), so this says what to do instead.
+        compiled = self.workspace.compiled
+        if (compiled and compiled["revision"] == rev
+                and (compiled["problems"] or not compiled["units"])):
+            raise ValueError("the timeline has problems - fix them on the "
+                             "Timeline tab, then Upload")
         # Both halves of "every unit of the timeline holds this upload":
         # the units that hold an OLDER one, and the units this timeline
         # needs that were never written at all - a one-LOOK upload from
@@ -2392,14 +2410,6 @@ class Handler(BaseHTTPRequestHandler):
         behind = sorted(unit for unit, mark in known.items() if mark != rev)
         if not missing and not behind:
             return
-        # "Upload again" is no use when an Upload could not happen: the
-        # timeline itself does not build (N2). Read off the last compile,
-        # and only while it is still a compile of what is on screen.
-        compiled = self.workspace.compiled
-        if (compiled and compiled["revision"] == rev
-                and (compiled["problems"] or not compiled["units"])):
-            raise ValueError("the timeline has problems - fix them on the "
-                             "Timeline tab, then Upload")
         if not missing and len(set(known.values())) == 1:
             # They agree with each other, and all disagree with the
             # timeline on screen: the ordinary "edited and forgot to

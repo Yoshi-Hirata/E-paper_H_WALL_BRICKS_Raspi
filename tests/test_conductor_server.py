@@ -2727,6 +2727,66 @@ def test_the_gate_does_not_say_upload_again_about_a_timeline_that_cannot_be_uplo
         server.server_close()
 
 
+def test_start_refuses_after_a_one_look_upload_that_left_a_garment_off_its_unit(tmp_path):
+    """The hole the unit counting cannot see (found in review, 2026-09-27).
+
+    A garment with cues and no unit is in nobody's marks and in
+    `timeline_units()` either, so after a one-LOOK upload of the garments
+    that DO have units there is nothing "missing" and nothing "behind" -
+    the fleet agrees with itself about a show that is missing a dress.
+    The timeline's own problems have to be read BEFORE that count, not
+    after it."""
+    ws = Workspace(tmp_path)
+    ws.save("Look22_map.csv", MAP)
+    ws.save("Look22_color_pattern01_grid.csv", GRID)
+    ws.save("Look20-Skirt_map.csv", SKIRT_MAP)
+    ws.save("Look20-Skirt_color_pattern01_grid.csv", SKIRT_GRID)
+    ws.assign("Look22", "radxa-01")             # ...and the skirt has none
+    ws.set_timeline(600, [_cue("a", 0), _skirt_cue("b", 0)])
+    server, fleet = _two_unit_server(tmp_path)
+    port = server.server_address[1]
+    try:
+        status, payload = _post(port, "/api/fleet/upload",
+                                {"units": ["radxa-01"]})
+        assert status == 200 and payload["units"]["radxa-01"]["ok"]
+        assert payload["warnings"] == ["Look20-Skirt: not assigned to a unit"]
+        # radxa-01 holds exactly what is on screen, and it is the only
+        # unit the timeline names - the count comes out clean.
+        assert ws.timeline_units() == {"radxa-01"}
+        for command in ("start", "preset"):
+            status, payload = _post(port, f"/api/fleet/{command}",
+                                    {"lead_s": 3})
+            assert status == 400, command
+            assert payload["error"] == ("the timeline has problems - fix them "
+                                        "on the Timeline tab, then Upload"), command
+        assert fleet.run is None
+        # The burn gate's `force` is not an answer to this one, as it is
+        # not an answer to the split (review N1): one "yes" never answers
+        # a question the operator was not asked.
+        status, payload = _post(port, "/api/fleet/start",
+                                {"lead_s": 3, "force": True})
+        assert status == 400
+        assert payload["error"].startswith("the timeline has problems")
+        # `split_ok` does get past it - as it always has, for every
+        # timeline this gate refuses: it skips the gate whole, and what
+        # is left is the burn gate (these stubs hold no pictures).
+        status, payload = _post(port, "/api/fleet/start",
+                                {"lead_s": 3, "split_ok": True})
+        assert status == 400 and "has not taken this show yet" in payload["error"]
+        # Give the skirt a unit and the gate goes back to counting units:
+        # radxa-02 was never written at all, and giving it the skirt moved
+        # the timeline on past what radxa-01 holds.
+        ws.assign("Look20-Skirt", "radxa-02")
+        status, payload = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert status == 400
+        assert payload["error"] == ("radxa-02, radxa-01 are not on this "
+                                    "upload - Upload for All LOOKs before "
+                                    "the show")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_a_conductor_that_knows_nothing_does_not_refuse_start(tmp_path):
     # Restarted mid-show: it has no marks of its own and must not refuse
     # on a guess - the units are running and it has just adopted them.
@@ -3309,8 +3369,11 @@ document.body.appendChild(pre);
 </script>
 """
 
+# The row's own title is the MODEL label; what is named as not written is
+# the ITEM, the same string the server's refusal and its amber line use.
 BAG, TOPS = "AZ271SG1036 Bag 02", "AZ271SB2303 Tops"
-BAG_ROW = "IAZ271SG1036"        # writeRows' key for a look-less item
+BAG_ITEM, TOPS_ITEM = "AZ271SG1036", "AZ271SB2303"
+BAG_ROW = "I" + BAG_ITEM         # writeRows' key for a look-less item
 
 
 def _dlg_case(only=None, tops_unit=None, bag_problems=(), tops_problems=()):
@@ -3378,18 +3441,19 @@ def test_the_dialog_enables_upload_for_one_look_whose_unit_is_assigned(dialog_st
     # The whole point: the button is live, for the unit that has a show.
     assert one["uploadWhy"] is None and one["demoWhy"] is None
     assert one["only"] == ["radxa-09"] and one["bad"] == 0
-    # And it says what it is not writing, on both choices.
-    assert one["unassigned"] == [TOPS]
-    assert f"Not written: {TOPS} — no unit yet" in one["onlyText"]
+    # And it says what it is not writing, on both choices - by the same
+    # name the server's amber line will use afterwards.
+    assert one["unassigned"] == [TOPS_ITEM]
+    assert f"Not written: {TOPS_ITEM} — no unit yet" in one["onlyText"]
     assert "give it one on the Designs tab before the show" in one["onlyText"]
-    assert f"Not written: {TOPS}" in one["demoText"]
-    assert "Only AZ271SG1036 Bag 02's unit is written" in one["onlyText"]
+    assert f"Not written: {TOPS_ITEM}" in one["demoText"]
+    assert f"Only {BAG}'s unit is written" in one["onlyText"]
 
 
 def test_the_dialog_still_refuses_a_full_upload_with_a_garment_off_its_unit(dialog_states):
     every = dialog_states["all_looks_one_off_its_unit"]
     assert every["uploadWhy"] == (
-        f"{TOPS} has cues but no unit — give it one on the Designs tab,"
+        f"{TOPS_ITEM} has cues but no unit — give it one on the Designs tab,"
         " or pick one LOOK above to write just that one.")
     assert every["demoWhy"] == every["uploadWhy"]     # the same hole, both ways
     assert every["only"] is None and every["onlyText"] == ""

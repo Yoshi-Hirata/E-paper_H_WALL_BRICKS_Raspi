@@ -50,13 +50,25 @@
   All LOOKs では未割り当ての衣装を名指しして断り、逃げ道を同じ文に入れる
   (`… has cues but no unit — give it one on the Designs tab, or pick one LOOK
   above to write just that one.`)。1 ルック選択中は Upload が押せて、
-  両方の選択肢の下に `Not written: <型番> — no unit yet` と出る。
-  結果欄の warnings は赤ではなく **amber**(`not written: …`)で、
-  「n / n 書けた」の判定には数えない
+  両方の選択肢の下に `Not written: <衣装名> — no unit yet` と出る
+  (**サーバの拒否文・amber 行と同じ「衣装名」で呼ぶ**。型番ラベルは
+  ラジオの行が言う)。結果欄の warnings は赤ではなく **amber**
+  (`not written: …`)で、「n / n 書けた」の判定には数えない
+- **START / ② Show preset の門(`_one_timeline`)は、機体を数える前に
+  タイムラインの problems を見る**(レビュー指摘、同日)。
+  **機体を持たない衣装は誰の印にも `timeline_units()` にも現れない**ので、
+  機体を持つ衣装だけを 1 ルック Upload した直後は
+  missing も behind も空 ―― 門が黙って通り、衣装 1 着が抜けたショーが
+  走りかけていた(プローブでは焼き込みの門にだけ引っかかっていた)。
+  順序を入れ替えただけで文言は同じ(`the timeline has problems - fix them on
+  the Timeline tab, then Upload`)。`force` はこの門の答えにならないのも同じ。
+  **`split_ok` は従来どおり門ごと飛ばす**(この門が断るどのタイムラインでも
+  同じ挙動。オペレーターが明示的に「承知」と答えた場合のみ)
 
 テスト:`tests/test_showfile.py`(他機体の壊れたキューは warning で、その機体は
 ビルドもしない)、`tests/test_conductor_server.py`(compile / エンドポイント /
-ヘッドレスで `writeState()` を実際に走らせる 3 件)。
+**1 ルック Upload のあと START と PRESET が断る** / ヘッドレスで
+`writeState()` を実際に走らせる 3 件)。
 
 **bundle を取り込んでも配線(`*_map.csv`)は残す(2026-09-27 オペレーター決定)**
 

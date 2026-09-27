@@ -2756,8 +2756,11 @@ function writeState() {
   // unit") and are simply not part of a one-LOOK write - which is the
   // whole fix of 2026-09-27: one bag on its Radxa was refused over five
   // garments that were between units and were never going to be written.
-  const unassigned = [...new Map(state.show.cues.map(c => itemByKey(c.item))
-    .filter(i => i && !i.unit).map(i => [i.item, i.model || i.item])).values()];
+  // Named by the ITEM, which is what the server's own refusal and its
+  // amber "not written" line say - one garment, one name, wherever the
+  // operator reads about it (the model label is on the row above).
+  const unassigned = [...new Set(state.show.cues.map(c => itemByKey(c.item))
+    .filter(i => i && !i.unit).map(i => i.item))];
   const busy = targets.filter(t => t.demoBusy).map(t => t.unit);
   const run = fleet?.run || null;
   let both = null;
