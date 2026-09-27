@@ -32,7 +32,8 @@ from ui.patterns import BY_KEY
 from ui.remote import (ARMED, FAILED, FIRED, LOCAL, READY, STANDBY,
                        RemoteError, RemoteSession)
 from ui.runner import NO_DELAY
-from tests.test_ui_runner import FakeBus, make_runner, wait_until
+from tests.test_ui_runner import (FakeBus, RecoveringBus, make_runner,
+                                  wait_until)
 
 SAVE, SHOW, STOP, CFG = 0x13, 0x1D, 0x17, 0x1B
 
@@ -1797,3 +1798,319 @@ def test_status_carries_the_clear_and_says_none_until_one_is_asked_for():
     assert wait_until(lambda: session.status()["clear"]["state"] == "cleared")
     assert session.status()["clear"]["total"] == 18
     runner.stop()
+
+
+# ---- getting a bus that accepts frames and executes none back ----
+# The 2026-09-28 LOOK28 evidence, in one paragraph: 10-30 s after the last
+# cue's repaint every write to radxa-07's master began to block 359 ms, the
+# frames were accepted and NOT executed (the operator's "Show preset" wrote
+# slot 1 and no panel refreshed), and only a restart of the unit's UI service
+# cleared it. See ui/runner.py's RECOVERED_MS for the two hypotheses these
+# tests pin down.
+
+def recovery_runner(bus, **kwargs):
+    kwargs.setdefault("boards", [1, 2])
+    kwargs.setdefault("pad_settle", 0.01)
+    kwargs.setdefault("recover_quiet", 0.5)
+    kwargs.setdefault("recover_backoff", 0.3)
+    kwargs.setdefault("verify_fire", False)
+    return make_runner(bus, **kwargs)
+
+
+def test_the_padding_alone_gets_a_stalled_bus_back():
+    """Hypothesis A: the transient desynced the master's frame parser, and
+    16 zero bytes plus the quiet for its own inter-byte timeout is the
+    whole cure. Tried first because it costs half a second and touches
+    nothing else."""
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus)
+    result = runner._recover_bus(bus, 2)
+    assert result["recovered"] is True and result["by"] == "padding"
+    assert result["before_ms"] >= 300 and result["after_ms"] < 100
+    assert bus.padded == [16]            # transport.RESYNC_PAD_BYTES
+    assert bus.reopened == []            # the port was never touched
+    assert runner._setup_owed is False   # ...so nothing is owed a sweep
+    assert runner.bus_recovery["by"] == "padding"
+    assert runner.bus_recovery["count"] == 1
+    assert any("bus recovered by padding" in line and "→" in line
+               for line in runner.recent(20))
+
+
+def test_a_bus_the_padding_does_not_fix_is_reopened():
+    """Hypothesis B: the master needs the port reopen itself - the DTR
+    toggle a restart of the service does and nothing else does."""
+    bus = RecoveringBus("reopen")
+    runner = recovery_runner(bus)
+    result = runner._recover_bus(bus, 2)
+    assert result["recovered"] is True and result["by"] == "reopen"
+    assert bus.padded == [16] and bus.reopened == ["/dev/fake"]
+    # The boards know nothing of the new port: the sweep is owed, and it
+    # is owed to _run_remote(), not taken on the recovery's own clock.
+    assert runner._setup_owed is True
+    assert any("bus recovered by reopen" in line for line in runner.recent(20))
+    # The one board that is actually ON the USB cable was asked again -
+    # and only it, because the whole sweep is not bounded.
+    asked = [f.dest for f in bus.requested]
+    assert asked and set(asked) == {1}
+
+
+def test_a_bus_nothing_fixes_says_so_and_leaves_the_stall_standing():
+    bus = RecoveringBus("never")
+    runner = recovery_runner(bus)
+    result = runner._recover_bus(bus, 2)
+    assert result["recovered"] is False and result["by"] is None
+    assert result["before_ms"] >= 300 and result["after_ms"] >= 300
+    assert bus.padded == [16] and bus.reopened == ["/dev/fake"]
+    assert runner.bus_recovery["by"] is None
+    # NOT taken down: the tile has to go on saying "restart this unit".
+    assert runner.bus_stall and runner.bus_stall["ms"] >= 300
+    assert any("bus recovery failed" in line for line in runner.recent(20))
+
+
+def test_a_healthy_bus_answers_recovered_with_nothing_done():
+    """POST /bus/recover on a unit that is fine: one timed STOP, the truth,
+    and no port reopened on a guess."""
+    bus = RecoveringBus("padding")
+    bus.stalled = False
+    runner = recovery_runner(bus)
+    result = runner._recover_bus(bus, 2)
+    assert result["recovered"] is True and result["by"] is None
+    assert result["after_ms"] < 100
+    assert result["before_ms"] == result["after_ms"]
+    assert bus.padded == [] and bus.reopened == []
+    assert any("nothing to recover" in line for line in runner.recent(20))
+
+
+def test_a_recovery_takes_the_stall_mark_down():
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus)
+    runner.bus_stall = {"ms": 359.0, "frame": "stop", "at": time.time(),
+                        "count": 4}
+    runner._recover_bus(bus, 2)
+    # The all-clear shape the code already had: the count of what happened
+    # is kept, the amber number goes.
+    assert runner.bus_stall == {"ms": None, "frame": None, "at": None,
+                                "count": 4}
+
+
+def test_two_stalled_heartbeats_start_the_recovery_on_their_own():
+    """The trigger: two heartbeat STOPs in a row that each blocked. One is
+    a board repainting and ends by itself; this does not."""
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus, remote_guard=0.05, guard_delay=0.05)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)                 # a worker on the port, no cue due
+    assert wait_until(lambda: runner.bus_recovery is not None, timeout=15.0)
+    recovery = dict(runner.bus_recovery)
+    runner.stop()
+    assert recovery["by"] == "padding"
+    assert bus.padded == [16]
+    assert session.status()["bus_recovery"]["by"] == "padding"
+    assert session.status()["bus_recovery"]["ago_s"] is not None
+
+
+def test_one_stalled_heartbeat_is_not_enough():
+    bus = RecoveringBus("padding")
+    bus.stalled = False                  # nothing automatic in the way
+    runner = recovery_runner(bus)
+    runner.remote = RemoteSession(runner)
+    runner._maybe_recover(bus, 2, 359.0)
+    assert runner._stall_streak == 1 and runner.bus_recovery is None
+    runner._maybe_recover(bus, 2, 12.0)          # a clean one breaks it
+    assert runner._stall_streak == 0 and runner.bus_recovery is None
+    runner._maybe_recover(bus, 2, 359.0)
+    runner._maybe_recover(bus, 2, 359.0)         # ...two in a row do it
+    assert runner.bus_recovery is not None
+
+
+def test_a_cue_inside_the_quiet_window_holds_the_recovery_off():
+    """A recovery reopens the port. It stands aside for a cue and picks the
+    unit up on a later heartbeat - it never makes a cue wait."""
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus, recover_quiet=30.0)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    session.fire("c1", time.monotonic() + 5.0)   # inside the window
+    assert not runner._recover_quiet(time.monotonic())
+    runner._stall_streak = 1
+    runner._maybe_recover(bus, 2, 359.0)
+    assert runner.bus_recovery is None and bus.padded == []
+    session.cancel()
+    runner.stop()
+
+
+def test_a_show_being_played_holds_the_recovery_off_too():
+    bus = RecoveringBus("padding")
+    bus.stalled = False
+    runner = recovery_runner(bus)
+    session = RemoteSession(runner)
+    runner.remote = session
+    session.playing = lambda: True                # a run, or a HOLD
+    assert not runner._recover_quiet(time.monotonic())
+    runner._stall_streak = 1
+    runner._maybe_recover(bus, 2, 359.0)
+    assert runner.bus_recovery is None
+    session.playing = lambda: False               # STOP, and it may run
+    assert runner._recover_quiet(time.monotonic())
+
+
+def test_the_recovery_backs_off_and_then_leaves_it_to_the_operator():
+    bus = RecoveringBus("never")
+    runner = recovery_runner(bus, recover_backoff=10.0, recover_attempts=3)
+    runner.remote = RemoteSession(runner)
+
+    def try_recovery():
+        runner._stall_streak = 1
+        runner._maybe_recover(bus, 2, 359.0)
+
+    try_recovery()
+    assert runner._recover_tries == 1
+    try_recovery()                       # inside the backoff: nothing
+    assert runner._recover_tries == 1
+    for _ in range(2):
+        runner._recover_next = 0.0
+        try_recovery()
+    assert runner._recover_tries == 3
+    runner._recover_next = 0.0
+    try_recovery()                       # the ceiling, and it says so once
+    runner._recover_next = 0.0
+    try_recovery()
+    assert runner._recover_tries == 3
+    said = [line for line in runner.recent(80)
+            if "leaving it to the operator" in line]
+    assert len(said) == 1
+
+
+def test_the_endpoint_answers_what_the_recovery_took():
+    bus = RecoveringBus("reopen")
+    runner = recovery_runner(bus)
+    session = RemoteSession(runner)
+    agent = Agent(session, port=0, host="127.0.0.1", name="radxa-07")
+    agent.start()
+    try:
+        code, answer = call(agent, "/bus/recover", {})
+    finally:
+        agent.stop()
+        runner.stop()
+    assert code == 200
+    assert answer["recovered"] is True and answer["by"] == "reopen"
+    assert answer["before_ms"] >= 300 and answer["after_ms"] < 100
+    assert bus.reopened == ["/dev/fake"]
+
+
+def test_the_endpoint_refuses_while_a_show_is_running():
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus)
+    session = RemoteSession(runner)
+    session.playing = lambda: True
+    agent = Agent(session, port=0, host="127.0.0.1", name="radxa-07")
+    agent.start()
+    try:
+        code, answer = call(agent, "/bus/recover", {})
+    finally:
+        agent.stop()
+        runner.stop()
+    assert code == 409
+    assert answer["error"] == "a show is running - stop it first"
+    assert bus.padded == [] and bus.reopened == []
+
+
+def test_the_endpoint_refuses_a_cue_that_is_about_to_fire():
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus, recover_quiet=30.0)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    session.fire("c1", time.monotonic() + 4.0)
+    agent = Agent(session, port=0, host="127.0.0.1", name="radxa-07")
+    agent.start()
+    try:
+        code, answer = call(agent, "/bus/recover", {})
+    finally:
+        agent.stop()
+        session.cancel()
+        runner.stop()
+    assert code == 409 and "a cue fires in" in answer["error"]
+    assert bus.padded == []
+
+
+def test_the_status_carries_the_last_recovery():
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus)
+    session = RemoteSession(runner)
+    agent = Agent(session, port=0, host="127.0.0.1", name="radxa-07")
+    agent.start()
+    try:
+        assert call(agent, "/status")[1]["bus_recovery"] is None
+        call(agent, "/bus/recover", {})
+        code, status = call(agent, "/status")
+    finally:
+        agent.stop()
+        runner.stop()
+    assert code == 200
+    recovery = status["bus_recovery"]
+    assert recovery["by"] == "padding" and recovery["count"] == 1
+    assert recovery["ago_s"] is not None
+    assert status["resend_on_stall"] is False and status["resend"] is None
+
+
+# ---- the opt-in fire-time re-send (--resend-on-stall) ----
+
+def test_a_stalled_cue_is_not_re_sent_unless_the_unit_was_started_for_it():
+    """Off by default, and this is why: if the stalled frame WAS executed,
+    the re-send restarts the repaint and the garment paints twice."""
+    bus = StallingBus(0.25, SHOW)
+    runner = make_runner(bus, guard_delay=0.05, verify_fire=False)
+    assert runner.resend_on_stall is False
+    session = RemoteSession(runner)
+    session.arm("c1", 6)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    runner.stop()
+    assert len(shows(bus)) == 1                  # one frame, as always
+    assert runner.resend is None
+    assert any("bus stalled" in line for line in runner.recent(20))
+
+
+def test_a_stalled_cue_is_re_sent_once_when_the_flag_is_on():
+    bus = StallingBus(0.25, SHOW)
+    runner = make_runner(bus, guard_delay=0.05, verify_fire=False,
+                         resend_on_stall=True)
+    session = RemoteSession(runner)
+    session.arm("c1", 6)
+    session.fire("c1", time.monotonic() + 0.05)
+    # The padding was the cure: the write behind it is immediate.
+    bus.pad = lambda count=8: setattr(bus, "block_s", 0.0)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    runner.stop()
+    assert len(shows(bus)) == 2                  # exactly one more
+    assert runner.resend["cue"] == "c1" and runner.resend["count"] == 1
+    assert runner.resend["before_ms"] >= 200
+    assert runner.resend["after_ms"] < 200
+    assert any("re-sent after" in line and "ms stall" in line
+               for line in runner.recent(20))
+
+
+def test_a_cue_that_went_out_cleanly_is_never_re_sent():
+    bus = StallingBus(0.0, SHOW)
+    runner = make_runner(bus, guard_delay=0.05, verify_fire=False,
+                         resend_on_stall=True)
+    session = RemoteSession(runner)
+    session.arm("c1", 6)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    runner.stop()
+    assert len(shows(bus)) == 1 and runner.resend is None
+
+
+def test_a_re_send_that_still_stalls_is_not_tried_a_third_time():
+    bus = StallingBus(0.25, SHOW)
+    runner = make_runner(bus, guard_delay=0.05, verify_fire=False,
+                         resend_on_stall=True)
+    session = RemoteSession(runner)
+    session.arm("c1", 6)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    runner.stop()
+    assert len(shows(bus)) == 2                  # two, and never a third
+    assert runner.resend["after_ms"] >= 200
+    assert any("re-send still stalled" in line for line in runner.recent(20))

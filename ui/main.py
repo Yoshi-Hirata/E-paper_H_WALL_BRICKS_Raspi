@@ -314,6 +314,20 @@ def main() -> int:
                          "boards in use; off by default")
     ap.add_argument("--no-verify-fire", action="store_true",
                     help="(kept for older service files) the default")
+    # The fire-time re-send (ui/runner.py's RESEND_STALL_MS). Off by
+    # default for the same kind of reason as --verify-fire: the reading
+    # it acts on is not proven for every degradation, and the cost of
+    # being wrong is a garment painting the same slot twice.
+    ap.add_argument("--resend-on-stall", action="store_true",
+                    help="when a cue's own broadcast BLOCKS for 200 ms or "
+                         "more (a healthy bus takes 1-2 ms), pad the port "
+                         "and send that same frame once more. For the "
+                         "2026-09-28 state where the master accepted "
+                         "frames and executed none. RISK: if the stalled "
+                         "frame was executed after all, the garment "
+                         "repaints the same slot twice - off by default")
+    ap.add_argument("--no-resend-on-stall", action="store_true",
+                    help="(kept for older service files) the default")
     ap.add_argument("--verify-after", type=float, default=VERIFY_AFTER_S,
                     help=f"seconds after a cue's broadcast (and after the "
                          f"witness board's own sweep start) before that "
@@ -384,7 +398,9 @@ def main() -> int:
                         port=args.port,
                         verify_fire=args.verify_fire and not args.no_verify_fire,
                         verify_after=args.verify_after,
-                        verify_witness=args.verify_witness)
+                        verify_witness=args.verify_witness,
+                        resend_on_stall=(args.resend_on_stall
+                                         and not args.no_resend_on_stall))
 
     firmware = Path(args.firmware) if args.firmware else find_firmware()
     images = [firmware] if args.firmware else find_firmware_images()

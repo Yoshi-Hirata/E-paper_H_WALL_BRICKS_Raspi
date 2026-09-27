@@ -275,6 +275,9 @@ input[type=range] { width: 100%; }
 /* "pictures cleared": the thing the operator asked for, not a fault - so it
    is a quiet grey, not the green of a thing that went well. */
 .tile .vf.ok { color: var(--dim); font-weight: 500; }
+/* "Recover bus", beside the stall mark it belongs to: a button the size of
+   the words around it, never one that redraws the tile's line height. */
+button.small { font-size: 11px; padding: 1px 6px; vertical-align: baseline; }
 .tile .l { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 .go { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 10px; }
 .go button.big { padding: 7px 16px; font-weight: 600; }
@@ -3867,6 +3870,56 @@ const SHOWBOARD = (() => {
              title: STALL_WHY + (ago === null ? "" : ` ${Math.round(ago)} s ago.`)
                + (count > 1 ? ` ${count} times this run.` : "") };
   }
+  // ---- "Recover bus" (ui/runner.py's _recover_bus()) ----
+  // The 2026-09-28 LOOK28 state: the master accepts every frame, executes
+  // none, and every write blocks ~360 ms for ever. The unit can get itself
+  // out of it - the resync padding, then a port reopen - and that is worth
+  // trying BEFORE ② Show preset and ③ START rather than after a garment has
+  // sat out a cue. So the page sweeps first and sends the preset second.
+  //
+  // Which units: online, a stall recorded and still showing (`ms` set - the
+  // unit takes it down itself once a broadcast goes out cleanly), and FRESH
+  // (STALL_FRESH_S), so last hour's hiccup does not reopen a healthy port.
+  // NOT only the degraded ones: two stalls of 359 ms are already this state
+  // and waiting for five of them is waiting for the show. Never during a
+  // run - the unit would refuse it anyway, and asking is a wasted second.
+  function recoverTargets(units, running) {
+    if (running) return [];
+    return (units || []).filter(u => {
+      const s = u && u.bus_stall;
+      return u && u.online && s && s.ms
+        && typeof s.ago_s === "number" && s.ago_s <= STALL_FRESH_S;
+    }).map(u => u.name);
+  }
+  // One unit's answer in the words the operator needs: what it took, or the
+  // one thing left to do about it. A failure names the cure and no numbers -
+  // "358 ms" tells the operator nothing they can act on at 19:58.
+  function recoverText(name, result) {
+    if (!result || result.error)
+      return { name, ok: false, tone: "warn",
+               text: `${name}: bus recovery — ${(result && result.error)
+                        || "no answer from the unit"}` };
+    const n = v => typeof v === "number" ? Math.round(v) : null;
+    const before = n(result.before_ms), after = n(result.after_ms);
+    const span = before === null || after === null ? ""
+      : ` (${before} → ${after} ms)`;
+    if (!result.recovered)
+      return { name, ok: false, tone: "warn",
+               text: `${name}: bus recovery failed — restart the unit` };
+    if (!result.by)
+      return { name, ok: true, tone: "", text: `${name}: bus was already clear` };
+    return { name, ok: true, tone: "",
+             text: `${name}: bus recovered by ${result.by}${span}` };
+  }
+  // Every unit of one sweep on one line, worst tone wins: one unit that
+  // still needs restarting is the whole message, whatever the others did.
+  function recoverReport(answers) {
+    const lines = (answers || []).map(a => recoverText(a.name, a.result));
+    if (!lines.length) return null;
+    return { text: lines.map(l => l.text).join(" · "),
+             tone: lines.some(l => !l.ok) ? "warn" : "",
+             ok: lines.every(l => l.ok) };
+  }
   function vitals(u, boardNos, running) {
     const plain = (text, tone) => ({ text, parts: [{ text }], tone,
                                      offline: true, missing: false });
@@ -3910,7 +3963,8 @@ const SHOWBOARD = (() => {
   return { AMBER_S, RED_S, FIRED_S, LAG_BAD_MS, RTT_SLOW_MS, RESTART_S, ARROWS,
            STALL_STREAK_N, STALL_FRESH_S,
            mmss, secs, arrow, tone, isBag, phase, atRest, rowAt, rowText,
-           ahead, firedAgo, header, boardsOf, busStall, vitals };
+           ahead, firedAgo, header, boardsOf, busStall, vitals,
+           recoverTargets, recoverText, recoverReport };
 })();
 // <<< /SHOWBOARD >>>
 
@@ -4714,11 +4768,52 @@ const showMidRun = () => ["running", "holding"].includes((fleet?.run || {}).stat
 // about it, which is a unit restart and only while nothing is running -
 // SHOWBOARD.busStall() draws that line, so the tile, the NOW -> NEXT row
 // and the notes under START and in the dialog can never disagree.
+// ...and next to either mark, the one thing that can be tried from here:
+// the unit's own recovery (ui/runner.py's _recover_bus()), which is the
+// cheap half of the restart the red mark asks for. Offered on the amber
+// mark too - two 359 ms stalls ARE this state, and waiting for the fifth
+// is waiting for the show - and never during a run, where the unit would
+// refuse it and the words on a tile must not change under the operator.
 function stallMark(u) {
   const s = SHOWBOARD.busStall(u, showMidRun());
   if (!s) return "";
-  return `<span class="vf ${s.degraded ? "no" : "re"}" title="${esc(s.title)}">`
+  const mark = `<span class="vf ${s.degraded ? "no" : "re"}" title="${esc(s.title)}">`
     + `${esc(s.text)}</span>`;
+  if (showMidRun() || !u.online) return mark;
+  return mark + ` <button class="small" data-recover-bus="${esc(u.name)}" `
+    + `title="Pad the port and, if that is not it, close and reopen it - `
+    + `what a restart of the unit does to the bus, without the restart. `
+    + `The unit refuses this while a show is running.">Recover bus</button>`;
+}
+// The sweep ② Show preset and ③ START make first: every online unit still
+// showing a fresh stall, in parallel, each answer on its own line. Bounded
+// by the unit's own 15 s and the server's 20 s, so a unit that has walked
+// out of Wi-Fi range delays the preset by that and no more.
+async function recoverBuses(names) {
+  if (!names.length || commandInFlight) return null;
+  commandInFlight = true; document.body.classList.add("busy");
+  try {
+    toast(names.length === 1 ? `${names[0]}: recovering the bus…`
+          : `Recovering the bus on ${names.length} units…`);
+    const answers = await Promise.all(names.map(async name => {
+      try {
+        return { name, result: await api(`/api/units/${encodeURIComponent(name)}/bus/recover`, {}) };
+      } catch (err) {
+        return { name, result: { error: err.message } };
+      }
+    }));
+    const report = SHOWBOARD.recoverReport(answers);
+    if (report) toast(report.text, report.tone);
+    fleet = await api("/api/fleet"); fleet.at = performance.now(); renderTiles();
+    return report;
+  } finally { commandInFlight = false; document.body.classList.remove("busy"); }
+}
+// Before ② Show preset and ③ START: try to get a degraded bus back before
+// the cue that would be lost to it, not after. A failure does NOT stop the
+// press - a unit that cannot be recovered still has to be given the show,
+// and the toast says which one needs restarting.
+async function recoverBeforeShow() {
+  return recoverBuses(SHOWBOARD.recoverTargets(fleet?.units || [], showMidRun()));
 }
 // The online units whose bus is degraded right now, by name - for the one
 // amber line under ③ START and in WRITE TO UNITS. Empty on every ordinary
@@ -4996,6 +5091,11 @@ document.addEventListener("click", async e => {
     const answers = { force: false, split_ok: false };
     const msg = burnFailedQuestion("Show the preset anyway?");
     if (msg) { if (!confirm(msg)) return; answers.force = true; }
+    // A degraded bus accepts this preset and refreshes no panel (2026-09-28,
+    // radxa-07: slot 1 written +125 ms, nothing on the glass). So the units
+    // still showing a fresh stall get their recovery FIRST, and the preset
+    // goes out behind it whatever the recovery managed.
+    await recoverBeforeShow();
     let result = await fleetCommand("preset", { ...answers }, "② Show preset", "show");
     // The tiles can lag the units by a poll, and the two gates are
     // independent: each refusal gets its own question and one retry, not
@@ -5029,6 +5129,11 @@ document.addEventListener("click", async e => {
     else if (failedMsg) { msg = failedMsg; answers.force = true; }
     else if (startAt > 0) msg = `Start the show at ${clock(startAt)} (not from the beginning)?`;
     if (msg && !confirm(msg)) return;
+    // The same sweep as ② Show preset, for the same reason: a unit whose
+    // every write blocks 360 ms takes the show and shows none of it. Skipped
+    // on a restart of a running show (recoverTargets() refuses mid-run) -
+    // the units would refuse it there anyway.
+    await recoverBeforeShow();
     const startBody = () => ({ lead_s: ui.lead, ...answers });
     let result = await fleetCommand("start", startBody(), `③ START (in ${ui.lead} s)`, "show");
     // Two gates, each with its own question and its own answer: the
@@ -5130,6 +5235,11 @@ document.addEventListener("click", async e => {
   if (e.target.id === "write-demo") { await writeDemo(); return; }
   if (e.target.id === "write-clear-now") { await writeClearNow(); return; }
   if (e.target.id === "demo-refresh") { await refreshDemos(); return; }
+  const recover = e.target.closest("[data-recover-bus]");
+  if (recover) {
+    await recoverBuses([recover.dataset.recoverBus]);
+    return;
+  }
   const delDemo = e.target.closest("[data-demo-delete]");
   if (delDemo) {
     const slug = delDemo.dataset.demoDelete;

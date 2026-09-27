@@ -24,6 +24,22 @@ a show.
     POST /cancel     forget the fire time
     POST /standby    white out the panels, keep the unit under remote
     POST /release    back to the unit's own menu
+    POST /bus/recover  get a serial bus that is ACCEPTING frames and
+                     EXECUTING NONE working again (ui/runner.py's
+                     _recover_bus(); the 2026-09-28 LOOK28 state, where
+                     every write blocked 359 ms for ever and the preset
+                     refreshed no panel). The padding first, the port
+                     reopen if that was not it. The only answer on this
+                     server that is not /status: {"recovered": bool,
+                     "by": "padding" | "reopen" | null, "before_ms",
+                     "after_ms"} - `by` null with recovered true is
+                     "there was nothing wrong", which is what a healthy
+                     unit answers. Bounded at ~11 s of work, 15 s of
+                     waiting. Refused (409) while a show is running or
+                     holding, while a cue is armed within the minute, or
+                     during an OTA: it reopens the port, and there is no
+                     giving a cue the port back in the middle of that.
+                     /status carries the last one as `bus_recovery`
 
     POST /show/load    the unit's whole show file (conductor/showfile.py);
                        starts writing every cue into its own slot right
@@ -254,6 +270,10 @@ class _Handler(BaseHTTPRequestHandler):
                 session.cancel()
             elif self.path == "/standby":
                 session.standby()
+            elif self.path == "/bus/recover":
+                # The one answer on this server that is not /status: the
+                # operator's "Recover bus" wants to read what it took.
+                return self._answer(200, session.recover_bus())
             elif self.path == "/release":
                 session.release()
             else:

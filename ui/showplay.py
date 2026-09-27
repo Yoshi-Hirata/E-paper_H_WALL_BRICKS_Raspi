@@ -225,6 +225,13 @@ class ShowPlayer:
         # (ui/app.py, the tests) need not change, but nothing is timed
         # by them any more - a trigger needs no lead (pre-burn).
         self.session = session
+        # A bus recovery reopens the serial port, so it must never run
+        # inside a run - not even between two cues a minute apart. This
+        # is the only object that knows there is one, so it says so here
+        # rather than leave every caller to wire it up (ui/remote.py's
+        # `playing`, ui/runner.py's _recover_quiet()). A HOLD counts: the
+        # director is standing in the middle of the show either way.
+        session.playing = lambda: self.state in (RUNNING, HOLDING)
         self.store = Path(store) if store else None
         self._clock, self._wall = clock, wall
         self.grace_s, self.tick_s = grace_s, tick_s
