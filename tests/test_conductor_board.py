@@ -180,8 +180,13 @@ def test_a_unit_still_playing_counts_as_mid_show():
     # is on stage (M2).
     mid = PAGE[PAGE.index("const showMidRun ="):]
     mid = mid[:mid.index(";\n")]
-    assert '["running", "holding"].includes' in mid
-    assert 'u.show && u.show.state === "running"' in mid, mid
+    assert mid.count('["running", "holding"].includes') == 2, \
+        "a unit that is HOLDING is mid-show too (N3)"
+    # Three things a unit's own `show` is not evidence of: a demo it is
+    # playing from its own menu (N1), an offline unit's kept last answer
+    # (N2), and anything other than running/holding.
+    assert "u.online" in mid, "an offline unit's stale show.state counts (N2)"
+    assert "!u.show.demo" in mid, "a unit's own demo silences the fleet (N1)"
 
 
 def test_the_note_is_shown_under_start_and_in_the_write_dialog():
@@ -1094,7 +1099,16 @@ _SHOWS = {
     # it was restarted mid-show and has not adopted the run yet (M2).
     "playing": {"id": "S1", "state": "running", "applied": 1, "cues": 2,
                 "demo": False,
-                "burn": {"state": "burned", "done": 6, "total": 6}},
+                "burn": {"state": "burned", "done": 6, "total": 6,
+                         "failed": []}},
+    # A unit playing its OWN standalone demo from KEY1. It reads "running"
+    # exactly as a show does (conductor/fleet.py's _playing_demo), and one
+    # unit on a stand in a showroom must not silence the degraded-bus
+    # guidance across the whole fleet (N1).
+    "demo": {"id": "D1", "state": "running", "applied": 1, "cues": 2,
+             "demo": True, "demo_name": "PARIS SS26",
+             "burn": {"state": "burned", "done": 6, "total": 6,
+                      "failed": []}},
 }
 # ...and what the unit says about the clear itself, beside its show.
 _STALLS = {
@@ -1162,6 +1176,11 @@ class _Stand:
         # so the note can be seen naming two units at once.
         self.stall = "none"
         self.stall2 = "none"
+        # radxa-04 playing its own standalone demo (N1), and the offline
+        # radxa-03 still carrying a stale show.state of "running" (N2):
+        # neither is evidence that THIS show is on stage.
+        self.demo4 = False
+        self.stale3 = False
         # "Clear pictures after the show": a real setting on this stand-in, so
         # the page's checkbox can be ticked and read back the way it is on the
         # night (the server stores it with the show, not in the browser).
@@ -1226,6 +1245,11 @@ class _Stand:
                 if path == "/api/fleet":
                     show = _SHOWS[stand.unit_show]
                     clear = _CLEARS[stand.unit_clear]
+                    # radxa-04 on its own standalone demo (N1), and the
+                    # offline radxa-03 still carrying whatever its last
+                    # answer said - which the fleet keeps as it was (N2).
+                    four = _SHOWS["demo"] if stand.demo4 else show
+                    three = _SHOWS["playing"] if stand.stale3 else None
                     return self._json({
                         # radxa-02 is a third of a second behind this PC AND
                         # one board short - either on its own is red.
@@ -1235,8 +1259,9 @@ class _Stand:
                                         live=2, live_ids=[17, 18], absent=[20],
                                         clear=clear,
                                         bus_stall=_STALLS[stand.stall2]),
-                                  _unit("radxa-03", online=False, error="no answer"),
-                                  _unit("radxa-04", show=show, clear=clear),
+                                  _unit("radxa-03", online=False, error="no answer",
+                                        show=three),
+                                  _unit("radxa-04", show=four, clear=clear),
                                   _unit("radxa-05", show=show, clear=clear)],
                         "last_fire": None, "run": _RUNS[stand.run],
                         "shows": ({n: {"id": "S1", "cues": 2, "boards": []}
@@ -1257,6 +1282,10 @@ class _Stand:
                     stand.unit_clear = args.get("clear", stand.unit_clear)
                     stand.stall = args.get("stall", stand.stall)
                     stand.stall2 = args.get("stall2", stand.stall2)
+                    if "demo4" in args:
+                        stand.demo4 = args["demo4"] == "1"
+                    if "stale3" in args:
+                        stand.stale3 = args["stale3"] == "1"
                     if "uploaded" in args:
                         stand.uploaded = args["uploaded"] == "1"
                     if "clear_in" in args:
@@ -1564,7 +1593,22 @@ _PAGE_PROBE = """
       out.degradedUnitPlaying = {
         tile: document.querySelector("#tiles .tile").textContent,
         note: document.querySelector("#show-degraded").textContent };
-      await fetch("/test/fleet?run=running&show=ran");
+      // ...but radxa-04 on its own standalone DEMO is not this show on stage:
+      // one unit on a stand in a showroom must not silence the guidance for
+      // the other nine (N1).
+      await fetch("/test/fleet?show=ran&demo4=1");
+      await wait(1600);
+      out.degradedWhileOneUnitDemos = {
+        tile: document.querySelector("#tiles .tile").textContent,
+        note: document.querySelector("#show-degraded").textContent };
+      // ...and neither is the OFFLINE radxa-03's last answer, kept as it was
+      // and possibly about a show that ended before this PC was plugged in.
+      await fetch("/test/fleet?demo4=0&stale3=1");
+      await wait(1600);
+      out.degradedWhileOfflineSaysRunning = {
+        tile: document.querySelector("#tiles .tile").textContent,
+        note: document.querySelector("#show-degraded").textContent };
+      await fetch("/test/fleet?stale3=0&run=running&show=ran");
       await wait(1600);
       out.degradedRunning = {
         tile: document.querySelector("#tiles .tile").textContent,
@@ -1976,6 +2020,28 @@ def test_a_unit_still_playing_keeps_the_wording_it_had(page):
     assert "bus degraded" not in p["tile"], p["tile"]
     assert "bus stalled 359 ms" in p["tile"], p["tile"]
     assert p["note"] == "", p["note"]
+
+
+DEGRADED_NOTE = "radxa-01: bus degraded — restart the unit, then Upload"
+
+
+def test_a_demo_on_one_unit_does_not_silence_the_other_nine(page):
+    # A demo reads "running" exactly as a show does (fleet.py's
+    # _playing_demo). One unit on a stand in a showroom, playing from KEY1,
+    # would otherwise take this guidance away from the whole fleet for hours
+    # on end (N1).
+    d = page["degradedWhileOneUnitDemos"]
+    assert "bus degraded (37 stalls)" in d["tile"], d["tile"]
+    assert d["note"] == DEGRADED_NOTE, d["note"]
+
+
+def test_an_offline_units_stale_show_state_is_not_evidence(page):
+    # The fleet keeps an offline unit's last answer as it was, and that
+    # answer can say "running" about a show that ended before this PC was
+    # plugged in. It is not a garment on stage (N2).
+    d = page["degradedWhileOfflineSaysRunning"]
+    assert "bus degraded (37 stalls)" in d["tile"], d["tile"]
+    assert d["note"] == DEGRADED_NOTE, d["note"]
 
 
 def test_nothing_about_it_changes_once_the_show_is_running(page):

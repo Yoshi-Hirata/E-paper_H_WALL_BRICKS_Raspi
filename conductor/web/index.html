@@ -4733,8 +4733,19 @@ function verifyMark(u) {
 // if the units came back unsynced), and in that gap the cues are still
 // firing. "Restart this unit" must not appear over a garment that is on
 // stage (M2).
+//
+// Three things a unit's own `show` is NOT evidence of (N1-N3):
+// * a DEMO. One unit playing its own standalone demo from KEY1 - in a
+//   showroom, on a stand - would otherwise silence this feature across the
+//   whole fleet, for hours. A demo reads "running" exactly like a show does
+//   (conductor/fleet.py's _playing_demo), so it has to be excluded by name.
+// * an OFFLINE unit's last answer, which is kept as it was and may say
+//   "running" about a show that ended before the PC was even plugged in.
+// * "holding" being anything other than mid-show - the same rule as the
+//   conductor's own clause above.
 const showMidRun = () => ["running", "holding"].includes((fleet?.run || {}).state)
-  || (fleet?.units || []).some(u => u.show && u.show.state === "running");
+  || (fleet?.units || []).some(u => u.online && u.show && !u.show.demo
+       && ["running", "holding"].includes(u.show.state));
 // A write to the unit's own serial port that BLOCKED (ui/runner.py's
 // STALL_LOG_MS). One of them is amber, in the same family as "re-sent": it
 // is not a lost cue by itself, but it is the fingerprint of the board that
