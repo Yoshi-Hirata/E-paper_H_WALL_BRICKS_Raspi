@@ -1834,18 +1834,31 @@ def test_start_and_preset_refuse_once_the_pictures_are_cleared(rig):
         assert "Upload again" in str(exc.value)
 
 
-def test_a_start_over_a_clear_that_never_began_runs_as_before(rig):
-    player, session, runner, bus, _ = rig
-    show = dict(make_show(), clear_after_show=True)
-    player.load(show)
-    assert wait_burned(player)
-    # Queued, then taken back by the START before a single slot went: so
-    # nothing about the pictures has changed and the gate passes.
-    session.clear(range(1, 19))
-    player.run(time.monotonic() + 0.05)
-    assert wait_until(lambda: player.applied is not None, timeout=5)
-    assert deleted(bus) == []
-    assert player.status()["burn"]["state"] == "burned"
+def test_a_start_over_a_clear_that_never_began_runs_as_before(tmp_path):
+    # A long guard is what parks the worker: the clear stays QUEUED for
+    # those seconds, so the START below really does take the pictures back
+    # before a single 0x14 went out.
+    session, runner, bus = make_session(verify_fire=False, guard_delay=5.0)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02, grace_s=0.1)
+    try:
+        show = dict(make_show(sents=(-REFRESH, 30.0), duration=60),
+                    clear_after_show=True)
+        player.load(show)
+        assert wait_burned(player)
+        player.run(time.monotonic() + 0.05)
+        assert wait_until(lambda: player.applied is not None, timeout=5)
+        session.clear(range(1, 19))
+        time.sleep(0.2)                  # the worker has had every chance
+        assert session.clear_record()["state"] == "clearing"
+        assert deleted(bus) == []        # ...and is waiting for the guard
+        player.run(time.monotonic() + 0.05)     # START takes them back
+        assert session.clear_record()["state"] == "none"
+        assert player.status()["burn"]["state"] == "burned"
+        time.sleep(0.3)
+        assert deleted(bus) == []
+    finally:
+        player.close()
+        runner.stop()
 
 
 def test_a_cleared_show_comes_back_cleared_after_a_restart(tmp_path):

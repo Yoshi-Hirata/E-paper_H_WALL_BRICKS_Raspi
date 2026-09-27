@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import struct
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -1709,16 +1710,58 @@ def test_a_clear_interrupted_by_a_start_stops_and_says_so():
 
 
 def test_a_clear_that_never_began_leaves_the_pictures_alone():
-    session, runner, bus = make_session(boards=[1], verify_fire=False)
+    # A long guard is what parks the worker: the clear stays QUEUED for
+    # those seconds, so the cancel below really is "before it ever began"
+    # rather than a race on how fast the worker woke up.
+    session, runner, bus = make_session(boards=[1], verify_fire=False,
+                                        guard_delay=5.0)
     burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
-    # Cancelled before the worker ever took the job: not one slot went, so
-    # nothing about the pictures has changed and START passes as before.
+    session.arm("q00", 1, dev_type=3)
+    session.fire("q00", time.monotonic() + 0.02)
+    assert wait_until(lambda: session.phase == FIRED)
     session.clear(range(1, 19))
+    time.sleep(0.2)                     # the worker has had every chance
+    assert session.clear_record()["state"] == "clearing"
+    assert deletes(bus) == []           # ...and is waiting for the guard
     session.cancel_clear("a new run started")
     time.sleep(0.2)
+    # Not one slot went, so nothing about the pictures has changed and
+    # START passes its gate as it always did.
     assert session.clear_record()["state"] == "none"
     assert session.burn_record()[0]["state"] == "burned"
     assert deletes(bus) == []
+    runner.stop()
+
+
+def test_a_clear_the_worker_has_taken_is_past_taking_back():
+    # The worker stops after the slot it is on, and THAT slot can land
+    # after the cancel returns - so the pictures stop being something
+    # START may run the moment the job was taken, not when the first
+    # delete is recorded (50-250 ms of relay in between).
+    held = threading.Event()
+    reached = threading.Event()
+
+    class Blocking(FakeBus):
+        def request(self, frame, retries=3, timeout=None):
+            if frame.cmd == DELETE:
+                reached.set()
+                held.wait(5)
+            return super().request(frame, retries)
+
+    session, runner, bus = make_session(Blocking(), boards=[1],
+                                        verify_fire=False)
+    burned(session, [{"slot": 1, "boards": {1: array(1)}, "delays": {}}])
+    session.clear(range(1, 19))
+    assert reached.wait(5), "the worker never reached the first delete"
+    assert session.clear_record()["done"] == 0   # nothing recorded yet
+    session.cancel_clear("a new run started")
+    # ...and START is already refused, before that first 0x14 has landed.
+    assert session.clear_record()["state"] == "partial"
+    burn, _ = session.burn_record()
+    assert burn["state"] == "cleared" and burn["reason"] == "cleared partially"
+    held.set()
+    assert wait_until(lambda: any("clear interrupted" in line
+                                 for line in runner.recent(20)))
     runner.stop()
 
 

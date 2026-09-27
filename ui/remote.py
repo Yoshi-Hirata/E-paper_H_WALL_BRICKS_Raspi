@@ -583,22 +583,31 @@ class RemoteSession:
     def cancel_clear(self, reason: "str | None" = None) -> None:
         """Give up on a clear - a START taking the pictures back.
 
-        One that never began leaves the slots exactly as they were, so
-        the state goes back to None and the burn record with it: START
-        then passes its gate as it always did. One that has already
-        deleted a slot becomes "partial" and the burn record stays
-        "cleared" (with "cleared partially" as its reason), because half
-        a show's pictures is not something START may run - the worker
-        notices between slots and stops after the one it is on.
+        The line is whether the WORKER HAS THE JOB, not whether a slot
+        has been recorded as deleted yet:
+
+        * still queued - the job is taken off the queue here and not one
+          0x14 ever went out, so the slots are exactly as they were: the
+          state goes back to None and START passes its gate as it always
+          did;
+        * already on the bus - the worker stops after the slot it is on,
+          and that slot can land AFTER this returns. So the pictures stop
+          being something START may run the moment the job was taken,
+          whether or not a delete has been recorded: the state is
+          "partial" and the burn record "cleared" ("cleared partially" as
+          its reason). Deciding this on `clear_deleted` instead left a
+          window of one 0x14 - 50-250 ms on the relay - in which START
+          was waved through and a slot then went anyway, so the garment's
+          first look was missing on one board.
         """
         with self._lock:
             self._clear_epoch += 1
-            self._clear_job = None
+            queued, self._clear_job = self._clear_job, None
             if self.clear_state != "clearing":
                 return              # finished, failed, or never asked for
-            if not self.clear_deleted:
+            if queued is not None:
                 self.clear_state = self.clear_reason = None
-                self.clear_done = self.clear_total = 0
+                self.clear_done = self.clear_total = self.clear_deleted = 0
                 self.clear_failed = []
             else:
                 self.clear_state = "partial"
@@ -661,11 +670,16 @@ class RemoteSession:
             self._mark_cleared_locked()
 
     def clear_cancelled(self, epoch: int, reason: str) -> None:
-        """The worker gave up on the clear it was working through (the
-        port taken, a shutdown, no bus at all)."""
+        """The worker gave up on the clear it was working through, or
+        never got to start it (the port taken, a shutdown, no bus at
+        all). A cancel_clear() has already written its own verdict, so a
+        superseded epoch is a no-op here."""
         with self._lock:
             if epoch != self._clear_epoch:
                 return              # superseded: the newer state stands
+            # Nothing is left for a worker to pick up: the state below is
+            # the last word on this clear.
+            self._clear_job = None
             self.clear_state = "partial"
             self.clear_reason = reason
             if self.clear_deleted:
