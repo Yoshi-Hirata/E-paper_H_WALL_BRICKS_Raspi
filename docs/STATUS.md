@@ -30,9 +30,25 @@
 自動巡回で本番の絵が出ないようにする」)。`show.json` の `clear_after_show` に
 ショーごと保存され(undo 可、import/export も運ぶ)、run の状態にも写る。
 
-- **入れて走らせると**、run が終了(t ≧ duration)したとき、および **STOP** の
-  ときに、Conductor がそのショーを持つ各機体へ **`POST /show/clear`**(新設)を
-  出す。**HOLD では出さない。SEEK でも出さない**
+- **入れて走らせると**、run が終了したとき、および **STOP の 30 秒後**に、Conductor が
+  そのショーを持つ各機体へ **`POST /show/clear`**(新設)を出す。**HOLD では出さない**
+- **STOP は 30 秒待つ**(`CLEAR_AFTER_STOP_S`。2026-09-27 のレビュー指摘)。STOP は
+  演出家が**途中で止める**ときにも押すボタンで、消去は ① Upload(約 3 分)なしには
+  戻せない。この窓の間に **③ START / ② Show preset / RESUME / NEXT / シーク /
+  ① Upload** のどれかがあれば取り消される。確認ダイアログがそれを言い、
+  大時計の下に残り秒数が出る:
+  `Pictures will be cleared on every unit in 21 s — press ③ START (or ② Show preset)
+  to keep them. Clearing cannot be undone: the show has to be uploaded again.`
+  **時間で終わったときは待たない** ― もう終わっているから
+- **終了は「再生して終わりまで来た」ときだけ**(同レビュー)。`seek` は `duration` を
+  含んで丸めるので、時計だけを見ていると「最後のルックを見るために終わりへ飛ぶ」が
+  消去を始めてしまった。**終わり(の 1 秒前より後)へ着地した T0 では消さない**、かつ
+  **最後の T0 移動から 30 秒**は消さない
+- **二重依頼は無視**(同レビュー)。機体自身の STOP が 1 つ積み、数 ms 後に Conductor の
+  指示が来る。進行中の消去と同じものなら**何もしない** ― やり直すと 288 対を頭から
+  歩き直し、空にしたスロットの NAK が「失敗」に数えられる
+- **届かなかった機体は次のポーリングでもう一度**(同レビュー)。相手が理由を答えた
+  場合(古い・別のショー・デモ中)は答えなので繰り返さない
 - 機体は**最後のキューの guard(§4.2 の `_guard_floor`)が過ぎるのを待ってから**、
   生きている全基板の**スロット 1〜18** を `delete_slot`(0x14、ACK 確認、
   リトライは色保存と同じ段)で 1 つずつ削除する。**スロット 0(白)と 19
@@ -55,6 +71,11 @@
 - **チェックを忘れたとき / 1 台だけ**:**Write to units…** ダイアログの
   **「After the show — clear the pictures」→ Clear pictures now**。Upload と同じ
   WHICH LOOKs の選択が効き、ショー中・HOLD 中は押せない
+- **できれば ① Upload の前にチェックを入れる**(同レビュー)。当日は Conductor が
+  指示を出すのでどちらでも効くが、**機体自身にこの設定が入るのは次の Upload のとき**
+  (絵は変わらないのでショーの id も変わらない = タイルが `✗ old version` に
+  ならない)。ショー中に PC を失っても機体が自分で消すようにしたいなら Upload の前に。
+  チェックの隣に `— tick before ① Upload for the units to clear on their own` と出る
 - 古いエージェント(`/show/clear` が 404)は
   `unit too old for clear - power the boards off before unplugging` として
   その機体のタイルに出し、**他の機体の消去は止めない**
