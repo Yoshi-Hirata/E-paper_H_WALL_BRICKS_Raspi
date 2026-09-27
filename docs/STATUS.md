@@ -42,8 +42,10 @@ REMOTE には**発火後のガード 1 発(`--guard-delay` 30 秒)しか無か�
 
 直したもの(`ui/runner.py`):
 
-- **REMOTE でも定期的にブロードキャスト停止**(`REMOTE_GUARD_S`、
-  `--remote-guard 秒`、0 で無効)。ただし**ワーカが暇で、害になりようがない
+- **REMOTE でも 15 秒ごとにブロードキャスト停止**(`REMOTE_GUARD_S`、
+  `--remote-guard 秒`、0 で無効)。待機中の 60 秒ではなく 15 秒なのは、
+  落ちたキューの直前の無音が **11〜38 秒**だったから。
+  ただし**ワーカが暇で、害になりようがない
   時だけ** ―― 直前の show ブロードキャストから `_guard_after_fire()`
   (= `_guard_for()`、既定 30 秒。着弾確認の再送があればそこから測り直す)
   を過ぎていて、次のキューまで 5 秒(`REMOTE_GUARD_HOLD_S`)以上、発火も
@@ -54,6 +56,18 @@ REMOTE には**発火後のガード 1 発(`--guard-delay` 30 秒)しか無か�
 - **ログは最初の 1 行だけ**(`remote guard: stop every … s while idle`)。
   以後は無言で、回数は `/status` の **`remote_guard_sent`** で見る
 - ショーのブロードキャストと発火の精度は変更なし(フェイクバスで ±50 ms)
+
+**詰まった書き込みを名指しできるようにした**(同日)。REMOTE の
+ブロードキャスト書き込み(表示 0x1D、ガード・定期の 0x17)を
+`time.perf_counter()` で計時し、**50 ms 以上**(`STALL_LOG_MS`)なら
+`bus stalled 303 ms on show slot 6` / `… on stop` をログに出す。
+最後の 1 件は `/status` の **`bus_stall`**(`{ms, frame, at, count}`)に
+残り、`conductor/fleet.py` がそのまま通して、タイルと NOW → NEXT の行に
+`re-sent` と同じ琥珀色で **`bus stalled 303 ms`** と出る
+(ツールチップ:「USB につながっている基板がフレームをすぐに取らなかった
+―― 取り込み中だった。絵は出ていないかもしれない」)。
+発火ログの遅れだけでは Radxa が遅いのか基板が USB を見ていないのかが
+分からない ―― 書き込み自体の時間だけが後者を名指しできる。
 
 **Conductor の CSV 取り込みとタイムラインを、演出家用シミュレーターに
 揃えた(2026-09-27)**

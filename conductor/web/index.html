@@ -3856,7 +3856,8 @@ function paintBoard() {
     c.nextWhen.innerHTML = (txt.when ? esc(txt.when) : "")
       + (txt.count === null ? "" : ` <span class="c ${txt.tone}">−${txt.count} s</span>`);
     const u = c.r.unit ? (fleet?.units || []).find(x => x.name === c.r.unit) || null : null;
-    c.state.innerHTML = u && u.online ? esc(lateText(u)) + verifyMark(u) : "";
+    c.state.innerHTML = u && u.online
+      ? esc(lateText(u)) + verifyMark(u) + stallMark(u) : "";
     const v = SHOWBOARD.vitals(u, c.r.boardNos);
     // Each value carries its own tooltip - which way the lag's sign runs,
     // above all - so the line is spans rather than text. Rewritten only
@@ -4302,6 +4303,19 @@ function verifyMark(u) {
     return `<span class="vf re" title="The first broadcast was not taken${at}; the unit sent it again and that one landed.${cue}">re-sent</span>`;
   return "";
 }
+// A write to the unit's own serial port that BLOCKED (ui/runner.py's
+// STALL_LOG_MS). Amber, in the same family as "re-sent": it is not a
+// lost cue by itself, but it is the fingerprint of the board that stops
+// taking USB while it repaints - the one thing that explains a cue that
+// never appeared at all.
+function stallMark(u) {
+  const s = u.bus_stall;
+  if (!s || !s.ms) return "";
+  const more = s.count > 1 ? ` ${esc(s.count)} times this run.` : "";
+  return `<span class="vf re" title="The board on the USB cable did not take the`
+    + ` frame at once — it was busy; the picture may not have landed.${more}">`
+    + `bus stalled ${esc(Math.round(s.ms))} ms</span>`;
+}
 function renderTiles() {
   showClockText();
   const box = $("#tiles");
@@ -4320,7 +4334,7 @@ function renderTiles() {
       <div class="row"><span>Boards (answering / expected)</span><b>${u.live} / ${expected || u.boards || "?"}${boardListMark(u)}</b></div>
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
-      <div class="row"><span>Fired late by</span><b>${esc(lateText(u))}${verifyMark(u)}</b></div>
+      <div class="row"><span>Fired late by</span><b>${esc(lateText(u))}${verifyMark(u)}${stallMark(u)}</b></div>
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version")
             + (unitHoldsRevision(u.name) === false ? " (older timeline)" : "") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>

@@ -683,5 +683,10 @@ class RemoteSession:
                 # garment losing cues with this stuck at 0 means the
                 # heartbeat never got a clear window.
                 "remote_guard_sent": runner.remote_guard_sent,
+                # The last broadcast write that BLOCKED, and how many
+                # have (ui/runner.py's STALL_LOG_MS): {"ms", "frame",
+                # "at" (wall clock), "count"}. None while every write
+                # has been immediate, which is the normal answer.
+                "bus_stall": runner.bus_stall,
                 "burn": burn,
             }

@@ -314,6 +314,12 @@ class UnitLink:
                 # that had to be re-sent, or one that could not be
                 # confirmed even then.
                 "verify": status.get("verify"),
+                # The unit's last blocked broadcast write, if any
+                # (ui/runner.py's STALL_LOG_MS). A board that is
+                # repainting stops taking USB, and a cue written into
+                # that window is lost rather than late - this is the
+                # only place that says so out loud.
+                "bus_stall": status.get("bus_stall"),
                 # How many demos the unit says it holds, in its own poll
                 # answer (None from an agent too old to count them). What
                 # those demos ARE is the fleet's cached /demo/list, added

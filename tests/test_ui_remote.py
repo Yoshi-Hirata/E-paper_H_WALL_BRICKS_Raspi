@@ -452,6 +452,66 @@ def test_the_heartbeat_does_not_move_a_cue():
     runner.stop()
 
 
+# ---- the write that blocked ----
+
+class StallingBus(StampedBus):
+    """A FakeBus whose broadcast writes BLOCK, the way the CDC of a
+    master board that has started repainting does."""
+
+    def __init__(self, seconds: float = 0.12, on_cmd: int = SHOW):
+        super().__init__()
+        self.block_s, self.on_cmd = seconds, on_cmd
+
+    def send(self, frame):
+        if frame.cmd == self.on_cmd and frame.dest == 0xFF:
+            time.sleep(self.block_s)
+        super().send(frame)
+
+
+def test_a_show_write_that_blocks_is_timed_named_and_counted():
+    """2026-09-27: the cue was not late, it was LOST - and the only
+    trace was the fire's own lateness, which says nothing about whose
+    fault it was. The write's own clock does."""
+    bus = StallingBus(0.12, SHOW)
+    runner = make_runner(bus, guard_delay=0.05)
+    session = RemoteSession(runner)
+    session.arm("c1", 6)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    stall = session.status()["bus_stall"]
+    assert stall["frame"] == "show slot 6" and stall["count"] == 1
+    assert stall["ms"] >= 100 and stall["at"] > 0
+    assert any("bus stalled" in line and "on show slot 6" in line
+               for line in runner.recent(20))
+    runner.stop()
+
+
+def test_a_stop_that_blocks_is_named_stop_and_the_stalls_add_up():
+    bus = StallingBus(0.08, STOP)
+    runner = make_runner(bus, guard_delay=0.05, remote_guard=0.1)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    assert wait_until(lambda: (runner.bus_stall or {}).get("count", 0) >= 2,
+                      timeout=5.0)
+    stall = session.status()["bus_stall"]
+    runner.stop()
+    assert stall["frame"] == "stop" and stall["count"] >= 2
+    assert stall["ms"] >= 70
+
+
+def test_a_bus_that_takes_the_frame_at_once_reports_no_stall():
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.05, remote_guard=0.05)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    session.fire("c1", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    assert wait_until(lambda: runner.remote_guard_sent >= 1, timeout=5.0)
+    assert session.status()["bus_stall"] is None
+    assert not [line for line in runner.recent(40) if "bus stalled" in line]
+    runner.stop()
+
+
 def test_junk_span_and_refresh_are_read_as_not_said():
     """Advisory numbers: a cue is never refused over one, and the guard
     falls back to the flat delay rather than to something nonsensical."""

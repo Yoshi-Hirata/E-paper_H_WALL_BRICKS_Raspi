@@ -165,13 +165,27 @@ LINK_GUARD_S = 60.0       # how often standby re-suppresses the autoplay
 # showed. So standby's 60 s heartbeat now runs in REMOTE too - but only
 # while the worker is idle and only when it cannot land inside a
 # repaint: see _remote_guard_clear().
-REMOTE_GUARD_S = 60.0     # how often remote re-suppresses the autoplay
+# 15 s, not standby's 60: the silences that lost cues were 11-38 s long
+# once the show was about two minutes old, so a minute between stops
+# cannot be relied on to cover them. The frame costs 8 bytes and the
+# rules below mean it only ever goes out when nothing else would touch
+# the bus anyway.
+REMOTE_GUARD_S = 15.0     # how often remote re-suppresses the autoplay
 # How near a cue's trigger may be when the periodic stop goes out. A
 # broadcast 0x17 is one 8-byte frame, but the board takes it, and a
 # trigger landing in that window is exactly the collision this whole
 # change is about - so the heartbeat stands aside for the cue, never
 # the other way round, and picks up on the next pass.
 REMOTE_GUARD_HOLD_S = 5.0
+# A broadcast write that takes longer than this is worth saying out
+# loud. On a healthy port `bus.send()` is a memcpy into the CDC's
+# buffer - well under a millisecond. The lost cues of 2026-09-27 were
+# all writes that BLOCKED for 40-400 ms because the master board had
+# stopped servicing USB mid-repaint, and until now the only trace of it
+# was the fire's own lateness. Timed here, the log and /status say
+# plainly "the board was busy", which is what tells an autoplay problem
+# apart from a slow Radxa or a late command from the PC.
+STALL_LOG_MS = 50.0
 PROBE_SWEEPS = 3          # setup passes over the board list
 PROBE_SWEEP_DELAY_S = 3.0 # between passes, so a repaint can finish meanwhile
 REPROBE_INTERVAL_S = 60.0 # how often absent boards get another chance
@@ -367,6 +381,11 @@ class DemoRunner:
         self._remote_guard_due: "float | None" = None
         self._remote_guard_said = False
         self.remote_guard_sent = 0
+        # The last broadcast write that blocked (STALL_LOG_MS), with how
+        # many have blocked in this worker: {"ms", "frame", "at",
+        # "count"}, reported in /status as bus_stall. None until one
+        # does.
+        self.bus_stall: "dict | None" = None
         self.cycle = 0
         self.failures = 0          # cycles abandoned since the demo started
         self.started_at: float | None = None
@@ -1670,7 +1689,9 @@ class DemoRunner:
                 self._record_verify(session, cue_id, "idle-not-repaired",
                                     resent, board, fired["gen"])
                 return
-            bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
+            self._send_timed(bus, show_single(0xFF, slot, groups,
+                                              dev_type=dev_type),
+                             f"show slot {slot}")
             again = time.monotonic()
             self.emit(f"cue {cue_id} not applied at @{board:02d} (checked "
                       f"+{checked:.1f} s), re-sent "
@@ -1692,6 +1713,36 @@ class DemoRunner:
             verified(cue_id, landed, resent=resent, witness=board, gen=gen)
         except TypeError:
             verified(cue_id, landed, resent=resent, witness=board)
+
+    def _send_timed(self, bus, frame, what: str) -> None:
+        """Put one broadcast on the bus and time the write itself.
+
+        A healthy CDC takes a copy and returns in well under a
+        millisecond. A board that is repainting stops servicing USB and
+        the write BLOCKS instead - 40-400 ms in the 2026-09-27
+        rehearsals, and the cue that was written into that window never
+        appeared. The lateness in the fire's own log line says something
+        went slowly; only the write's own clock says it was the BOARD,
+        which is what separates an autoplay that restarted from a busy
+        Radxa or a command the PC sent late.
+
+        The stall is recorded whether or not the write then succeeded,
+        and the exception (if any) goes on to the caller untouched.
+        """
+        began = time.perf_counter()
+        try:
+            bus.send(frame)
+        finally:
+            took_ms = (time.perf_counter() - began) * 1000.0
+            if took_ms >= STALL_LOG_MS:
+                previous = self.bus_stall or {}
+                self.bus_stall = {"ms": round(took_ms, 1), "frame": what,
+                                  # Wall clock: the PC's tile shows how
+                                  # long ago, and the two machines only
+                                  # share this one.
+                                  "at": time.time(),
+                                  "count": int(previous.get("count", 0)) + 1}
+                self.emit(f"bus stalled {took_ms:.0f} ms on {what}")
 
     def _sent_broadcast_stop(self) -> None:
         """Note that a broadcast 0x17 just went out, whoever sent it.
@@ -1770,7 +1821,9 @@ class DemoRunner:
                     self._stop.wait(min(remaining - FIRE_SPIN_S, 0.05))
                 else:
                     time.sleep(0.0005)
-            bus.send(show_single(0xFF, slot, groups, dev_type=dev_type))
+            self._send_timed(bus, show_single(0xFF, slot, groups,
+                                              dev_type=dev_type),
+                             f"show slot {slot}")
             sent_at = self._last_show_at = time.monotonic()
             # What the landing check needs to know about THIS cue, read
             # before the session is told it fired: ui/showplay.py arms
@@ -1804,6 +1857,7 @@ class DemoRunner:
         self._last_show_at = None
         self._remote_guard_said = False
         self.remote_guard_sent = 0
+        self.bus_stall = None
         while not self._stop.is_set():
             port = self.port or find_port()
             if not port:
@@ -2010,7 +2064,7 @@ class DemoRunner:
                             # As after every demo cycle: a shown slot runs
                             # on into the factory autoplay unless stopped.
                             guard_due = None
-                            bus.send(stop(0xFF, groups))
+                            self._send_timed(bus, stop(0xFF, groups), "stop")
                             self._sent_broadcast_stop()
                         elif (self._remote_guard_due is not None
                               and now >= self._remote_guard_due
@@ -2024,7 +2078,7 @@ class DemoRunner:
                                 self.emit("remote guard: stop every "
                                           f"{self.remote_guard:g} s while idle")
                             self.remote_guard_sent += 1
-                            bus.send(stop(0xFF, groups))
+                            self._send_timed(bus, stop(0xFF, groups), "stop")
                             self._sent_broadcast_stop()
                         if self._reprobe(bus, groups):
                             pass                # joined boards take the next cue

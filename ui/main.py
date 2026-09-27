@@ -331,9 +331,10 @@ def main() -> int:
     # restarted its own autoplay in that gap (SPECIFICATION 4.2, 5.4).
     ap.add_argument("--remote-guard", type=float, default=REMOTE_GUARD_S,
                     metavar="SEC",
-                    help="while the show PC drives this unit, re-send the "
-                         "broadcast stop this often when the worker is idle "
-                         "and no cue is near (default 60; 0 disables)")
+                    help=f"while the show PC drives this unit, re-send the "
+                         f"broadcast stop this often when the worker is idle "
+                         f"and no cue is near (default {REMOTE_GUARD_S:g}; "
+                         f"0 disables)")
     ap.add_argument("--slot", type=int, default=TEST_SLOT)
     ap.add_argument("--pattern", choices=[p.key for p in PATTERNS],
                     help="start this pattern immediately instead of showing "
