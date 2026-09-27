@@ -86,9 +86,19 @@ DEMO_NAME_MESSAGE = (f"A-Z, 0-9 and symbols, up to {DEMO_NAME_MAX} characters "
                      "(the unit's screen cannot show Japanese)")
 _DEMO_NAME_OK = re.compile(r"^[\x20-\x7e]+$")     # printable ASCII only
 _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-# Parts of show.json that never reach a unit: the operator's own notes
-# about the show (see Workspace.revision).
-_REVISION_IGNORES = {"music", "labels"}
+# Parts of show.json that must not make the page say "changed since Upload"
+# (see Workspace.revision). The music and the LOOK / model labels never reach
+# a unit at all - they are the operator's own notes about the show.
+#
+# `clear_after_show` is the one exception that DOES reach a unit, and is here
+# on purpose (2026-09-27). Nothing about the pictures changes with it: the
+# show keeps its id (conductor/showfile.py adds the key after the digest), so
+# an Upload would rewrite nothing, and the conductor sends POST /show/clear
+# itself when the run ends - it never depends on the unit's own copy, which is
+# only the fallback for a show that ends with the PC gone. Counting it would
+# turn ten green chips amber and ask for a three-minute re-Upload, the evening
+# of the show, for a flag the clear does not need.
+_REVISION_IGNORES = {"music", "labels", "clear_after_show"}
 # A CSV's name is conductor/look.py's business now (normalize_name /
 # name_problem, the same rule the designers' simulator applies): this one
 # is only for the MUSIC blob, which is a file on disk and nothing else -
@@ -1465,7 +1475,9 @@ class Workspace:
         Not the whole of show.json: the music and the LOOK / model labels
         are the operator's own notes about the show and never leave this
         PC, so loading a track or renaming a look would otherwise turn
-        every chip red for nothing (found in review).
+        every chip red for nothing (found in review). "Clear pictures
+        after the show" is left out for the same reason though it does
+        reach a unit - see _REVISION_IGNORES.
 
         Why not the compiled show ids themselves: compiling builds every
         picture of every board (measured 2026-09-25: 364 ms for a two-unit

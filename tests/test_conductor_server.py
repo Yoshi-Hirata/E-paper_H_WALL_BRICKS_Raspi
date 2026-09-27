@@ -3127,6 +3127,25 @@ def test_the_clear_after_show_setting_is_undoable(workspace):
     assert workspace.state()["history"]["undo"] == depth
 
 
+def test_ticking_the_box_does_not_make_the_units_look_out_of_date(workspace):
+    # Nothing about the pictures changes, and the show keeps its id, so a
+    # re-Upload would rewrite nothing - and asking for one, on ten tiles, the
+    # evening of the show, is worse than the unit's own fallback copy of the
+    # flag being one Upload behind (the conductor sends the clear itself).
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0,
+                                  "design": grid}])
+    before = workspace.revision()
+    workspace.set_clear_after_show(True)
+    assert workspace.revision() == before
+    # ...and the show files keep their identity, which is what the tiles and
+    # the supervision compare.
+    workspace.assign("Look22", "radxa-01")
+    shows = workspace.compile_show()[0]
+    workspace.set_clear_after_show(False)
+    assert workspace.compile_show()[0]["radxa-01"]["id"] == shows["radxa-01"]["id"]
+
+
 def test_the_clear_after_show_setting_refuses_anything_but_a_bool(workspace):
     for junk in ("yes", 1, None, {}):
         with pytest.raises(ValueError, match="must be true or false"):
