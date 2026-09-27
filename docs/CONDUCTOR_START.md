@@ -155,7 +155,12 @@ python -m conductor serve --open
 >   メニューに名前つきで保存し、機体が KEY1 で再生する
 >
 > どちらもダイアログ上部の **WHICH LOOKs** のラジオで「All LOOKs」(既定)か LOOK 1 つを
-> 選べる。1 つだけ選ぶとその LOOK の機体にしか書かない。**START(と ② Show preset)は
+> 選べる。1 つだけ選ぶとその LOOK の機体にしか書かない。**必要なのはその LOOK の機体が
+> 割り当て済みであることだけ** ― 他の衣装が Designs タブで機体未割り当てでも、
+> 他の衣装のキューに問題が残っていても、1 ルックの書き込みは通る。書かなかった分は
+> ダイアログに `Not written: AZ271SB2303 … — no unit yet` と黄色で出る
+> (**All LOOKs は従来どおり全部そろっていないと断る**。未割り当ての衣装があれば
+> その型番を名指しして止まる)。**START(と ② Show preset)は
 > タイムラインの全機体が同じ Upload を持っていることを要求し、揃っていなければ断る** -
 > `radxa-04 is not on this upload - Upload for All LOOKs before the show`。
 > 1 ルックの Upload は確認用、本番前には必ず All LOOKs でもう一度 Upload すること
