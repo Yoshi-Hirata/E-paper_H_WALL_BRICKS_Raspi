@@ -77,6 +77,13 @@ SHOW_FORMAT_VERSION = 1
 BUNDLE_FORMAT = "epaper-show-bundle"      # the designers' simulator export
 BUNDLE_FORMAT_VERSION = 1
 BUNDLE_MAX_FILES = 200
+# Why a bundle's *_map.csv did not land: the wiring in this workspace is
+# the operator's, regenerated from the 配線ナビ when the garment changes
+# (2026-09-27 - a bundle loaded at 13:49 put a stale copy of
+# AZ271SD1307_map.csv back over that morning's board 150). The designer's
+# own copy travels in the bundle so a FRESH workspace can be built from
+# it; it is not the source of truth for a garment already here.
+BUNDLE_WIRING_KEPT = "the workspace's wiring is kept (the bundle's copy differs)"
 DEMO_NAME_MAX = 14        # the unit's LCD menu row
 # The unit's LCD font (ui/render.py, DejaVu) has no Japanese glyphs, so a
 # demo's name must be plain ASCII the unit can actually draw - the same
@@ -1026,6 +1033,25 @@ class Workspace:
         again on this machine (docs/SIMULATOR_FOR_DESIGNERS.md), so this
         never touches self.music; the name is only handed back for the
         page's toast.
+
+        Designs are replaced and reported (`overwritten`) - that is what
+        sending a bundle is for. A garment's WIRING is not: every
+        *_map.csv this workspace already holds stays exactly as it is and
+        is reported in `kept` instead (2026-09-27, operator's decision).
+        The maps here are regenerated from the 配線ナビ as the site
+        changes a garment, and a designer's bundle carries whatever copy
+        their simulator was started from - at 13:49 that put the morning's
+        board 150 back to the stale layout without a word. `kept` entries
+        are {name, why}: `why` is empty when the bundle's bytes are the
+        same file (nothing happened, nothing to say) and
+        BUNDLE_WIRING_KEPT when they differ, which the page shows. A kept
+        map is in none of `saved`, `overwritten` or `renamed` - nothing of
+        the bundle's landed under any name (its composed spelling is still
+        used to rewrite the timeline's references, since that is the
+        spelling the file here has). The operator replaces a map
+        deliberately, by hand (Delete, then Add CSV). A bundle map for a
+        garment this workspace does NOT have yet is written as before: a
+        new garment arrives with its wiring.
         """
         if not isinstance(payload, dict):
             raise ValueError("not a bundle file")
@@ -1114,24 +1140,66 @@ class Workspace:
         # Validate the whole timeline before a single CSV is written.
         changes, cues = self._validate_show(show)
         with self._lock:
-            existing = {p.name for p in self.files.glob("*.csv")}
+            # Folded, like intake()'s own look: the operator's PC is
+            # Windows, where "look22_map.csv" in a bundle IS the
+            # "Look22_map.csv" already here (look.fold_name).
+            on_disk = self._on_disk()            # folded name -> the name here
         saved: "list[str]" = []
         overwritten: "list[str]" = []
+        kept: "list[dict]" = []
+        kept_folded: "set[str]" = set()
+        # The bundle's own spellings of the maps that were kept: dropped
+        # from the `renamed` this call REPORTS, because nothing of theirs
+        # was written under any name. The composing itself still has to
+        # happen (it is what rewrote the cues, transitions, units, labels
+        # and boards above onto the spelling this workspace keeps), so it
+        # is `renamed` the reply loses, not the rewrite.
+        kept_cleans: "set[str]" = set()
         for name, text in to_save:
+            if self.kind(name) == "map":
+                here = on_disk.get(look_fold_name(name))
+                if here is not None:
+                    # The wiring stays. Once per garment, whatever the
+                    # bundle calls it: two entries of one map (two
+                    # spellings, two cases) are one file here and one line
+                    # for the operator to read.
+                    kept_cleans.add(name)
+                    if look_fold_name(here) not in kept_folded:
+                        kept_folded.add(look_fold_name(here))
+                        same = _same_csv(self._existing_text(here), text)
+                        kept.append({"name": here,
+                                     "why": "" if same else BUNDLE_WIRING_KEPT})
+                    continue
             try:
                 saved_name = self.save(name, text)
             except OSError as exc:
                 raise ValueError(
                     f"could not save {name}: {exc} - {len(saved)} file(s) "
                     f"already saved, {len(refused)} refused before this")
-            if saved_name in existing:
-                overwritten.append(saved_name)
+            # Folded, like everything else about "the same file": a design
+            # whose name differs from the one here only in case IS that
+            # file on NTFS, and reporting it as a plain save (as an exact
+            # `in existing` did) told the operator a design had been added
+            # when it had in fact replaced one. Named by the spelling on
+            # disk, which is the file that was written.
+            folded = look_fold_name(saved_name)
+            if folded in on_disk:
+                overwritten.append(on_disk[folded])
             saved.append(saved_name)
+            # ...and a second entry of this same bundle landing on it is an
+            # overwrite too, not a second design.
+            on_disk.setdefault(folded, saved_name)
+        # The CHECK below (and every one the page runs afterwards) reads
+        # the CSVs on disk, so a design drawn for the bundle's stale
+        # layout is judged against the wiring that was KEPT - which is the
+        # point: it is flagged here rather than at the run-through.
         cue_count, warnings = self._apply_show_changes(changes, cues)
         music = payload.get("music") or show.get("music")
+        renamed_here = {old: new for old, new in renamed.items()
+                        if new not in kept_cleans}
         return {"ok": True, "saved": saved, "refused": refused,
-                "renamed": renamed,
-                "overwritten": overwritten, "cues": cue_count,
+                "renamed": renamed_here,
+                "overwritten": overwritten, "kept": kept, "cues": cue_count,
                 "warnings": warnings, "units_kept": units_kept,
                 "boards_kept": boards_kept,
                 "music": music.get("name") if isinstance(music, dict) else None}
@@ -1148,9 +1216,10 @@ class Workspace:
         """Write one CSV, replacing whatever is there under that name.
 
         The plain write, and it stays that way: import_bundle() is
-        documented to overwrite and to report what it overwrote. The
-        /api/files path does NOT come here directly - it goes through
-        intake() below, which never lets one file land on another.
+        documented to overwrite the DESIGNS it names and to report what it
+        overwrote (it keeps a garment's wiring and never calls this for
+        it). The /api/files path does NOT come here directly - it goes
+        through intake() below, which never lets one file land on another.
         """
         with self._lock:
             return self._save_locked(name, text)
@@ -1245,7 +1314,10 @@ class Workspace:
         import_bundle() deliberately does NOT come this way: a bundle
         replaces the designs it names and reports what it overwrote
         (docs/SIMULATOR_FOR_DESIGNERS.md), which is the whole point of
-        sending one.
+        sending one. It agrees with this function about WIRING, though -
+        since 2026-09-27 a bundle's *_map.csv for a garment already here
+        is kept, not written, and the operator replaces one deliberately
+        (Delete, then Add CSV) exactly as the rule above says.
         """
         with self._lock:
             return self._intake_locked(list(entries), item)
