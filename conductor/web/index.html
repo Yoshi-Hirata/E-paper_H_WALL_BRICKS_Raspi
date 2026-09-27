@@ -281,7 +281,12 @@ input[type=range] { width: 100%; }
 .showclock.running small { color: var(--ok); } .showclock.holding small { color: var(--warn); }
 .shownext { font-size: 13px; color: var(--dim); min-width: 220px; }
 .shownext b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
-.go button.hold { background: var(--warn); border-color: var(--warn); color: #fff; }
+/* HOLD is an amber SURFACE, so its ink is --warn-ink, never a hardcoded
+   white: in dark --warn is light amber (#ffb860) and white on it reads at
+   1.71:1 - the one button on this panel nobody may have to squint at
+   (review, 2026-09-27). --warn-ink is 5.2:1 light / 10:1 dark. */
+.go button.hold { background: var(--warn); border-color: var(--warn);
+                  color: var(--warn-ink); }
 .go button.stop:hover { border-color: var(--err); color: var(--err); }
 /* THE SHOW's own music row. The same green/red as the Timeline's ▶ Play /
    ⏹ Stop, because it is the same audio - one <audio> element serves both. */
@@ -2973,6 +2978,21 @@ function writeClearHtml(s) {
     <button class="big" id="write-clear-now" ${s.clearWhy ? "disabled" : ""}>Clear pictures now</button>
   </div>`;
 }
+// How long a STOP's clear waits before it goes out - conductor/fleet.py's
+// CLEAR_AFTER_STOP_S. The page only SAYS it; the fleet is what counts it.
+const CLEAR_AFTER_STOP_S = 30;
+// STOP's own question. With "Clear pictures after the show" ticked, STOP is
+// not only "the panels keep what they are showing" any more: it starts the
+// clock on something that cannot be undone without a three-minute Upload -
+// and STOP is also how a director aborts a show half way through, which is
+// the ordinary reason to press it (review, 2026-09-27). So the confirm says
+// what is about to happen and how to take it back.
+function stopQuestion() {
+  const base = "Stop the show? The panels keep what they are showing.";
+  if (!fleet?.run?.clear_after_show) return base;
+  return base + ` Pictures will be cleared ${CLEAR_AFTER_STOP_S} s after STOP`
+    + " unless you START again — clearing cannot be undone (Upload again).";
+}
 // Said in full before anything is deleted: what goes, what stays, and what
 // it costs (an Upload before the next START).
 const clearNowQuestion = who =>
@@ -3417,7 +3437,20 @@ const UPLOAD_TITLE = "Writes every picture into the boards now (one per cue, "
 const CLEAR_AFTER_TITLE = "ショー終了後にスロット 1〜18 を削除。"
   + "Radxa を外した後の自動巡回で本番の絵が出ないようにする。"
   + "\n\nThe garment keeps the look it is showing (nothing is repainted) - "
-  + "but after this, START needs an Upload again.";
+  + "but after this, START needs an Upload again."
+  + "\n\nThis PC sends the clear itself when the show ends or is stopped, so "
+  + "ticking it now is enough for tonight. The UNITS only learn it at the "
+  + "next ① Upload - tick it before Upload if they are to clear on their own "
+  + "with the PC gone.";
+// ...and the same thing in one line beside the box, because the tooltip is
+// only found by hovering: the unit-side fallback (the PC vanishing before the
+// show ends) exists only for units that were Uploaded AFTER the tick. Ticking
+// it afterwards deliberately does not change the show's id, so no unit is
+// asked to take the timeline again for it (review, 2026-09-27).
+function clearAfterNote() {
+  if (!state.show.clear_after_show) return "";
+  return "— tick before ① Upload for the units to clear on their own";
+}
 // ---- THE SHOW's NOW -> NEXT board ---------------------------------------
 // Under the big clock: one header line saying what fires next and in how
 // many seconds, then one row per garment - what it is wearing now, how it
@@ -4090,7 +4123,9 @@ function renderFleet() {
         <button class="big fire" id="show-start">③ START</button>
         <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
           id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
-          Clear pictures after the show</label>
+          Clear pictures after the show
+          <span class="none" id="show-clear-after-note">${
+            esc(clearAfterNote())}</span></label>
         <button class="big" id="show-write" title="The other way to put this timeline on the units: stored in each unit's own menu, played from KEY1 with no PC at all. Opens the same &quot;Write to units…&quot; dialog as the Timeline tab.">④ Save on units (plays without this PC)</button>
         <label class="meta">START / NEXT / MOVE take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
         <span style="flex:1"></span>
@@ -4224,7 +4259,14 @@ function showClockText() {
     startBtn.classList.toggle("warnbtn", startAt > 0);
   }
   const hint = $("#show-hint");
-  if (hint) hint.textContent = !want ? (unitsBusy
+  // The STOP window, above everything else: it is the only line on this
+  // panel with a deadline on it, and the way out is one button away.
+  const clearIn = fleet.clear_in_s;
+  if (hint) hint.textContent = typeof clearIn === "number"
+      ? `Pictures will be cleared on every unit in ${Math.ceil(clearIn)} s`
+        + " — press ③ START (or ② Show preset) to keep them. Clearing cannot"
+        + " be undone: the show has to be uploaded again."
+    : !want ? (unitsBusy
       ? "Units are running a show this conductor did not upload (it was restarted). STOP works; Upload again to take the show over."
       : "Upload the show first.")
     // Said before the "n units do not hold this show" line, because this
@@ -4861,7 +4903,7 @@ document.addEventListener("click", async e => {
     return;
   }
   if (e.target.id === "show-stop") {
-    if (confirm("Stop the show? The panels keep what they are showing.")) {
+    if (confirm(stopQuestion())) {
       const result = await fleetCommand("stop", {}, "STOP", "show");
       if (result && result.units !== undefined) {
         ui.manual = false; ui.seekSent = null; dropSeek(); renderSeekBlock();

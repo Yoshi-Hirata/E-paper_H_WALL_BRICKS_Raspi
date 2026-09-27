@@ -241,6 +241,9 @@ class RemoteSession:
         self.clear_reason: str | None = None
         self._clear_job: dict | None = None
         self._clear_epoch = 0
+        # Which slots the clear in hand is about, so a second ask for the
+        # SAME ones is a no-op rather than a restart - see clear().
+        self._clear_slots: "list[int] | None" = None
 
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -441,6 +444,7 @@ class RemoteSession:
             # into the new burn's state.
             self._clear_epoch += 1
             self._clear_job = None
+            self._clear_slots = None
             self.clear_state = self.clear_reason = None
             self.clear_done = self.clear_total = self.clear_deleted = 0
             self.clear_failed = []
@@ -567,12 +571,22 @@ class RemoteSession:
                                   f"0 is the standby white and 19 the "
                                   f"manual slot, and neither is cleared")
         with self._lock:
+            if self.clear_state == "clearing" and self._clear_slots == slots:
+                # The same clear is already queued or on the bus. Asking
+                # twice happens by design - the unit's own STOP queues one
+                # and the conductor's POST /show/clear lands a few ms
+                # later - and bumping the epoch here would abort that walk
+                # part way and start all 288 pairs again, with every slot
+                # the first walk already emptied answering NAK and reading
+                # as a failure (review, 2026-09-27).
+                return
             self._clear_epoch += 1
             epoch = self._clear_epoch
             self.clear_state = "clearing"
             self.clear_done = self.clear_total = self.clear_deleted = 0
             self.clear_failed = []
             self.clear_reason = None
+            self._clear_slots = list(slots)
             self._clear_job = {"slots": slots, "epoch": epoch}
         if not self.runner.remote and self.runner.start_remote(self) is False:
             self.clear_cancelled(epoch, "bus busy: the previous worker has "
@@ -607,6 +621,7 @@ class RemoteSession:
                 return              # finished, failed, or never asked for
             if queued is not None:
                 self.clear_state = self.clear_reason = None
+                self._clear_slots = None
                 self.clear_done = self.clear_total = self.clear_deleted = 0
                 self.clear_failed = []
             else:

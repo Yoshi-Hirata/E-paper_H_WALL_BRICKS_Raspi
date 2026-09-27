@@ -62,9 +62,12 @@ def make_show(sents=(-REFRESH, 0.8, 1.7), duration=2.2):
 @pytest.fixture
 def rig(tmp_path):
     session, runner, bus = make_session()
+    # clear_after_stop_s: the real 30 s window a STOP's clear waits out,
+    # compressed like every other wait on this player. The tests that are
+    # ABOUT the window set it themselves.
     player = ShowPlayer(session, store=tmp_path, save_s=0.01, margin_s=0.15,
                         grace_s=0.3, tick_s=0.02, setup_s=0.5,
-                        setup_board_s=0.0)
+                        setup_board_s=0.0, clear_after_stop_s=0.05)
     yield player, session, runner, bus, tmp_path
     player.close()
     runner.stop()
@@ -1856,6 +1859,112 @@ def test_a_start_over_a_clear_that_never_began_runs_as_before(tmp_path):
         assert player.status()["burn"]["state"] == "burned"
         time.sleep(0.3)
         assert deleted(bus) == []
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_stop_waits_before_it_clears_and_a_start_takes_it_back(tmp_path):
+    # STOP is also how a director aborts a show half way through - the
+    # ordinary reason to press it - and clearing cannot be undone without a
+    # three-minute Upload. So STOP ARMS the clear and a START inside the
+    # window takes it back (review, 2026-09-27).
+    session, runner, bus = make_session(verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02, grace_s=0.1,
+                        clear_after_stop_s=5.0)
+    try:
+        show = dict(make_show(sents=(-REFRESH, 30.0), duration=60),
+                    clear_after_show=True)
+        player.load(show)
+        assert wait_burned(player)
+        player.run(time.monotonic() + 0.05)
+        assert wait_until(lambda: player.applied is not None, timeout=5)
+        player.stop()
+        time.sleep(0.4)
+        # Nothing has gone yet, and the show is still runnable.
+        assert session.clear_record()["state"] == "none"
+        assert deleted(bus) == []
+        assert player.status()["burn"]["state"] == "burned"
+        # ...and the START inside the window is the end of it.
+        player.run(time.monotonic() + 0.05)
+        assert player._clear_at is None
+        assert wait_until(lambda: player.applied is not None, timeout=5)
+        time.sleep(0.3)
+        assert deleted(bus) == []
+        assert session.clear_record()["state"] == "none"
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_preset_inside_the_stop_window_takes_the_clear_back(tmp_path):
+    session, runner, bus = make_session(verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02, grace_s=0.1,
+                        clear_after_stop_s=5.0)
+    try:
+        show = dict(make_show(sents=(-REFRESH, 30.0), duration=60),
+                    clear_after_show=True)
+        player.load(show)
+        assert wait_burned(player)
+        player.run(time.monotonic() + 0.05)
+        assert wait_until(lambda: player.applied is not None, timeout=5)
+        player.stop()
+        player.preset()
+        assert player._clear_at is None
+        time.sleep(0.4)
+        assert deleted(bus) == []
+        assert session.clear_record()["state"] == "none"
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_the_window_runs_out_and_then_the_slots_go(rig):
+    # The rig's window is 0.05 s; nobody presses anything, so it closes.
+    player, session, runner, bus, _ = rig
+    show = dict(make_show(sents=(-REFRESH, 30.0), duration=60),
+                clear_after_show=True)
+    player.load(show)
+    assert wait_burned(player)
+    player.run(time.monotonic() + 0.05)
+    assert wait_until(lambda: player.applied is not None, timeout=5)
+    player.stop()
+    assert wait_cleared(session)
+    assert deleted(bus) == [(b, s) for b in (1, 2) for s in range(1, 19)]
+
+
+def test_asking_while_a_clear_is_in_flight_does_not_restart_the_walk(tmp_path):
+    # The unit's own STOP queues a clear and the conductor's POST
+    # /show/clear lands a few ms behind it. Restarting would abort the walk
+    # part way and re-walk every pair, with the slots the first walk
+    # already emptied answering NAK and reading as failures.
+    class SlowDelete(FakeBus):
+        def request(self, frame, retries=3, timeout=None):
+            if frame.cmd == DELETE:
+                time.sleep(0.02)
+            return super().request(frame, retries)
+
+    session, runner, bus = make_session(SlowDelete(), verify_fire=False)
+    player = ShowPlayer(session, store=tmp_path, tick_s=0.02, grace_s=0.1,
+                        clear_after_stop_s=0.01)
+    try:
+        show = dict(make_show(sents=(-REFRESH, 30.0), duration=60),
+                    clear_after_show=True)
+        player.load(show)
+        assert wait_burned(player)
+        player.run(time.monotonic() + 0.05)
+        assert wait_until(lambda: player.applied is not None, timeout=5)
+        player.stop()
+        assert wait_until(lambda: session.clear_record()["done"] > 0,
+                          timeout=5)
+        epoch = session._clear_epoch
+        player.clear_pictures("abc1234567")      # the conductor, right behind
+        player.clear_pictures("abc1234567")      # ...and again
+        assert session._clear_epoch == epoch, "the walk was restarted"
+        assert wait_cleared(session, timeout=30)
+        # One walk, one pair each, nothing counted as failed.
+        assert deleted(bus) == [(b, s) for b in (1, 2) for s in range(1, 19)]
+        assert session.clear_record()["failed"] == []
     finally:
         player.close()
         runner.stop()

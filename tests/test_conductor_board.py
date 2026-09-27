@@ -852,6 +852,11 @@ _RUNS = {
     "running": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 5.0},
     "holding": {"t0": 0.0, "state": "holding", "held_at": 20.0, "force": False, "now": 20.0},
     "ended": {"t0": 0.0, "state": "running", "held_at": None, "force": False, "now": 190.0},
+    # A run that will take its pictures out of the slots when it is over -
+    # what makes STOP's own confirm say so (2026-09-27).
+    "running_clearing": {"t0": 0.0, "state": "running", "held_at": None,
+                         "force": False, "now": 5.0,
+                         "clear_after_show": True},
 }
 # A unit's own show, as it reads once the show has been through it: "stop"
 # is what /api/fleet says AFTER a STOP - no run, but units that applied
@@ -924,6 +929,9 @@ class _Stand:
         # night (the server stores it with the show, not in the browser).
         self.clear_after = False
         self.cleared = []          # units the "Clear pictures now" button hit
+        # Seconds left of a STOP's clear window, or None for "none armed":
+        # what the page counts down while it runs.
+        self.clear_in_s = None
         # Whether this conductor believes it has uploaded to the units. Off by
         # default, so every assertion written before this one sees the fleet it
         # always saw; the clear's own steps turn it on, because "which units
@@ -995,6 +1003,7 @@ class _Stand:
                                    for n in ("radxa-01", "radxa-02",
                                              "radxa-04", "radxa-05")}
                                   if stand.uploaded else {}),
+                        "clear_in_s": stand.clear_in_s,
                         "corrections": [], "prepared": {},
                         "start_at": 0.0, "show_duration": 180.0,
                         "burn": {"burned": 0, "total": 0}, "timeline": written})
@@ -1008,6 +1017,9 @@ class _Stand:
                     stand.unit_clear = args.get("clear", stand.unit_clear)
                     if "uploaded" in args:
                         stand.uploaded = args["uploaded"] == "1"
+                    if "clear_in" in args:
+                        stand.clear_in_s = (None if args["clear_in"] == "none"
+                                            else float(args["clear_in"]))
                     return self._json({"run": stand.run, "show": stand.unit_show,
                                        "clear": stand.unit_clear,
                                        "uploaded": stand.uploaded})
@@ -1214,6 +1226,37 @@ _PAGE_PROBE = """
       out.clearNowWhileRunning = btn() ? btn().disabled : null;
       out.clearNowWhy = (document.querySelector("#write-clear-why") || {}).textContent;
       document.querySelector("#write-close").click();
+      await wait(400);
+
+      // 9. STOP's own confirm. Without the box it says what it always said;
+      //    with it, STOP starts a clock on something irreversible and has to
+      //    say so and how to take it back.
+      var asked = null;
+      window.confirm = function (msg) { asked = msg; return false; };
+      await fetch("/test/fleet?run=running&show=ran&clear=none");
+      await wait(1600);
+      document.querySelector("#show-stop").click();
+      await wait(400);
+      out.stopPlain = asked;
+      asked = null;
+      await fetch("/test/fleet?run=running_clearing");
+      await wait(1600);
+      out.stopRunClears = !!(fleet.run && fleet.run.clear_after_show);
+      document.querySelector("#show-stop").click();
+      await wait(400);
+      out.stopClearing = asked;
+
+      // 10. ...and the window counting down, where the way out of it is.
+      await fetch("/test/fleet?run=none&clear_in=21");
+      await wait(1600);
+      out.windowHint = document.querySelector("#show-hint").textContent;
+      await fetch("/test/fleet?clear_in=none");
+      await wait(1600);
+      out.windowGone = document.querySelector("#show-hint").textContent;
+
+      // 11. The checkbox's own note, with the box ticked.
+      out.clearAfterNote = (document.querySelector("#show-clear-after-note")
+                            || {}).textContent;
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -1369,6 +1412,60 @@ def test_the_checkbox_sits_next_to_start_and_is_stored_with_the_show():
     assert "await refresh()" in handler
 
 
+def test_the_stop_confirm_says_the_pictures_are_about_to_go():
+    # STOP is also how a director aborts a show half way through - the
+    # ordinary reason to press it - and a clear cannot be undone without a
+    # three-minute Upload. The confirm has to say so (review, 2026-09-27).
+    body = _function_body("stopQuestion")
+    assert "Stop the show? The panels keep what they are showing." in body
+    assert "fleet?.run?.clear_after_show" in body, \
+        "the warning is added whether or not this run clears"
+    assert "Pictures will be cleared ${CLEAR_AFTER_STOP_S} s after STOP" in body
+    assert "unless you START again" in body
+    assert "clearing cannot be undone (Upload again)" in body
+    # ...and it is what the button actually asks.
+    assert "confirm(stopQuestion())" in PAGE
+    assert 'confirm("Stop the show? The panels keep what they are showing.")' \
+        not in PAGE, "the old, silent confirm is still on the button"
+    assert "const CLEAR_AFTER_STOP_S = 30;" in PAGE
+
+
+def test_the_window_is_counted_down_where_the_way_out_is():
+    body = _function_body("showClockText")
+    assert "fleet.clear_in_s" in body
+    assert "Pictures will be cleared on every unit in" in body
+    assert "press ③ START (or ② Show preset) to keep them" in body
+    assert "cannot" in body and "uploaded again" in body
+
+
+def test_the_checkbox_says_the_units_only_learn_it_at_upload():
+    # Ticking it after an Upload never reaches the units (the show keeps its
+    # id by design), so the unit-side fallback - the PC vanishing before the
+    # show ends - exists only for units Uploaded after the tick.
+    note = _function_body("clearAfterNote")
+    assert "tick before ① Upload for the units to clear on their own" in note
+    assert "state.show.clear_after_show" in note, \
+        "the note is shown even with the box unticked"
+    assert 'id="show-clear-after-note"' in PAGE
+    # ...and the tooltip says the whole of it (the source wraps the sentence,
+    # so this looks for its distinctive halves rather than one long line).
+    title = PAGE[PAGE.index("const CLEAR_AFTER_TITLE"):]
+    title = title[:title.index("\nfunction clearAfterNote")]
+    assert "This PC sends the clear itself when the show ends or is stopped" \
+        in title
+    assert "The UNITS only learn it at the " in title
+    assert "next ① Upload" in title
+    assert "if they are to clear on their own " in title
+
+
+def test_the_hold_button_has_readable_ink_in_both_schemes():
+    # An amber SURFACE: white on dark mode's #ffb860 is 1.71:1.
+    rule = PAGE[PAGE.index(".go button.hold {"):]
+    rule = rule[:rule.index("}") + 1]
+    assert "var(--warn-ink)" in rule, rule
+    assert "#fff" not in rule, rule
+
+
 def test_the_tile_says_where_the_clear_has_got_to():
     body = _function_body("clearText")
     assert '"clearing "' not in body     # ...it is a template, see below
@@ -1457,6 +1554,34 @@ def test_the_tile_and_the_board_follow_the_clear(page):
     assert "radxa-01" in page["clearedHint"]
     assert page["clearedBoardNote"] == "show ended — pictures cleared", \
         page["clearedBoardNote"]
+
+
+def test_stop_warns_about_the_clear_only_when_this_run_clears(page):
+    # Without the box, the confirm is the one it always was.
+    assert page["stopPlain"] == \
+        "Stop the show? The panels keep what they are showing.", page["stopPlain"]
+    # With it, STOP starts a clock on something that cannot be undone.
+    assert page["stopRunClears"] is True, "the stand's run does not clear"
+    said = page["stopClearing"] or ""
+    assert said.startswith("Stop the show? The panels keep what they are "
+                           "showing."), said
+    assert "Pictures will be cleared 30 s after STOP" in said, said
+    assert "unless you START again" in said, said
+    assert "clearing cannot be undone (Upload again)" in said, said
+
+
+def test_the_window_counts_down_on_the_panel(page):
+    hint = page["windowHint"] or ""
+    assert "Pictures will be cleared on every unit in 21 s" in hint, hint
+    assert "press ③ START (or ② Show preset) to keep them" in hint, hint
+    assert "uploaded again" in hint, hint
+    # ...and it goes when the window does.
+    assert "will be cleared on every unit" not in (page["windowGone"] or "")
+
+
+def test_the_checkbox_carries_its_note_when_ticked(page):
+    assert "tick before ① Upload for the units to clear on their own" \
+        in (page["clearAfterNote"] or ""), page["clearAfterNote"]
 
 
 def test_the_clear_now_button_asks_first_and_then_sends(page):

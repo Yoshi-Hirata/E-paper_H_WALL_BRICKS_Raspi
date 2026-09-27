@@ -69,6 +69,24 @@ DEMO_LIST_EVERY_S = 10.0
 # slack is there so a clock a hair ahead cannot clear a show still on its
 # last cue.
 CLEAR_AFTER_END_S = 5.0
+# ...and how long a STOP waits. STOP is also how a director aborts a show
+# mid-way - the ordinary reason to press it - and a clear cannot be undone
+# without a three-minute Upload, so the operator gets a window in which START,
+# PRESET, RESUME, NEXT, a seek or an Upload takes it back (review, 2026-09-27:
+# a mid-show abort used to cost the re-Upload, with a confirm dialog that said
+# nothing about it). The natural END does not wait - it is over either way.
+CLEAR_AFTER_STOP_S = 30.0
+# An END clear also stands aside for this long after any T0 MOVE. A seek or a
+# NEXT that lands at (or a hair before) the end would otherwise arm the
+# irreversible clear on the spot, because the end was only ever read off the
+# clock: fleet.seek() clamps to `duration` inclusive, so "go to the end to see
+# the last look" deleted the show (review, 2026-09-27).
+CLEAR_AFTER_MOVE_S = 30.0
+# A T0 move landing this close to the end (or past it) is a JUMP to the end,
+# never playing to it: no amount of waiting turns it into one, so the END
+# clear never fires on that T0 at all. STOP is how the operator ends such a
+# run, and STOP has its own window above.
+END_REACH_MARGIN_S = 1.0
 
 # The PC's reference clock. Not time.monotonic(): on Windows that ticks
 # every 15.6 ms (measured 2026-09-21: round trips of exactly 0, 15 or
@@ -361,9 +379,17 @@ class UnitLink:
 class Fleet:
     def __init__(self, units: "dict[str, str] | None" = None,
                  token: "str | None" = None, poll_s: float = POLL_S,
-                 clock=pc_clock):
+                 clock=pc_clock,
+                 clear_after_stop_s: float = CLEAR_AFTER_STOP_S,
+                 clear_after_move_s: float = CLEAR_AFTER_MOVE_S):
         self._clock = clock
         self.poll_s = poll_s
+        # The two windows the clear after the show waits out: after a STOP
+        # (the director's mid-show abort), and after any T0 move (so a seek
+        # in the last seconds cannot delete the show). Knobs so the tests
+        # can compress them; the constants are the real thing.
+        self.clear_after_stop_s = clear_after_stop_s
+        self.clear_after_move_s = clear_after_move_s
         self.links = {name: UnitLink(name, address, token, clock)
                       for name, address in (units or default_units()).items()}
         self._stop = threading.Event()
@@ -411,6 +437,12 @@ class Fleet:
         # show ending, and the unit is asked once for the two of them.
         self._clear_told: "set[str]" = set()
         self._clear_too_old: "set[str]" = set()
+        # A STOP's clear, waiting out CLEAR_AFTER_STOP_S: when it becomes
+        # due (this PC's clock) and which units it is for. None when none
+        # is armed. Anything that means "the show is not over after all" -
+        # START, PRESET, RESUME, NEXT, a seek, an Upload - drops it.
+        self._clear_at: "float | None" = None
+        self._clear_armed: "list[str]" = []
         # Units currently left alone because they play their own demo -
         # said once per episode (added when the demo starts, dropped the
         # moment it is not running/holding any more), never every poll.
@@ -580,6 +612,10 @@ class Fleet:
                 "corrections": self.corrections[-5:],
                 "start_at": start_at,
                 "show_duration": duration if self.shows else None,
+                # Seconds left of the window a STOP's clear is waiting out,
+                # or null when none is armed - the page counts it down and
+                # says what takes it back (CLEAR_AFTER_STOP_S).
+                "clear_in_s": self.clear_armed_in_s(),
                 "burn": {"burned": burned, "total": len(reporting)}}
 
     def _unit_snapshot(self, link, run: "dict | None" = None) -> dict:
@@ -823,34 +859,53 @@ class Fleet:
         alone, and so is one that holds some other show - its slots are
         not this show's to empty.
 
-        `once` (the automatic path, on END and on STOP) skips a unit
-        already asked for this run, so a supervision tick does not send
+        `once` (the automatic path, on END and on STOP) does not ask a
+        unit twice for the same run, so a supervision tick does not send
         it every three seconds; the manual button passes once=False.
+
+        "Once" counts only an ask that SETTLED, though: a unit that was
+        out of reach - offline, a timeout, the conductor's own connection
+        dropped - is asked again on the next poll it answers. Marking it
+        told before the post meant the comment above promised a retry that
+        never came, and the one garment nobody could reach when the show
+        ended was the one left holding the pictures (review, 2026-09-27).
+        Units that refuse for a REASON (too old, holding another show,
+        playing a demo) are settled: retrying cannot change the answer, so
+        they are told once and the tile says why.
 
         An agent too old for the endpoint answers 404, which is NOT an
         error that may hold the other units up: that unit is remembered
         and its tile says "unit too old for clear - power the boards off
         before unplugging".
         """
+        settled = set()
+
         def action(link):
             unit = (link.status or {}).get("show") or {}
             show = self.shows.get(link.name)
             if show is None:
+                settled.add(link.name)
                 raise RuntimeError("not holding this show")
             if self._playing_demo(link):
+                settled.add(link.name)
                 raise RuntimeError("playing a demo - press STOP first")
             if unit.get("id") != show["id"]:
+                settled.add(link.name)
                 raise RuntimeError("holding another show")
             try:
                 link.post("/show/clear", {"show": show["id"]})
             except Exception as exc:        # noqa: BLE001 - see below
                 if _too_old_for_clear(exc):
                     self._clear_too_old.add(link.name)
+                    settled.add(link.name)
                     raise RuntimeError(
                         "unit too old for clear - power the boards off "
                         "before unplugging") from None
+                # Anything else is the network, not an answer: leave this
+                # unit untold so the next poll asks it again.
                 raise
             self._clear_too_old.discard(link.name)
+            settled.add(link.name)
             return {}
 
         wanted = [name for name in names
@@ -858,13 +913,22 @@ class Fleet:
         if not wanted:
             return {}
         if once:
-            self._clear_told.update(wanted)
+            # Stamped BEFORE the posts, like _post_or_refused(): a unit
+            # that is not answering costs a connection timeout, and the
+            # retry above belongs on supervision's own cadence
+            # (SUPERVISE_EVERY_S) rather than on every poll.
+            now = self._clock()
+            for name in wanted:
+                self._corrected[name] = now
         results = self._each(wanted, action)
+        if once:
+            self._clear_told.update(settled)
         for name, result in sorted(results.items()):
             if not result.get("ok"):
+                retry = "" if name in settled else " - asking again next poll"
                 self.corrections.append(
                     f"{time.strftime('%H:%M:%S')} {name}: clear refused: "
-                    f"{result.get('error')}")
+                    f"{result.get('error')}{retry}")
             else:
                 self.corrections.append(f"{time.strftime('%H:%M:%S')} "
                                         f"{name}: clearing the pictures")
@@ -897,6 +961,7 @@ class Fleet:
         by a partial upload exactly as a full one drops it, or _targets()
         would go on driving it and START would post /show/run to a unit
         that is not in the show at all (review F3)."""
+        self._cancel_armed_clear()      # the pictures are going back in
         targets = ([name for name in shows] if only is None
                    else [name for name in only if name in shows])
         if only is not None:
@@ -1138,6 +1203,7 @@ class Fleet:
         common case - the unit tolerates that too) and is posted to the
         unit as {"force": true}; never a unit still burning, offline, on
         another show, or with nothing written (cancelled/none)."""
+        self._cancel_armed_clear()
         targets = self._targets()
         problems = self._burn_problems(targets, force=force)
         if problems:
@@ -1165,6 +1231,10 @@ class Fleet:
         of this run (_send_run, _supervise), so the unit's own gate waves
         the same boards through; the unit still refuses a force over a
         live board that would not take the write."""
+        # Before the gate: a STOP's clear that is still inside its window
+        # has not deleted anything, so dropping it is what lets START run
+        # the show again (the director's mid-show abort, taken back).
+        self._cancel_armed_clear()
         duration = self.show_duration()
         at = self._clamped(at, 0.0, duration)
         if not 0 <= at <= duration:
@@ -1210,7 +1280,16 @@ class Fleet:
         if self.run is None:
             self._t0_was, self._t0_seen = {}, {}
             return
-        self.run["t0_set_at"] = self._clock()
+        now = self._clock()
+        self.run["t0_set_at"] = now
+        # ...and WHERE in the show this move landed. The clear after the
+        # show reads it to tell "played to the end" from "jumped to the
+        # end": a seek clamps to `duration` inclusive, so without this a
+        # look at the last cue armed the irreversible clear on the spot
+        # (review, 2026-09-27 - see _reached_end_by_playing()).
+        held = self.run["state"] == "holding"
+        mark = self.run["held_at"] if held and self.run["held_at"] else now
+        self.run["landed_at_s"] = mark - self.run["t0"]
         # Rebound, never mutated in place: snapshot() reads these from
         # whichever thread is serving the page.
         self._t0_was = {name: ((link.status or {}).get("show") or {}).get("t0")
@@ -1227,6 +1306,7 @@ class Fleet:
 
         Returns (mode, per-unit results); `to_s` outside 0..show_duration()
         is a ValueError, the plain-English range the page shows."""
+        self._cancel_armed_clear()
         duration = self.show_duration()
         to_s = self._clamped(to_s, 0.0, duration)
         if not 0 <= to_s <= duration:
@@ -1250,6 +1330,7 @@ class Fleet:
         return mode, {}
 
     def hold(self) -> "dict[str, dict]":
+        self._cancel_armed_clear()
         with self._run_lock:
             if not self.run or self.run["state"] != "running":
                 return {}
@@ -1258,6 +1339,7 @@ class Fleet:
         return self.simple(self._targets(), "/show/hold")
 
     def resume(self) -> "dict[str, dict]":
+        self._cancel_armed_clear()
         with self._run_lock:
             if not self.run or self.run["state"] != "holding":
                 return {}
@@ -1269,6 +1351,7 @@ class Fleet:
     def next_cue(self, lead_s: float = DEFAULT_LEAD_S) -> "dict[str, dict]":
         """Bring the earliest upcoming cue of any unit to `lead_s` from now
         by moving T0 earlier - for every unit alike, so they stay in step."""
+        self._cancel_armed_clear()
         with self._run_lock:
             if not self.run:
                 return {}
@@ -1311,14 +1394,54 @@ class Fleet:
             self._t0_moved()
         results = self.simple(targets, "/show/stop")
         if clear:
-            # After the STOP, never with it: the unit refuses a clear
-            # while the run is still running, and the slots are what the
-            # next trigger would have read from. A unit that could not be
-            # stopped is asked anyway - it refuses, says why, and the
-            # tile shows it rather than the operator finding out from the
-            # garment an hour later.
-            self._clear_units(targets)
+            # ARMED, not sent. STOP is also how a director aborts a show
+            # half way through - the ordinary reason to press it - and a
+            # clear cannot be undone without a three-minute Upload, so the
+            # operator gets CLEAR_AFTER_STOP_S in which START, PRESET,
+            # RESUME, NEXT, a seek or an Upload takes it back. The page's
+            # own confirm says so before the click.
+            #
+            # (And after the STOP, never with it, whenever it does go: the
+            # unit refuses a clear while its run is still running, and
+            # those slots are what the next trigger would read from.)
+            with self._run_lock:
+                self._clear_at = self._clock() + self.clear_after_stop_s
+                self._clear_armed = list(targets)
         return results
+
+    def clear_armed_in_s(self) -> "float | None":
+        """Seconds until an armed STOP clear goes out, or None when none
+        is armed - what the page shows while the window runs."""
+        with self._run_lock:
+            if self._clear_at is None:
+                return None
+            return max(0.0, self._clear_at - self._clock())
+
+    def _cancel_armed_clear(self) -> None:
+        """"The show is not over after all" - START, PRESET, RESUME, NEXT,
+        a seek, an Upload. Called without _run_lock held."""
+        with self._run_lock:
+            armed, self._clear_at, self._clear_armed = self._clear_at, None, []
+        if armed is not None:
+            self.corrections.append(f"{time.strftime('%H:%M:%S')} "
+                                    f"the clear after STOP was taken back")
+            del self.corrections[:-20]
+
+    def _fire_armed_clear(self, link: UnitLink) -> bool:
+        """Has a STOP's window run out? Then ask THIS unit to clear - the
+        same once-per-unit rule as the END path, so a unit that was out of
+        reach is retried on the next poll it answers.
+
+        True when there is nothing else to supervise about this unit.
+        """
+        with self._run_lock:
+            if self._clear_at is None or self._clock() < self._clear_at:
+                return False
+            armed = list(self._clear_armed)
+        if link.name not in armed:
+            return False
+        self._clear_units([link.name])
+        return True
 
     def _supervise(self, link: UnitLink) -> None:
         """After every poll: is this unit running what it should, on the
@@ -1349,6 +1472,12 @@ class Fleet:
                 self.corrections.append(f"{time.strftime('%H:%M:%S')} "
                                         f"{link.name}: stopped (missed STOP)")
                 del self.corrections[:-20]
+                return
+            # A STOP armed a clear and its window has run out. Here, not on
+            # a timer, because this already runs for every unit after every
+            # poll - and a unit that was out of reach when the window
+            # closed is asked again on the first poll it answers.
+            self._fire_armed_clear(link)
             return
         show = self.shows.get(link.name)
         if show is None or link.offset is None:
@@ -1471,11 +1600,47 @@ class Fleet:
             return False
         if link.name in self._clear_told:
             return True
-        over = float(show.get("duration", 0)) + CLEAR_AFTER_END_S
-        if self._clock() - run["t0"] < over:
+        duration = float(show.get("duration", 0))
+        if self._clock() - run["t0"] < duration + CLEAR_AFTER_END_S:
+            return False
+        if not self._reached_end_by_playing(run, duration):
             return False
         self._clear_units([link.name])
         return True
+
+    def _reached_end_by_playing(self, run: dict, duration: float) -> bool:
+        """Did this run get to the end by PLAYING there?
+
+        The end used to be read off the clock alone, and `seek` clamps to
+        `duration` inclusive - so "move to the end and see the last look"
+        armed a clear that cannot be undone, and a NEXT onto the final cue
+        did the same (review, 2026-09-27). Two rules, both about the last
+        T0 MOVE (START, SEEK, RESUME, NEXT, an adoption):
+
+        * it must have landed BEFORE the end (END_REACH_MARGIN_S of slack).
+          A move that landed at or past the end is a jump to the end, and
+          no amount of waiting makes it a performance - the END clear never
+          fires on that T0. STOP is how the operator ends such a run, and
+          STOP has its own window;
+        * and the run must have been left alone for CLEAR_AFTER_MOVE_S
+          since, so an operator still working the seek bar in the last
+          half-minute of the show never has the pictures deleted under
+          them. A show played through normally passes this long before its
+          own end (the last move was the START).
+
+        A run ADOPTED from the units is stamped like any other, so this
+        conductor clears once it has watched that run play on past the end
+        - but never one it adopted already past it, which it did not see
+        reach anything. A run dict carrying neither key at all (nothing
+        builds one today) is treated the same way: nothing is deleted on a
+        guess.
+        """
+        landed, moved_at = run.get("landed_at_s"), run.get("t0_set_at")
+        if landed is None or moved_at is None:
+            return False
+        if float(landed) >= duration - END_REACH_MARGIN_S:
+            return False
+        return self._clock() - float(moved_at) >= self.clear_after_move_s
 
     def _post_or_refused(self, link: UnitLink, now: float, path: str,
                          body: dict, what: str) -> bool:

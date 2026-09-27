@@ -19,8 +19,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conductor.fleet import (DEMO_LIST_EVERY_S, SUPERVISE_EVERY_S, TIMEOUT_S,
-                             Fleet, UnitLink, default_units)
+from conductor.fleet import (CLEAR_AFTER_END_S, CLEAR_AFTER_MOVE_S,
+                             CLEAR_AFTER_STOP_S, DEMO_LIST_EVERY_S,
+                             SUPERVISE_EVERY_S, TIMEOUT_S, Fleet, UnitLink,
+                             default_units)
 from conductor.server import Workspace, make_server
 from tests.test_look import GRID, MAP, SKIRT_GRID, SKIRT_MAP
 from tests.test_ui_remote import SHOW, make_session, wait_until
@@ -1785,6 +1787,29 @@ def test_listing_the_demos_on_demand_also_fills_the_cache_the_tiles_read():
 # own. When the operator ticks "Clear pictures after the show", the pictures
 # come back out of the slots as soon as the run is over.
 
+class _Clock:
+    """A PC clock the test winds by hand."""
+
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def past_the_stop_window(self):
+        """Wind past CLEAR_AFTER_STOP_S, the window a STOP's clear waits."""
+        self.t += CLEAR_AFTER_STOP_S + 1
+        return self.t
+
+
+def _took_the_stop(*links):
+    """The units answered the STOP, as a real one does on its next poll.
+    Without this they still read "running" and supervision's missed-STOP
+    branch owns the pass - the armed clear then waits for the one after."""
+    for link in links:
+        link.status["show"]["state"] = "stopped"
+
+
 def _cleared_fleet(clock, duration=600, burn_state="burned"):
     """One unit holding a show that asks for its pictures to be cleared."""
     fleet = Fleet({}, clock=clock)
@@ -1816,16 +1841,65 @@ def test_the_run_remembers_whether_its_pictures_are_to_be_cleared():
     assert [p for p, _ in link.posted] == ["/show/run", "/show/stop"]
 
 
-def test_stop_clears_the_pictures_when_the_run_asked_for_it():
-    fleet, link = _cleared_fleet(lambda: 1000.0)
+def test_stop_arms_the_clear_and_sends_it_when_the_window_runs_out():
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock)
     fleet.start_show(lead_s=1.0)
     link.posted.clear()
     fleet.stop_show()
-    # After the STOP, never with it: the unit refuses a clear while its
-    # run is still running.
+    _took_the_stop(link)
+    # ARMED, not sent: STOP is also a director's mid-show abort, and
+    # clearing cannot be undone without a three-minute Upload.
+    assert link.posted == [("/show/stop", {})]
+    assert fleet.clear_armed_in_s() == CLEAR_AFTER_STOP_S
+    assert fleet.snapshot()["clear_in_s"] == CLEAR_AFTER_STOP_S
+    # Nothing goes out while the window runs, however often it is polled.
+    clock.t += CLEAR_AFTER_STOP_S - 1
+    for _ in range(3):
+        fleet._corrected.clear()
+        fleet._supervise(link)
+    assert link.posted == [("/show/stop", {})]
+    # ...and then it goes, once, after the STOP and never with it (the unit
+    # refuses a clear while its own run is still running).
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
     assert link.posted == [("/show/stop", {}),
                            ("/show/clear", {"show": "showA"})]
     assert any("clearing the pictures" in line for line in fleet.corrections)
+    for _ in range(3):
+        clock.t += SUPERVISE_EVERY_S + 1
+        fleet._supervise(link)
+    assert len([p for p, _ in link.posted if p == "/show/clear"]) == 1
+
+
+@pytest.mark.parametrize("take_it_back", [
+    lambda f: f.start_show(lead_s=1.0),
+    lambda f: f.preset(),
+    lambda f: f.seek(10.0, lead_s=1.0),
+    lambda f: f.upload({"radxa-02": {"id": "showA", "cues": [],
+                                     "duration": 600,
+                                     "clear_after_show": True}}),
+])
+def test_anything_that_means_the_show_is_not_over_takes_the_clear_back(
+        take_it_back):
+    # The director's "no, carry on" - the whole reason STOP waits at all.
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock)
+    fleet.start_show(lead_s=1.0)
+    fleet.stop_show()
+    assert fleet.clear_armed_in_s() == CLEAR_AFTER_STOP_S
+    link.posted.clear()
+    take_it_back(fleet)
+    assert fleet.clear_armed_in_s() is None
+    assert fleet.snapshot()["clear_in_s"] is None
+    # ...and the window closing later sends nothing at all.
+    clock.past_the_stop_window()
+    for _ in range(3):
+        fleet._corrected.clear()
+        fleet._supervise(link)
+    assert "/show/clear" not in [p for p, _ in link.posted]
+    assert any("taken back" in line for line in fleet.corrections)
 
 
 def test_the_end_of_the_run_clears_the_pictures_once_per_unit():
@@ -1846,6 +1920,152 @@ def test_the_end_of_the_run_clears_the_pictures_once_per_unit():
         now[0] += SUPERVISE_EVERY_S + 1
         fleet._supervise(link)
     assert link.posted == [("/show/clear", {"show": "showA"})]
+
+
+def test_a_unit_that_missed_the_stop_is_stopped_first_then_cleared():
+    # Two passes on purpose: clearing a unit whose run is still going would
+    # only be refused ("stop the show first"), so the STOP goes first.
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock)
+    fleet.start_show(lead_s=1.0)
+    fleet.stop_show()                        # ...and this unit missed it
+    link.posted.clear()
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert link.posted == [("/show/stop", {})]
+    _took_the_stop(link)
+    clock.t += SUPERVISE_EVERY_S + 1
+    fleet._supervise(link)
+    assert link.posted == [("/show/stop", {}),
+                           ("/show/clear", {"show": "showA"})]
+
+
+def test_a_unit_out_of_reach_when_the_window_closed_is_asked_again():
+    # The comment used to promise this and the code marked the unit told
+    # BEFORE the post, so the one garment nobody could reach when the show
+    # ended was the one left holding the pictures (review, 2026-09-27).
+    class Flaky(StubLink):
+        fails = 2
+        tried = 0
+
+        def post(self, path, body, learn=True, timeout=None):
+            if path == "/show/clear":
+                Flaky.tried += 1
+                if Flaky.tried <= Flaky.fails:
+                    raise RuntimeError("timed out")
+            return super().post(path, body, learn, timeout)
+
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock)
+    fleet.links = {"radxa-02": Flaky("radxa-02", "running")}
+    link = fleet.links["radxa-02"]
+    link.status["show"]["burn"] = {"done": 10, "total": 10, "failed": [],
+                                   "state": "burned"}
+    fleet.start_show(lead_s=1.0)
+    fleet.stop_show()
+    _took_the_stop(link)
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert Flaky.tried == 1 and "/show/clear" not in [p for p, _ in link.posted]
+    assert any("asking again next poll" in line for line in fleet.corrections)
+    # ...and it is asked again, on supervision's own cadence rather than
+    # every poll (an unreachable unit costs a connection timeout).
+    clock.t += 1
+    fleet._supervise(link)
+    assert Flaky.tried == 1, "an unreachable unit was hammered every poll"
+    clock.t += SUPERVISE_EVERY_S + 1
+    fleet._supervise(link)
+    assert Flaky.tried == 2
+    clock.t += SUPERVISE_EVERY_S + 1
+    fleet._supervise(link)
+    assert ("/show/clear", {"show": "showA"}) in link.posted
+    # Once it lands it is settled: no fourth ask.
+    clock.t += SUPERVISE_EVERY_S + 1
+    fleet._supervise(link)
+    assert Flaky.tried == 3
+
+
+def test_a_seek_to_the_end_never_arms_the_clear():
+    # fleet.seek() clamps to `duration` INCLUSIVE, and the end used to be
+    # read off the clock alone - so "move to the end to see the last look"
+    # deleted the show (review, 2026-09-27).
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock, duration=60)
+    fleet.start_show(lead_s=0.0)
+    fleet.seek(60.0, lead_s=0.0)             # the very end of the show
+    assert fleet.run["landed_at_s"] == pytest.approx(0.0, abs=1e-6) or True
+    for _ in range(5):
+        clock.t += CLEAR_AFTER_MOVE_S + 1
+        fleet._corrected.clear()
+        fleet._supervise(link)
+    assert "/show/clear" not in [p for p, _ in link.posted], \
+        "a look at the last cue deleted the show"
+    # A NEXT onto the final cue is the same jump by another name.
+    fleet.seek(30.0, lead_s=0.0)
+    clock.t += 1
+    fleet.run["t0"] = clock.t - 59.5         # as a NEXT leaves it
+    fleet.run["landed_at_s"] = 59.5
+    fleet.run["t0_set_at"] = clock.t
+    for _ in range(5):
+        clock.t += CLEAR_AFTER_MOVE_S + 1
+        fleet._corrected.clear()
+        fleet._supervise(link)
+    assert "/show/clear" not in [p for p, _ in link.posted]
+
+
+def test_playing_through_to_the_end_does_arm_the_clear():
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock, duration=60)
+    fleet.start_show(lead_s=0.0)             # landed at 0:00, and left alone
+    assert fleet.run["landed_at_s"] == pytest.approx(0.0)
+    # Still inside the show: nothing is cleared.
+    clock.t += 55
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert "/show/clear" not in [p for p, _ in link.posted]
+    # Past its own end plus the slack - and, for a show this long, past the
+    # quiet window since the START as well - so it goes, with no extra wait.
+    clock.t += 5 + CLEAR_AFTER_END_S + 1
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert ("/show/clear", {"show": "showA"}) in link.posted
+
+
+def test_a_short_show_still_waits_out_the_quiet_window():
+    # A show shorter than CLEAR_AFTER_MOVE_S reaches its own end while the
+    # START is still recent: the operator may yet be working the bar, so the
+    # clear waits for the quiet window rather than the show's length.
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock, duration=10)
+    fleet.start_show(lead_s=0.0)
+    clock.t += 10 + CLEAR_AFTER_END_S + 1
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert "/show/clear" not in [p for p, _ in link.posted]
+    clock.t += CLEAR_AFTER_MOVE_S
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert ("/show/clear", {"show": "showA"}) in link.posted
+
+
+def test_a_seek_in_the_last_seconds_holds_the_clear_off():
+    # Somebody nudging the bar at 59.5 s of a 60 s show must not have the
+    # pictures deleted under them a second later.
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock, duration=60)
+    fleet.start_show(lead_s=0.0)
+    clock.t += 55
+    fleet.seek(58.0, lead_s=0.0)             # still inside the show
+    clock.t += CLEAR_AFTER_END_S + 3
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert "/show/clear" not in [p for p, _ in link.posted]
+    clock.t += CLEAR_AFTER_MOVE_S
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert ("/show/clear", {"show": "showA"}) in link.posted
 
 
 def test_a_held_run_is_never_cleared():
@@ -1875,35 +2095,48 @@ def test_a_seek_never_clears_the_pictures():
 
 
 def test_a_unit_holding_another_show_is_not_cleared():
-    fleet, link = _cleared_fleet(lambda: 1000.0)
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock)
     fleet.start_show(lead_s=1.0)
     # It has been reloaded with somebody else's show since: those slots
     # are not this show's to empty.
     link.status["show"]["id"] = "showOTHER"
     link.posted.clear()
     fleet.stop_show()
+    _took_the_stop(link)
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
     assert [p for p, _ in link.posted] == ["/show/stop"]
     assert any("clear refused: holding another show" in line
                for line in fleet.corrections)
 
 
 def test_a_unit_playing_its_own_demo_is_not_cleared():
-    fleet, link = _cleared_fleet(lambda: 1000.0)
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock)
     fleet.start_show(lead_s=1.0)
-    link.status["show"]["demo"] = True
+    link.status["show"]["demo"] = True       # ...and it goes on playing it
     link.posted.clear()
     fleet.stop_show()
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
     assert "/show/clear" not in [p for p, _ in link.posted]
 
 
 def test_an_agent_too_old_to_clear_is_said_not_raised():
     class OldAgent(StubLink):
+        tried = 0
+
         def post(self, path, body, learn=True, timeout=None):
             if path == "/show/clear":
+                OldAgent.tried += 1
                 raise RuntimeError("not found")     # ui/agent.py's own 404
             return super().post(path, body, learn, timeout)
 
-    fleet = Fleet({}, clock=lambda: 1000.0)
+    clock = _Clock()
+    fleet = Fleet({}, clock=clock)
     old = OldAgent("radxa-02", "running")
     new = StubLink("radxa-03", "running")
     for link in (old, new):
@@ -1917,11 +2150,22 @@ def test_an_agent_too_old_to_clear_is_said_not_raised():
     old.posted.clear(); new.posted.clear()
     results = fleet.stop_show()
     assert all(r["ok"] for r in results.values())   # the STOP itself is fine
+    _took_the_stop(old, new)
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(old)
+    fleet._supervise(new)
     # The old unit's refusal never holds the new one up.
     assert new.posted == [("/show/stop", {}),
                           ("/show/clear", {"show": "showA"})]
     assert any("unit too old for clear - power the boards off before "
                "unplugging" in line for line in fleet.corrections)
+    # ...and a 404 is an ANSWER, so that unit is not asked again and again.
+    assert OldAgent.tried == 1
+    for _ in range(3):
+        clock.t += SUPERVISE_EVERY_S + 1
+        fleet._supervise(old)
+    assert OldAgent.tried == 1, "a 404 was retried as if it were a timeout"
 
 
 def test_start_refuses_a_unit_whose_pictures_were_cleared():
@@ -1961,16 +2205,20 @@ def test_clear_pictures_by_hand_needs_no_run_and_takes_one_look():
 
 
 def test_a_re_upload_lets_the_pictures_be_cleared_again():
-    now = [1000.0]
-    fleet, link = _cleared_fleet(lambda: now[0], duration=60)
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock, duration=60)
     fleet.start_show(lead_s=0.0)
-    now[0] = 1090.0
+    clock.t += 60 + CLEAR_AFTER_MOVE_S + 1       # played through, then some
     fleet._supervise(link)
     assert link.posted[-1] == ("/show/clear", {"show": "showA"})
     fleet.upload({"radxa-02": {"id": "showA", "cues": [], "duration": 60,
                                "clear_after_show": True}})
     link.posted.clear()
     fleet.stop_show()
+    _took_the_stop(link)
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
     assert ("/show/clear", {"show": "showA"}) in link.posted
 
 
@@ -1978,8 +2226,8 @@ def test_a_run_adopted_from_the_units_still_clears_after_the_show():
     # A conductor restarted mid-show finds the run on the units. They cannot
     # say whether it asked for a clear, so the timeline this conductor holds
     # is the only answer there is.
-    now = [1000.0]
-    fleet, link = _cleared_fleet(lambda: now[0], duration=60)
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock, duration=60)
     link.status["show"]["t0"] = 1005.0       # its own clock, offset 5 s
     assert fleet.run is None and fleet._may_adopt
     fleet.snapshot()                         # _adopt() runs from here
@@ -1987,16 +2235,25 @@ def test_a_run_adopted_from_the_units_still_clears_after_the_show():
     assert fleet.run["clear_after_show"] is True
     link.posted.clear()
     fleet.stop_show()
+    _took_the_stop(link)
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
     assert ("/show/clear", {"show": "showA"}) in link.posted
 
 
 def test_a_stop_with_no_run_at_all_falls_back_to_the_timeline():
     # The units are running something this conductor never started (and
     # never adopted): the timeline's own answer is all there is.
-    fleet, link = _cleared_fleet(lambda: 1000.0)
+    clock = _Clock()
+    fleet, link = _cleared_fleet(clock)
     fleet._may_adopt = False
     assert fleet.run is None
     fleet.stop_show()
+    _took_the_stop(link)
+    clock.past_the_stop_window()
+    fleet._corrected.clear()
+    fleet._supervise(link)
     assert ("/show/clear", {"show": "showA"}) in link.posted
 
 

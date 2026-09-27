@@ -121,6 +121,15 @@ RESTORE_OVER_S = 60.0      # past its end by this much: that show is over
 CATCH_UP_LEAD_S = 0.3
 RETRY_AFTER_FAILED_S = 3.0
 END_SLACK_S = 30.0
+# How long a STOP waits before it takes the show's pictures out of the slots
+# (`clear_after_show`). STOP is also how a director aborts a show mid-way -
+# the ordinary reason to press it - and clearing cannot be undone without a
+# three-minute Upload, so the operator gets a window in which a START (or a
+# PRESET) takes it back. The natural END of the show does NOT wait: it is over
+# either way. The conductor has the same window (conductor/fleet.py's
+# CLEAR_AFTER_STOP_S) and normally gets there first; this is the unit's own
+# copy, for a STOP pressed with the PC already gone (KEY2 on the unit).
+CLEAR_AFTER_STOP_S = 30.0
 
 LOADED, RUNNING, HOLDING, STOPPED, ENDED = (
     "loaded", "running", "holding", "stopped", "ended")
@@ -209,7 +218,8 @@ class ShowPlayer:
                  save_s=None, margin_s=None,
                  grace_s: float = RESTORE_GRACE_S, tick_s: float = 0.2,
                  setup_s=None, setup_board_s=None,
-                 retry_s: float = RETRY_AFTER_FAILED_S):
+                 retry_s: float = RETRY_AFTER_FAILED_S,
+                 clear_after_stop_s: float = CLEAR_AFTER_STOP_S):
         # save_s / margin_s / setup_s / setup_board_s: the live-write
         # design's lead-time knobs, still accepted so existing callers
         # (ui/app.py, the tests) need not change, but nothing is timed
@@ -219,6 +229,10 @@ class ShowPlayer:
         self._clock, self._wall = clock, wall
         self.grace_s, self.tick_s = grace_s, tick_s
         self.retry_s = retry_s
+        # The window a STOP's clear waits out before it goes (see
+        # CLEAR_AFTER_STOP_S). A knob so the tests can compress it, like
+        # every other wait on this player.
+        self.clear_after_stop_s = clear_after_stop_s
 
         self.show: "dict | None" = None
         self.state = STOPPED
@@ -272,6 +286,10 @@ class ShowPlayer:
         # _loop(), which does the asking outside it - clear() may have to
         # take the port, exactly like _send().
         self._clear_due = False
+        # When a STOP's clear becomes due (CLEAR_AFTER_STOP_S), on the
+        # monotonic clock, or None when none is armed. A START or a PRESET
+        # inside that window takes it back.
+        self._clear_at: "float | None" = None
         # restore() found this unit in the middle of a show: ui/main.py
         # must not paint the standby white over the picture the garment
         # is still holding (real unit, 2026-09-25 - 16 s of probing and
@@ -338,6 +356,7 @@ class ShowPlayer:
             # session's own clear is dropped by burn() below, which is
             # also what makes a clear queued a moment ago never run.
             self._clear_asked, self._clear_due = None, False
+            self._clear_at = None            # ...and a STOP's armed window
             self._forget_burn_record()
             self.show = show
             self.is_demo = bool(demo)
@@ -539,6 +558,16 @@ class ShowPlayer:
             burn, _ = self._burn_record_locked()
             if (burn or {}).get("state") == "cleared":
                 return                          # already done
+            if (self._clear_asked == self.show["id"]
+                    and self.session.clear_record()["state"] == "clearing"):
+                # One is already on the bus for this show. Asking twice is
+                # normal - this unit's own STOP queues a clear and the
+                # conductor's POST /show/clear lands a few ms behind it -
+                # and starting over would abort that walk part way and
+                # re-walk every pair, with the slots the first walk
+                # already emptied answering NAK and reading as failures
+                # (review, 2026-09-27).
+                return
             self._clear_asked = self.show["id"]
             self._clear_due = False
             # The clear is about THIS show, so the record that comes out
@@ -558,16 +587,38 @@ class ShowPlayer:
         did; one that has already deleted a slot stops after the slot it
         is on and leaves the burn record "cleared", so the gate refuses -
         START must never run a garment half its pictures were taken from.
+
+        A STOP's clear that is still inside its CLEAR_AFTER_STOP_S window
+        has not begun at all, so this is simply the end of it: the
+        pictures are untouched and the show runs again.
         """
         self.session.cancel_clear("a new run started")
         self._clear_asked, self._clear_due = None, False
+        self._clear_at = None
 
     def _take_clear_due(self) -> bool:
-        """_plan() decided the show is over and its pictures are to go;
-        _loop() does the asking, outside the lock."""
+        """Is a clear to be asked for right now? _plan() decides under the
+        lock; _loop() does the asking outside it, because clear() may have
+        to take the port (exactly like _send()).
+
+        Two ways one comes due: the show ENDED (immediate - it is over
+        either way), or a STOP armed one and its window has run out.
+        """
         with self._lock:
             due, self._clear_due = self._clear_due, False
+            if not due and self._clear_at is not None:
+                if self._clock() >= self._clear_at:
+                    self._clear_at = None
+                    due = True
             return due
+
+    def _clear_wait(self) -> "float | None":
+        """Seconds until an armed STOP clear is due, for the loop's own
+        wait - so it asks AT the window's end rather than a tick later."""
+        with self._lock:
+            if self._clear_at is None:
+                return None
+            return max(0.0, self._clear_at - self._clock())
 
     def _clear_when_over_locked(self) -> None:
         """The show has just reached ENDED: queue the clear if this show
@@ -710,12 +761,15 @@ class ShowPlayer:
         # STOP is the other end of the show, and the one the operator
         # actually presses before unplugging a garment: if this show asked
         # for its pictures to come back out of the slots, this is where it
-        # happens (HOLD deliberately does not - the show is not over).
+        # is ARMED (HOLD deliberately does not - the show is not over).
+        #
+        # Armed, not done: STOP is also how a director aborts a show
+        # half way through, and clearing cannot be undone without a
+        # three-minute Upload. CLEAR_AFTER_STOP_S later _plan() asks for
+        # it, and a START or a PRESET inside that window takes it back.
         if was_running and self.clear_after_show():
-            try:
-                self.clear_pictures()
-            except RemoteError as exc:
-                self.note = str(exc)
+            with self._lock:
+                self._clear_at = self._clock() + self.clear_after_stop_s
         self._wake.set()
 
     def close(self) -> None:
@@ -1284,11 +1338,16 @@ class ShowPlayer:
                 wait, action = self._plan()
                 if action is not None:
                     self._send(*action)
-                # The show reached its end and asked for its pictures to
-                # go: done here, outside the lock, because clear() may
-                # have to take the port (exactly like _send()).
+                # The show is over and asked for its pictures to go -
+                # either it ENDED, or a STOP armed it and the window has
+                # run out. Done here, outside the lock, because clear()
+                # may have to take the port (exactly like _send()).
                 if self._take_clear_due():
                     self.clear_pictures()
+                else:
+                    left = self._clear_wait()
+                    if left is not None:
+                        wait = min(wait, left)
             except RemoteError as exc:
                 # A refused prepare (the session holds a cue about to
                 # fire, or the unit is busy): look again next tick, not a
