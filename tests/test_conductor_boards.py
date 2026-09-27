@@ -51,6 +51,47 @@ def test_the_comparison_is_marked_off_and_pure():
         assert forbidden not in code, f"the pure layer reaches for {forbidden!r}"
 
 
+# ---- the DIP ID cell in BOARDS AND DIP SWITCHES (Designs tab) ----
+# The operator changed AZ271SD1301's DIP 27 to 28 on the garment itself
+# (2026-09-27): the cell has to be typed in, say when it was, and offer the
+# way back to the rank.
+
+def _dip_table() -> str:
+    start = PAGE.index("<h2>BOARDS AND DIP SWITCHES")
+    return PAGE[start:PAGE.index("</div>", PAGE.index("</table>", start))]
+
+
+def test_the_dip_id_is_typed_in_and_says_when_it_was_set_by_hand():
+    table = _dip_table()
+    # An input, like the board number beside it - not a read-only <b>.
+    assert 'class="dip' in table and "data-dip-board=" in table
+    assert "<b>${b.dip_id}</b>" not in table
+    assert "set by hand" in table and "data-dip-clear=" in table
+    # SWITCHES ON is still the server's own, so it follows the DIP.
+    assert "${esc(b.switches_on)}" in table
+    # The amber note, in the words the operator asked for.
+    assert ("4+ switches on — reported unreliable; set another ID by hand"
+            in table)
+    assert 'class="warn"' in table and "b.dip_unreliable" in table
+    # ...and the meta sentence under the table says how to use the cell.
+    assert ("DIP IDs follow the numbers, smallest first — click a DIP ID to "
+            "set the number the board's switches really have") in PAGE
+
+
+def test_a_typed_dip_id_and_its_revert_go_to_the_one_boards_endpoint():
+    # One table, one endpoint (server.py's /api/boards takes `dips`).
+    handler = PAGE[PAGE.index("e.target.dataset.dipBoard"):]
+    handler = handler[:handler.index("} else if")]
+    assert '"/api/boards", { item: ui.item, dips:' in handler
+    # An empty cell means "back to the rank", the same as the badge's ✕.
+    assert 'raw === "" ? null' in handler
+    clear = PAGE[PAGE.index("[data-dip-clear]"):]
+    clear = clear[:clear.index("const row =")]
+    assert '"/api/boards", { item: ui.item, dips: { [dipClear.dataset.dipClear]: null } }' in clear
+    # Enter saves, like the board number and the label.
+    assert "input.lab, input.bno, input.dip" in PAGE
+
+
 def test_the_tile_shows_both_marks_in_the_same_amber_family():
     # The board-list note sits on the Boards row, the restart note beside
     # the pictures - both in the `vf` family the landing check uses, so a

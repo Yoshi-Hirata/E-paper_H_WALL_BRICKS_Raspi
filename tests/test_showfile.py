@@ -112,6 +112,56 @@ def test_a_custom_transition_at_span_zero_sweeps_nothing(tmp_path):
         assert all(set(t) == {NO_DELAY} for t in tables(entry).values())
 
 
+# ---- a DIP ID set by hand reaches the unit's own file ----
+
+def test_a_hand_set_dip_is_the_address_the_unit_file_carries(tmp_path):
+    """Top (boards 17, 18, 20) and Skirt (1, 2) share radxa-02, so the ranks
+    are 1, 2, 3, 4, 5. One board of each has its switches set by hand: the
+    rest keep their rank, gaps and all, and every key of every cue - boards,
+    state and delays - uses the new addresses."""
+    ws = workspace(tmp_path)
+    ws.set_dips("Look20-Top", {"20": 30})
+    ws.set_dips("Look20-Skirt", {"1": 29})
+    ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1),
+                         cue("b", "Look20-Skirt", 0, S1)], refresh=1.0)
+    shows, problems = ws.compile_show()
+    assert problems == []
+    show = shows["radxa-02"]
+    assert show["boards"] == [2, 3, 4, 29, 30]
+    entry = show["cues"][0]
+    for key in ("boards", "state", "delays"):
+        assert sorted(entry[key]) == ["2", "29", "3", "30", "4"]
+    # The picture really moved with the address: the Skirt's board 1 held
+    # socket 7 as 0x0A (SKIRT_GRID) and now does so at 29, not at 1.
+    assert bytes.fromhex(entry["state"]["29"])[7] == 0x0A
+    assert bytes.fromhex(entry["state"]["30"])[5] == 0x0F   # Top's board 20
+
+
+def test_a_unit_drives_the_gapped_board_list_a_hand_set_dip_leaves(tmp_path):
+    """The unit's own runner takes the show file's board list as THE list
+    (ui/runner.py's _apply_job_boards) and sends group_count = its highest
+    address when it has gaps - which is exactly what a DIP set by hand
+    makes. Checked against the runner itself, over its fake bus, so the
+    27-board garment whose last board reads 28 is known to work before the
+    rehearsal rather than after it."""
+    from tests.test_ui_runner import FakeBus
+    from ui.runner import DemoRunner
+    ws = workspace(tmp_path)
+    ws.set_dips("Look20-Top", {"20": 30})
+    ws.set_timeline(60, [cue("a", "Look20-Top", 0, P1)], refresh=1.0)
+    shows, problems = ws.compile_show()
+    assert problems == []
+    listed = shows["radxa-02"]["boards"]
+    assert listed == [1, 2, 3, 4, 30]      # 5 would have been the Top's 20
+    runner = DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake",
+                        boards=[1, 2], echo_log=False)
+    assert runner._apply_job_boards(listed, source="show")
+    assert runner.boards == [1, 2, 3, 4, 30]
+    # A frame's group_count follows the list: its highest address, not 5.
+    assert runner.group_count == 30
+    assert runner.boards_source == "show"
+
+
 # ---- whole or not at all, and what "whole" is for a one-LOOK write ----
 
 def test_a_one_look_build_leaves_another_units_broken_cue_alone(tmp_path):
