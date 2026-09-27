@@ -43,8 +43,9 @@ from pathlib import Path
 
 from . import sequence, showfile, timeline
 from .fleet import DEFAULT_LEAD_S, Fleet, default_units
-from .look import (PALETTE, Design, LookError, LookMap, check,
-                   compile_design, default_shift, unit_board_ids)
+from .look import (MAX_BOARD_ID, PALETTE, UNRELIABLE_DIP_NOTE, Design,
+                   LookError, LookMap, check, compile_design, default_shift,
+                   resolve_dips, unit_board_ids, unreliable_dip)
 from .look import kind as file_kind
 from .look import file_stem, map_item
 from .look import NOT_A_CSV_NAME
@@ -184,7 +185,7 @@ def _rename_design_refs(show: dict, renamed: "dict[str, str]") -> dict:
 
     Design files are named by a cue's "design" and by a key of
     "transitions". A MAP's rename is a garment's rename, which the cues'
-    "item" and the "units"/"labels"/"boards" maps all key on. A name the
+    "item" and the "units"/"labels"/"boards"/"dips" maps all key on. A name the
     bundle did not carry is composed too - it may well be pointing at
     something this workspace already holds in NFC - but never invented:
     a design reference is only rewritten when NFC changes it AND the
@@ -223,7 +224,7 @@ def _rename_design_refs(show: dict, renamed: "dict[str, str]") -> dict:
     transitions = show.get("transitions")
     if isinstance(transitions, dict):
         show["transitions"] = {rename(k): v for k, v in transitions.items()}
-    for key in ("units", "labels", "boards"):
+    for key in ("units", "labels", "boards", "dips"):
         value = show.get(key)
         if isinstance(value, dict):
             show[key] = {rename_item(k): v for k, v in value.items()}
@@ -572,6 +573,27 @@ class Workspace:
         except (AttributeError, TypeError, ValueError):
             return {}
 
+    # ---- DIP IDs set by hand on the page ----
+    # An address is normally the board's rank among the unit's board numbers
+    # (look.unit_board_ids()). A board whose DIP switch was changed on the
+    # garment itself cannot be said that way - AZ271SD1301 carries 27 boards
+    # and the last one was set to 28 (2026-09-27) - so show.json's `dips`
+    # carries {item: {board_no: the number the switches really have}}, keyed
+    # on the board number as the page shows it (after `boards`).
+
+    @staticmethod
+    def _own_dips(show: dict, item: str) -> "dict[int, int]":
+        try:
+            return {int(no): int(dip) for no, dip in
+                    show.get("dips", {}).get(item, {}).items()}
+        except (AttributeError, TypeError, ValueError):
+            return {}
+
+    @staticmethod
+    def _unit_dips(show: dict, maps: "list[LookMap]") -> "dict[int, int]":
+        """The one {board_no: DIP} of a bus, from every item on it."""
+        return resolve_dips(maps, show.get("dips") or {})
+
     def _renumbered(self, look_map: LookMap, show: dict) -> LookMap:
         own = {old: new for old, new in
                self._own_boards(show, look_map.item or "").items()
@@ -628,6 +650,67 @@ class Workspace:
                            if new != old}
             self._commit(before, dict(before, boards=every))
 
+    def set_dips(self, item: str, dips: dict) -> None:
+        """{board_no: the DIP ID that board's switches really have}.
+
+        The board number is the one the page shows (the map CSV's own,
+        after set_boards()). A DIP of None - or one that equals the rank
+        the board would have anyway - drops the override: that is the "✕"
+        on the page's badge. Every other item on the same unit is taken
+        into account, so a number already in use on that bus is refused
+        here rather than at Upload.
+        """
+        with self._lock:
+            before = self._load_show()
+            path = self._map_path(str(item))
+            try:
+                look_map = self._renumbered(LookMap.from_csv(path), before)
+            except (TypeError, OSError, LookError):
+                raise ValueError(f"{item}: no usable map")
+            own = {no: dip for no, dip in self._own_dips(before, item).items()
+                   if no in look_map.board_nos}
+            try:
+                asked = {int(no): (None if dip is None else int(dip))
+                         for no, dip in dips.items()}
+            except (AttributeError, TypeError, ValueError):
+                raise ValueError("dips: {board_no: DIP ID}")
+            unknown = sorted(set(asked) - set(look_map.board_nos))
+            if unknown:
+                raise ValueError(f"{item} has no board {unknown[0]}")
+            for no, dip in asked.items():
+                if dip is None:
+                    own.pop(no, None)
+                elif not 1 <= dip <= MAX_BOARD_ID:
+                    raise ValueError(f"a DIP ID is 1 to {MAX_BOARD_ID}")
+                else:
+                    own[no] = dip
+            # Judged on the whole bus, by the one function that derives
+            # addresses - so the page's refusal and Upload's agree.
+            assigned = before.get("units", {})
+            unit = assigned.get(look_map.item or "")
+            on_unit = [look_map]
+            if unit:
+                for other in self._maps_for_migration(before).values():
+                    if (other.item != look_map.item
+                            and assigned.get(other.item or "") == unit):
+                        on_unit.append(other)
+            every = dict(before.get("dips", {}))
+            every[item] = {str(no): dip for no, dip in sorted(own.items())}
+            merged = resolve_dips(on_unit, dict(every))
+            try:
+                unit_board_ids(on_unit, merged, unit=unit)
+            except LookError as exc:
+                raise ValueError(exc.problems[0])
+            # A setting that only restates the rank is not a setting.
+            ranks = unit_board_ids(on_unit, unit=unit)
+            every[item] = {str(no): dip for no, dip in sorted(own.items())
+                           if ranks.get(no) != dip}
+            if not every[item]:
+                every.pop(item)
+            if every == (before.get("dips") or {}):
+                return                      # nothing changed: not a step
+            self._commit(before, dict(before, dips=every))
+
     def duplicate(self, item: str) -> str:
         """Another garment of the same shape, as an item of its own: the map
         CSV is copied under a new name (Look22 -> Look22-2). Nothing is
@@ -644,7 +727,7 @@ class Workspace:
             shutil.copyfile(source, self.files / f"{twin}_map.csv")
             before = self._load_show()
             after = dict(before)
-            for key in ("labels", "boards"):    # it starts as what it copies
+            for key in ("labels", "boards", "dips"):  # starts as what it copies
                 if isinstance(before.get(key, {}).get(item), dict):
                     after[key] = dict(before[key], **{
                         twin: dict(before[key][item])})
@@ -840,6 +923,7 @@ class Workspace:
             "labels": show.get("labels") or {},
             "units": show.get("units") or {},
             "boards": show.get("boards") or {},
+            "dips": show.get("dips") or {},
             "music": {"name": music["name"]} if isinstance(music, dict)
                      and music.get("name") else None,
         }
@@ -920,6 +1004,14 @@ class Workspace:
             if not isinstance(payload["boards"], dict):
                 raise ValueError("boards: must be an object")
             changes["boards"] = {str(k): v for k, v in payload["boards"].items()}
+        # The DIP IDs set by hand travel with the boards they belong to: a
+        # restore that brought back the garments' own numbering but forgot
+        # which board's switches were changed would address that board by
+        # its rank again, and the cue would land on the wrong panel.
+        if "dips" in payload:
+            if not isinstance(payload["dips"], dict):
+                raise ValueError("dips: must be an object")
+            changes["dips"] = {str(k): v for k, v in payload["dips"].items()}
         return changes, cues
 
     def _apply_show_changes(self, changes: dict, cues: "list[dict] | None"
@@ -1061,6 +1153,14 @@ class Workspace:
         boards_kept = not show.get("boards")
         if boards_kept:
             show.pop("boards", None)
+        # `dips` follows `boards` exactly: a bundle carrying none leaves
+        # whatever this workspace knows about its own garments' switches
+        # alone (a DIP ID set by hand is a fact about the boards standing
+        # here, not about the timeline that arrived), and a bundle carrying
+        # a populated mapping replaces it.
+        dips_kept = not show.get("dips")
+        if dips_kept:
+            show.pop("dips", None)
         # Validate the whole timeline before a single CSV is written.
         changes, cues = self._validate_show(show)
         with self._lock:
@@ -1083,7 +1183,7 @@ class Workspace:
                 "renamed": renamed,
                 "overwritten": overwritten, "cues": cue_count,
                 "warnings": warnings, "units_kept": units_kept,
-                "boards_kept": boards_kept,
+                "boards_kept": boards_kept, "dips_kept": dips_kept,
                 "music": music.get("name") if isinstance(music, dict) else None}
 
     # ---- files ----
@@ -1368,7 +1468,9 @@ class Workspace:
                                          items=_known_items(maps))
                 on_unit = [m for key, m in maps.items()
                            if assigned.get(m.item) == unit]
-                ids = unit_board_ids(on_unit)
+                ids = unit_board_ids(on_unit,
+                                     self._unit_dips(show, on_unit),
+                                     unit=unit)
                 partial = bool(check(look_map, design))
                 arrays = compile_design(look_map, design, partial=partial,
                                         ids=ids)
@@ -1584,7 +1686,7 @@ class Workspace:
             return {}, broken
         return showfile.build(maps, assigned, lambda name: designs[name],
                               cues, refresh, duration, cue_problems,
-                              name=self.root.name)
+                              name=self.root.name, dips=show.get("dips"))
 
     # ---- the state the page draws ----
 
@@ -1683,9 +1785,16 @@ class Workspace:
             if key in maps:
                 groups.setdefault(entry["unit"] or f"\0{key}", []).append(key)
         unit_problems: "dict[str, list[str]]" = {}
-        for group, keys in groups.items():
+        # Every address a hand-set DIP produced, and every one whose
+        # switches the operator reported flaky - gathered here so state()
+        # can warn about the whole show in one place, before Upload.
+        dip_warnings: "list[str]" = []
+        for group, keys in sorted(groups.items()):
+            on_unit = [maps[k] for k in keys]
+            named = None if group.startswith("\0") else group
             try:
-                ids = unit_board_ids([maps[k] for k in keys])
+                ids = unit_board_ids(on_unit, self._unit_dips(show, on_unit),
+                                     unit=named)
             except LookError as exc:
                 unit_problems[group] = exc.problems
                 ids = None
@@ -1695,9 +1804,20 @@ class Workspace:
                 # The page can renumber boards: which one is which in the CSV.
                 was = {new: old for old, new in
                        self._own_boards(show, items[key]["item"]).items()}
+                by_hand = self._own_dips(show, items[key]["item"])
                 for board in items[key]["boards"]:
                     board["source_no"] = was.get(board["board_no"],
                                                  board["board_no"])
+                    # What the page needs to draw the DIP cell: whether this
+                    # address was typed in, and whether its switch pattern
+                    # is one the operator reported unreliable.
+                    board["dip_by_hand"] = board["board_no"] in by_hand
+                    board["dip_unreliable"] = unreliable_dip(board["dip_id"])
+                    if board["dip_unreliable"]:
+                        dip_warnings.append(
+                            f"{items[key]['item']} board "
+                            f"{board['board_no']}: DIP {board['dip_id']} has "
+                            f"{UNRELIABLE_DIP_NOTE}")
                 if ids is None:
                     items[key]["problems"] += unit_problems[group]
 
@@ -1727,6 +1847,12 @@ class Workspace:
         _time_sweeps(cues, maps)
         cue_problems, warnings = timeline.validate(cues, facts, duration,
                                                    refresh)
+        # A warning, never a problem: the garments' switches are already set
+        # for the rank numbering, and refusing to build a show two days
+        # before it runs would be worse than the flakiness. The operator
+        # reads it beside the Upload button and sets another ID by hand if
+        # there is time (the operator, 2026-09-27).
+        warnings = warnings + dip_warnings
         cue_ends = timeline.ends(cues, refresh, duration)
         for cue in cues:
             cue["sent"], cue["complete"] = timeline.times(cue, refresh)
@@ -2191,7 +2317,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "item":
                                    self.workspace.duplicate(body["item"])})
             if self.path == "/api/boards":
-                self.workspace.set_boards(body["item"], body["boards"])
+                # One endpoint for the one table: `boards` is which board the
+                # garment carries, `dips` is the DIP ID that board's switches
+                # really have. The page sends whichever cell was typed in,
+                # and a call that names both is two steps of the history.
+                if "boards" in body:
+                    self.workspace.set_boards(body["item"], body["boards"])
+                if "dips" in body:
+                    self.workspace.set_dips(body["item"], body["dips"])
+                if "boards" not in body and "dips" not in body:
+                    return self._json({"error": "boards or dips"}, status=400)
                 return self._json({"ok": True})
             if self.path == "/api/arrange":
                 self.workspace.arrange(body["units"])

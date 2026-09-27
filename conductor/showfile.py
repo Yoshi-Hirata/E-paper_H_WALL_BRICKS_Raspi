@@ -67,7 +67,7 @@ import unicodedata
 
 from . import timeline
 from .look import (ARRAY_LEN, MARKER, NO_REFRESH, Design, LookError, LookMap,
-                   compile_design, unit_board_ids)
+                   compile_design, resolve_dips, unit_board_ids)
 from .sequence import FRAME_S, NO_DELAY, compile_delays
 
 DELAY_UNIT_MS = round(FRAME_S * 1000)   # 10: what a unit table's frame is
@@ -123,10 +123,13 @@ def design_label(look_map: LookMap, design: Design, partial: bool) -> str:
 def build_unit_show(unit: str, maps: "list[LookMap]",
                     designs: "dict[tuple[str, str], Design]",
                     cues: "list[dict]", refresh: float, duration: float,
-                    name: str = "show") -> dict:
+                    name: str = "show", dips: "dict | None" = None) -> dict:
     """One unit's show file. `designs` is keyed (item lower-cased, file);
-    `cues` are the timeline's cues for the items in `maps`."""
-    ids = unit_board_ids(maps)
+    `cues` are the timeline's cues for the items in `maps`. `dips` is
+    show.json's own {item: {board_no: DIP set by hand}} - the unit's
+    `boards` list then carries those addresses instead of the ranks, gaps
+    and all (conductor/look.py's unit_board_ids())."""
+    ids = unit_board_ids(maps, resolve_dips(maps, dips), unit=unit)
     by_item = {(m.item or m.name).lower(): m for m in maps}
     addresses = sorted(ids.values())
 
@@ -200,7 +203,8 @@ def build_unit_show(unit: str, maps: "list[LookMap]",
 
 def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
           load_design, cues: "list[dict]", refresh: float, duration: float,
-          cue_problems: "dict[str, list[str]]", name: str = "show"
+          cue_problems: "dict[str, list[str]]", name: str = "show",
+          dips: "dict | None" = None
           ) -> "tuple[dict[str, dict], list[str]]":
     """({unit: show file}, problems). Nothing is built while the
     timeline still has a problem: a show goes out whole or not at all."""
@@ -234,7 +238,7 @@ def build(maps: "dict[str, LookMap]", assigned: "dict[str, str]",
             designs = {(c["item"].lower(), c["design"]):
                        load_design(c["design"]) for c in unit_cues}
             shows[unit] = build_unit_show(unit, unit_maps, designs, unit_cues,
-                                          refresh, duration, name)
+                                          refresh, duration, name, dips=dips)
         except (OSError, LookError) as exc:
             problems.append(f"{unit}: {exc}")
     return (shows, problems) if not problems else ({}, problems)

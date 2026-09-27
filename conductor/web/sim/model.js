@@ -473,6 +473,9 @@
   const ARRAY_LEN = 64;
   const NO_REFRESH = 0xff;
   const MAX_BOARDS = 60;
+  const MAX_BOARD_ID = MAX_BOARDS;      // look.py's MAX_BOARD_ID
+  const UNRELIABLE_SWITCHES = 4;        // look.py's UNRELIABLE_SWITCHES
+  const UNRELIABLE_DIP_NOTE = "4+ switches on - reported unreliable; set another ID by hand";
   const COLOR_COUNT = 16;
 
   // production site's colour chart 260921 - see conductor/look.py for
@@ -1129,6 +1132,39 @@
     return ids;
   }
 
+  // conductor/look.py's dip_popcount()/unreliable_dip(): how many DIP
+  // switches an address turns on (switch n = bit n-1, so 27 = 11011 is
+  // four), and whether that is a pattern the operator reported flaky on
+  // the bus (2026-09-27).
+  function dipPopcount(dipId) {
+    let n = Number(dipId) & 0xFF, count = 0;
+    while (n) { count += n & 1; n >>>= 1; }
+    return count;
+  }
+  function unreliableDip(dipId) {
+    return Number.isFinite(Number(dipId)) && dipPopcount(dipId) >= UNRELIABLE_SWITCHES;
+  }
+
+  // conductor/look.py's unit_board_ids() `dips`: the ranks, with the
+  // boards whose switches were changed on the garment taking their own
+  // address. Only those move, so the gap one leaves stays a gap. The sim
+  // has no unit assignment, so one map is one bus here.
+  function applyDips(map, ids, dipsForItem) {
+    const result = Object.assign({}, ids);
+    Object.keys(dipsForItem || {}).forEach(noStr => {
+      const no = Number(noStr), dip = Number(dipsForItem[noStr]);
+      if (!(no in result)) return;
+      if (!Number.isInteger(dip) || dip < 1 || dip > MAX_BOARD_ID) return;
+      result[no] = dip;
+    });
+    // A duplicate would be a LookError in Python; the sim has no problems
+    // channel for a bus, so it keeps the ranks rather than draw two
+    // boards at one address.
+    const used = Object.keys(result).map(k => result[k]);
+    if (new Set(used).size !== used.length) return Object.assign({}, ids);
+    return result;
+  }
+
   function dipSheet(map, ids) {
     const counts = {};
     map.scales.forEach(s => { counts[s.board_no] = (counts[s.board_no] || 0) + 1; });
@@ -1168,7 +1204,9 @@
   }
 
   const look = {
-    PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS,
+    PALETTE, ARRAY_LEN, COLOR_COUNT, MAX_BOARDS, MAX_BOARD_ID,
+    UNRELIABLE_SWITCHES, UNRELIABLE_DIP_NOTE, dipPopcount, unreliableDip,
+    applyDips,
     defaultShift, kind, nameParts, mapItem, normalizeName, nameProblem,
     parseMap, parseDesign, shiftAt, designShiftAt, check, geometryProblem,
     boardIds, dipSheet, renumber,

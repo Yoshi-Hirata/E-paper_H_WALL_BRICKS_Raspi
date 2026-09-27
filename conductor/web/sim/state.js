@@ -104,6 +104,22 @@
     return result;
   }
 
+  // Workspace._own_dips, restricted to one item: {board_no: the DIP ID
+  // that board's switches really have}. All-or-nothing like the Python.
+  function ownDipsFor(show, item) {
+    const perItem = show && show.dips && typeof show.dips === "object"
+      && !Array.isArray(show.dips) ? show.dips[item] : null;
+    if (!perItem || typeof perItem !== "object" || Array.isArray(perItem)) return {};
+    const result = {};
+    for (const noKey of Object.keys(perItem)) {
+      const no = pyIntCoerce(noKey);
+      const dip = pyIntCoerce(perItem[noKey]);
+      if (no === null || dip === null) return {};
+      result[no] = dip;
+    }
+    return result;
+  }
+
   function buildState(project) {
     project = project || {};
     const files = project.files && typeof project.files === "object" ? project.files : {};
@@ -217,10 +233,14 @@
     });
 
     // ---- board addressing (never shared: the sim has no unit assignment) ----
-    Object.keys(maps).forEach(key => {
+    // Sorted, because server.py walks its unit groups in sorted order and
+    // the DIP warnings below go on the show in the order they are found.
+    const dipWarnings = [];
+    Object.keys(maps).sort().forEach(key => {
       const map = maps[key];
       const entry = items[key];
-      const ids = look.boardIds(map);
+      const byHand = ownDipsFor(show, entry.item);
+      const ids = look.applyDips(map, look.boardIds(map), byHand);
       entry.boards = look.dipSheet(map, ids);
       const was = {};
       const own = ownBoardsFor(show, entry.item);
@@ -228,6 +248,12 @@
       entry.boards.forEach(board => {
         board.source_no = Object.prototype.hasOwnProperty.call(was, board.board_no)
           ? was[board.board_no] : board.board_no;
+        board.dip_by_hand = Object.prototype.hasOwnProperty.call(byHand, board.board_no);
+        board.dip_unreliable = look.unreliableDip(board.dip_id);
+        if (board.dip_unreliable) {
+          dipWarnings.push(`${entry.item} board ${board.board_no}: DIP `
+            + `${board.dip_id} has ${look.UNRELIABLE_DIP_NOTE}`);
+        }
       });
     });
 
@@ -293,7 +319,10 @@
     timeline.applyTransitions(cues, transitions);
     timeSweeps(cues, maps);
     const validated = timeline.validate(cues, facts, duration, refresh);
-    const cueProblems = validated.problems, warnings = validated.warnings;
+    const cueProblems = validated.problems;
+    // server.py's state(): the DIP switch warnings ride on the show's own
+    // warning list, after the timeline's.
+    const warnings = validated.warnings.concat(dipWarnings);
     const cueEnds = timeline.ends(cues, refresh, duration);
     cues.forEach(cue => {
       const t = timeline.times(cue, refresh);

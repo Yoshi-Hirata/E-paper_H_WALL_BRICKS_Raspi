@@ -963,6 +963,27 @@ def _small_project_cases() -> list:
                 "labels": {}, "boards": {}, "music": None}
     projects.append(("transition_span_over_max", {"files": files, "show": show_over}))
 
+    # A DIP ID set by hand (show.json's `dips`): Sample's third board, 20,
+    # would rank as address 3; its switches really read 28, so the bus is
+    # 1, 2, 28 - the gap the rank left stays a gap. The board's row also
+    # carries dip_by_hand for the page's "set by hand" badge.
+    show_dip = {"duration": 120.0, "refresh_s": 7.0,
+               "cues": [{"id": "a", "item": "Sample", "at": 0,
+                        "design": "Sample_color_pattern01_grid.csv"}],
+               "transitions": {}, "labels": {}, "boards": {},
+               "dips": {"Sample": {"20": 28}}, "music": None}
+    projects.append(("dip_set_by_hand", {"files": files, "show": show_dip}))
+
+    # 15 is 1111: four switches on, which the operator reported unreliable
+    # (2026-09-27). The address is used all the same - nothing refuses one -
+    # and the show carries the warning the page draws in amber.
+    show_flaky = {"duration": 120.0, "refresh_s": 7.0,
+                 "cues": [{"id": "a", "item": "Sample", "at": 0,
+                          "design": "Sample_color_pattern01_grid.csv"}],
+                 "transitions": {}, "labels": {}, "boards": {},
+                 "dips": {"Sample": {"20": 15}}, "music": None}
+    projects.append(("dip_four_switches_on", {"files": files, "show": show_flaky}))
+
     return projects
 
 
