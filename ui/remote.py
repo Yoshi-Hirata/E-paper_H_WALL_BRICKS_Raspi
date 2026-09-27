@@ -546,6 +546,20 @@ class RemoteSession:
             boards, self._boards = self._boards, None
             return boards
 
+    def pending_job(self) -> bool:
+        """True while a prepare or a burn is waiting for the worker.
+
+        The worker's idle-time autoplay guard (ui/runner.py's
+        REMOTE_GUARD_S heartbeat) stands aside for one: the writes are
+        about to start and the heartbeat is only worth sending when
+        nothing else is going to touch the bus anyway. A queued board
+        list (set_boards()) is not one of these - it puts nothing on the
+        bus of its own, and the probing sweep it causes opens with a
+        stop anyway.
+        """
+        with self._lock:
+            return self._job is not None or self._burn_job is not None
+
     def prepared(self, cue_id: str, saved, failed, seconds: float) -> None:
         with self._lock:
             if cue_id != self.cue_id or self._job is not None:
@@ -664,5 +678,10 @@ class RemoteSession:
                 "group_count": runner.group_count,
                 "no_sweep": sorted(runner.no_sweep),
                 "standby_ready": bool(runner.standby_ready),
+                # How many idle autoplay guards this worker has sent
+                # (ui/runner.py's REMOTE_GUARD_S). Diagnosis only: a
+                # garment losing cues with this stuck at 0 means the
+                # heartbeat never got a clear window.
+                "remote_guard_sent": runner.remote_guard_sent,
                 "burn": burn,
             }

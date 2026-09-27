@@ -351,6 +351,107 @@ def test_a_cue_with_no_sweep_keeps_the_flat_guard():
     runner.stop()
 
 
+# ---- the idle autoplay guard while the PC drives the unit ----
+#
+# 2026-09-27, three rehearsals and a unit swap: the tops garment (16
+# boards) lost cues from about two minutes after START on whichever
+# Radxa drove it, the skirt never did, and the lost cues' serial writes
+# had BLOCKED for 40-400 ms. The master board had restarted its factory
+# autoplay in a gap between two cues (38 s with no 0x17 on the bus at
+# all) and was deaf mid-repaint. REMOTE now keeps STANDBY's 60 s
+# heartbeat going - see ui/runner.py's REMOTE_GUARD_S.
+
+def test_the_remote_guard_stops_the_autoplay_while_the_worker_is_idle():
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.05, remote_guard=0.1)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)                    # a worker with nothing to do
+    assert wait_until(lambda: runner.remote_guard_sent >= 4, timeout=5.0)
+    beats = list(bus.broadcast_stops)
+    status = session.status()
+    runner.stop()
+    gaps = [b - a for a, b in zip(beats[-4:], beats[-3:])]
+    assert gaps and all(0.09 <= gap <= 0.4 for gap in gaps), gaps
+    # Said once, then silent - one line a minute would bury the log.
+    said = [line for line in runner.recent(40) if "remote guard" in line]
+    assert said == [said[0]] and "stop every 0.1 s while idle" in said[0]
+    # ...and counted, so /status can show it did happen.
+    assert status["remote_guard_sent"] >= 4
+
+
+def test_the_remote_guard_stands_aside_for_a_cue_and_its_repaint():
+    """The two ways a heartbeat could do harm: landing on top of a
+    trigger about to go out (REMOTE_GUARD_HOLD_S of clearance), and
+    landing inside the repaint that trigger starts (_guard_for())."""
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.4, remote_guard=0.05)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    assert wait_until(lambda: runner.remote_guard_sent >= 1, timeout=5.0)
+    armed_at = time.monotonic()
+    session.fire("c1", armed_at + 0.5)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    fired = session.fired_at
+    # Nothing at all in the run-up to the trigger, though the heartbeat
+    # was due six times over: a cue within 5 s owns the bus.
+    assert [t for t in bus.broadcast_stops if armed_at < t < fired] == []
+    assert wait_until(lambda: any(t > fired for t in bus.broadcast_stops),
+                      timeout=5.0)
+    # ...and the first stop after it is the post-fire guard, a whole
+    # guard_delay of repaint later - not a heartbeat inside the picture.
+    assert min(t for t in bus.broadcast_stops if t > fired) >= fired + 0.38
+    runner.stop()
+
+
+def test_a_fire_resets_the_remote_guards_clock():
+    """Any broadcast 0x17 counts as the heartbeat's own: the guard STOP
+    after a fire silences the autoplay just as well, so the next
+    heartbeat is a full interval after THAT, not after the last one."""
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.3, remote_guard=0.25)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    assert wait_until(lambda: runner.remote_guard_sent >= 1, timeout=5.0)
+    session.fire("c1", time.monotonic() + 0.02)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    fired = session.fired_at
+    assert wait_until(lambda: any(t > fired for t in bus.broadcast_stops),
+                      timeout=5.0)
+    guard_at = min(t for t in bus.broadcast_stops if t > fired)
+    assert guard_at >= fired + 0.28          # only the guard, nothing sooner
+    assert wait_until(lambda: any(t > guard_at for t in bus.broadcast_stops),
+                      timeout=5.0)
+    assert min(t for t in bus.broadcast_stops if t > guard_at) >= guard_at + 0.23
+    runner.stop()
+
+
+def test_remote_guard_zero_sends_no_heartbeat_at_all():
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.05, remote_guard=0.0)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    # The worker's own opening stop (_setup()) still goes out, once.
+    assert wait_until(lambda: len(bus.broadcast_stops) == 1, timeout=5.0)
+    time.sleep(0.5)
+    assert len(bus.broadcast_stops) == 1
+    assert runner.remote_guard_sent == 0
+    runner.stop()
+
+
+def test_the_heartbeat_does_not_move_a_cue():
+    bus = StampedBus()
+    runner = make_runner(bus, guard_delay=0.05, remote_guard=0.05)
+    session = RemoteSession(runner)
+    session.arm("c1", 7)
+    assert wait_until(lambda: runner.remote_guard_sent >= 3, timeout=5.0)
+    at = time.monotonic() + 0.3
+    session.fire("c1", at)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    assert len(shows(bus)) == 1 and shows(bus)[0].dest == 0xFF
+    assert 0 <= (session.fired_at - at) * 1000 < 50
+    runner.stop()
+
+
 def test_junk_span_and_refresh_are_read_as_not_said():
     """Advisory numbers: a cue is never refused over one, and the guard
     falls back to the flat delay rather than to something nonsensical."""

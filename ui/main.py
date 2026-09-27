@@ -27,8 +27,8 @@ from .puller import RepoPuller
 from .rebooter import Rebooter
 from .remote import RemoteSession
 from .showplay import ShowPlayer
-from .runner import (DEFAULT_BOARDS, VERIFY_AFTER_S, WITNESS_ANY,
-                     WITNESS_USB, DemoRunner)
+from .runner import (DEFAULT_BOARDS, REMOTE_GUARD_S, VERIFY_AFTER_S,
+                     WITNESS_ANY, WITNESS_USB, DemoRunner)
 from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
                       usb_rebind)
 from .versions import BoardVersions
@@ -326,6 +326,14 @@ def main() -> int:
                          "(SPECIFICATION 5.7); any asks whichever live "
                          "board starts repainting first - only after the "
                          "bench test in DEVELOPMENT.md section 6")
+    # The same rehearsal's other finding, a morning later: between two
+    # cues nothing reaches the boards at all, and the tops' master
+    # restarted its own autoplay in that gap (SPECIFICATION 4.2, 5.4).
+    ap.add_argument("--remote-guard", type=float, default=REMOTE_GUARD_S,
+                    metavar="SEC",
+                    help="while the show PC drives this unit, re-send the "
+                         "broadcast stop this often when the worker is idle "
+                         "and no cue is near (default 60; 0 disables)")
     ap.add_argument("--slot", type=int, default=TEST_SLOT)
     ap.add_argument("--pattern", choices=[p.key for p in PATTERNS],
                     help="start this pattern immediately instead of showing "
@@ -371,6 +379,7 @@ def main() -> int:
     # can bring the boards back as ttyACM1. `port` is only the label.
     runner = DemoRunner(boards=args.boards, interval=args.interval,
                         guard_delay=args.guard_delay, slot=args.slot,
+                        remote_guard=args.remote_guard,
                         port=args.port,
                         verify_fire=args.verify_fire and not args.no_verify_fire,
                         verify_after=args.verify_after,
