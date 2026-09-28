@@ -965,6 +965,35 @@ L3)。そのうえで、**UI サービスの再起動では直らず、USB リ�
 | 5.7 | **OTA 系コマンド(少なくとも 0x29)は 485 中継すると無応答で、USB 直結側(マスタ)の CDC が固まる**(2026-09-17 radxa-01、ID:1 USB + ID:2 485 で再現: 0x17 は中継 0.05 秒で ACK、0x29 は 6 秒無応答→以後 Write timeout、電源再投入まで回復せず)。0x29 は自分宛(USB 直結基板)には 485 接続中でも正常応答 | 0x29 は「存在確認(0x17)で 1 枚だけ応答した基板」にのみ送る(`ota.scan`)。UPDATE FW / FW VERSION は 485 接続中は照会せず「485 を抜け」と表示 |
 | 5.8 | 0x29 の size/crc は再起動後 0(FW_260917 書き込み直後でも `IDLE size=0 crc=0x0000`) | 0x29 で判別できるのは V1.0/V1.1 の別のみ。ビルドの識別は不可 |
 | 5.9 | **DIP スイッチが 4 本以上 ON のアドレスは通信が不安定との報告**(運用担当、2026-09-27。AZ271SD1301(LOOK 25)の DIP 27 = `11011` を 28 = `11100` に変更)。ランク順の既定採番は変えない(本番 2 日前、各衣装のスイッチは既定どおりに設定済み) | Conductor が警告し、DIP ID を手で指定できる ― 「BOARDS AND DIP SWITCHES」の DIP ID 欄で該当アドレスに琥珀色の注記を出し、同じ文をショーの警告一覧(Upload の手前)にも出す。手で入れた ID は `show.json` の `dips` に入り、そのボードだけがランクから外れる(`conductor/look.py` の `dip_popcount()` / `unit_board_ids()` の `dips`) |
+| 5.10 | **基板に印字されたシリアルも型番も無い**。見分けられるのは STM32 の USB シリアル文字列(MCU の固有 ID)だけで、読めるのは**機体の USB に挿さっている 1 枚だけ**(485 の先の基板は名乗れない。この FW は 0x02 に答えない)。2026-09-28、艦隊の大半は末尾 `324C`(`48E8854C324C` など)、2 枚が末尾 `3930`(`5CF26F473930` / `5CEF71563930`)で、うち 1 枚は FW_260923 がエラーなく入ったのに単色デモでも色が違った | 下記「基板の識別」。末尾 4 文字を TYPE と呼び、`324C` 以外を琥珀色で示す。理由(ロット違いか基板違いか)はまだ分からない ―― ラベルにすぎない |
+
+### 基板の識別(BOARD INFO と `/status` の `usb_board`、2026-09-28)
+
+- `host/epaper/transport.py` の `usb_board_info(port)` → `{"serial", "family",
+  "vid_pid", "bcd"}`。シリアルはその port の pyserial `list_ports`(無ければ Linux の
+  sysfs `/sys/bus/usb/devices/<dev>/serial`)、`bcd` は sysfs の `bcdDevice`。
+  `family` はシリアルの末尾 4 文字が `324C` / `3930` ならそれ、ほかは `"other"`、
+  シリアルが無ければ `null`。**基板には 1 バイトも送らない**。例外を投げない
+- **機体の LCD: BOARD INFO**(FW VERSION の次の行): `SERIAL 5CF26F473930` /
+  `TYPE 3930 (differs from most: 324C)`(琥珀色)または `TYPE 324C` /
+  `FW V1.4 16-color (FW_260923+)`(FW VERSION と同じ検出 ―― 同じ
+  `BoardVersions` の走査で、送るのは各アドレスへの PLAY_STOP と、1 枚だけ
+  答えた USB 基板への 0x29 と 0x25 だけ。ポートを専有するので FW VERSION と
+  同じくランナーを止める。PC が機体を動かしている間は読まず
+  `FW (not read while the PC is driving)`)/ `FLASHED FW_260923 09-28 18:00 here`
+  または `no flash record here`(この機体の `~/.epaper/flash-log.json`)。
+  KEY1 で読み直し、KEY2 でメニュー
+- **UPDATE FW** の確認画面にも、書き込み(KEY1)の前に
+  `SERIAL 5CF26F473930  TYPE 3930` の 1 行(`324C` 以外は琥珀色)
+- **`/status` の `usb_board`**: `{"serial", "family"}`。ワーカーがポートを開くたびに
+  読み直し(以後 60 秒ごと、`USB_BOARD_RECHECK_S`)、あいだはキャッシュ。読むのは
+  `/status` を聞いた側のスレッドで、ランナーのワーカーは「開いた」と記すだけ
+  (発火・復旧の経路には何も足していない ―― 開き直しで名前が変わっても 60 秒以内に
+  追いつく)。まだどのワーカーもポートを開いていなければ `null`
+- **Conductor のタイル**: `Commit` の下に小さく `master 5CF26F473930`、`324C` 以外なら
+  琥珀色の `board type 3930`(ツールチップ: This board's MCU serial differs from most
+  boards (…324C). Two such boards behaved differently (colours) on 2026-09-28. Only
+  the board on the USB cable can be identified.)
 
 ## 6. ソフトウェア構成
 
