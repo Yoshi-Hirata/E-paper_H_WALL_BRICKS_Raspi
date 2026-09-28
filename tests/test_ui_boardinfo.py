@@ -236,6 +236,58 @@ def test_the_app_draws_board_info_and_redraws_when_fw_lands(tmp_path):
     app.draw()
 
 
+# ---- /status usb_board ----
+
+def test_status_usb_board_is_read_after_each_open_and_cached(monkeypatch):
+    from tests.test_ui_remote import make_session
+    from ui import runner as runner_mod
+
+    reads = []
+
+    def board_info(port):
+        reads.append(port)
+        return dict(ODD)
+    session, runner, _ = make_session(usb_board_info=board_info)
+    assert session.status()["usb_board"] is None      # no worker has had it
+    assert reads == []
+    runner._saw_port("/dev/ttyACM0")                  # what a worker's open does
+    assert session.status()["usb_board"] == {"serial": "5CF26F473930",
+                                             "family": "3930"}
+    session.status()
+    session.status()
+    assert reads == ["/dev/ttyACM0"]                  # cached, not re-read
+    runner._saw_port("/dev/ttyACM1")                  # another open
+    assert session.status()["usb_board"]["serial"] == "5CF26F473930"
+    assert reads == ["/dev/ttyACM0", "/dev/ttyACM1"]
+    monkeypatch.setattr(runner_mod, "USB_BOARD_RECHECK_S", 0.0)
+    session.status()                                  # stale: read again
+    assert len(reads) == 3
+
+
+def test_status_usb_board_never_raises():
+    from tests.test_ui_remote import make_session
+
+    def boom(port):
+        raise OSError("sysfs went away")
+    session, runner, _ = make_session(usb_board_info=boom)
+    runner._saw_port("/dev/ttyACM0")
+    assert session.status()["usb_board"] == {"serial": None, "family": None}
+
+
+def test_a_worker_opening_the_port_is_what_marks_it():
+    from tests.test_ui_remote import make_session
+    from tests.test_ui_remote import array as picture
+
+    session, runner, _ = make_session(
+        usb_board_info=lambda port: {"serial": port and "48E8854C324C",
+                                     "family": "324C"})
+    session.prepare("c1", {1: picture(3)}, label="x")
+    assert wait_until(lambda: session.status()["usb_board"] is not None)
+    assert session.status()["usb_board"] == {"serial": "48E8854C324C",
+                                             "family": "324C"}
+    runner.stop()
+
+
 # ---- UPDATE FW shows SERIAL and TYPE before KEY1 ----
 
 def test_the_update_screen_names_the_usb_board_before_a_write(tmp_path):
