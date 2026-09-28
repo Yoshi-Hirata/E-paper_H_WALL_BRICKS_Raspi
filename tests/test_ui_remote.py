@@ -2547,7 +2547,7 @@ def test_recover_bus_on_an_idle_unit_starts_no_worker():
 HOLD = 0.3          # a compressed REMOTE_GUARD_HOLD_S for these tests
 
 
-def armed(monkeypatch, lead=4.0, degrade=True, **kwargs):
+def armed(monkeypatch, lead=4.3, degrade=True, **kwargs):
     """Setup on a healthy master, then (optionally) it degrades, then a cue
     `lead` seconds out - so the setup's probes are not what is measured."""
     fake = {k: kwargs.pop(k) for k in list(kwargs)
@@ -2556,7 +2556,7 @@ def armed(monkeypatch, lead=4.0, degrade=True, **kwargs):
     bus = degraded(monkeypatch, **fake)
     bus.degraded = False
     kwargs.setdefault("remote_guard_hold", HOLD)
-    kwargs.setdefault("precheck", 3.6)
+    kwargs.setdefault("precheck", 3.9)   # the reset step fits (ASK_SETTLE_S)
     runner = degraded_runner(bus, **kwargs)
     session = RemoteSession(runner)
     session.prepare("c1", {1: array(1), 2: array(2)})
@@ -3330,13 +3330,22 @@ def test_a_healthy_master_passes_the_precheck_with_two_frames(monkeypatch):
     still silent` on a HEALTHY master - the 0x02 it asked is never answered
     on this firmware (the fake is now silent to 0x02 the same way). Asked a
     unicast STOP instead, a healthy master ACKs: the whole check is one
-    broadcast STOP and one unicast STOP to board 1, and no reset."""
+    broadcast STOP and one unicast STOP to board 1, and no reset.
+
+    And (radxa-07 on dc846a1) the question waits ASK_SETTLE_S behind the
+    broadcast: the fake, like the real master, misses a unicast asked
+    within 0.1 s of one - so the FIRST ask answers and no second ask goes
+    out."""
+    from ui.runner import ASK_SETTLE_S
+
     bus, runner, session, at = armed(monkeypatch, degrade=False)
     assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
     runner.stop()
-    before = _wire(bus, at - 3.6 - 0.2, at - 0.01)
+    before = _wire(bus, at - 3.9 - 0.2, at - 0.01)
     assert [(how, cmd, dest) for _, how, cmd, dest in before] == [
         ("send", "0x17", 0xFF), ("ask", "0x17", 1)], before
+    assert before[1][0] - before[0][0] >= ASK_SETTLE_S - 0.01, before
+    assert not any("silent" in l for l in runner.recent(30))
     assert bus.resets == [] and runner.precheck["by"] is None
     assert not any(f.cmd == 0x02 for f in bus.requested)
     assert any("precheck c1: bus ok" in l and "board 1 answers" in l
@@ -3460,7 +3469,7 @@ class _SilentAt(DegradedMaster):
     `lose` drops that many answers of the next unicast STOPs to board 1 -
     a frame lost on a healthy bus."""
 
-    def __init__(self, silent=(), wait=False, **kwargs):
+    def __init__(self, silent=(), wait=False, send_s=0.0, **kwargs):
         super().__init__(**kwargs)
         self.degraded = False
         self.silent = set(silent)
@@ -3468,6 +3477,12 @@ class _SilentAt(DegradedMaster):
         # `wait`: a silence costs what it costs on the unit - the whole read
         # window, plus the transport's 0.05 s poll overshoot.
         self.wait = wait
+        self.send_s = send_s                     # every send() blocks this
+
+    def send(self, frame):
+        if self.send_s:
+            time.sleep(self.send_s)
+        super().send(frame)
 
     def request(self, frame, retries=3, timeout=None):
         lost = (frame.dest == 1 and frame.cmd == STOP and self.lose > 0)
@@ -3562,26 +3577,33 @@ def test_one_lost_ack_behind_a_fast_stop_is_asked_again_not_reset(
     assert len(bus.resets) == 1
 
 
+@pytest.mark.parametrize("lead", [8.5, 8.8])
 def test_a_degraded_master_with_a_fast_stop_is_reset_before_the_hold(
-        monkeypatch):
+        monkeypatch, lead):
     """Gate on f9efd43, MED-1 (review_T11/t_degfast.py): a master that
     degrades mid-show but whose precheck STOP reads under 50 ms (every write
     blocks 30 ms). Two full asks left "no time for a usb reset" and the cue
-    went into a degraded bus. Now: the second ask is short, and asked only
-    if the reset still fits behind it - with the REAL PRECHECK_S and hold
-    the reset is in and proven before T-5.0, and the cue is on time."""
+    went into a degraded bus. The second ask is short, and asked only if the
+    reset still fits behind it - then the reset is in and proven before
+    T-5.0 and the cue is on time.
+
+    After the radxa-07 run of dc846a1 one miss behind a fast STOP is never
+    a verdict, and the first ask waits ASK_SETTLE_S: at the default
+    PRECHECK_S 8.5 the two asks no longer fit, so this case is "not reset"
+    there (left to the idle recovery); at a lead of 8.8 it is caught."""
     from ui.runner import PRECHECK_S, REMOTE_GUARD_HOLD_S
 
+    assert PRECHECK_S == 8.5
     bus = degraded(monkeypatch, quick_s=0.03, slow_s=0.03, reset_s=0.3,
                    reenum_s=0.44, open_s=0.3)
     bus.degraded = False
-    runner = degraded_runner(bus, boards=[1, 2, 3], precheck=PRECHECK_S,
+    runner = degraded_runner(bus, boards=[1, 2, 3], precheck=lead,
                              remote_guard_hold=REMOTE_GUARD_HOLD_S)
     session = RemoteSession(runner)
     session.prepare("c1", {1: array(1), 2: array(2), 3: array(3)},
                     refresh_s=0.2)
     assert wait_until(lambda: session.phase == READY, timeout=15.0)
-    at = time.monotonic() + PRECHECK_S + 1.0
+    at = time.monotonic() + lead + 1.0
     bus.degraded = True
     reset_at = []
     real_reset = bus.usb_reset
@@ -3595,6 +3617,11 @@ def test_a_degraded_master_with_a_fast_stop_is_reset_before_the_hold(
     assert wait_until(lambda: session.phase == FIRED, timeout=20.0)
     runner.stop()
     said = [l for l in runner.recent(40) if "precheck c1" in l]
+    if lead == 8.5:
+        assert said and said[0].endswith(
+            "no time to ask another - not reset"), said
+        assert bus.resets == [] and runner.precheck["by"] is None
+        return
     assert said and "→ usb reset → ok (board" in said[0], said
     assert len(bus.resets) == 1 and bus.degraded is False
     assert reset_at and reset_at[0] <= -7.4 + 0.05, reset_at   # begun by T-7.4
@@ -3677,18 +3704,27 @@ def _precheck_at(monkeypatch, bus, lead, cue):
     return runner, [l for l in runner.recent(20) if f"precheck {cue}" in l]
 
 
-@pytest.mark.parametrize("lead", [8.355, 8.36, 8.365, 8.37])
+@pytest.mark.parametrize("lead", [8.655, 8.66, 8.665, 8.67, 8.8])
 def test_a_second_ask_that_just_fits_never_costs_the_reset(monkeypatch, lead):
     """LOW-1: HEALTH_SECOND_ASK_COST_S (0.3) had no room for the read
-    overshoot, so at leads around 8.36 s the second ask just fit, overshot,
-    and then "no time for a usb reset" - the degraded master went into the
-    cue. At 0.35 the second ask is only taken with room for its overshoot
-    too, and either way the reset follows."""
+    overshoot, so at leads just short of the boundary the second ask fit,
+    overshot, and then "no time for a usb reset" - the degraded master went
+    into the cue. (With ASK_SETTLE_S the window moved from ~8.36 s to
+    ~8.66 s.) At 0.35 the second ask is only taken with room for its
+    overshoot too: either both asks and the reset, or one miss and "not
+    reset" - never the second ask and then no reset."""
     bus = _AtTheLimits()
     runner, said = _precheck_at(monkeypatch, bus, lead, "q03")
-    assert said and "→ usb reset → ok" in said[0], said
-    assert "no time for a usb reset" not in said[0]
-    assert len(bus.resets) == 1 and runner.precheck["by"] == "usb_reset"
+    assert said, runner.recent(20)
+    assert "no time for a usb reset" not in said[0], said
+    if len(bus.requested) >= 2:
+        assert "→ usb reset → ok" in said[0], said
+        assert len(bus.resets) == 1 and runner.precheck["by"] == "usb_reset"
+    else:
+        assert said[0].endswith("no time to ask another - not reset"), said
+        assert bus.resets == []
+    if lead == 8.8:                                  # both fit here
+        assert len(bus.resets) == 1
 
 
 def test_the_second_ask_costs_no_more_than_it_is_allowed(monkeypatch):
@@ -3710,16 +3746,34 @@ def test_the_second_ask_costs_no_more_than_it_is_allowed(monkeypatch):
 
 
 def test_the_cure_check_asks_a_board_that_was_not_silent(monkeypatch):
-    """LOW-2: a late precheck (no room for a second ask) on a healthy bus
-    whose lowest board has dropped: the one miss gets the reset, and the
-    check after it used to ask that same dead board - "no answer". It asks
-    the first candidate not already silent in this check."""
-    bus = _SilentAt(silent={1}, wait=True)
-    runner, said = _precheck_at(monkeypatch, bus, 8.2, "q04")
+    """LOW-2: a precheck whose STOP reads 60 ms (so one miss resets at once)
+    on a bus whose lowest board has dropped: the check after the reset used
+    to ask that same dead board - "no answer". It asks the first candidate
+    not already silent in this check."""
+    bus = _SilentAt(silent={1}, wait=True, send_s=0.06)
+    runner, said = _precheck_at(monkeypatch, bus, 8.5, "q04")
     assert said, runner.recent(20)
-    assert "board 1 silent, no time to ask another" in said[0], said
+    assert "precheck q04: board 1 silent (6" in said[0], said
     assert "→ usb reset → ok (board 3 answers)" in said[0], said
     assert runner.precheck["by"] == "usb_reset"
+
+
+def test_a_late_precheck_does_not_reset_a_healthy_master_on_one_miss(
+        monkeypatch):
+    """PM, after radxa-07 on dc846a1: one miss behind a fast STOP is the
+    normal case on a healthy master, so a precheck with no room for a
+    second ask resets NOTHING on it."""
+    bus = _SilentAt()
+    monkeypatch.setattr("ui.runner.find_port", bus.find_port)
+    runner = degraded_runner(bus, precheck=20.0, remote_guard_hold=HOLD)
+    bus.lose = 1
+    runner._precheck(bus, 2, "q03", time.monotonic() + HOLD + 1.7)
+    said = [l for l in runner.recent(10) if "precheck q03" in l]
+    assert said == [said[0]], said
+    assert said[0].endswith("precheck q03: stop 0 ms, board 1 silent, no "
+                            "time to ask another - not reset"), said
+    assert bus.resets == [] and runner.precheck["by"] is None
+    assert [f.dest for f in bus.requested if f.cmd == STOP] == [1]
 
 
 def test_a_precheck_begun_too_late_to_ask_does_not_say_bus_ok():
