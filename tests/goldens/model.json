@@ -12515,7 +12515,7 @@
      ]
     },
     "warnings": [
-     "Look22: 101 s of cues without room for a stop (1:00) - leave 2 s after a picture is complete",
+     "Look22: one picture takes 99 s - no stop can be sent while it draws",
      "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
     ]
    },
@@ -15178,7 +15178,7 @@
     {
      "at": 0.0,
      "design": "p1",
-     "id": "p",
+     "id": "sp",
      "item": "Look22",
      "partial": false,
      "refresh_s": 8.0,
@@ -15188,7 +15188,7 @@
     {
      "at": 503.0,
      "design": "p2",
-     "id": "q0",
+     "id": "s0",
      "item": "Look22",
      "partial": false,
      "refresh_s": 7.0,
@@ -15198,7 +15198,7 @@
     {
      "at": 518.0,
      "design": "p2",
-     "id": "q1",
+     "id": "s1",
      "item": "Look22",
      "partial": false,
      "refresh_s": 7.0,
@@ -15208,7 +15208,7 @@
     {
      "at": 543.0,
      "design": "p2",
-     "id": "q2",
+     "id": "s2",
      "item": "Look22",
      "partial": false,
      "refresh_s": 8.0,
@@ -15218,7 +15218,7 @@
     {
      "at": 554.0,
      "design": "p2",
-     "id": "q3",
+     "id": "s3",
      "item": "Look22",
      "partial": false,
      "refresh_s": 8.0,
@@ -15228,7 +15228,7 @@
     {
      "at": 565.0,
      "design": "p2",
-     "id": "q4",
+     "id": "s4",
      "item": "Look22",
      "partial": false,
      "refresh_s": 7.0,
@@ -15238,7 +15238,7 @@
     {
      "at": 577.0,
      "design": "p2",
-     "id": "q5",
+     "id": "s5",
      "item": "Look22",
      "partial": false,
      "refresh_s": 8.0,
@@ -15253,7 +15253,7 @@
       "complete": 0.0,
       "end": 503.0,
       "end_source": "next",
-      "id": "p",
+      "id": "sp",
       "refresh": 8.0,
       "refresh_source": "cue",
       "sent": -8.0
@@ -15262,7 +15262,7 @@
       "complete": 511.0,
       "end": 518.0,
       "end_source": "next",
-      "id": "q0",
+      "id": "s0",
       "refresh": 7.0,
       "refresh_source": "cue",
       "sent": 503.0
@@ -15271,7 +15271,7 @@
       "complete": 526.0,
       "end": 543.0,
       "end_source": "next",
-      "id": "q1",
+      "id": "s1",
       "refresh": 7.0,
       "refresh_source": "cue",
       "sent": 518.0
@@ -15280,7 +15280,7 @@
       "complete": 551.0,
       "end": 554.0,
       "end_source": "next",
-      "id": "q2",
+      "id": "s2",
       "refresh": 8.0,
       "refresh_source": "cue",
       "sent": 543.0
@@ -15289,7 +15289,7 @@
       "complete": 562.0,
       "end": 565.0,
       "end_source": "next",
-      "id": "q3",
+      "id": "s3",
       "refresh": 8.0,
       "refresh_source": "cue",
       "sent": 554.0
@@ -15298,7 +15298,7 @@
       "complete": 573.0,
       "end": 577.0,
       "end_source": "next",
-      "id": "q4",
+      "id": "s4",
       "refresh": 7.0,
       "refresh_source": "cue",
       "sent": 565.0
@@ -15307,7 +15307,7 @@
       "complete": 585.0,
       "end": 655.0,
       "end_source": "show",
-      "id": "q5",
+      "id": "s5",
       "refresh": 8.0,
       "refresh_source": "cue",
       "sent": 577.0
@@ -15317,13 +15317,13 @@
      "radxa-09": 9.0
     },
     "problems": {
-     "p": [],
-     "q0": [],
-     "q1": [],
-     "q2": [],
-     "q3": [],
-     "q4": [],
-     "q5": []
+     "s0": [],
+     "s1": [],
+     "s2": [],
+     "s3": [],
+     "s4": [],
+     "s5": [],
+     "sp": []
     },
     "warnings": []
    },
@@ -15350,7 +15350,449 @@
     }
    },
    "kind": "timeline",
-   "name": "keep_away_look26_has_room",
+   "name": "keep_away_look26_skirt_replays_clean",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p1",
+     "id": "tp",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 8.0,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 485.0,
+     "design": "p2",
+     "id": "t0",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 7.0,
+     "span": 1.0,
+     "sweep": null
+    },
+    {
+     "at": 518.0,
+     "design": "p2",
+     "id": "t1",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 7.0,
+     "span": 1.0,
+     "sweep": null
+    },
+    {
+     "at": 543.0,
+     "design": "p2",
+     "id": "t2",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 8.0,
+     "span": 0.0,
+     "sweep": null
+    },
+    {
+     "at": 554.0,
+     "design": "p2",
+     "id": "t3",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 8.0,
+     "span": 0.0,
+     "sweep": null
+    },
+    {
+     "at": 565.0,
+     "design": "p2",
+     "id": "t4",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 7.0,
+     "span": 1.0,
+     "sweep": null
+    },
+    {
+     "at": 577.0,
+     "design": "p2",
+     "id": "t5",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 8.0,
+     "span": 0.0,
+     "sweep": null
+    }
+   ],
+   "duration": 655.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 485.0,
+      "end_source": "next",
+      "id": "tp",
+      "refresh": 8.0,
+      "refresh_source": "cue",
+      "sent": -8.0
+     },
+     {
+      "complete": 493.0,
+      "end": 518.0,
+      "end_source": "next",
+      "id": "t0",
+      "refresh": 7.0,
+      "refresh_source": "cue",
+      "sent": 485.0
+     },
+     {
+      "complete": 526.0,
+      "end": 543.0,
+      "end_source": "next",
+      "id": "t1",
+      "refresh": 7.0,
+      "refresh_source": "cue",
+      "sent": 518.0
+     },
+     {
+      "complete": 551.0,
+      "end": 554.0,
+      "end_source": "next",
+      "id": "t2",
+      "refresh": 8.0,
+      "refresh_source": "cue",
+      "sent": 543.0
+     },
+     {
+      "complete": 562.0,
+      "end": 565.0,
+      "end_source": "next",
+      "id": "t3",
+      "refresh": 8.0,
+      "refresh_source": "cue",
+      "sent": 554.0
+     },
+     {
+      "complete": 573.0,
+      "end": 577.0,
+      "end_source": "next",
+      "id": "t4",
+      "refresh": 7.0,
+      "refresh_source": "cue",
+      "sent": 565.0
+     },
+     {
+      "complete": 585.0,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "t5",
+      "refresh": 8.0,
+      "refresh_source": "cue",
+      "sent": 577.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "t0": [],
+     "t1": [],
+     "t2": [],
+     "t3": [],
+     "t4": [],
+     "t5": [],
+     "tp": []
+    },
+    "warnings": []
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "keep_away_look26_tops_replays_clean",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p1",
+     "id": "p",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 23.0,
+     "design": "p2",
+     "id": "c0",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 43.0,
+     "design": "p2",
+     "id": "c1",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 63.0,
+     "design": "p2",
+     "id": "c2",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 83.0,
+     "design": "p2",
+     "id": "c3",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 95.0,
+     "design": "p2",
+     "id": "c4",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 104.0,
+     "design": "p2",
+     "id": "c5",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 113.0,
+     "design": "p2",
+     "id": "c6",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 122.0,
+     "design": "p2",
+     "id": "c7",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 131.0,
+     "design": "p2",
+     "id": "c8",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 140.0,
+     "design": "p2",
+     "id": "c9",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 655.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 23.0,
+      "end_source": "next",
+      "id": "p",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": -8.0
+     },
+     {
+      "complete": 31.0,
+      "end": 43.0,
+      "end_source": "next",
+      "id": "c0",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 23.0
+     },
+     {
+      "complete": 51.0,
+      "end": 63.0,
+      "end_source": "next",
+      "id": "c1",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 43.0
+     },
+     {
+      "complete": 71.0,
+      "end": 83.0,
+      "end_source": "next",
+      "id": "c2",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 63.0
+     },
+     {
+      "complete": 91.0,
+      "end": 95.0,
+      "end_source": "next",
+      "id": "c3",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 83.0
+     },
+     {
+      "complete": 103.0,
+      "end": 104.0,
+      "end_source": "next",
+      "id": "c4",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 95.0
+     },
+     {
+      "complete": 112.0,
+      "end": 113.0,
+      "end_source": "next",
+      "id": "c5",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 104.0
+     },
+     {
+      "complete": 121.0,
+      "end": 122.0,
+      "end_source": "next",
+      "id": "c6",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 113.0
+     },
+     {
+      "complete": 130.0,
+      "end": 131.0,
+      "end_source": "next",
+      "id": "c7",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 122.0
+     },
+     {
+      "complete": 139.0,
+      "end": 140.0,
+      "end_source": "next",
+      "id": "c8",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 131.0
+     },
+     {
+      "complete": 148.0,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "c9",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 140.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "c0": [],
+     "c1": [],
+     "c2": [],
+     "c3": [],
+     "c4": [],
+     "c5": [],
+     "c6": [],
+     "c7": [],
+     "c8": [],
+     "c9": [],
+     "p": []
+    },
+    "warnings": [
+     "Look22: 94 s without a stop (0:54\u20132:28) - cues too close for the unit to send one"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "keep_away_replay_trap",
    "refresh": 8.0
   },
   {
@@ -15444,6 +15886,46 @@
      "refresh_s": null,
      "span": null,
      "sweep": null
+    },
+    {
+     "at": 579.0,
+     "design": "p2",
+     "id": "t8",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 588.5,
+     "design": "p2",
+     "id": "t9",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 598.0,
+     "design": "p2",
+     "id": "t10",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 607.5,
+     "design": "p2",
+     "id": "t11",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
     }
    ],
    "duration": 655.0,
@@ -15523,12 +16005,48 @@
      },
      {
       "complete": 577.5,
-      "end": 655.0,
-      "end_source": "show",
+      "end": 579.0,
+      "end_source": "next",
       "id": "t7",
       "refresh": 8.0,
       "refresh_source": "show",
       "sent": 569.5
+     },
+     {
+      "complete": 587.0,
+      "end": 588.5,
+      "end_source": "next",
+      "id": "t8",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 579.0
+     },
+     {
+      "complete": 596.5,
+      "end": 598.0,
+      "end_source": "next",
+      "id": "t9",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 588.5
+     },
+     {
+      "complete": 606.0,
+      "end": 607.5,
+      "end_source": "next",
+      "id": "t10",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 598.0
+     },
+     {
+      "complete": 615.5,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "t11",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 607.5
      }
     ],
     "minInterval": {
@@ -15538,194 +16056,16 @@
      "p": [],
      "t0": [],
      "t1": [],
+     "t10": [],
+     "t11": [],
      "t2": [],
      "t3": [],
      "t4": [],
      "t5": [],
      "t6": [],
-     "t7": []
-    },
-    "warnings": [
-     "Look22: 76 s of cues without room for a stop (8:23\u20139:30) - leave 2 s after a picture is complete"
-    ]
-   },
-   "gap": 1.0,
-   "items": {
-    "look22": {
-     "boards": 16,
-     "designs": {
-      "g1.csv": {
-       "full": true,
-       "partial": true
-      },
-      "p1": {
-       "full": true,
-       "partial": true
-      },
-      "p2": {
-       "full": true,
-       "partial": true
-      }
-     },
-     "item": "Look22",
-     "unit": "radxa-09"
-    }
-   },
-   "kind": "timeline",
-   "name": "keep_away_no_room_warns",
-   "refresh": 8.0
-  },
-  {
-   "cues": [
-    {
-     "at": 0.0,
-     "design": "p1",
-     "id": "p",
-     "item": "Look22",
-     "partial": false,
-     "refresh_s": null,
-     "span": null,
-     "sweep": null
-    },
-    {
-     "at": 503.0,
-     "design": "p2",
-     "id": "t0",
-     "item": "Look22",
-     "partial": false,
-     "refresh_s": null,
-     "span": null,
-     "sweep": null
-    },
-    {
-     "at": 512.5,
-     "design": "p2",
-     "id": "t1",
-     "item": "Look22",
-     "partial": false,
-     "refresh_s": null,
-     "span": null,
-     "sweep": null
-    },
-    {
-     "at": 522.0,
-     "design": "p2",
-     "id": "t2",
-     "item": "Look22",
-     "partial": false,
-     "refresh_s": null,
-     "span": null,
-     "sweep": null
-    },
-    {
-     "at": 531.5,
-     "design": "p2",
-     "id": "t3",
-     "item": "Look22",
-     "partial": false,
-     "refresh_s": null,
-     "span": null,
-     "sweep": null
-    },
-    {
-     "at": 541.0,
-     "design": "p2",
-     "id": "t4",
-     "item": "Look22",
-     "partial": false,
-     "refresh_s": null,
-     "span": null,
-     "sweep": null
-    },
-    {
-     "at": 550.5,
-     "design": "p2",
-     "id": "t5",
-     "item": "Look22",
-     "partial": false,
-     "refresh_s": null,
-     "span": null,
-     "sweep": null
-    }
-   ],
-   "duration": 655.0,
-   "expect": {
-    "cues": [
-     {
-      "complete": 0.0,
-      "end": 503.0,
-      "end_source": "next",
-      "id": "p",
-      "refresh": 8.0,
-      "refresh_source": "show",
-      "sent": -8.0
-     },
-     {
-      "complete": 511.0,
-      "end": 512.5,
-      "end_source": "next",
-      "id": "t0",
-      "refresh": 8.0,
-      "refresh_source": "show",
-      "sent": 503.0
-     },
-     {
-      "complete": 520.5,
-      "end": 522.0,
-      "end_source": "next",
-      "id": "t1",
-      "refresh": 8.0,
-      "refresh_source": "show",
-      "sent": 512.5
-     },
-     {
-      "complete": 530.0,
-      "end": 531.5,
-      "end_source": "next",
-      "id": "t2",
-      "refresh": 8.0,
-      "refresh_source": "show",
-      "sent": 522.0
-     },
-     {
-      "complete": 539.5,
-      "end": 541.0,
-      "end_source": "next",
-      "id": "t3",
-      "refresh": 8.0,
-      "refresh_source": "show",
-      "sent": 531.5
-     },
-     {
-      "complete": 549.0,
-      "end": 550.5,
-      "end_source": "next",
-      "id": "t4",
-      "refresh": 8.0,
-      "refresh_source": "show",
-      "sent": 541.0
-     },
-     {
-      "complete": 558.5,
-      "end": 655.0,
-      "end_source": "show",
-      "id": "t5",
-      "refresh": 8.0,
-      "refresh_source": "show",
-      "sent": 550.5
-     }
-    ],
-    "minInterval": {
-     "radxa-09": 9.0
-    },
-    "problems": {
-     "p": [],
-     "t0": [],
-     "t1": [],
-     "t2": [],
-     "t3": [],
-     "t4": [],
-     "t5": []
+     "t7": [],
+     "t8": [],
+     "t9": []
     },
     "warnings": []
    },
@@ -15752,7 +16092,391 @@
     }
    },
    "kind": "timeline",
-   "name": "keep_away_no_room_short",
+   "name": "keep_away_every_9.5_s",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p1",
+     "id": "p",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 503.0,
+     "design": "p2",
+     "id": "t0",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 512.0,
+     "design": "p2",
+     "id": "t1",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 521.0,
+     "design": "p2",
+     "id": "t2",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 530.0,
+     "design": "p2",
+     "id": "t3",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 539.0,
+     "design": "p2",
+     "id": "t4",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 548.0,
+     "design": "p2",
+     "id": "t5",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 557.0,
+     "design": "p2",
+     "id": "t6",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 566.0,
+     "design": "p2",
+     "id": "t7",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 575.0,
+     "design": "p2",
+     "id": "t8",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 584.0,
+     "design": "p2",
+     "id": "t9",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 593.0,
+     "design": "p2",
+     "id": "t10",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 602.0,
+     "design": "p2",
+     "id": "t11",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 655.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 503.0,
+      "end_source": "next",
+      "id": "p",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": -8.0
+     },
+     {
+      "complete": 511.0,
+      "end": 512.0,
+      "end_source": "next",
+      "id": "t0",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 503.0
+     },
+     {
+      "complete": 520.0,
+      "end": 521.0,
+      "end_source": "next",
+      "id": "t1",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 512.0
+     },
+     {
+      "complete": 529.0,
+      "end": 530.0,
+      "end_source": "next",
+      "id": "t2",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 521.0
+     },
+     {
+      "complete": 538.0,
+      "end": 539.0,
+      "end_source": "next",
+      "id": "t3",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 530.0
+     },
+     {
+      "complete": 547.0,
+      "end": 548.0,
+      "end_source": "next",
+      "id": "t4",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 539.0
+     },
+     {
+      "complete": 556.0,
+      "end": 557.0,
+      "end_source": "next",
+      "id": "t5",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 548.0
+     },
+     {
+      "complete": 565.0,
+      "end": 566.0,
+      "end_source": "next",
+      "id": "t6",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 557.0
+     },
+     {
+      "complete": 574.0,
+      "end": 575.0,
+      "end_source": "next",
+      "id": "t7",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 566.0
+     },
+     {
+      "complete": 583.0,
+      "end": 584.0,
+      "end_source": "next",
+      "id": "t8",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 575.0
+     },
+     {
+      "complete": 592.0,
+      "end": 593.0,
+      "end_source": "next",
+      "id": "t9",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 584.0
+     },
+     {
+      "complete": 601.0,
+      "end": 602.0,
+      "end_source": "next",
+      "id": "t10",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 593.0
+     },
+     {
+      "complete": 610.0,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "t11",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 602.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "p": [],
+     "t0": [],
+     "t1": [],
+     "t10": [],
+     "t11": [],
+     "t2": [],
+     "t3": [],
+     "t4": [],
+     "t5": [],
+     "t6": [],
+     "t7": [],
+     "t8": [],
+     "t9": []
+    },
+    "warnings": [
+     "Look22: 116 s without a stop (8:14\u201310:10) - cues too close for the unit to send one"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "keep_away_every_9_s",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p1",
+     "id": "p",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 100.0,
+     "design": "p2",
+     "id": "x",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 60.0,
+     "span": 2.0,
+     "sweep": null
+    }
+   ],
+   "duration": 655.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 100.0,
+      "end_source": "next",
+      "id": "p",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": -8.0
+     },
+     {
+      "complete": 160.0,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "x",
+      "refresh": 60.0,
+      "refresh_source": "cue",
+      "sent": 100.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "p": [],
+     "x": []
+    },
+    "warnings": [
+     "Look22: one picture takes 62 s - no stop can be sent while it draws"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "keep_away_one_long_picture",
    "refresh": 8.0
   },
   {
@@ -15778,7 +16502,7 @@
      "sweep": null
     },
     {
-     "at": 109.5,
+     "at": 109.0,
      "design": "p2",
      "id": "s1",
      "item": "Skirt",
@@ -15788,7 +16512,7 @@
      "sweep": null
     },
     {
-     "at": 109.5,
+     "at": 109.0,
      "design": "p1",
      "id": "u1",
      "item": "Top",
@@ -15798,7 +16522,7 @@
      "sweep": null
     },
     {
-     "at": 119.0,
+     "at": 118.0,
      "design": "p2",
      "id": "s2",
      "item": "Skirt",
@@ -15808,7 +16532,7 @@
      "sweep": null
     },
     {
-     "at": 119.0,
+     "at": 118.0,
      "design": "p1",
      "id": "u2",
      "item": "Top",
@@ -15818,7 +16542,7 @@
      "sweep": null
     },
     {
-     "at": 128.5,
+     "at": 127.0,
      "design": "p2",
      "id": "s3",
      "item": "Skirt",
@@ -15828,7 +16552,7 @@
      "sweep": null
     },
     {
-     "at": 128.5,
+     "at": 127.0,
      "design": "p1",
      "id": "u3",
      "item": "Top",
@@ -15838,7 +16562,7 @@
      "sweep": null
     },
     {
-     "at": 138.0,
+     "at": 136.0,
      "design": "p2",
      "id": "s4",
      "item": "Skirt",
@@ -15848,7 +16572,7 @@
      "sweep": null
     },
     {
-     "at": 138.0,
+     "at": 136.0,
      "design": "p1",
      "id": "u4",
      "item": "Top",
@@ -15858,7 +16582,7 @@
      "sweep": null
     },
     {
-     "at": 147.5,
+     "at": 145.0,
      "design": "p2",
      "id": "s5",
      "item": "Skirt",
@@ -15868,7 +16592,7 @@
      "sweep": null
     },
     {
-     "at": 147.5,
+     "at": 145.0,
      "design": "p1",
      "id": "u5",
      "item": "Top",
@@ -15878,7 +16602,7 @@
      "sweep": null
     },
     {
-     "at": 157.0,
+     "at": 154.0,
      "design": "p2",
      "id": "s6",
      "item": "Skirt",
@@ -15888,7 +16612,7 @@
      "sweep": null
     },
     {
-     "at": 157.0,
+     "at": 154.0,
      "design": "p1",
      "id": "u6",
      "item": "Top",
@@ -15898,7 +16622,7 @@
      "sweep": null
     },
     {
-     "at": 166.5,
+     "at": 163.0,
      "design": "p2",
      "id": "s7",
      "item": "Skirt",
@@ -15908,9 +16632,89 @@
      "sweep": null
     },
     {
-     "at": 166.5,
+     "at": 163.0,
      "design": "p1",
      "id": "u7",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 172.0,
+     "design": "p2",
+     "id": "s8",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 172.0,
+     "design": "p1",
+     "id": "u8",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 181.0,
+     "design": "p2",
+     "id": "s9",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 181.0,
+     "design": "p1",
+     "id": "u9",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 190.0,
+     "design": "p2",
+     "id": "s10",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 190.0,
+     "design": "p1",
+     "id": "u10",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 199.0,
+     "design": "p2",
+     "id": "s11",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 199.0,
+     "design": "p1",
+     "id": "u11",
      "item": "Top",
      "partial": false,
      "refresh_s": null,
@@ -15923,7 +16727,7 @@
     "cues": [
      {
       "complete": 108.0,
-      "end": 109.5,
+      "end": 109.0,
       "end_source": "next",
       "id": "s0",
       "refresh": 8.0,
@@ -15932,7 +16736,7 @@
      },
      {
       "complete": 108.0,
-      "end": 109.5,
+      "end": 109.0,
       "end_source": "next",
       "id": "u0",
       "refresh": 8.0,
@@ -15940,130 +16744,202 @@
       "sent": 100.0
      },
      {
-      "complete": 117.5,
-      "end": 119.0,
+      "complete": 117.0,
+      "end": 118.0,
       "end_source": "next",
       "id": "s1",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 109.5
+      "sent": 109.0
      },
      {
-      "complete": 117.5,
-      "end": 119.0,
+      "complete": 117.0,
+      "end": 118.0,
       "end_source": "next",
       "id": "u1",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 109.5
+      "sent": 109.0
      },
      {
-      "complete": 127.0,
-      "end": 128.5,
+      "complete": 126.0,
+      "end": 127.0,
       "end_source": "next",
       "id": "s2",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 119.0
+      "sent": 118.0
      },
      {
-      "complete": 127.0,
-      "end": 128.5,
+      "complete": 126.0,
+      "end": 127.0,
       "end_source": "next",
       "id": "u2",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 119.0
+      "sent": 118.0
      },
      {
-      "complete": 136.5,
-      "end": 138.0,
+      "complete": 135.0,
+      "end": 136.0,
       "end_source": "next",
       "id": "s3",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 128.5
+      "sent": 127.0
      },
      {
-      "complete": 136.5,
-      "end": 138.0,
+      "complete": 135.0,
+      "end": 136.0,
       "end_source": "next",
       "id": "u3",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 128.5
+      "sent": 127.0
      },
      {
-      "complete": 146.0,
-      "end": 147.5,
+      "complete": 144.0,
+      "end": 145.0,
       "end_source": "next",
       "id": "s4",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 138.0
+      "sent": 136.0
      },
      {
-      "complete": 146.0,
-      "end": 147.5,
+      "complete": 144.0,
+      "end": 145.0,
       "end_source": "next",
       "id": "u4",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 138.0
+      "sent": 136.0
      },
      {
-      "complete": 155.5,
-      "end": 157.0,
+      "complete": 153.0,
+      "end": 154.0,
       "end_source": "next",
       "id": "s5",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 147.5
+      "sent": 145.0
      },
      {
-      "complete": 155.5,
-      "end": 157.0,
+      "complete": 153.0,
+      "end": 154.0,
       "end_source": "next",
       "id": "u5",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 147.5
+      "sent": 145.0
      },
      {
-      "complete": 165.0,
-      "end": 166.5,
+      "complete": 162.0,
+      "end": 163.0,
       "end_source": "next",
       "id": "s6",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 157.0
+      "sent": 154.0
      },
      {
-      "complete": 165.0,
-      "end": 166.5,
+      "complete": 162.0,
+      "end": 163.0,
       "end_source": "next",
       "id": "u6",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 157.0
+      "sent": 154.0
      },
      {
-      "complete": 174.5,
-      "end": 655.0,
-      "end_source": "show",
+      "complete": 171.0,
+      "end": 172.0,
+      "end_source": "next",
       "id": "s7",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 166.5
+      "sent": 163.0
      },
      {
-      "complete": 174.5,
-      "end": 655.0,
-      "end_source": "show",
+      "complete": 171.0,
+      "end": 172.0,
+      "end_source": "next",
       "id": "u7",
       "refresh": 8.0,
       "refresh_source": "show",
-      "sent": 166.5
+      "sent": 163.0
+     },
+     {
+      "complete": 180.0,
+      "end": 181.0,
+      "end_source": "next",
+      "id": "s8",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 172.0
+     },
+     {
+      "complete": 180.0,
+      "end": 181.0,
+      "end_source": "next",
+      "id": "u8",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 172.0
+     },
+     {
+      "complete": 189.0,
+      "end": 190.0,
+      "end_source": "next",
+      "id": "s9",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 181.0
+     },
+     {
+      "complete": 189.0,
+      "end": 190.0,
+      "end_source": "next",
+      "id": "u9",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 181.0
+     },
+     {
+      "complete": 198.0,
+      "end": 199.0,
+      "end_source": "next",
+      "id": "s10",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 190.0
+     },
+     {
+      "complete": 198.0,
+      "end": 199.0,
+      "end_source": "next",
+      "id": "u10",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 190.0
+     },
+     {
+      "complete": 207.0,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "s11",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 199.0
+     },
+     {
+      "complete": 207.0,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "u11",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 199.0
      }
     ],
     "minInterval": {
@@ -16072,23 +16948,31 @@
     "problems": {
      "s0": [],
      "s1": [],
+     "s10": [],
+     "s11": [],
      "s2": [],
      "s3": [],
      "s4": [],
      "s5": [],
      "s6": [],
      "s7": [],
+     "s8": [],
+     "s9": [],
      "u0": [],
      "u1": [],
+     "u10": [],
+     "u11": [],
      "u2": [],
      "u3": [],
      "u4": [],
      "u5": [],
      "u6": [],
-     "u7": []
+     "u7": [],
+     "u8": [],
+     "u9": []
     },
     "warnings": [
-     "Skirt + Top: 76 s of cues without room for a stop (1:40\u20132:46) - leave 2 s after a picture is complete",
+     "Skirt + Top: 116 s without a stop (1:31\u20133:28) - cues too close for the unit to send one",
      "Skirt: no preset at 0:00 - it opens on whatever it showed before the show",
      "Top: no preset at 0:00 - it opens on whatever it showed before the show"
     ]

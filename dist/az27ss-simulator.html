@@ -1708,13 +1708,22 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   const LEGACY_REFRESH_S = 7.0;
   const REFRESH_RANGE_S = [1.0, 60.0];
   const GAP_AFTER_REFRESH_S = 1.0;
-  // conductor/timeline.py's KEEPAWAY_*: the unit's STOP keep-away
-  // (SPECIFICATION 4.6) wants a stop at least every 60 s, 0.5 s after a
-  // picture is complete and 1.5 s before the next send.
+  // conductor/timeline.py's KEEPAWAY_* / UNIT_*: the unit's broadcast STOP
+  // rules (ui/runner.py's defaults, SPECIFICATION 4.6), replayed by
+  // keepAwayGaps() below.
+  const KEEPAWAY_DUE_S = 40.0;
   const KEEPAWAY_MAX_GAP_S = 60.0;
   const KEEPAWAY_AFTER_PICTURE_S = 0.5;
   const KEEPAWAY_BEFORE_CUE_S = 1.5;
+  const KEEPAWAY_MIN_BEFORE_CUE_S = 1.0;
   const KEEPAWAY_ROOM_S = KEEPAWAY_AFTER_PICTURE_S + KEEPAWAY_BEFORE_CUE_S;
+  const UNIT_HEARTBEAT_S = 15.0;
+  const UNIT_HOLD_S = 5.0;
+  const UNIT_PRECHECK_S = 9.0;
+  const UNIT_PRECHECK_LEAD_S = 5.4;
+  const UNIT_GUARD_DELAY_S = 30.0;
+  const UNIT_GUARD_MARGIN_S = 23.0;
+  const UNIT_GUARD_MAX_S = 200.0;
   // Pre-burn conductor (main, 2026-09-25+): every picture is written to
   // its on-board slot at Upload time (showfile.py), so nothing is
   // written any more while the show runs - a running send is one
@@ -1835,10 +1844,41 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     return slow + span;
   }
 
-  // conductor/timeline.py's keep_away_gaps(): [[seconds, first, last]] for
-  // every stretch of ONE unit's sends that leaves the unit's keep-away STOP
-  // no room (the next send KEEPAWAY_ROOM_S after a picture is complete) for
-  // longer than KEEPAWAY_MAX_GAP_S. Same arithmetic, same order.
+  // conductor/timeline.py's _unit_next_stop(): [when, what] of the unit's
+  // next broadcast STOP from `now`, or null. Same candidates, same order,
+  // the first of equal times wins.
+  function unitNextStop(now, last, floor, done, trigger, picture, prechecked) {
+    const found = [];
+    if (trigger === null) {
+      if (floor !== null) found.push([pyMax2(now, floor), "guard"]);
+    } else if (!prechecked) {
+      let check = trigger - UNIT_PRECHECK_S;
+      if (floor !== null) check = pyMax2(check, floor);
+      check = pyMax2(check, now);
+      if (trigger - check >= UNIT_PRECHECK_LEAD_S) found.push([check, "precheck"]);
+    }
+    let beat = last + UNIT_HEARTBEAT_S;
+    if (floor !== null) beat = pyMax2(beat, floor);
+    beat = pyMax2(beat, now);
+    if (trigger === null || trigger - beat >= UNIT_HOLD_S) found.push([beat, "heartbeat"]);
+    let keep = last + KEEPAWAY_DUE_S;
+    if (done !== null) keep = pyMax2(keep, done);
+    keep = pyMax2(keep, now);
+    if (trigger === null || trigger - keep >= KEEPAWAY_BEFORE_CUE_S) {
+      found.push([keep, "keep-away"]);
+    } else if (trigger - keep >= KEEPAWAY_MIN_BEFORE_CUE_S
+               && trigger + picture + KEEPAWAY_AFTER_PICTURE_S >= last + KEEPAWAY_MAX_GAP_S) {
+      found.push([keep, "keep-away"]);
+    }
+    let best = null;
+    found.forEach(entry => { if (best === null || entry[0] < best[0]) best = entry; });
+    return best;
+  }
+
+  // conductor/timeline.py's keep_away_gaps(): [[seconds, from, to, longest
+  // picture]] for every gap between two broadcast STOPs over
+  // KEEPAWAY_MAX_GAP_S, found by REPLAYING the unit's own rules over ONE
+  // unit's sends. Same arithmetic, same order.
   function keepAwayGaps(unitCues, refresh) {
     if (refresh === undefined) refresh = REFRESH_S;
     const momentCues = Object.create(null);
@@ -1846,18 +1886,33 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       const sent = times(cue, refresh)[0];
       (momentCues[sent] = momentCues[sent] || []).push(cue);
     });
-    const moments = Object.keys(momentCues).map(Number).sort((a, b) => a - b);
+    const sends = Object.keys(momentCues).map(Number).sort((a, b) => a - b)
+      .filter(sent => sent > 0)
+      .map(sent => [sent, pyMin2(UNIT_GUARD_MAX_S, unitPictureS(momentCues[sent], refresh))]);
     const found = [];
-    if (!moments.length) return found;
-    let roomEnd = moments[0] - KEEPAWAY_BEFORE_CUE_S, first = moments[0];
-    moments.forEach((sent, index) => {
-      const opens = sent + unitPictureS(momentCues[sent], refresh) + KEEPAWAY_AFTER_PICTURE_S;
-      const after = index + 1 < moments.length ? moments[index + 1] : null;
-      if (after !== null && after - KEEPAWAY_BEFORE_CUE_S < opens) return;
-      const stretch = fmt.round(opens - roomEnd, 3);
-      if (stretch > KEEPAWAY_MAX_GAP_S) found.push([stretch, first, sent]);
-      if (after !== null) { roomEnd = after - KEEPAWAY_BEFORE_CUE_S; first = after; }
-    });
+    if (!sends.length) return found;
+    let now = 0.0, last = 0.0, floor = null, done = null, longest = 0.0;
+    for (let index = 0; index <= sends.length; index++) {
+      const trigger = index < sends.length ? sends[index][0] : null;
+      const picture = index < sends.length ? sends[index][1] : 0.0;
+      let prechecked = false;
+      for (;;) {
+        const step = unitNextStop(now, last, floor, done, trigger, picture, prechecked);
+        if (step === null || (trigger !== null && step[0] >= trigger)) break;
+        const at = step[0], what = step[1];
+        const gap = fmt.round(at - last, 3);
+        if (gap > KEEPAWAY_MAX_GAP_S) found.push([gap, last, at, longest]);
+        now = last = at;
+        longest = 0.0;
+        if (what === "precheck") prechecked = true;
+        if (trigger === null) return found;
+      }
+      now = trigger;
+      floor = trigger + pyMax2(UNIT_GUARD_DELAY_S,
+                               pyMin2(UNIT_GUARD_MAX_S, picture + UNIT_GUARD_MARGIN_S));
+      done = trigger + picture + KEEPAWAY_AFTER_PICTURE_S;
+      longest = pyMax2(longest, picture);
+    }
     return found;
   }
 
@@ -2078,20 +2133,22 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
         previousSent = sent; previousGroup = group;
       });
 
-      // The unit's STOP keep-away needs room between pictures and the next
-      // send (keepAwayGaps()). A warning, never a problem.
+      // The unit's broadcast STOPs, replayed (keepAwayGaps()): a gap over
+      // 60 s is a master left to go back to its autoplay. A warning, never
+      // a problem.
       const nameSet = Object.create(null);
       byUnit[unit].forEach(c => { const n = items[c.item.toLowerCase()].item; nameSet[n] = true; });
       const names = Object.keys(nameSet).sort((a, b) => {
         const la = a.toLowerCase(), lb = b.toLowerCase();
         return la < lb ? -1 : la > lb ? 1 : 0;
       }).join(" + ");
-      keepAwayGaps(byUnit[unit], refresh).forEach(([stretch, firstRaw, last]) => {
-        const first = pyMax2(0.0, firstRaw);
-        const span = formatClock(first) === formatClock(last)
-          ? formatClock(first) : `${formatClock(first)}–${formatClock(last)}`;
-        warnings.push(`${names}: ${fmt.fixed(stretch, 0)} s of cues without room for a stop `
-          + `(${span}) - leave ${fmt.g(KEEPAWAY_ROOM_S)} s after a picture is complete`);
+      keepAwayGaps(byUnit[unit], refresh).forEach(([gap, since, until, longest]) => {
+        if (longest + KEEPAWAY_ROOM_S > KEEPAWAY_MAX_GAP_S) {
+          warnings.push(`${names}: one picture takes ${fmt.fixed(longest, 0)} s - no stop can be sent while it draws`);
+          return;
+        }
+        warnings.push(`${names}: ${fmt.fixed(gap, 0)} s without a stop `
+          + `(${formatClock(since)}–${formatClock(until)}) - cues too close for the unit to send one`);
       });
     });
 
@@ -2109,8 +2166,10 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     REFRESH_S, LEGACY_REFRESH_S, PANEL_REPAINT_S, REFRESH_RANGE_S,
     GAP_AFTER_REFRESH_S,
     SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S, MAX_DURATION_S,
-    KEEPAWAY_MAX_GAP_S, KEEPAWAY_AFTER_PICTURE_S, KEEPAWAY_BEFORE_CUE_S,
-    KEEPAWAY_ROOM_S,
+    KEEPAWAY_DUE_S, KEEPAWAY_MAX_GAP_S, KEEPAWAY_AFTER_PICTURE_S,
+    KEEPAWAY_BEFORE_CUE_S, KEEPAWAY_MIN_BEFORE_CUE_S, KEEPAWAY_ROOM_S,
+    UNIT_HEARTBEAT_S, UNIT_HOLD_S, UNIT_PRECHECK_S, UNIT_PRECHECK_LEAD_S,
+    UNIT_GUARD_DELAY_S, UNIT_GUARD_MARGIN_S, UNIT_GUARD_MAX_S,
     parseClock, formatClock, cleanRefresh, effectiveRefresh, completeS,
     panelRepaintOf, panelRefresh, spanOf, unitPictureS, keepAwayGaps,
     sweeps, clean, resolve, applyTransitions, times, ends, minInterval,

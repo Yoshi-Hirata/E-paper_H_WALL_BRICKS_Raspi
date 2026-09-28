@@ -903,26 +903,44 @@ def timeline_cases() -> list:
         "refresh8_preset_that_sweeps",
         [preset_sweep, _cue("b", "Look22", 60, "p2")], sweep8, refresh=eight))
 
-    # The unit's STOP keep-away (timeline.keep_away_gaps(), SPECIFICATION
-    # 4.6): a warning when a unit's sends leave no room for a stop (the next
-    # send 2 s after a picture is complete) for longer than 60 s. LOOK26 as
-    # the real show has it (15/25/11/11/12 s apart, 8 s pictures) has room
-    # everywhere; cues 9.5 s apart do not, and a run of them warns.
-    look26 = [_cue("p", "Look22", 0, "p1", refresh_s=8.0)]
-    for n, (at, refresh_s, span) in enumerate(
-            ((503, 7.0, 1.0), (518, 7.0, 1.0), (543, 8.0, 0.0),
-             (554, 8.0, 0.0), (565, 7.0, 1.0), (577, 8.0, 0.0))):
-        look26.append(_cue(f"q{n}", "Look22", at, "p2", refresh_s=refresh_s,
-                           span=span))
-    cases.append(_run_timeline_case("keep_away_look26_has_room", look26,
-                                    sweep8, 655.0, eight))
-    tight = [_cue("p", "Look22", 0, "p1")] + [
-        _cue(f"t{n}", "Look22", 503 + n * 9.5, "p2") for n in range(8)]
-    cases.append(_run_timeline_case("keep_away_no_room_warns", tight,
-                                    sweep8, 655.0, eight))
-    # Six of them (1.5 s before the first to 0.5 s after the last picture:
-    # 57.5 s) stay under 60 s: no warning.
-    cases.append(_run_timeline_case("keep_away_no_room_short", tight[:7],
+    # The unit's broadcast STOPs, REPLAYED (timeline.keep_away_gaps(),
+    # SPECIFICATION 4.6): a warning when the unit's own rules leave the
+    # master more than 60 s without one. LOOK26 as the real show has it
+    # (both garments, 8 s pictures) replays with 40 s at most: no warning.
+    def look26_of(item, times_):
+        track = [_cue(f"{item}p", "Look22", 0, "p1", refresh_s=8.0)]
+        for n, (at, refresh_s, span) in enumerate(times_):
+            track.append(_cue(f"{item}{n}", "Look22", at, "p2",
+                              refresh_s=refresh_s, span=span))
+        return track
+    skirt = ((503, 7.0, 1.0), (518, 7.0, 1.0), (543, 8.0, 0.0),
+             (554, 8.0, 0.0), (565, 7.0, 1.0), (577, 8.0, 0.0))
+    cases.append(_run_timeline_case("keep_away_look26_skirt_replays_clean",
+                                    look26_of("s", skirt), sweep8, 655.0,
+                                    eight))
+    tops = ((485, 7.0, 1.0),) + skirt[1:]
+    cases.append(_run_timeline_case("keep_away_look26_tops_replays_clean",
+                                    look26_of("t", tops), sweep8, 655.0,
+                                    eight))
+    # The review's case (2a67ef8, MED-A): every stretch has room, but the
+    # room comes before the keep-away is due, and then nine cues 9 s apart
+    # leave none - the unit goes 94.5 s without a stop (0:54 - 2:28).
+    trap = [_cue("p", "Look22", 0, "p1")] + [
+        _cue(f"c{n}", "Look22", at, "p2") for n, at in enumerate(
+            (23, 43, 63, 83, 95, 104, 113, 122, 131, 140))]
+    cases.append(_run_timeline_case("keep_away_replay_trap", trap, sweep8,
+                                    655.0, eight))
+    # 9.5 s apart: the 1.0 s last resort fits (picture + 0.5 + 1.0) - clean.
+    # 9.0 s apart: nothing fits at all - warns.
+    for step in (9.5, 9.0):
+        run = [_cue("p", "Look22", 0, "p1")] + [
+            _cue(f"t{n}", "Look22", 503 + n * step, "p2") for n in range(12)]
+        cases.append(_run_timeline_case(f"keep_away_every_{step:g}_s", run,
+                                        sweep8, 655.0, eight))
+    # One picture no stop can get past: its own wording.
+    lone = [_cue("p", "Look22", 0, "p1"),
+            _cue("x", "Look22", 100, "p2", refresh_s=60.0, span=2.0)]
+    cases.append(_run_timeline_case("keep_away_one_long_picture", lone,
                                     sweep8, 655.0, eight))
     # Two items sharing a unit share its master: named together, and one
     # send for both at the same instant.
@@ -931,9 +949,9 @@ def timeline_cases() -> list:
               "skirt": {"item": "Skirt", "unit": "radxa-05", "boards": 8,
                         "designs": {"p1": OK, "p2": OK}}}
     both = []
-    for n in range(8):
-        both.append(_cue(f"s{n}", "Skirt", 100 + n * 9.5, "p2"))
-        both.append(_cue(f"u{n}", "Top", 100 + n * 9.5, "p1"))
+    for n in range(12):
+        both.append(_cue(f"s{n}", "Skirt", 100 + n * 9.0, "p2"))
+        both.append(_cue(f"u{n}", "Top", 100 + n * 9.0, "p1"))
     cases.append(_run_timeline_case("keep_away_shared_unit", both, shared,
                                     655.0, eight))
 

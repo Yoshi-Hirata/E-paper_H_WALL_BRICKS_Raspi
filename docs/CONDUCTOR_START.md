@@ -4,7 +4,7 @@
 > - **機体が自動で行うこと**: 基板の監視 / USB が切れたら即座に再接続 / 待機中の
 >   バスの自動修復(USB リセット)/ 間隔の空いたキューの 9 秒前の確認 /
 >   親基板に 60 秒以上 STOP を切らさない(keep-away ―― 詰まったキューの連続でも
->   オートプレイが戻らない。Timeline の琥珀色 `… without room for a stop` は警告のみ)
+>   オートプレイが戻らない。Timeline の琥珀色 `… without a stop` は警告のみ)
 > - **オペレーターが行うこと**: 電源は 12 V → Radxa の順 / **① Upload** のあと、
 >   `ready` のタイルで **Recover bus** を 1 回押し、`bus was already clear` と出るのを
 >   確認 / タイルに赤で `bus degraded (n stalls) — press Recover bus, or reboot the Radxa`
@@ -192,11 +192,13 @@ Timeline タブの **Load bundle…**(演出家のシミュレーターの Save 
 1.5 秒」(8 秒の絵なら 9.5 秒)以上のとき ―― それより詰まった間には STOP を
 置けない。ローカルのデモ(SOLID16 など)と長い Upload の焼き込みでも同じように
 送る。オペレーターがすることは無い(止めるのは `--no-keep-away`、SPECIFICATION 4.6)。
-Timeline の CUES の上に琥珀色で
-`AZ271SC6302: 76 s of cues without room for a stop (8:23–9:30) - leave 2 s after a
-picture is complete` と出たら、その衣装のキューが「絵の完成 + 2 秒」より詰まって
-60 秒を超えて続いている。エラーではない(機体は STOP を入れる)が、できれば
-どこか 1 か所の間を 2 秒以上空ける。本番の LOOK26 では出ない。
+Timeline は機体の STOP の規則をショーの上で再生していて、CUES の上に琥珀色で
+`AZ271SC6302: 94 s without a stop (0:54–2:28) - cues too close for the unit to send
+one` と出たら、その時間帯は機体が STOP を入れられない(親基板がオートプレイに戻り
+うる)。エラーではないが、その区間のどこかのキューの間を「絵の完成 + 2 秒」
+(8 秒の絵なら 10 秒)以上空ける。`one picture takes 62 s - no stop can be sent
+while it draws` は、その 1 枚の絵(refresh の上書き + sweep)が長すぎるという意味。
+本番の LOOK26 では出ない。
 
 ### ショーの長さと音源の終わり(2026-09-28)
 
