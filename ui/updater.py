@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 import serial
 
 import ota
-from epaper.transport import Bus, find_port, port_serial
+from epaper.transport import Bus, find_port, port_serial, usb_board_info
 
 from . import flashlog
 from .config import LOG_HISTORY
@@ -149,7 +149,8 @@ class FirmwareUpdater:
                  verify_wait: float = VERIFY_WAIT_S, echo_log: bool = True,
                  serial_of=port_serial,
                  flash_log: Path = flashlog.DEFAULT_PATH,
-                 images: list[Path] | None = None):
+                 images: list[Path] | None = None,
+                 board_info=usb_board_info):
         """`firmware` is the image offered first; `images` every image the
         operator may switch to (default: the one given, or the repo's)."""
         self.firmware = Path(firmware) if firmware else None
@@ -162,6 +163,11 @@ class FirmwareUpdater:
         if self.firmware is not None and self.firmware not in self.images:
             self.images.append(self.firmware)
         self._serial_of = serial_of
+        # The USB board's SERIAL and TYPE for the confirm screen
+        # (transport.usb_board_info - the descriptor only, no frame):
+        # read at every scan, None until the first one.
+        self._board_info = board_info
+        self.usb_board: dict | None = None
         self.flash_log = Path(flash_log)
         self.boards = list(boards) if boards else list(range(1, 21))
         self.port = port
@@ -333,7 +339,15 @@ class FirmwareUpdater:
             if self.addr == addr and not self.busy:
                 self.board_state = state
 
+    def _read_usb_board(self) -> None:
+        try:
+            port = self.port or self._locate()
+            self.usb_board = dict(self._board_info(port) or {})
+        except Exception:                 # noqa: BLE001 - shown as "none"
+            self.usb_board = {"serial": None, "family": None}
+
     def _scan(self) -> None:
+        self._read_usb_board()
         result = self._with_bus(lambda bus: ota.scan(bus, self.boards))
         if self.busy or self._probe_pending is not None:
             return                      # superseded by a newer request

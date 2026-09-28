@@ -48,6 +48,14 @@ SCANNING = "scanning"
 DONE = "done"
 
 
+def fw_family(v14: "bool | None") -> str:
+    """The firmware family from the 0x25 answer (ota.pipeline_supported)
+    of a board that answered 0x29 but cannot name its build."""
+    return ("V1.4 16-color (FW_260923+)" if v14 else
+            "V1.1 16-color" if v14 is False else
+            "V1.1/V1.4 16-color (0x25 unanswered)")
+
+
 class BoardVersions:
     """State behind the FW VERSION screen; the scan runs in a thread.
 
@@ -66,6 +74,10 @@ class BoardVersions:
         self._serial_of = serial_of
         self.flash_log = Path(flash_log)
         self.usb_serial: str | None = None
+        # The firmware of the lone USB board after a scan that found
+        # exactly one (the FW half of its row, no flash record) - None
+        # otherwise. Read by BOARD INFO.
+        self.usb_fw: str | None = None
         self.port = port
         self._open_bus = open_bus or (lambda p: Bus(p, verbose=False))
         self._locate = locate
@@ -131,6 +143,7 @@ class BoardVersions:
             return
         self.phase = SCANNING
         self.rows = []
+        self.usb_fw = None
         self.asked = 0
         self.offset = 0
         self.status = "scanning..."
@@ -151,18 +164,24 @@ class BoardVersions:
             self.rows.append((addr, "answers..."))
         self.status = f"scanning {self.asked}/{len(self.boards)}..."
 
-    def _label(self, ack, v14: bool | None = None) -> str:
-        if ack is None:
-            return self.ON_BUS
+    def _firmware(self, ack, v14: bool | None = None) -> "tuple[str, bool]":
+        """(what the board runs, whether that came from 0x25 alone) - the
+        firmware half of a row, without the flash record. BOARD INFO
+        (ui/boardinfo.py) shows exactly this as its FW line."""
         label = ota.identify(ack, self.catalog)
         if label.startswith("V1.1") and "build unknown" in label:
             # The board cannot say which build; 0x25 tells V1.4 from
             # V1.1, and the flash record names the file.
+            return fw_family(v14), True
+        return label, False
+
+    def _label(self, ack, v14: bool | None = None) -> str:
+        if ack is None:
+            return self.ON_BUS
+        label, by_family = self._firmware(ack, v14)
+        if by_family:
             record = flashlog.lookup(self.usb_serial, self.flash_log)
-            family = ("V1.4 16-color (FW_260923+)" if v14 else
-                      "V1.1 16-color" if v14 is False else
-                      "V1.1/V1.4 16-color (0x25 unanswered)")
-            label = f"{family}, {flashlog.describe(record)}"
+            label = f"{label}, {flashlog.describe(record)}"
             if v14 and record and "FW_2609" in str(record) and "FW_260923" not in str(record):
                 label += " - record older than the board"
         return label
@@ -186,6 +205,10 @@ class BoardVersions:
                                               log=self.emit)
             self.rows = [(addr, self._label(ack, v14.get(addr)))
                          for addr, ack in found.items()]
+            if len(found) == 1:
+                (addr, ack), = found.items()
+                if ack is not None:
+                    self.usb_fw = self._firmware(ack, v14.get(addr))[0]
             for addr, label in self.rows:
                 self.emit(f"board {addr:02d}: {label}")
             answering = len(found)

@@ -32,6 +32,7 @@ from .runner import (DEFAULT_BOARDS, PRECHECK_S, REMOTE_GUARD_S,
 from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
                       usb_rebind)
 from .versions import BoardVersions
+from .boardinfo import BoardInfo
 
 
 def preview(directory: str) -> int:
@@ -145,6 +146,18 @@ def preview(directory: str) -> int:
                            host="radxa-01").save(out / "versions_done.png")
     render.versions_screen([], "no serial port", "done", "FW_260917",
                            host="radxa-01").save(out / "versions_noport.png")
+    usb = "USB 0483:5740  bcd 0200  /dev/ttyACM0"
+    render.boardinfo_screen(
+        [("SERIAL", "5CF26F473930", ""),
+         ("TYPE", "3930 (differs from most: 324C)", "warn"),
+         ("FW", "V1.4 16-color (FW_260923+)", ""),
+         ("FLASHED", "FW_260923 09-28 18:00 here", "")],
+        False, usb_line=usb, host="radxa-01").save(out / "boardinfo_3930.png")
+    render.boardinfo_screen(
+        [("SERIAL", "48E8854C324C", ""), ("TYPE", "324C", ""),
+         ("FW", "(not read while the PC is driving)", ""),
+         ("", "no flash record here", "")],
+        False, usb_line=usb, host="radxa-01").save(out / "boardinfo_pc.png")
     print(f"wrote preview screens to {out}")
     return 0
 
@@ -446,6 +459,7 @@ def main() -> int:
     puller = RepoPuller()
     rebooter = Rebooter()
     versions = BoardVersions(boards=args.boards, port=args.port)
+    boardinfo = BoardInfo(versions, port=args.port)
     host = socket.gethostname() or None
 
     remote = agent = demo_store = None
@@ -483,6 +497,7 @@ def main() -> int:
         app_kwargs = {"port_label": port, "locked": args.locked,
                       "updater": updater, "puller": puller, "host": host,
                       "versions": versions, "rebooter": rebooter,
+                      "boardinfo": boardinfo,
                       "remote": remote,
                       "player": player if remote is not None else None,
                       "demos": demo_store}
