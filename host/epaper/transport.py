@@ -54,6 +54,74 @@ def port_serial(device: str | None) -> str | None:
     return None
 
 
+# The last four characters of the STM32's USB serial string (its unique
+# ID), grouped as seen across the fleet 2026-09-28: most masters read
+# ...324C (48E8854C324C), two read ...3930 (5CF26F473930, 5CEF71563930) -
+# and one of those showed wrong colours in a solid-colour demo although
+# FW_260923 went in without error. Only a label: nothing here says WHY
+# the two groups differ (a different MCU lot, or a different board).
+USB_BOARD_FAMILIES = ("324C", "3930")
+USB_BOARD_COMMON = "324C"          # what most of the fleet's masters read
+
+
+def usb_board_family(serial_no: "str | None") -> "str | None":
+    """'324C' / '3930' for a serial ending in one of the known suffixes,
+    'other' for any other serial, None when there is no serial at all."""
+    if not serial_no:
+        return None
+    tail = serial_no.strip().upper()[-4:]
+    return tail if tail in USB_BOARD_FAMILIES else "other"
+
+
+def _sysfs_read(directory: str, name: str) -> "str | None":
+    try:
+        with open(os.path.join(directory, name), encoding="ascii",
+                  errors="replace") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def usb_board_info(port: "str | None") -> dict:
+    """Who is on the USB cable behind `port` - the only board a unit can
+    name (the ones behind the 485 have no way to say, and this firmware
+    does not answer 0x02). Never raises, never sends a byte:
+
+      {"serial": "5CF26F473930" | None, "family": "324C"|"3930"|"other"|None,
+       "vid_pid": "0483:5740" | None, "bcd": "0200" | None}
+
+    The serial comes from pyserial's list_ports for THAT port only (never
+    a search across the machine), else from sysfs on Linux; bcd (the USB
+    bcdDevice) only from sysfs. No port, no USB device, or a machine
+    without either answers Nones.
+    """
+    info = {"serial": None, "family": None, "vid_pid": None, "bcd": None}
+    if not port:
+        return info
+    try:
+        entry = next((p for p in list_ports.comports() if p.device == port),
+                     None)
+        if entry is None:
+            return info
+        if entry.vid is not None and entry.pid is not None:
+            info["vid_pid"] = f"{entry.vid:04x}:{entry.pid:04x}"
+        info["serial"] = (getattr(entry, "serial_number", None) or "").strip() or None
+        sysfs = None
+        if sys.platform.startswith("linux"):
+            sysfs = getattr(entry, "usb_device_path", None)
+            location = getattr(entry, "location", None)
+            if not sysfs and location:
+                sysfs = "/sys/bus/usb/devices/" + location.split(":", 1)[0]
+        if sysfs:
+            if info["serial"] is None:
+                info["serial"] = _sysfs_read(sysfs, "serial")
+            info["bcd"] = _sysfs_read(sysfs, "bcdDevice")
+    except Exception:                   # noqa: BLE001 - an answer, not a raise
+        pass
+    info["family"] = usb_board_family(info["serial"])
+    return info
+
+
 def find_port() -> str | None:
     ports = list(list_ports.comports())
     for p in ports:

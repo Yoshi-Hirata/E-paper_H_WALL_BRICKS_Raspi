@@ -192,3 +192,66 @@ def test_nothing_is_reset_off_linux():
         return                                       # the Radxas: see above
     assert transport.usb_reset("/dev/ttyACM0")[0] is False
     assert transport.usb_reset_available("/dev/ttyACM0")[0] is False
+
+
+# ---- usb_board_info: who is on the USB cable (2026-09-28) ----
+
+class InfoPort:
+    def __init__(self, device, serial_number=None, vid=0x0483, pid=0x5740,
+                 location=None, usb_device_path=None):
+        self.device = device
+        self.serial_number = serial_number
+        self.vid = vid
+        self.pid = pid
+        self.location = location
+        self.usb_device_path = usb_device_path
+
+
+def test_usb_board_info_names_the_serial_and_its_family(monkeypatch):
+    monkeypatch.setattr(transport.sys, "platform", "win32")   # no sysfs
+    _patch_ports(monkeypatch, [
+        InfoPort("/dev/ttyACM1", serial_number="48E8854C324C"),
+        InfoPort("/dev/ttyACM0", serial_number="5CF26F473930"),
+    ])
+    info = transport.usb_board_info("/dev/ttyACM0")
+    assert info == {"serial": "5CF26F473930", "family": "3930",  # THAT port
+                    "vid_pid": "0483:5740", "bcd": None}
+    assert transport.usb_board_info("/dev/ttyACM1")["family"] == "324C"
+
+
+def test_usb_board_family_of_known_and_unknown_serials():
+    assert transport.usb_board_family("48E8854C324C") == "324C"
+    assert transport.usb_board_family("5cef71563930") == "3930"
+    assert transport.usb_board_family("0123456789AB") == "other"
+    assert transport.usb_board_family(None) is None
+    assert transport.usb_board_family("") is None
+
+
+def test_usb_board_info_without_a_serial_or_a_port(monkeypatch):
+    monkeypatch.setattr(transport.sys, "platform", "win32")
+    _patch_ports(monkeypatch, [InfoPort("/dev/ttyACM0", serial_number=None,
+                                        vid=None, pid=None)])
+    blank = {"serial": None, "family": None, "vid_pid": None, "bcd": None}
+    assert transport.usb_board_info("/dev/ttyACM0") == blank
+    assert transport.usb_board_info("/dev/ttyACM9") == blank   # not there
+    assert transport.usb_board_info(None) == blank
+    assert transport.usb_board_info("") == blank
+
+
+def test_usb_board_info_falls_back_to_sysfs_on_linux(monkeypatch, tmp_path):
+    (tmp_path / "serial").write_text("5CEF71563930\n")
+    (tmp_path / "bcdDevice").write_text("0200\n")
+    _patch_ports(monkeypatch, [InfoPort("/dev/ttyACM0", serial_number=None,
+                                        usb_device_path=str(tmp_path))])
+    monkeypatch.setattr(transport.sys, "platform", "linux")
+    info = transport.usb_board_info("/dev/ttyACM0")
+    assert info == {"serial": "5CEF71563930", "family": "3930",
+                    "vid_pid": "0483:5740", "bcd": "0200"}
+
+
+def test_usb_board_info_never_raises(monkeypatch):
+    def boom():
+        raise OSError("comports exploded")
+    monkeypatch.setattr(transport.list_ports, "comports", boom)
+    assert transport.usb_board_info("/dev/ttyACM0") == {
+        "serial": None, "family": None, "vid_pid": None, "bcd": None}
