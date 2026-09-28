@@ -230,8 +230,10 @@ the show` と出る ― **本番前にこの文が出ていないことを確か
 つまり **電源・USB の立ち上がりが荒かった親基板は、全フレームを約 360 ms 遅らせる
 状態に入りうる。**
 
-> **何で直るか(2026-09-28 LOOK28 / radxa-07 で確かめた)**: この状態の親基板は
-> フレームを受け取っても**何も実行せず、何にも答えない**。直るのは
+> **何で直るか(2026-09-28 LOOK28 / radxa-07 で確かめた)**: 詰まった親基板には
+> 2 つの状態がある ―― フレームを約 0.36 秒遅れて**実行する**状態(LOOK23:
+> 絵は全部出た、遅れて)と、受け取っても**何も実行せず、何にも答えない**状態
+> (radxa-07: プリセットでどのパネルも動かなかった)。後者が直るのは
 > **親基板の USB リセット**(0.3 秒)、**Radxa の再起動(reboot = USB の電源が
 > 入り直す)**、**親基板の USB の挿し直し**のどれか。**機体の UI サービスの
 > 再起動では直らない** ―― ポートを開き直して基板を探し直すだけで、この親基板は
@@ -259,19 +261,28 @@ the show` と出る ― **本番前にこの文が出ていないことを確か
    先に 1. に戻る(焼き込み 0/112 のまま 3 分を捨てることになる)
 4. **衣装の基板に機体より後から電源を入れてしまったとき、またはタイルの
    `Fired late by` の行に赤で
-   `bus degraded (n stalls) — restart this unit before START` と出ているときは、
-   Upload の前に直す。** まず赤い印の横の **Recover bus** を押す(機体が親基板の
-   USB をリセットし、直ったことを確かめてから
+   `bus degraded (n stalls) — press Recover bus, or reboot the Radxa` と出ている
+   ときは、Upload の前に直す。** まず赤い印の横の **Recover bus** を押す(機体が
+   親基板の USB をリセットし、直ったことを確かめてから
    `radxa-07: bus recovered by usb reset (…)` と答える)。
    `radxa-07: bus recovery failed — reboot the Radxa or re-plug the master's USB`
    と出たら、**その Radxa を再起動(reboot)する**か、**親基板の USB を
    挿し直す**。**UI サービスの再起動では直らない。** NOW → NEXT ボードのその衣装の行にも
    赤で `bus degraded` と出る。③ START の下と WRITE TO UNITS には
    **琥珀色(amber)**で 1 行
-   `radxa-01: bus degraded — restart the unit, then Upload`
-   (2 台以上なら `radxa-01, radxa-02: bus degraded — restart these units, then Upload`)
+   `radxa-01: bus degraded — press Recover bus (or reboot the Radxa), then Upload`
+   (2 台以上なら `radxa-01, radxa-02: bus degraded — press Recover bus (or reboot these Radxas), then Upload`)
    ―― **START は止めない**(詰まっていてもキューは出る、ただ遅れる)
-5. **① Upload** → **「THE SHOW」カードが `pictures written on 10 / 10 units`**
+5. **健全な機体それぞれで Recover bus を 1 回押す**(ボタンはショーが走って
+   いない間、どのタイルの `Fired late by` の行にも出る)。
+   トーストは **`radxa-01: bus was already clear`** でなければならない。
+   **健全な衣装なのに `bus recovered…` や `bus recovery failed…` と出たら**、
+   その機体は USB ケーブルの先の基板がアドレス 1 でないなどで、機体の判定が
+   当てにならない ―― **その機体は `--precheck 0 --no-auto-recover` で
+   起動する**(直前点検と自動復旧を止める。SPECIFICATION §4.5 の「前提」)。
+   タイルに琥珀色で **`no usb reset on this unit`** と出ている機体は、劣化しても
+   自分では直せない ―― そうなったら Radxa の再起動か USB の挿し直ししかない
+6. **① Upload** → **「THE SHOW」カードが `pictures written on 10 / 10 units`**
    になり、**全機体のタイルの `Pictures` 行が `written`** になったのを確認 →
    **③ START**
 

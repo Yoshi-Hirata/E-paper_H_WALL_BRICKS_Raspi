@@ -504,13 +504,32 @@ ttyACM0 で戻り、8 秒後に `panels online: 22/22`、白のスタンバイ�
 だから治療は `transport.usb_reset(port)` ただ 1 つ。そのポートの裏にある USB
 デバイスを探し(pyserial の vid/pid と sysfs の busnum/devnum)、
 **(a)** `/dev/bus/usb/BBB/DDD` に書けるなら ioctl `USBDEVFS_RESET`
-(`_IO('U', 20)` = 0x5514)、**(b)** 書けなければ `sudo -n usbreset VID:PID`
-(5 秒で打ち切り)。どちらで済んだか、どちらもだめならなぜかを返す。Radxa では
+(`_IO('U', 20)` = 0x5514)、**(b)** 書けなければ **`sudo -n usbreset BBB/DDD`**
+(バス番号/デバイス番号 ―― **VID:PID は渡さない**: それはこの型のマスタ全部を
+指し、usbreset は最初に見つけたものをリセットする。レビュー M1)。**打ち切りは
+呼び出し側の残り予算**(最大 5 秒 ―― sudo が固まってもキューを待たせない、
+レビュー M2)。どちらで済んだか、どちらもだめならなぜかを返す。Radxa では
 `/dev/bus/usb/001/NNN` が root:root crw-rw-r-- なので実際は (b)(サービスの
 ユーザー radxa は NOPASSWD sudo、`/usr/bin/usbreset` あり)。**Linux 以外は
 「unsupported」を返して何もしない。**探すのは**そのポートの裏のデバイスだけ**
 で、VID:PID で機械全体を探すことはしない ―― テストは Radxa の上でも走り、本物の
 マスタが挿さっているかもしれないから(テストは偽物の `usb_reset` を渡す)。
+
+**この機体でリセットできるか**は、ワーカーが最初にポートを持ったとき 1 回だけ
+確かめる(`usb_reset_available()`: USB ノードに書けるか、または usbreset が
+あって `sudo -n true` が通るか)。`/status` の **`usb_reset_ok`** に出し、false
+なら機体のログに `no usb reset on this unit (…)`、タイルに琥珀色で
+**`no usb reset on this unit`**(レビュー L2)―― そこでの復旧は失敗しかしない
+ので、本番前に分かるように。
+
+> **前提: USB ケーブルに繋がっている基板はバスアドレス 1**(`ADDR_BUS_MASTER`)。
+> 「きれい」の判定も証明も直前点検も、アドレス 1 への 0x02 の答えで決める
+> (レビュー M3)。マスタが別のアドレスだと、健全でも「黙っている」と読まれ、
+> 直前点検のたびに USB リセットをかけてしまう。**だから本番前に、健全な機体
+> それぞれで Recover bus を 1 回押し、トーストが `bus was already clear` と
+> 言うことを確かめる**(CONDUCTOR_START.md §6)。健全な衣装で
+> `recovered` や `failed` と出たら、その機体は `--precheck 0 --no-auto-recover`
+> で起動する。
 
 #### 偽の「直った」が起きた理由と、二度と起きない理由
 
@@ -544,9 +563,19 @@ ttyACM0 で戻り、8 秒後に `panels online: 22/22`、白のスタンバイ�
    ノードを待ち(名前が変わってもよい。0.05 秒ごと、最大 `USB_NODE_WAIT_S` 3 秒)、
    開く(EACCES / ENOENT なら 0.05 秒ごと、最大 `OPEN_RETRY_S` 2 秒 ――
    ログ `port /dev/ttyACM1 opened after 2 refusals (not ready)`)。
-   **リセットできないとき**(Linux でない、デバイスが無い、usbreset が無い)は
-   ポートを元どおり開き直して `bus recovery failed (358 ms, usb reset: …)`
-2. **証明**(上)
+   **リセットできないとき**(Linux でない、デバイスが無い、usbreset が無い、
+   予算内に終わらない)は、ポートを元どおり開き直して
+   `bus recovery failed (358 ms, usb reset: …)`。**ポートは決して閉じたままに
+   しない**: その開き直しも失敗したら監視に明示的に引き渡し(`_needs_reopen`)、
+   監視はノードが戻り次第開く ―― `--no-port-watch` でも(レビュー M2)
+2. **開き直した直後にブロードキャスト STOP を 1 つ**(`_frame_refusal()` に
+   従う)。USB リセットが万一マスタの工場出荷時の自動巡回を再開させても、
+   次のキューより前に止める(レビュー M4)。発火時の経路では送らない ――
+   そこでは show フレームが最初で、その後ろには何も続けない
+3. **証明**(上)。3 秒の沈黙の途中で**キューが武装されたり、prepare / 焼き込みの
+   ジョブが入ったら、そこで打ち切って**その時点の判定を出す:
+   `bus recovered by usb reset (358 ms, master answers, proof cut short by a cue)`
+   (レビュー L1)―― Recover bus のすぐ後の START が証明のせいで遅れることはない
 
 リセットは**ポートの開き直しと同じく掃引を預ける**(下の「預けた掃引」)。
 最大 3 回、60 秒あけて、そのあとは
@@ -559,10 +588,10 @@ ttyACM0 で戻り、8 秒後に `panels online: 22/22`、白のスタンバイ�
 
 | きっかけ | 条件 | 実測(偽物のマスタ、実機の時間: 書き込み 358 ms・リセット 0.3 秒・ノード復帰 0.44 秒・オープン 0.3 秒) |
 |---|---|---|
-| **自動**(アイドル、`--no-auto-recover` で無効) | ハートビート STOP が **2 回続けて** `STALL_RECOVER_MS`(200 ms)以上ブロック、かつ直前の絵が描き終わり、**60 秒以内にキューが無く**、ジョブも無く、ショーが再生中/保留中でなく、掃引中でもないこと | **4.45 秒**(3 秒の沈黙を含む) |
+| **自動**(アイドル、`--no-auto-recover` で無効) | ハートビート STOP が **2 回続けて** `STALL_RECOVER_MS`(200 ms)以上ブロック、かつ直前の絵が描き終わり、**60 秒以内にキューが無く**、ジョブも無く、ショーが再生中/保留中でなく、掃引中でもないこと | **4.44 秒**(3 秒の沈黙を含む) |
 | **手動** `POST /bus/recover` | 下記の 409 | 同上、待ち上限 15 秒 |
-| **キュー直前点検** `PRECHECK_S` = **8.5 秒**前(`--precheck`) | 下記 | T−8.5 から始めて **T−7.06 に終わる**(T−5.0 まで 2 秒の余裕) |
-| **発火時の再送**(§4.5.1、既定 ON) | キュー自身の show フレームが 200 ms 以上ブロック | 再送は **1.44 秒遅れ**、EACCES 1 回で 1.51、2 回で 1.57 |
+| **キュー直前点検** `PRECHECK_S` = **8.5 秒**前(`--precheck`) | 下記 | T−8.5 から始めて **T−7.05 に終わる**(T−5.0 まで 2 秒の余裕) |
+| **発火時の再送**(§4.5.1、**既定 OFF**) | キュー自身の show フレームが 200 ms 以上ブロックし、**かつマスタが 0x02 に答えない** | 再送は **1.80 秒遅れ**、EACCES 1 回で 1.88、2 回で 1.92 |
 | **ポート消失** `PORT_POLL_S` = 0.2 秒ごと(`--no-port-watch` で無効) | デバイスノードが消えたら `find_port()` を 0.1 秒ごと、最大 `PORT_BACK_WAIT_S`(3 秒)。**キュー待ちの中ではトリガの時刻を越えて待たず**、キューの取消/移動には 0.1 秒以内に気付く。**掃引中は動かない**。戻れば開き直す(EACCES の再試行つき)―― ここは USB リセットではなく**ポートの開き直し**: ポートは勝手に消えて戻ったのであって、劣化したのではない | 再列挙 0.45 秒、復帰まで**約 1 秒** |
 
 #### キュー直前点検(`_precheck()`)
@@ -580,11 +609,14 @@ STOP が 200 ms 以上か、マスタが黙っていれば、**その場で USB 
 - ② **直前のキューの絵が描き終わっている**(`_guard_floor`)
 - **予算**(劣化した書き込みを 0.4 秒として): 測定の STOP が T−8.1、0x02(1 回、
   0.4 + 読み 0.3)が T−7.4 までに終わる。**USB リセットの段は
-  `USB_RESET_BUDGET_S` = 1.8 秒**(リセット 0.3 + ノード復帰 約 0.45 + オープン
-  0.3 + 確かめの 0x02 0.7)が `T − 5.0` までに収まるときだけ始める ―― 8.5 秒
-  なら T−5.6 で、余裕 0.6 秒。**リセットが入るのは 7.9 秒以上**から。各フレームは
-  さらに 1 つずつ `_frame_refusal()` で確かめ、リセット自体の待ちもトリガの前で
-  打ち切る
+  `USB_RESET_BUDGET_S` = 2.2 秒**(リセット 0.3 + ノード復帰 約 0.45 + オープン
+  0.3 + その直後の STOP 0.4 + 確かめの 0x02 0.7)が `T − 5.0` までに収まるとき
+  だけ始める ―― 8.5 秒なら T−5.2。**リセットが入るのは 8.3 秒以上**から。
+  **リセット自体・ノード待ち・オープンは `T − 5.0` で打ち切る**(レビュー M2 ――
+  sudo が 4.5 秒固まった実験では T−3.11 に開き直していた)。打ち切ったあとの
+  「ポートだけ」の開き直しだけはトリガの直前まで試す(開いたポートが無いと
+  キューそのものが出ない)。各フレームはさらに 1 つずつ `_frame_refusal()` で
+  確かめる
 
 ログ: `precheck q03: bus ok (2 ms, master answers)` /
 `precheck q03: stalled 358 ms → usb reset → ok (master answers)` /
@@ -654,58 +686,79 @@ USB リセットもポートの開き直しも、プローブ掃引を `_setup_o
 | `--precheck SECONDS` | 8.5 | 0 で直前点検なし。7.9 未満では USB リセットが入らず診断だけ |
 | `--no-port-watch` | 監視する | 再列挙は従来どおり次の書き込みで見つかる |
 | `--no-auto-recover` | 自動復旧する | 二度の詰まりで自分からは直さない。**手動の Recover bus は動く** |
-| `--no-resend-on-stall` | **再送する(ON)** | 詰まったキューを再送しない(§4.5.1)。`--resend-on-stall` は既定なので何もしない(古いサービスファイル用) |
+| `--resend-on-stall` | **再送しない(OFF)** | 付けると再送する ―― マスタが黙っているときだけ(§4.5.1)。`--no-resend-on-stall` は既定を書いただけで何もしない(古いサービスファイル用) |
 
-`/status` に `precheck_s` / `port_watch` / `auto_recover` / `resend_on_stall`
-がそのまま出る。`raspi/epaper-ui.env` は変えていない ―― どれも既定値で動く。
+`/status` に `precheck_s` / `port_watch` / `auto_recover` / `resend_on_stall` /
+`usb_reset_ok` がそのまま出る。`raspi/epaper-ui.env` は変えていない ―― どれも既定値で動く。
 
 #### Conductor 側
 
-タイルの「bus degraded」/「bus stalled」の印の隣に **Recover bus** ボタン
-(実行中は出ない、NOW → NEXT の行にも出ない)。トーストは
+**Recover bus** ボタンは、ショーが走っていない間**オンラインのどのタイルにも**
+出る(「bus degraded」/「bus stalled」の印があればその隣)―― 健全な機体で
+押して `bus was already clear` を確かめるのが本番前の手順だから(上の「前提」、
+レビュー M3)。実行中は出ない、NOW → NEXT の行にも出ない。トーストは
 `radxa-07: bus recovered by usb reset (358 → 2 ms)`(通常)、
 `radxa-07: bus was already clear`(通常 ―― 健全な機体で押したとき)、
 `radxa-07: bus recovery failed — reboot the Radxa or re-plug the master's USB`
 (警告色 ―― 「restart the unit」とは言わない: UI の再起動では直らない)、
 `radxa-07: bus recovery — a repaint is in progress - try again in 13 s` /
-`… — no answer within 3 s`(警告色)。S の赤い印の文言
-(`bus degraded (n stalls) — restart this unit before START`)はそのままで、
-ツールチップが、機体が自分で USB をリセットすること、**UI サービスの再起動では
-直らず、USB リセット・Radxa の再起動・親基板の USB の挿し直しだけが直す**ことを
-言う。
+`… — no answer within 6 s`(警告色)。赤い印は
+**`bus degraded (n stalls) — press Recover bus, or reboot the Radxa`**、
+③ START の下と WRITE TO UNITS の 1 行は
+**`radxa-01: bus degraded — press Recover bus (or reboot the Radxa), then Upload`**
+(2 台以上なら `… — press Recover bus (or reboot these Radxas), then Upload`)
+―― 「restart」とは言わない。ツールチップは**2 つの状態のどちらとも言い切らない**
+(フレームが約 360 ms 遅れて実行される状態と、実行されない状態がある ―― レビュー
+L3)。そのうえで、**UI サービスの再起動では直らず、USB リセット・Radxa の再起動・
+親基板の USB の挿し直しだけが直す**ことを言う。リセットできない機体には琥珀色で
+`no usb reset on this unit`。
 
 **② Show preset だけ**は、押された時点で**オンライン**で、`bus_stall.ms` が
 **150 ms 以上**かつ **2 分以内**の機体を先に復旧してからプリセットを送る。
-待つのは**全体で最大 3 秒**(`PRESET_RECOVER_WAIT_MS`)。USB リセットと 3 秒の
-沈黙を含む復旧は約 4.5 秒かかるので、**劣化した機体では 3 秒で
-`no answer within 3 s` の警告が出て、プリセットはそのまま送られる**。機体は
-復旧を続け、終わってからプリセットを受け取る。**③ START の前には何もしない**
+待つのは**全体で最大 6 秒**(`PRESET_RECOVER_WAIT_MS`、トーストは
+`Recovering the bus on N units… (up to 6 s)`)―― USB リセットと 3 秒の証明で
+約 4.5 秒かかり、プリセットは時間にうるさくない(レビュー L1。3 秒だと、
+リセットが効いても劣化した機体はいつも「答えなし」になっていた)。断られても、
+時間切れでも、失敗しても警告色のトーストが出るだけで、プリセットはそのまま
+送られる。**③ START の前には何もしない**
 ―― START は押した瞬間に出なければならない(音楽がある)。
 
-#### 4.5.1 発火時の再送(既定 ON、`--no-resend-on-stall` で無効)
+#### 4.5.1 発火時の再送(既定 OFF、`--resend-on-stall` で有効)
 
-キュー自身の show フレームが `RESEND_STALL_MS`(200 ms)以上ブロックしたら、
-そのフレームは実行されていない ―― radxa-07 ではブロックしたフレームは一度も
-実行されなかった(272 ms ブロックしたプリセットでどのパネルも動かなかった)。
-だから**マスタの USB をリセットし、ポートを開き直し、同じフレームをもう一度
-だけ**送る。**2 度目の再送は決してしない。**キューの時刻から
-`FIRE_RESEND_BUDGET_S` = **2.0 秒**以内にポートが戻らなければ再送せず、
-その機体はあとでアイドルの復旧が拾う。ハートビートとガードの床は再送した
-フレームから数える。
+キュー自身の show フレームが `RESEND_STALL_MS`(200 ms)以上ブロックしたとき、
+その裏には**2 つの状態**があり、扱いは正反対になる(レビュー H1):
 
-- ログ: `cue q05 re-sent after usb reset (stall 272 ms → 2 ms, 1.4 s late)` /
+- **劣化(degraded)** ―― radxa-07、2026-09-28 Run 2: フレームは受理されるが
+  **実行されない**(272 ms ブロックしたプリセットでどのパネルも動かなかった)。
+  マスタは何にも答えない。直すには USB リセットと、同じフレームの再送
+- **遅いが動いている** ―― LOOK23、2026-09-28 17:29: 絵は**全部出た**、それぞれ
+  約 0.36 秒遅れて。マスタは答える。ここで再送すると**同じスロットを 2 度描く**
+
+だから詰まりだけでは何も決めない。詰まった直後に**マスタへ 0x02 を 1 回**
+(1 回だけ、読み 0.3 秒)聞く。**答えたら**そのフレームは遅れて実行されている
+―― `cue q05 stalled 251 ms, master answers - not re-sent` とだけ言い、何も
+しない。**黙っていたときだけ** USB をリセットし、ポートを開き直し、**同じ
+フレームをもう一度だけ**送る。**2 度目の再送は決してしない。**キューの時刻から
+`FIRE_RESEND_BUDGET_S` = **2.5 秒**以内(リセット自体にも残り時間しか与えない)
+にポートが戻らなければ再送しない。
+
+- **再送したら**、そのフレームが絵の始まりなので、ハートビートとガードの床は
+  そこから数える。**再送しなかったら**(断念・失敗・答えあり)、キューの送信
+  時刻・`late_ms`・ガードの床は**最初のフレームのもの**のまま(レビュー M2 ――
+  固まったリセットでキューが +5251 ms と報告されていた)
+- ログ: `cue q05 re-sent after usb reset (stall 272 ms → 2 ms, 1.8 s late)` /
+  `cue q05 stalled 251 ms, master answers - not re-sent` /
   `cue q05 re-send failed (usb reset: …)` /
-  `cue q05 re-send failed (the port was back 2.1 s late, past the 2 s budget)`
+  `cue q05 re-send failed (the port was back 2.6 s late, past the 2.5 s budget)`
 - `/status` の `resend`: `{"cue", "before_ms", "after_ms", "late_s", "by",
   "at", "count"}`
-- **遅れ(偽物のマスタに実機の時間)**: 1.44 秒。udev が最初のオープンを
-  EACCES で 1 回・2 回断ると 1.51 / 1.57 秒。最初の目標は 1.5 秒だったが、
-  それだと**実機の Run 1 がまさに見せた EACCES の場合に再送を捨てる**ので、
-  予算は 2.0 秒にした ―― どちらにしても、出るはずのなかった絵に対する遅れ
+- **遅れ(偽物のマスタに実機の時間。黙っている機器への 0x02 は読みの窓 0.3 秒を
+  まるごと払う)**: 1.80 秒。udev が最初のオープンを EACCES で 1 回・2 回断ると
+  1.88 / 1.92 秒
 
-> **リスク**: ブロックしたフレームが**実は実行されていた**なら、再送で同じ
-> スロットが 2 度描かれる。証拠ではそうならないが、もし起きる機体があれば
-> `--no-resend-on-stall` で止める。既定 ON はオーナーの判断(実機での確認待ち)。
+> **既定 OFF の理由**(PM、レビュー後): 読み違えたときの二重描画は、遅れた
+> キューより舞台上で悪い。2 つ目の合図(0x02)はまだ実機で試していない。
+> 実機で確かめてから `--resend-on-stall` で入れる。
 
 ## 5. 実機検証で確認した制約(メーカー仕様との差異)
 
