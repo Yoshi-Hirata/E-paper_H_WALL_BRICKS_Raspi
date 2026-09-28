@@ -1892,9 +1892,26 @@ def test_a_recovery_takes_the_stall_mark_down():
                         "count": 4}
     runner._recover_bus(bus, 2)
     # The all-clear shape the code already had: the count of what happened
-    # is kept, the amber number goes.
+    # is kept, the amber number goes. Five, not four: the recovery takes its
+    # OWN measurement first (never the recorded, possibly stale, 359 ms), and
+    # on this still-stalled bus that measurement was one more real stall.
     assert runner.bus_stall == {"ms": None, "frame": None, "at": None,
-                                "count": 4}
+                                "count": 5}
+
+
+def test_a_recovery_measures_for_itself_and_never_trusts_a_stale_stall():
+    """Re-review of e139a33: a unit whose recorded stall is old but whose
+    port is fine now must answer "already clear", not "by padding"."""
+    bus = RecoveringBus("padding")
+    bus.stalled = False                        # healthy now
+    runner = recovery_runner(bus)
+    runner.bus_stall = {"ms": 359.0, "frame": "stop", "at": time.time() - 90,
+                        "count": 6}            # ...but a stall is on record
+    result = runner._recover_bus(bus, 2)
+    assert result["recovered"] is True and result["by"] is None
+    assert result["before_ms"] < 100
+    assert bus.padded == [] and bus.reopened == []
+    assert any("nothing to recover" in line for line in runner.recent(20))
 
 
 def test_two_stalled_heartbeats_start_the_recovery_on_their_own():
@@ -2354,8 +2371,11 @@ def test_a_re_enumeration_before_a_cue_puts_nothing_into_its_picture(monkeypatch
         return request(frame, retries=retries, timeout=timeout)
     bus.send, bus.request = stamped_send, stamped_request
 
+    # owed_settle short: this is about ORDER against the floor. The 20 s
+    # settle itself has a test of its own below.
     runner = recovery_runner(bus, port=None, link_token=bus.token,
-                             port_poll=0.02, port_back_wait=1.0)
+                             port_poll=0.02, port_back_wait=1.0,
+                             owed_settle=0.1)
     session = RemoteSession(runner)
     session.prepare("c1", {1: array(1), 2: array(2)}, span_s=0.5,
                     refresh_s=0.8)
@@ -2383,6 +2403,73 @@ def test_a_re_enumeration_before_a_cue_puts_nothing_into_its_picture(monkeypatch
     assert [cmd for t, cmd in stamps
             if at - 5.0 < t < at and cmd != SHOW and t > at - 1.8] == []
     assert any("port only" in line for line in runner.recent(40))
+
+
+def _preset_after_a_recovery(owed_settle):
+    """The re-review's t_preset.py scenario, compressed: six boards, a
+    recovery that ends "by reopen" (so the sweep is owed), then the preset
+    armed ~0.45 s later, the way the Conductor sends it. Returns the stamps
+    (time, cmd, dest) of every frame, the fire time and that cue's floor."""
+    bus = RecoveringBus("reopen", seconds=0.36)
+    bus.stalled = False
+    stamps = []
+    send, request = bus.send, bus.request
+
+    def stamped_send(frame):
+        send(frame)
+        stamps.append((time.monotonic(), frame.cmd, frame.dest))
+
+    def stamped_request(frame, retries=3, timeout=None):
+        stamps.append((time.monotonic(), frame.cmd, frame.dest))
+        return request(frame, retries=retries, timeout=timeout)
+    bus.send, bus.request = stamped_send, stamped_request
+    boards = [1, 2, 3, 4, 5, 6]
+    runner = recovery_runner(bus, boards=boards, owed_settle=owed_settle,
+                             recover_quiet=0.5)
+    session = RemoteSession(runner)
+    session.prepare("c1", {b: array(b) for b in boards}, span_s=1.0,
+                    refresh_s=1.0)
+    assert wait_until(lambda: session.phase == READY, timeout=10.0)
+    bus.stalled = True
+    answer = session.recover_bus()
+    assert answer["by"] == "reopen", answer
+    time.sleep(0.15)                       # the Conductor posts the preset
+    session.fire("c1", time.monotonic() + 0.3)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
+    fired, floor = session.fired_at, runner._guard_floor
+    assert floor is not None and floor >= fired + 1.9
+    time.sleep(max(0.0, floor - time.monotonic()) + 0.3)
+    return runner, stamps, fired, floor
+
+
+def test_an_owed_sweep_waits_long_enough_for_the_preset_to_go_first():
+    """Re-review of e139a33, first end: a recovery is pressed right before
+    ② Show preset, and the sweep it owed started at once - the preset then
+    fired from inside it and it probed every board through the repaint.
+    With OWED_SETTLE_S it has not even begun when the preset fires."""
+    runner, stamps, fired, floor = _preset_after_a_recovery(owed_settle=20.0)
+    runner.stop()
+    between = [(round(t - fired, 3), hex(c), d) for t, c, d in stamps
+               if fired < t < floor - 0.02 and c != SHOW]
+    assert between == [], between
+    # ...and it has not run at all yet: still owed, inside its settle.
+    assert runner._setup_owed is True
+    assert not [l for l in runner.recent(40) if "stood aside" in l]
+
+
+def test_an_owed_sweep_already_running_stands_down_for_the_cue():
+    """The other end: if the sweep IS running when a cue fires from inside
+    it, it stops before its next probe - nothing but the show frame until
+    that cue's floor - and stays owed, with the unit reading as before."""
+    runner, stamps, fired, floor = _preset_after_a_recovery(owed_settle=0.0)
+    boards_after = list(runner.boards)
+    runner.stop()
+    between = [(round(t - fired, 3), hex(c), d) for t, c, d in stamps
+               if fired < t < floor - 0.02 and c != SHOW]
+    assert between == [], between
+    assert any("probe sweep stood aside for the cue, still owed" in l
+               for l in runner.recent(60))
+    assert boards_after == [1, 2, 3, 4, 5, 6]     # nothing half-reset
 
 
 def test_the_owed_sweep_waits_for_the_run_to_end_or_a_minute_of_quiet():
@@ -2441,6 +2528,52 @@ def test_a_port_that_does_not_come_back_is_left_to_the_ordinary_ladder():
     assert runner._port_watch(bus, 2) is False
     assert bus.reopened == []
     assert any("port gone for" in line for line in runner.recent(20))
+
+
+class SlowReopenBus(RecoveringBus):
+    """A real open settles 0.3 s (transport.Bus._open) - long enough for a
+    verdict taken before it to be inside the hold by the time it acts."""
+
+    def reopen(self, port=None):
+        time.sleep(0.3)
+        return super().reopen(port)
+
+
+def _lost_at(monkeypatch, lead, bus_class=RecoveringBus):
+    bus = bus_class("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+    monkeypatch.setattr("ui.runner.find_port", lambda: "/dev/ttyACM1")
+    runner = recovery_runner(bus, port=None, link_token=bus.token,
+                             port_poll=0.01)          # the REAL 5 s hold
+    bus.unplug(back_as="/dev/ttyACM1")
+    at = time.monotonic() + lead
+    assert runner._port_watch(bus, 2, at=at) is True
+    return bus, runner
+
+
+def test_a_port_lost_just_outside_the_hold_comes_back_as_the_port_only(
+        monkeypatch):
+    """Re-review of e139a33: found at T-5.1 s the port may be reopened, but
+    no frame of it can be handed over before T-5.0 - so none goes."""
+    bus, runner = _lost_at(monkeypatch, lead=5.1)
+    assert bus.reopened == ["/dev/ttyACM1"]
+    assert bus.sent == [] and bus.requested == []
+    assert any("port only" in line for line in runner.recent(20))
+
+
+def test_the_frames_are_decided_after_the_slow_open_not_before_it(monkeypatch):
+    """Found at T-5.5 s the wire was still clear - but the open takes 0.3 s,
+    and by then a STOP would land inside the hold. Decided after the open,
+    frame by frame, nothing goes."""
+    bus, runner = _lost_at(monkeypatch, lead=5.5, bus_class=SlowReopenBus)
+    assert bus.reopened == ["/dev/ttyACM1"]
+    assert bus.sent == [] and bus.requested == []
+
+
+def test_a_port_lost_well_before_a_cue_is_reopened_and_measured(monkeypatch):
+    bus, runner = _lost_at(monkeypatch, lead=30.0)
+    assert [f.cmd for f in bus.sent][:1] == [STOP]        # frames went
+    assert any("bus ok" in line for line in runner.recent(20))
 
 
 def test_the_wait_for_the_port_never_runs_past_a_trigger(monkeypatch):
