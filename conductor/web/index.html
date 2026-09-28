@@ -208,6 +208,17 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
 .cue-hold .chips b { width: 7px; height: 10px; display: inline-block; border: 1px solid rgba(128,128,128,.5); }
 .tl-wrap { position: relative; }
 #playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--err); pointer-events: none; z-index: 3; }
+/* Where the music ends (2026-09-28): an amber dashed line with its words at
+   the ruler, and the show left after it hatched as silence. Both are drawn
+   only when the music ends inside the show (paintMusicEnd()). */
+#music-end { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--warn); pointer-events: none; z-index: 2; }
+#music-end span { position: absolute; top: 2px; left: 4px; white-space: nowrap; font-size: 10.5px; font-weight: 600;
+  color: var(--warn); background: var(--panel); padding: 0 3px; border-radius: 2px; }
+#music-end.flip span { left: auto; right: 6px; }
+#music-silence { position: absolute; top: 22px; bottom: 0; right: 0; pointer-events: none; z-index: 1;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, var(--line) 6px 8px); }
+#music-silence span { position: absolute; bottom: 2px; left: 6px; font-size: 10.5px; color: var(--dim); }
+#music-note:empty { display: none; }
 /* The playhead IS the seek control (round: playhead-as-seek, replacing the
    dock's #ph slider, which never lined up with this line - the ruler starts
    150px in for the name column, the old slider spanned the whole dock).
@@ -286,6 +297,8 @@ input[type=range] { width: 100%; }
 .showclock { font-size: 40px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; min-width: 150px; }
 .showclock small { display: block; font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
 .showclock.running small { color: var(--ok); } .showclock.holding small { color: var(--warn); }
+.showclock .music-end { display: block; font-size: 12px; font-weight: 600; color: var(--dim); margin-top: 6px; max-width: 240px; line-height: 1.3; }
+.showclock .music-end.over { color: var(--warn); font-weight: 400; margin-top: 2px; }
 .shownext { font-size: 13px; color: var(--dim); min-width: 220px; }
 .shownext b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
 /* HOLD is an amber SURFACE, so its ink is --warn-ink, never a hardcoded
@@ -672,7 +685,7 @@ const DEMO_NAME_HINT = "A-Z, 0-9 and symbols only, up to 14 characters. The unit
 const DEMO_NAME_OK = /^[\x20-\x7e]+$/;
 const ui = { tab: "items", item: null, design: null, mode: "design", view: "outside",
              board: null, cue: null, playhead: 0, choices: {}, lead: 3, goLog: "", showLog: "",
-             playing: false, anchor: 0, startT: 0, simView: false,
+             playing: false, anchor: 0, startT: 0, pastMusic: false, simView: false,
              dock: loadDockPref(), editorOpen: true, dockCells: loadDockCellsPref(),
              // Manual show-position control (Units tab): client-side only, always off on
              // reload, off again after a successful START/STOP - see seekBlockHtml().
@@ -1042,7 +1055,11 @@ function cuesOf(item) { return state.show.cues.filter(c => c.item === item.item)
 // two sends (GAP_AFTER_REFRESH_S), so an append with its own idea of "a
 // reasonable gap" would quietly place cues the server then rejects.
 const APPEND_GAP_S = 1.0;
-const MAX_SHOW_DURATION_S = 99 * 60 + 59;      // the Show length field's ceiling
+// The longest show there can be: conductor/timeline.py's MAX_DURATION_S
+// (15:00, 2026-09-28 - the music became a 10:54 track). The server refuses
+// more with the same sentence, so the field says it before the round trip.
+const MAX_SHOW_DURATION_S = 15 * 60;
+const SHOW_TOO_LONG = "A show is at most 15:00";
 const DRAG_SNAP_S = 1, DRAG_SNAP_SHIFT_S = 5;
 // The design a fresh placement gets: this item's first one no cue is already
 // wearing, skipping the ones that do not compile at all.
@@ -1348,6 +1365,13 @@ function wornAt(item, t, opts) {
   return { colors, shifts, label, changing };
 }
 async function saveShow(cues, duration, refreshS) {     // not "refresh": that is the reload function
+  // A show stored before the 15:00 ceiling existed may be longer; every
+  // edit posts the length too, and the server would refuse them all - so an
+  // edit brings it down to the ceiling and says so, instead of failing.
+  if (duration === undefined && state.show.duration > MAX_SHOW_DURATION_S) {
+    duration = MAX_SHOW_DURATION_S;
+    toast(`${SHOW_TOO_LONG} - Show length set to ${clock(MAX_SHOW_DURATION_S)}.`, "warn");
+  }
   const result = await api("/api/show", { duration: duration ?? state.show.duration,
     refresh_s: refreshS ?? state.show.refresh_s,
     cues: cues.map(({ id, item, at, design, partial, transition, sequence, span_s, refresh_s }) =>
@@ -1355,6 +1379,7 @@ async function saveShow(cues, duration, refreshS) {     // not "refresh": that i
          span_s: span_s ?? 0, refresh_s: refresh_s ?? null })) });
   if (result.error) toast(result.error);
   await refresh();
+  return result;
 }
 // The Edit Cue card: Start / Refresh / Transition / (computed Complete) / End,
 // each with a plain-English explanation right beside the control - this is
@@ -1540,7 +1565,9 @@ function renderTimeline() {
 
   root.innerHTML = `
     <div class="toolbar">
-      <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px" title="${esc(CLOCK_HINT)}; at most ${clock(MAX_SHOW_DURATION_S)}"></div>
+      <div class="group"><span>Show length</span><input type="text" id="duration" value="${clock(D)}" style="width:70px" title="${esc(CLOCK_HINT)}; at most ${clock(MAX_SHOW_DURATION_S)}">
+        <button type="button" id="tl-fit" disabled>Fit to music</button>
+        <span class="warn" id="music-note"></span></div>
       <div class="group"><span>Default refresh time</span><input type="text" id="refresh" value="${show.refresh_s}" style="width:54px"
         title="Seconds from the command to the finished picture, the transition's sweep included, used by every cue that does not set its own (${defaultRefreshS().toFixed(1)} s on the latest firmware: a ${panelRepaintS().toFixed(1)} s panel repaint with a 1 s sweep inside it; 16 s on older boards)"><span>s</span></div>
       <div class="group">
@@ -1568,7 +1595,9 @@ function renderTimeline() {
           <div class="tl-wrap">
             <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${ruler}</div><div></div></div>
             ${rows}
-            <div style="position:absolute;left:150px;right:var(--tl-add-w);top:0;bottom:0;pointer-events:none"><div id="playhead">
+            <div style="position:absolute;left:150px;right:var(--tl-add-w);top:0;bottom:0;pointer-events:none">
+            <div id="music-silence" hidden><span>silence</span></div>
+            <div id="music-end" hidden><span id="music-end-label"></span></div><div id="playhead">
               <div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler · ← → 1 s · Shift 5 s · Home 0:00">
                 <svg width="14" height="12" viewBox="0 0 14 12"><path d="M1 1 H13 L7 11 Z" fill="var(--err)" stroke="var(--ph-outline)" stroke-width="1"/></svg>
                 <span id="ph-time"></span>
@@ -1625,6 +1654,7 @@ function renderTimeline() {
     </div>
     ${looksHtml}`;
   renderThumbs(THUMBS.timeline, ui.playhead);
+  paintMusicEnd();              // the marker, the note and Fit to music
   syncDockSpacing();
   // The two chips in the LOOKS AT bar ("is what I am looking at on the
   // units?"). The Timeline tab polls the fleet only every five seconds, so
@@ -1876,8 +1906,9 @@ function renderTransport() {
   const btn = $("#tp-play"); if (btn) btn.textContent = ui.playing ? "⏸ Pause" : "▶ Play";
 }
 // Stop the simulator (audio and the loop) without moving the playhead - used
-// both when the music runs out before the show does, and when the show
-// itself reaches its end (only the Stop button rewinds to 0:00).
+// when the show itself reaches its end (only the Stop button rewinds to
+// 0:00). The show's clock is the master: at END the music stops with it,
+// however much of the track is left.
 function haltPlaybackAt(t) {
   ui.playhead = t;
   updatePlayheadDom(t);
@@ -1890,11 +1921,17 @@ function tick() {
   // The simulator only owns the screen on the Timeline tab; leaving it must
   // not leave music playing with nothing left on screen to stop it.
   if (ui.tab !== "timeline") { pausePlayback(); return; }
-  // The audio can pause itself (autoplay policy, OS media keys, or simply
-  // running out before the show does - see the "ended" listener below);
-  // treat that the same as our own pause instead of spinning forever on a
-  // currentTime that no longer advances.
-  if (playerUrl && player.paused) { pausePlayback(); return; }
+  // The audio can pause itself (autoplay policy, OS media keys); treat that
+  // the same as our own pause instead of spinning forever on a currentTime
+  // that no longer advances. Running out before the show does is not a
+  // pause: the show goes on in silence to its END, on the wall clock
+  // (2026-09-28 - a show may now be longer than its music). `ended` is read
+  // here as well as listened for, because this frame can see the element
+  // paused before the "ended" event has been delivered.
+  if (playerUrl && !ui.pastMusic && player.paused) {
+    if (player.ended) runOnPastTheMusic(Math.max(ui.playhead, player.currentTime));
+    else { pausePlayback(); return; }
+  }
   // A manual scrub (the playhead head, or the ruler) is the sole source of
   // truth for ui.playhead while it's in progress - the audio seek behind it
   // is throttled, so without this guard tick() would yank the marker back to
@@ -1902,7 +1939,7 @@ function tick() {
   // is the seek control).
   if (seeking) { requestAnimationFrame(tick); return; }
   const D = state.show.duration;
-  let t = playerUrl ? player.currentTime : (performance.now() - ui.anchor) / 1000 + ui.startT;
+  let t = playerUrl && !ui.pastMusic ? player.currentTime : (performance.now() - ui.anchor) / 1000 + ui.startT;
   if (t >= D) { haltPlaybackAt(D); return; }
   ui.playhead = t;
   updatePlayheadDom(t);
@@ -1920,7 +1957,14 @@ function startPlayback() {
   // room is listening to).
   if (showMusicOwns()) { toast(SHOW_OWNS_MUSIC_NOTE); return; }
   ui.playing = true;
-  if (playerUrl) {
+  ui.pastMusic = false;
+  const len = musicLengthS();
+  if (playerUrl && len > 0 && ui.playhead >= len - MUSIC_END_SLACK_S) {
+    // Play from past the end of the track: there is nothing to hear, but
+    // the show still has a way to go.
+    player.pause();
+    runOnPastTheMusic(ui.playhead);
+  } else if (playerUrl) {
     player.currentTime = ui.playhead;
     const p = player.play();
     if (p?.catch) p.catch(err => { ui.playing = false; renderTransport(); toast("Could not play the music: " + err.message); });
@@ -1933,6 +1977,7 @@ function startPlayback() {
 function pausePlayback() {
   if (!ui.playing) return;
   ui.playing = false;
+  ui.pastMusic = false;
   player.pause();                 // always - not gated on playerUrl, so Remove/tab-away truly stops it
   renderTransport();
 }
@@ -1942,17 +1987,135 @@ function stopPlayback(rerender = true) {
   // too - there is nothing of the preview's to stop.
   if (showMusicOwns()) { toast(SHOW_OWNS_MUSIC_NOTE); return; }
   ui.playing = false;
+  ui.pastMusic = false;
   player.pause();
   if (playerUrl) player.currentTime = 0;
   ui.playhead = 0;
   if (rerender) renderTimeline(); else { renderTransport(); updatePlayheadDom(0); }
 }
 function togglePlayback() { ui.playing ? pausePlayback() : startPlayback(); }
-// Music shorter than the show: pause the simulator right where the track
-// ended (do not rewind) instead of leaving currentTime stuck while nothing
-// advances.
-player.addEventListener("ended", () => { if (ui.playing) haltPlaybackAt(player.currentTime); });
+// Music shorter than the show: the track has ended, the show has not. The
+// preview's clock carries on from there on the wall clock, in silence, to
+// the show's END (it used to stop dead at the end of the track).
+player.addEventListener("ended", () => {
+  if (ui.playing && !ui.pastMusic) runOnPastTheMusic(Math.max(ui.playhead, player.currentTime));
+});
 player.addEventListener("seeked", () => { seeking = false; });
+// Running on past the music, the element has nothing to play - but a media
+// key (or the OS's own player controls) can still play() it, and an ended
+// element starts again from 0:00 under a show that is minutes further on.
+// Put it straight back; the preview's own clock never noticed.
+for (const ev of ["play", "playing"])
+  player.addEventListener(ev, () => { if (ui.playing && ui.pastMusic) player.pause(); });
+// The music's length arrives when the element has read the file's header,
+// some time after the page drew the Timeline - and goes when it is removed.
+for (const ev of ["loadedmetadata", "durationchange", "emptied"]) player.addEventListener(ev, paintMusicEnd);
+
+// ---- where the music ends (2026-09-28) ----
+// 「音源の終わりがわかるように」: the show and its music are two lengths set
+// apart - the Show length field, and whatever file was loaded - and the
+// Timeline says where the one ends against the other. The music's length is
+// the <audio> element's own (the server never parses an MP3), so it is 0
+// until the element has read the file's header.
+const MUSIC_END_SLACK_S = 0.05;
+function musicLengthS() {
+  return playerUrl && Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0;
+}
+// Pure (tests lift it out): the music's length against the show's.
+//   label   "music ends 10:54" - the marker's words, and THE SHOW's
+//   marker  the music ends inside the show, so there is a line to draw
+//   silence seconds of show left after the music (shaded on the Timeline)
+//   note    the music outlasts the show: "music continues 0:54 past..."
+//   fit     what Fit to music sets: the length rounded UP, at most `max`
+//   tooLong the music is longer than any show can be
+function musicEndInfo(music, show, max) {
+  if (!(music > 0) || !(show > 0)) return null;
+  const whole = Math.max(1, Math.ceil(music - 0.001));
+  const over = music - show;
+  return { at: music, label: "music ends " + clock(music),
+           marker: music <= show, silence: Math.max(0, show - music),
+           note: over > 0.001 ? `music continues ${clock(Math.max(1, over))} past the end of the show` : "",
+           fit: Math.min(max, whole), tooLong: whole > max };
+}
+function runOnPastTheMusic(t) {
+  ui.pastMusic = true;
+  ui.anchor = performance.now(); ui.startT = t;
+}
+// A seek while the preview plays: past the end of the track it runs on the
+// wall clock from there; back inside it, the music picks up again.
+function previewSeeked(t) {
+  if (!ui.playing || !playerUrl) return;
+  const len = musicLengthS();
+  if (len > 0 && t >= len - MUSIC_END_SLACK_S) {
+    player.pause();
+    runOnPastTheMusic(t);
+    seeking = false;          // no audio seek to wait for
+  } else if (ui.pastMusic) {
+    ui.pastMusic = false;
+    player.currentTime = t;
+    const p = player.play();
+    if (p?.catch) p.catch(err => { ui.playing = false; renderTransport(); toast("Could not play the music: " + err.message); });
+  }
+}
+function paintMusicEnd() {
+  if (!state) return;
+  const D = state.show.duration, info = musicEndInfo(musicLengthS(), D, MAX_SHOW_DURATION_S);
+  const marker = $("#music-end"), silence = $("#music-silence"), note = $("#music-note"), fit = $("#tl-fit");
+  const drawn = !!(info && info.marker);
+  if (marker) {
+    marker.hidden = !drawn;
+    if (drawn) {
+      const pct = 100 * info.at / D;
+      marker.style.left = pct.toFixed(3) + "%";
+      marker.classList.toggle("flip", pct > 75);     // the words hang left of a line near the end
+      $("#music-end-label").textContent = info.label;
+    }
+  }
+  if (silence) {
+    const on = drawn && info.silence >= 0.5;
+    silence.hidden = !on;
+    if (on) silence.style.left = (100 * info.at / D).toFixed(3) + "%";
+  }
+  if (note) note.textContent = info ? info.note : "";
+  if (fit) {
+    fit.disabled = !info;
+    fit.title = !info ? (playerUrl ? "Waiting for the music's length" : "Load the music first")
+      : info.tooLong ? `The music (${clock(info.at)}) is longer than a show can be: sets the show to ${clock(MAX_SHOW_DURATION_S)}`
+      : `Set Show length to the music's length, rounded up to the next second (${clock(info.fit)})`;
+  }
+}
+// A different length is a different show (a new show id), so pictures a unit
+// already holds for the uploaded one no longer count: START refuses until an
+// Upload. Said where the operator changes it, not only at START (review
+// 2026-09-28). True when any unit holds (or is writing) the pictures of the
+// show this PC last uploaded to it.
+const UPLOAD_AGAIN = "Upload again before START.";
+function picturesOnUnits() {
+  return (fleet?.units || []).some(u => u.show && !u.show.demo && fleet.shows?.[u.name]
+    && u.show.id === fleet.shows[u.name].id
+    && ["burned", "failed", "burning"].includes((u.show.burn || {}).state));
+}
+// Fit to music: never automatic - the show's length changes only when the
+// operator presses this.
+async function fitToMusic() {
+  const info = musicEndInfo(musicLengthS(), state.show.duration, MAX_SHOW_DURATION_S);
+  if (!info) { toast("The music's length is not known yet - load the music first."); return; }
+  const why = info.tooLong
+    ? `The music is ${clock(info.at)} and a show is at most ${clock(MAX_SHOW_DURATION_S)}, so Show length is ${clock(info.fit)}.`
+    : `Show length is ${clock(info.fit)}: the music's length, rounded up.`;
+  if (info.fit === state.show.duration) { toast(why, info.tooLong ? "warn" : ""); return; }
+  ui.playhead = Math.min(ui.playhead, info.fit);
+  const uploaded = picturesOnUnits();          // asked before the show changes
+  const result = await saveShow(state.show.cues, info.fit);
+  if (!result?.error) toast(uploaded ? `${why} ${UPLOAD_AGAIN}` : why, info.tooLong || uploaded ? "warn" : "");
+}
+// THE SHOW's clock carries the same fact, in small print under the time.
+function musicEndClockHtml() {
+  const info = musicEndInfo(musicLengthS(), fleetDuration() || state?.show?.duration || 0, MAX_SHOW_DURATION_S);
+  if (!info) return "";
+  return `<span class="music-end" id="show-music-end">${esc(info.label)}</span>`
+    + (info.note ? `<span class="music-end over" id="show-music-over">${esc(info.note)}</span>` : "");
+}
 
 // ---- THE SHOW's music -------------------------------------------------
 // 「THE SHOW の再生時も、Timeline と同様に音源を再生する」: START plays the
@@ -4268,7 +4431,7 @@ function renderFleet() {
       <span class="unit-chips"></span></h2>
       <div class="meta sub" id="show-sub">The timeline is uploaded to the units; after START each unit runs it on its own clock, with or without this PC.</div>
       <div class="showbar">
-        <div class="showclock" id="show-clock"><small>—</small>0:00</div>
+        <div class="showclock" id="show-clock"><small>—</small>0:00${musicEndClockHtml()}</div>
         <div class="shownext" id="show-next"></div>
       </div>
       <!-- The NOW -> NEXT board is MOVED into this slot (placeBoard()), never
@@ -4369,10 +4532,14 @@ function showClockText() {
   if (run) {
     now = run.state === "holding" ? run.now : run.now + (performance.now() - fleet.at) / 1000;
     word = run.state === "holding" ? "ON HOLD" : now < 0 ? "STARTS IN" : "RUNNING" + (run.adopted ? " (RECOVERED FROM THE UNITS)" : "");
-    if (run.state === "running" && now > state.show.duration) word = "ENDED";
+    // fleetDuration(): the length the units were uploaded with - what they
+    // actually run - not this page's Show length, which the operator may
+    // have changed since (the clock must never read RUNNING after the units
+    // have ended, review 2026-09-28).
+    if (run.state === "running" && now > fleetDuration()) word = "ENDED";
   }
   box.className = "showclock " + (run ? run.state : "");
-  box.innerHTML = `<small>${word}</small>${now === null ? "0:00" : clock(now)}`;
+  box.innerHTML = `<small>${word}</small>${now === null ? "0:00" : clock(now)}${musicEndClockHtml()}`;
   const upcoming = fleet.units.filter(u => u.online && u.show && u.show.next).map(u => ({ unit: u.name, ...u.show.next }))
     .sort((a, b) => a.in_s - b.in_s);
   const loaded = fleet.units.filter(u => u.online && u.show && fleet.shows[u.name] && u.show.id === fleet.shows[u.name].id).length;
@@ -4982,6 +5149,7 @@ document.addEventListener("click", async e => {
   if (e.target.id === "undo" || e.target.id === "redo") { step(e.target.id); return; }
   if (e.target.id === "tp-play") { togglePlayback(); return; }
   if (e.target.id === "tp-stop") { stopPlayback(); return; }
+  if (e.target.id === "tl-fit") { fitToMusic(); return; }
   // "Music: click to join": the one gesture a browser wants before it will
   // start audio after a reload. The tick is run here rather than waited for
   // so the music comes in on the click instead of up to 250 ms later - but
@@ -5388,11 +5556,13 @@ document.addEventListener("change", async e => {
   else if (id === "duration") {
     const typed = parseTimeField(e.target.value);
     if (typed === null || typed < 1) { toast("Enter the length as " + CLOCK_HINT); renderTimeline(); return; }
-    // 99:59 is what the clock can show and what every time field here is
-    // read against; a longer show would print times the page cannot draw.
-    const seconds = Math.min(MAX_SHOW_DURATION_S, typed);
-    if (seconds !== typed) toast(`The show cannot run past ${clock(MAX_SHOW_DURATION_S)} - set to that.`);
-    ui.playhead = Math.min(ui.playhead, seconds); await saveShow(state.show.cues, seconds);
+    // Refused, not clamped: the length the operator typed is not the one
+    // they would get, and the field goes back to what the show really is.
+    if (typed > MAX_SHOW_DURATION_S) { toast(SHOW_TOO_LONG, "warn"); renderTimeline(); return; }
+    const uploaded = typed !== state.show.duration && picturesOnUnits();
+    ui.playhead = Math.min(ui.playhead, typed);
+    const result = await saveShow(state.show.cues, typed);
+    if (uploaded && !result?.error) toast(`Show length is ${clock(typed)}. ${UPLOAD_AGAIN}`, "warn");
   } else if (id === "refresh") {
     const seconds = Number(e.target.value);
     if (!(seconds >= 1 && seconds <= 60)) { toast("Enter a refresh time of 1 to 60 seconds"); renderTimeline(); return; }
@@ -5577,7 +5747,7 @@ document.addEventListener("input", e => {
   const t = Number(e.target.value);
   ui.playhead = t;
   if (ui.playing) {                 // dragging the scrubber while playing seeks, not stops
-    if (playerUrl) player.currentTime = t;   // "seeked" clears `seeking` once the async seek lands
+    if (playerUrl) { player.currentTime = t; previewSeeked(t); }   // "seeked" clears `seeking` once the async seek lands
     else { ui.anchor = performance.now(); ui.startT = t; seeking = false; }
   } else {
     seeking = false;
@@ -5652,7 +5822,7 @@ document.addEventListener("pointerup", () => {
   if (!phDrag) return;
   phDrag = null;
   const t = ui.playhead;
-  if (playerUrl && !showMusicOwns()) player.currentTime = t;   // exact final seek; the "seeked" listener clears `seeking`
+  if (playerUrl && !showMusicOwns()) { player.currentTime = t; previewSeeked(t); }   // exact final seek; the "seeked" listener clears `seeking`
   else {
     // No music: play (if running) from the dropped spot via the virtual
     // clock tick() reads - the old slider's own resume behaviour.
@@ -5715,7 +5885,7 @@ document.addEventListener("keydown", e => {
   // Set before the seek, not after - otherwise tick() can yank the playhead
   // back to the pre-seek position in the frame between assigning
   // currentTime and the "seeked" event landing (fix round finding 9).
-  if (playerUrl) { seeking = true; player.currentTime = t; }
+  if (playerUrl) { seeking = true; player.currentTime = t; previewSeeked(t); }
   else if (ui.playing) { ui.anchor = performance.now(); ui.startT = t; }
 });
 document.addEventListener("mouseover", e => {

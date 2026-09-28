@@ -245,6 +245,14 @@ CASES = {
     "stopped_already": _case(runState=None, audioPaused=True),
     "show_ended": _case(showTime=300.0),
     "track_shorter_than_the_show": _case(trackDuration=100.0, showTime=120.0),
+    # 2026-09-28: the real track is 10:54 (654.25 s). A 10:00 show stops it
+    # at END with 0:54 still to play; a 15:00 show runs on past its end.
+    "track_longer_than_the_show_at_end": _case(trackDuration=654.25, duration=600.0,
+                                               showTime=600.0, audioTime=600.0),
+    "track_longer_than_the_show_before_end": _case(trackDuration=654.25, duration=600.0,
+                                                   showTime=599.0, audioTime=599.0),
+    "fifteen_minute_show_after_the_track": _case(trackDuration=654.25, duration=900.0,
+                                                 showTime=700.0, audioTime=654.25),
     # The START lead counts down with a negative position.
     "lead_in_before_zero": _case(showTime=-2.5, audioPaused=True),
     "lead_in_with_audio_left_running": _case(showTime=-2.5),
@@ -379,6 +387,18 @@ def test_stop_and_the_end_of_the_show_stop_the_audio(plans):
     # instead of being started again at a position it cannot reach.
     assert r["track_shorter_than_the_show"]["action"] == "stop"
     assert r["track_shorter_than_the_show"]["state"] == "track ended"
+
+
+def test_the_show_clock_is_the_master_at_both_ends_of_the_music(plans):
+    r = plans["results"]
+    # Music longer than the show: it plays right up to END, and END stops it.
+    assert r["track_longer_than_the_show_before_end"]["state"] == "playing"
+    assert r["track_longer_than_the_show_at_end"]["action"] == "stop"
+    assert r["track_longer_than_the_show_at_end"]["state"] == "stopped"
+    # Music shorter than the show: silence after it, never a restart - and
+    # nothing here moves the show (the fleet's clock runs on to END).
+    assert r["fifteen_minute_show_after_the_track"]["action"] == "stop"
+    assert r["fifteen_minute_show_after_the_track"]["state"] == "track ended"
 
 
 def test_the_start_lead_does_not_play_the_track_early(plans):

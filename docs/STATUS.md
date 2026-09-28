@@ -18,6 +18,38 @@
 
 ## 2. 直近で完成したもの
 
+**ショーを 15:00 まで延ばせるようにし、音源の終わりを Timeline に出した(2026-09-28)**
+
+「シミュレーターとコンダクターのショーの長さが音源に対して短い。15分まで延長し、
+音源の終わりがわかるように。」― 音源が 10:54 の曲に替わり、ショーは 10:00 のまま。
+
+- **調べたこと**: Show length 欄はもともと両アプリにあり(Conductor は Timeline の
+  ツールバー、シミュレーターも同じ)、上限は両ページ 99:59(丸め)、サーバーは
+  1 秒〜6 時間。**600 秒の上限はどこにも無かった** ― 短かったのは `show.json` の
+  `duration` が 600 のままだったから。機体(`ui/showplay.py`)は `duration` を読むだけで
+  上限なし → **機体側の変更・再配布は不要**。音源の長さはブラウザの `<audio>` だけが
+  知っている(サーバーは MP3 を解析しない)。Timeline のプレビューは、音源がショーより
+  短いと**音源の終わりで止まっていた**(時計もそこで止まる)。THE SHOW はフリートの時計が
+  主で、END で音を止め、音源の後ろは "track ended" ― こちらは元から正しい
+- **上限 15:00**(`timeline.MAX_DURATION_S = 900`)を全部で共有: Show length 欄・
+  `POST /api/show`・Load show・Load bundle は超える長さを `A show is at most 15:00` で
+  **拒否**(シミュレーターは `A show is at most 15.00 - kept …`)。`duration` の無い
+  `show.json` は従来どおり 600 秒
+- **Fit to music**(Show length の横): 音源の長さを秒で切り上げて Show length に。押したときだけ
+- **音源の終わり**: Timeline に amber 破線 `music ends 10:54` と後ろの斜線 `silence`、
+  ショーの方が短ければ Show length の横に amber で `music continues 0:54 past the end of
+  the show`。THE SHOW の大時計の下にも `music ends 10:54`
+- **時計はショーが主**: プレビューも、音源が終わったら END まで無音で進み、END で音を止める
+- 仕様は [SPECIFICATION.md](SPECIFICATION.md) §4.4、手順は
+  [CONDUCTOR_START.md](CONDUCTOR_START.md) 5 章「ショーの長さと音源の終わり」
+- **本番のショー(`showdata/`)は触っていない。** 10:54 の曲に合わせるには、オペレーターが
+  Timeline で **Fit to music**(→ 10:55)を押し、**Upload し直す**
+
+**この PC のブラウザテストについて**: Bash(Git Bash)から起動した headless Edge 154 は
+`--dump-dom` で何も返さずに終わる(`no #page-out in the dumped DOM`、main でも)。
+PowerShell から起動すれば通る。ブラウザテストは PowerShell で
+`$env:CONDUCTOR_BROWSER_TESTS = "1"` を付けて走らせること。
+
 **詰まり続けるバスを「この機体を再起動」と言い切るようにした(2026-09-28
 リハーサル後)**
 

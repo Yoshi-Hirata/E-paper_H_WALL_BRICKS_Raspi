@@ -13538,6 +13538,113 @@
   {
    "cues": [
     {
+     "at": 0.0,
+     "design": "p1",
+     "id": "a",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 895.0,
+     "design": "p2",
+     "id": "b",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 901.0,
+     "design": "p1",
+     "id": "c",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 900.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 895.0,
+      "end_source": "next",
+      "id": "a",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": -7.0
+     },
+     {
+      "complete": 902.0,
+      "end": 901.0,
+      "end_source": "next",
+      "id": "b",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 895.0
+     },
+     {
+      "complete": 908.0,
+      "end": 900.0,
+      "end_source": "show",
+      "id": "c",
+      "refresh": 7.0,
+      "refresh_source": "show",
+      "sent": 901.0
+     }
+    ],
+    "minInterval": {
+     "radxa-03": 8.0
+    },
+    "problems": {
+     "a": [],
+     "b": [],
+     "c": [
+      "15:01 is after the end of the show (15:00)",
+      "starts before the previous picture is complete (15:02)"
+     ]
+    },
+    "warnings": []
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "accent": {
+       "full": false,
+       "partial": true
+      },
+      "broken": {
+       "full": false,
+       "partial": false
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-03"
+    }
+   },
+   "kind": "timeline",
+   "name": "fifteen_minute_show",
+   "refresh": 7.0
+  },
+  {
+   "cues": [
+    {
      "at": 53.0,
      "design": "t1",
      "id": "a",
