@@ -629,6 +629,7 @@ class DemoRunner:
         self._usb_board_read = 0      # the open count the cache was read at
         self._usb_board_guard = threading.Lock()  # one read in flight
         self._usb_board_thread: "threading.Thread | None" = None
+        self._usb_board_gen = 0       # the reader generation (one per open)
         # Set when a port could not be reopened after an abandoned reset:
         # the watcher keeps trying on its own poll (_port_watch()).
         self._needs_reopen = False
@@ -3350,14 +3351,16 @@ class DemoRunner:
         self._usb_board_read = self._usb_board_seen[1]
 
     def _start_usb_board_reader(self) -> None:
-        """Called by a worker right after it has the port: start the reader
-        thread unless it is already running. Starting a thread, nothing
-        read here."""
-        thread = self._usb_board_thread
-        if thread is not None and thread.is_alive():
-            return
+        """Called by a worker right after it has the port: start a reader
+        of its own. Each call is a new generation, and a reader of an older
+        one ends at its next look - so a stop followed at once by a start
+        can never leave the new worker without one (re-review of 62293fb,
+        LOW-c). Starting a thread, nothing read here."""
+        self._usb_board_gen += 1
+        gen = self._usb_board_gen
         try:
-            thread = threading.Thread(target=self._usb_board_loop, daemon=True,
+            thread = threading.Thread(target=self._usb_board_loop,
+                                      args=(gen,), daemon=True,
                                       name="usb-board")
             thread.start()
             self._usb_board_thread = thread
@@ -3390,13 +3393,13 @@ class DemoRunner:
                 info = self._usb_board_info(other) or {}
         return {"serial": info.get("serial"), "family": info.get("family")}
 
-    def _usb_board_loop(self) -> None:
+    def _usb_board_loop(self, gen: int = 0) -> None:
         """The reader: once after each open / reopen (`_usb_board_seen`),
         only when _usb_board_quiet(), each read bounded by USB_BOARD_READ_S
         (a hung read leaves the cache as it was, and the next is not
-        started until it returns). Ends with the worker (`_stop`); the next
-        worker's open starts it again. Never raises."""
-        while not self._stop.is_set():
+        started until it returns). Ends with the worker (`_stop`) or when a
+        newer worker has started its own (`gen`). Never raises."""
+        while gen == self._usb_board_gen and not self._stop.is_set():
             try:
                 seen = self._usb_board_seen
                 if (seen[1] and self._usb_board_read != seen[1]

@@ -118,8 +118,11 @@ class BoardInfo:
             self.usb_state = "reading"
             self.usb, self.usb_port, self.record = dict(_BLANK), None, None
             epoch = self._epoch
-            threading.Thread(target=self._read_usb, args=(epoch,),
-                             daemon=True, name="boardinfo-usb").start()
+            try:
+                threading.Thread(target=self._read_usb, args=(epoch,),
+                                 daemon=True, name="boardinfo-usb").start()
+            except Exception:           # noqa: BLE001 - never into App.handle
+                self.usb_state = "busy"  # "USB busy - KEY1 to read again"
         else:
             self._show_cached()
         self._fw_asked = bool(read_fw and self.versions is not None)

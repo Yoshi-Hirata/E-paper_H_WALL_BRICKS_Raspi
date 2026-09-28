@@ -401,6 +401,58 @@ def test_nothing_is_read_while_a_show_plays_a_cue_is_armed_or_a_reset_runs(
     runner._stop.set()
 
 
+def test_a_stop_then_a_start_always_leaves_the_new_worker_a_reader(
+        monkeypatch):
+    """Re-review of 62293fb, LOW-c: the old reader must end and the new
+    worker must get its own, however quickly the two follow each other."""
+    reads = []
+
+    def board_info(port):
+        reads.append(port)
+        return dict(ODD)
+    session, runner = _reader_session(monkeypatch, board_info)
+    runner._saw_port("/dev/ttyACM0")
+    runner._start_usb_board_reader()             # worker 1's open
+    assert wait_until(lambda: len(reads) == 1)
+    old = runner._usb_board_thread
+    runner._stop.set()                           # stop ...
+    runner._stop.clear()                         # ... and start at once
+    runner._saw_port("/dev/ttyACM1")             # worker 2's open
+    runner._start_usb_board_reader()
+    new = runner._usb_board_thread
+    assert new is not old
+    assert wait_until(lambda: not old.is_alive())    # the old one ended
+    assert new.is_alive()                            # the new one did not
+    assert wait_until(lambda: reads[-1:] == ["/dev/ttyACM1"])
+    runner._saw_port("/dev/ttyACM2")             # a reopen under worker 2
+    assert wait_until(lambda: reads[-1:] == ["/dev/ttyACM2"])
+    runner._stop.set()
+    assert wait_until(lambda: not new.is_alive())
+
+
+def test_board_info_carries_on_when_no_thread_can_start(tmp_path, monkeypatch):
+    """Re-review of 62293fb, LOW-b: nothing may reach App.handle."""
+    import ui.boardinfo as boardinfo_mod
+
+    class NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+    info, _ = make_info(tmp_path, versions=False)
+    app, _ = make_app(info)
+    import threading
+    from types import SimpleNamespace
+
+    # Only this module's view of `threading`, never the real module's.
+    monkeypatch.setattr(boardinfo_mod, "threading",
+                        SimpleNamespace(Thread=NoThread, Lock=threading.Lock))
+    open_board_info(app)                         # must not raise
+    assert app.screen is Screen.BOARDINFO
+    assert info.texts()[0] == "SERIAL USB busy - KEY1 to read again"
+
+
 def test_the_reader_never_raises(monkeypatch):
     def boom(port):
         raise OSError("sysfs went away")

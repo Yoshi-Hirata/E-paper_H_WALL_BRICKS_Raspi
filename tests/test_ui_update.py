@@ -528,6 +528,12 @@ def test_update_screen_redraws_as_the_transfer_advances(tmp_path):
     app, _ = make_app(updater)
     app.select("update")
     app.handle("key1")
+    # The entry scan runs in the background; let it land first, or its
+    # result arrives between the two ticks below as one more repaint
+    # (flaky under full load - re-review of 62293fb, LOW-a).
+    assert wait_until(lambda: updater._probe_thread is None
+                      and updater._probe_pending is None
+                      and updater.usb_board is not None)
     app.draw()
     before = app.display.frames
     updater.done = 60                        # a chunk acknowledged
