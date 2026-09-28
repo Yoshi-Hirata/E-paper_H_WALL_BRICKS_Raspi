@@ -315,6 +315,56 @@ class DegradedMaster(FakeBus):
         return (True, "ioctl") if self.reset_ok else (False, "no usbreset here")
 
 
+class AutoplayMaster(FakeBus):
+    """The garment's master board as the week's incidents showed it (PM's
+    analysis, 2026-09-28; docs/SPECIFICATION.md 4.6): it resumes its FACTORY
+    AUTOPLAY `autoplay_after` seconds (85 s on the real board, scaled down by
+    the test) after the LAST BROADCAST STOP it received, unless another one
+    arrives first. Show frames (0x1D) do not reset that clock - nothing but
+    a broadcast 0x17 does. Once it autoplays it stays that way (on the unit
+    only a USB reset got it back): every write stalls `stall_s` and nothing
+    is executed, and no unicast is answered.
+
+    Records every broadcast on the wire with its time (`wire`: (t, cmd,
+    slot)), and when the autoplay began (`autoplay_at`, None while it has
+    not)."""
+
+    def __init__(self, autoplay_after: float = 85.0, stall_s: float = 0.036):
+        super().__init__()
+        self.autoplay_after, self.stall_s = autoplay_after, stall_s
+        self.last_stop = time.monotonic()
+        self.autoplay_at: "float | None" = None
+        self.wire: "list[tuple[float, int, int | None]]" = []
+        self.ignored: "list[Frame]" = []
+
+    def autoplaying(self) -> bool:
+        if (self.autoplay_at is None
+                and time.monotonic() - self.last_stop >= self.autoplay_after):
+            self.autoplay_at = self.last_stop + self.autoplay_after
+        return self.autoplay_at is not None
+
+    def send(self, frame):
+        stuck = self.autoplaying()
+        now = time.monotonic()
+        if frame.dest == 0xFF:
+            slot = frame.data[0] if frame.cmd == 0x1D and frame.data else None
+            self.wire.append((now, frame.cmd, slot))
+        if stuck:
+            time.sleep(self.stall_s)
+            self.ignored.append(frame)
+        elif frame.cmd == 0x17 and frame.dest == 0xFF:
+            self.last_stop = now
+        super().send(frame)
+
+    def request(self, frame, retries=3, timeout=None):
+        if self.autoplaying():
+            time.sleep(self.stall_s)
+            self.requested.append(frame)
+            self.requested_at.append(time.monotonic())
+            return None
+        return super().request(frame, retries=retries, timeout=timeout)
+
+
 def wait_until(predicate, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

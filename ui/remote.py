@@ -1079,6 +1079,13 @@ class RemoteSession:
                 # garment losing cues with this stuck at 0 means the
                 # heartbeat never got a clear window.
                 "remote_guard_sent": runner.remote_guard_sent,
+                # The STOP keep-away (ui/runner.py's KEEPAWAY_DUE_S): on or
+                # off (--no-keep-away), how many this worker has sent, and
+                # how long ago the master last heard a broadcast STOP -
+                # which must never pass 60 while the PC drives the unit.
+                "keep_away": bool(runner.keep_away),
+                "keep_away_sent": runner.keep_away_sent,
+                "last_stop_ago_s": runner.last_stop_ago_s,
                 # The last broadcast write that BLOCKED, and how many
                 # have (ui/runner.py's STALL_LOG_MS): {"ms", "frame",
                 # "at" (wall clock), "ago_s", "count"}. None while every

@@ -459,6 +459,32 @@ GUARD_REFRESH_S = 7.0
 # so a show file or a /prepare body with a wild number cannot switch the
 # guard off altogether and hand the wall back to the factory autoplay.
 GUARD_MAX_S = 200.0
+# ---- the STOP keep-away (docs/SPECIFICATION.md 4.6) ----
+# The master board resumes its FACTORY AUTOPLAY about 85 s after the LAST
+# BROADCAST STOP it heard; show frames (0x1D) do not reset that clock. The
+# heartbeat above waits for the guard floor of the last fire (fire + 31 s
+# or so) and stands aside for the 5 s before a cue, so a run of cues closer
+# than ~36 s leaves the master with NO stop at all: LOOK26 (cues 15, 25,
+# 11, 11, 12 s apart) went 110 s without one, and in 5 of 5 runs, both
+# garments, the USB port was "disabled by hub (EMI?)" or the bus degraded
+# 86 s after the last stop, the last picture left half-drawn (PM's
+# analysis, 2026-09-28; LOOK28's old choreography the same, 9 of 9, at
+# 85 s). So the unit makes sure the master is never KEEPAWAY_MAX_GAP_S
+# without one: once KEEPAWAY_DUE_S have passed since the last broadcast
+# STOP it sends ONE at the first instant that is after the last picture is
+# COMPLETE (its fire + its own refresh + span + KEEPAWAY_AFTER_PICTURE_S -
+# a STOP inside a sweep leaves the picture half-drawn, and 0x17 does not
+# abort a refresh that is already running) and at least
+# KEEPAWAY_BEFORE_CUE_S before the next armed trigger. It is the one frame
+# the guard floor and the 5 s hold yield to, and only when the 40 s are
+# up. Cues so close that no such instant comes before the 60 s: it goes
+# anyway, KEEPAWAY_MIN_BEFORE_CUE_S before the trigger at the closest, and
+# says so once. --no-keep-away (ui/main.py) switches it off.
+KEEPAWAY_DUE_S = 40.0
+KEEPAWAY_MAX_GAP_S = 60.0
+KEEPAWAY_AFTER_PICTURE_S = 0.5
+KEEPAWAY_BEFORE_CUE_S = 1.5
+KEEPAWAY_MIN_BEFORE_CUE_S = 0.5
 
 
 class _SweepYielded(Exception):
@@ -530,6 +556,12 @@ class DemoRunner:
                  link_guard: float = LINK_GUARD_S,
                  remote_guard: float = REMOTE_GUARD_S,
                  remote_guard_hold: float = REMOTE_GUARD_HOLD_S,
+                 keep_away: bool = True,
+                 keep_away_due: float = KEEPAWAY_DUE_S,
+                 keep_away_max_gap: float = KEEPAWAY_MAX_GAP_S,
+                 keep_away_after_picture: float = KEEPAWAY_AFTER_PICTURE_S,
+                 keep_away_before_cue: float = KEEPAWAY_BEFORE_CUE_S,
+                 keep_away_min_before_cue: float = KEEPAWAY_MIN_BEFORE_CUE_S,
                  link_token=device_token,
                  probe_sweeps: int = PROBE_SWEEPS,
                  probe_sweep_delay: float = PROBE_SWEEP_DELAY_S,
@@ -639,6 +671,25 @@ class DemoRunner:
         # How near a cue may be when the heartbeat goes out. A parameter
         # only so a test can compress it along with everything else.
         self.remote_guard_hold = remote_guard_hold
+        # The STOP keep-away (KEEPAWAY_DUE_S): on by default, --no-keep-away
+        # switches it off. The timings are parameters only so a test can
+        # compress them with everything else.
+        self.keep_away = bool(keep_away)
+        self.keep_away_due = keep_away_due
+        self.keep_away_max_gap = keep_away_max_gap
+        self.keep_away_after_picture = keep_away_after_picture
+        self.keep_away_before_cue = keep_away_before_cue
+        self.keep_away_min_before_cue = keep_away_min_before_cue
+        self.keep_away_sent = 0            # /status keep_away_sent
+        self._keep_away_said_no_room = False   # the once-per-run line
+        # When the last broadcast STOP was actually written (monotonic;
+        # None until one has been) - a fact about the master, so it is NOT
+        # reset with a worker. /status last_stop_ago_s.
+        self._last_stop_at: "float | None" = None
+        # When the last picture is COMPLETE: its show broadcast + that
+        # cue's own refresh + span (read at the fire, like _guard_floor).
+        self._picture_done_at: "float | None" = None
+        self._picture_s = 0.0
         self._link_token = link_token
         self.probe_sweeps = probe_sweeps
         self.probe_sweep_delay = probe_sweep_delay
@@ -774,6 +825,12 @@ class DemoRunner:
         if self.started_at is None:
             return self._elapsed_base
         return self._elapsed_base + time.monotonic() - self.started_at
+
+    @property
+    def last_stop_ago_s(self) -> "float | None":
+        """Seconds since the last broadcast STOP was written (/status)."""
+        last = self._last_stop_at
+        return None if last is None else round(time.monotonic() - last, 1)
 
     def recent(self, count: int) -> list[str]:
         with self._lock:
@@ -2014,6 +2071,21 @@ class DemoRunner:
                    min(GUARD_MAX_S,
                        float(refresh_s) + float(span_s) + margin))
 
+    def _picture_for(self, session) -> float:
+        """Seconds from a show broadcast until that cue's picture is
+        COMPLETE: its own refresh + span - the numbers _guard_for() is
+        made from, without the guard's margin (the keep-away, see
+        KEEPAWAY_DUE_S). A cue that says no span keeps the flat guard
+        here too: it is the only number there is for such a cue, and a
+        sweep nobody knows the length of may run that long."""
+        span_s = getattr(session, "span_s", None)
+        if span_s is None:
+            return self.guard_delay
+        refresh_s = getattr(session, "refresh_s", None)
+        if refresh_s is None:
+            refresh_s = GUARD_REFRESH_S
+        return min(GUARD_MAX_S, float(refresh_s) + float(span_s))
+
     def _guard_after_fire(self, session) -> float:
         """When the guard STOP may go out after a cue.
 
@@ -2319,6 +2391,7 @@ class DemoRunner:
             # went out, not one worked out from whatever the session
             # holds by now.
             self._guard_floor = again + self._guard_hold_s
+            self._picture_done_at = again + self._picture_s
             resent = True
 
     def _record_verify(self, session, cue_id: str, landed: str,
@@ -3575,7 +3648,7 @@ class DemoRunner:
         self._stall_streak = 0
         self._recover_bus(bus, groups)
 
-    def _sent_broadcast_stop(self) -> None:
+    def _sent_broadcast_stop(self, written: bool = True) -> None:
         """Note that a broadcast 0x17 just went out, whoever sent it.
 
         The REMOTE heartbeat counts from the LAST stop the boards heard,
@@ -3583,7 +3656,13 @@ class DemoRunner:
         the guard stop after a fire each silence the autoplay just as
         well, and a heartbeat right behind one is a frame for nothing.
         (And the health question waits ASK_SETTLE_S behind it.)
+
+        `written` False: the write raised, so the master heard nothing -
+        the heartbeat's clock still moves (it must not spin on a dead
+        port), but the keep-away's does not (KEEPAWAY_DUE_S).
         """
+        if written:
+            self._last_stop_at = time.monotonic()
         self._last_broadcast_at = time.monotonic()
         self._remote_guard_due = (None if self.remote_guard <= 0 else
                                   time.monotonic() + self.remote_guard)
@@ -3619,6 +3698,71 @@ class DemoRunner:
             return False
         return not session.pending_job()
 
+    def _keep_away_when(self, session, now: float) -> "tuple[bool, str]":
+        """Whether the keep-away STOP goes out NOW (KEEPAWAY_DUE_S), and
+        what the log line says about the cue ahead.
+
+        Due once `keep_away_due` has passed since the last broadcast STOP
+        the master heard; then the first instant that is both after the
+        last picture is complete (its own refresh + span, plus
+        `keep_away_after_picture`) and `keep_away_before_cue` or more
+        before the next armed trigger. Inside that last stretch before a
+        trigger it goes only if waiting for the next gap would take the
+        master past `keep_away_max_gap` - and never closer to the trigger
+        than `keep_away_min_before_cue`.
+        """
+        last = self._last_stop_at
+        if last is None or now - last < self.keep_away_due:
+            return False, ""
+        done = self._picture_done_at
+        if done is not None and now < done + self.keep_away_after_picture:
+            return False, ""
+        due = session.due()
+        if due is None:
+            return True, ""
+        left = due[1] - now
+        ahead = f", {left:.1f} s before {due[0]}"
+        if left >= self.keep_away_before_cue:
+            return True, ahead
+        if left < self.keep_away_min_before_cue:
+            return False, ""
+        # The earliest the next gap can open: the armed cue's own picture
+        # complete (the session carries ITS numbers by now). A bound, not
+        # a promise - the cue after it may be closer still, and then that
+        # gap is judged the same way when it comes.
+        next_gap = due[1] + self._picture_for(session) + self.keep_away_after_picture
+        if next_gap < last + self.keep_away_max_gap:
+            return False, ""
+        if not self._keep_away_said_no_room:
+            self._keep_away_said_no_room = True
+            fired = self._last_show_at
+            apart = (f"cues {due[1] - fired:.1f} s apart" if fired is not None
+                     else f"{left:.1f} s before the cue")
+            self.emit(f"keep-away: no room for a stop between these cues "
+                      f"({apart})")
+        return True, ahead
+
+    def _keep_away_tick(self, bus, groups: int) -> None:
+        """Send the keep-away STOP if it is due and this is its instant
+        (_keep_away_when()). Timed like every other broadcast, so a stall
+        is measured and logged; one log line per STOP sent."""
+        session = self.remote
+        if not self.keep_away or session is None:
+            return
+        now = time.monotonic()
+        go, ahead = self._keep_away_when(session, now)
+        if not go:
+            return
+        since = now - self._last_stop_at
+        self.keep_away_sent += 1
+        self.emit(f"keep-away stop ({since:.0f} s since the last stop{ahead})")
+        written = False
+        try:
+            self._send_timed(bus, stop(0xFF, groups), "keep-away stop")
+            written = True
+        finally:
+            self._sent_broadcast_stop(written)
+
     def _remote_guard_tick(self, bus, groups: int) -> None:
         """Send the idle autoplay guard if one is due and clear to go.
 
@@ -3629,6 +3773,10 @@ class DemoRunner:
         the whole stretch between two cues - which is exactly the 11-38 s
         of silence that lost cues on 2026-09-27 (review, same day).
         """
+        # The keep-away first: the one STOP the rules below yield to, once
+        # the master has gone KEEPAWAY_DUE_S without one. Nothing at all
+        # when it is switched off.
+        self._keep_away_tick(bus, groups)
         session = self.remote
         if session is None or self._remote_guard_due is None:
             return
@@ -3643,10 +3791,12 @@ class DemoRunner:
                       f"{self.remote_guard:g} s while idle")
         self.remote_guard_sent += 1
         took_ms = 0.0
+        written = False
         try:
             took_ms = self._send_timed(bus, stop(0xFF, groups), "stop")
+            written = True
         finally:
-            self._sent_broadcast_stop()
+            self._sent_broadcast_stop(written)
         # This heartbeat is the one frame that goes out when NOTHING else
         # would touch the bus, which makes it the one honest sample of
         # the port's own health - and the place a recovery can run
@@ -3758,6 +3908,9 @@ class DemoRunner:
             # said nothing must keep the FLAT guard, not a 7 s refresh.
             self._guard_hold_s = self._guard_for(session)
             self._guard_floor = sent_at + self._guard_hold_s
+            # ...and when the picture is complete, for the keep-away STOP.
+            self._picture_s = self._picture_for(session)
+            self._picture_done_at = sent_at + self._picture_s
             # The time the PC is told is this FIRST send, whatever the
             # landing check does afterwards: "how late was the cue" is
             # about when the picture was asked for, and a re-send is a
@@ -3783,6 +3936,11 @@ class DemoRunner:
         self._remote_guard_due = None
         self._remote_guard_said = False
         self.remote_guard_sent = 0
+        # Counted and said per worker, like the heartbeat; the clock it runs
+        # on (_last_stop_at) and the last picture are the MASTER's, and go
+        # on across workers.
+        self.keep_away_sent = 0
+        self._keep_away_said_no_room = False
         self._guard_floor = None
         self.bus_stall = None
         self.bus_recovery = self.resend = self.precheck = None
