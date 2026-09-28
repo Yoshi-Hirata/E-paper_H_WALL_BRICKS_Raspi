@@ -221,7 +221,7 @@ def test_start_itself_is_not_gated_on_the_bus():
         assert word not in gate, f"the START gate refuses on {word!r}"
 
 
-def test_recover_bus_sits_on_the_mark_and_runs_before_preset_and_start():
+def test_recover_bus_sits_on_the_mark_and_runs_before_the_preset_only():
     # The button is on the mark itself, so it is where the operator is
     # already looking, and it carries the unit's name for the delegated
     # click handler (2026-09-28).
@@ -239,12 +239,23 @@ def test_recover_bus_sits_on_the_mark_and_runs_before_preset_and_start():
     assert "Promise.all" in sweep, "the units are recovered one after another"
     assert "SHOWBOARD.recoverReport(answers)" in sweep
     assert "commandInFlight" in sweep, "a double click sends it twice"
-    # ...and both buttons that put a picture on a garment sweep first.
-    assert _function_body("recoverBeforeShow").count("SHOWBOARD.recoverTargets") == 1
+    # ② Show preset sweeps first - three seconds at most, then the preset
+    # goes whatever came back (review F7).
+    before = _function_body("recoverBeforePreset")
+    assert before.count("SHOWBOARD.recoverTargets") == 1
+    assert "PRESET_RECOVER_WAIT_MS" in before
+    assert "const PRESET_RECOVER_WAIT_MS = 3000;" in PAGE
+    assert "AbortController" in sweep and "abort.abort()" in sweep
     clicks = PAGE[PAGE.index('e.target.id === "show-preset"'):]
     preset = clicks[:clicks.index('e.target.id === "show-start"')]
-    assert "await recoverBeforeShow();" in preset
-    assert "await recoverBeforeShow();" in clicks[clicks.index('e.target.id === "show-start"'):]
+    assert "await recoverBeforePreset();" in preset
+    # ③ START does NOT: it has to go the instant it is pressed, the show
+    # has music (review F7). Nothing of the recovery is left in its handler.
+    start = clicks[clicks.index('e.target.id === "show-start"'):]
+    start = start[:start.index('fleetCommand("start"')]
+    code = _strip_comments(start)
+    assert "recover" not in code.lower(), "START waits for a bus recovery"
+    assert "recoverBeforeShow" not in PAGE, "the old START sweep is still there"
 
 
 def test_the_units_own_endpoint_decides_whether_a_recovery_is_safe():
@@ -587,6 +598,14 @@ CALLS = {
     "recover_before_it_is_red": ["recoverTargets",
                                  [_u(name="radxa-07", bus_stall=_stall(count=2))],
                                  False],
+    # A board merely busy repainting blocks 50-60 ms: under S's
+    # STALL_DEGRADED_MS (150), and a recovery would buy it nothing (F7).
+    "recover_shallow_stall_left_alone": ["recoverTargets",
+                                         [_u(name="radxa-07",
+                                             bus_stall=_stall(ms=88.0))], False],
+    "recover_right_at_the_depth": ["recoverTargets",
+                                   [_u(name="radxa-07",
+                                       bus_stall=_stall(ms=150.0))], False],
     "recover_old_stall_left_alone": ["recoverTargets",
                                      [_u(name="radxa-07",
                                          bus_stall=_stall(ago_s=1200.0))], False],
@@ -1127,9 +1146,12 @@ def test_the_units_to_recover_are_the_ones_still_stalling_now(board):
     # Two stalls is already enough - this does not wait for the red mark's
     # five, because five is the show.
     assert r["recover_before_it_is_red"] == ["radxa-07"]
-    # Old, taken down by the unit itself, offline, mid-run, nothing at all:
-    # a port is never reopened on any of these.
-    for name in ("recover_old_stall_left_alone", "recover_cleared_left_alone",
+    # The same depth S's red mark is drawn from: 150 ms counts, 88 does not.
+    assert r["recover_right_at_the_depth"] == ["radxa-07"]
+    # Shallow, old, taken down by the unit itself, offline, mid-run, nothing
+    # at all: a port is never reopened on any of these.
+    for name in ("recover_shallow_stall_left_alone",
+                 "recover_old_stall_left_alone", "recover_cleared_left_alone",
                  "recover_offline_left_alone", "recover_not_while_running",
                  "recover_no_units_at_all"):
         assert r[name] == [], name
