@@ -273,9 +273,89 @@ def test_timeline_survives_a_unit_assignment_and_back(workspace):
 
 
 def test_timeline_rejects_nonsense_durations(workspace):
-    for bad in (0, "abc", 7 * 3600):
+    for bad in (0, "abc", 7 * 3600, float("nan")):
         with pytest.raises(ValueError):
             workspace.set_timeline(bad, [])
+
+
+# ---- a show is at most 15:00 (2026-09-28: the music became 10:54) ----
+
+def test_a_show_may_last_up_to_fifteen_minutes_and_no_longer(workspace):
+    workspace.set_timeline("15:00", [])
+    assert workspace.state()["show"]["duration"] == 900
+    workspace.set_timeline(900, [])
+    assert workspace.state()["show"]["duration"] == 900
+    for too_long in (901, "15:01", 900.5, "1:00:00", float("inf")):
+        with pytest.raises(ValueError) as caught:
+            workspace.set_timeline(too_long, [])
+        assert str(caught.value) == "A show is at most 15:00", too_long
+    assert workspace.state()["show"]["duration"] == 900     # the refusal kept it
+
+
+def test_a_cue_past_a_fifteen_minute_show_is_still_a_problem(workspace):
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.set_timeline(900, [{"id": "a", "item": "Look22", "at": 0, "design": grid},
+                                 {"id": "b", "item": "Look22", "at": "14:59", "design": grid},
+                                 {"id": "c", "item": "Look22", "at": "15:01", "design": grid}])
+    problems = {c["id"]: c["problems"] for c in workspace.state()["show"]["cues"]}
+    assert problems["a"] == [] and problems["b"] == []
+    assert any("after the end of the show (15:00)" in p for p in problems["c"]), problems["c"]
+
+
+def test_a_show_file_without_a_duration_is_still_ten_minutes(workspace):
+    # LEGACY: show.json never written by set_timeline (a fresh workspace, or
+    # one from before `duration` was stored) is a 600 s show - export,
+    # state() and the fleet all read the same default.
+    assert "duration" not in workspace._load_show()
+    assert workspace.state()["show"]["duration"] == 600
+    assert workspace.export_show()["duration"] == 600
+    # ...and a show file that does not mention it keeps what is there.
+    workspace.set_timeline("12:00", [])
+    workspace.import_show({"format": "epaper-show", "version": 1, "cues": []})
+    assert workspace.state()["show"]["duration"] == 720
+
+
+def test_load_show_and_load_bundle_refuse_a_show_longer_than_fifteen_minutes(workspace):
+    workspace.set_timeline(700, [])
+    for payload in ({"format": "epaper-show", "version": 1, "duration": 901, "cues": []},):
+        with pytest.raises(ValueError) as caught:
+            workspace.import_show(payload)
+        assert str(caught.value) == "A show is at most 15:00"
+        with pytest.raises(ValueError) as caught:
+            workspace.import_bundle({"format": "epaper-show-bundle", "version": 1,
+                                     "files": {}, "show": payload})
+        assert str(caught.value) == "A show is at most 15:00"
+    assert workspace.state()["show"]["duration"] == 700
+    workspace.import_show({"format": "epaper-show", "version": 1, "duration": 900,
+                           "cues": []})
+    assert workspace.state()["show"]["duration"] == 900
+
+
+def test_post_show_says_why_a_long_show_was_refused(tmp_path):
+    server = make_server(tmp_path, port=0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, answer = _post(port, "/api/show", {"duration": 901, "cues": []})
+        assert status != 200 or not answer.get("ok"), answer
+        assert "A show is at most 15:00" in json.dumps(answer), answer
+        status, answer = _post(port, "/api/show", {"duration": "15:00", "cues": []})
+        assert status == 200 and answer.get("ok"), answer
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_pages_share_the_fifteen_minute_ceiling():
+    from conductor import timeline
+
+    assert timeline.MAX_DURATION_S == 900 and timeline.DEFAULT_DURATION_S == 600
+    root = Path(__file__).resolve().parents[1] / "conductor" / "web"
+    for name in ("index.html", "sim/designer-app.js"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert re.findall(r"const MAX_SHOW_DURATION_S = (.*?);", text) == ["15 * 60"], name
+    model = (root / "sim" / "model.js").read_text(encoding="utf-8")
+    assert re.findall(r"^  const MAX_DURATION_S = ([0-9.]+);$", model, re.M) == ["900.0"]
 
 
 # ---- undo / redo of the show ----
