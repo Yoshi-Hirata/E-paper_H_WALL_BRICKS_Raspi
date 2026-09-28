@@ -40,6 +40,7 @@ class FakeBus:
                  deaf_boards: bool = True):
         self.sent: list[Frame] = []
         self.requested: list[Frame] = []
+        self.requested_at: "list[float]" = []   # when each request() began
         self.nak_on = nak_on
         self.ack_cmd = ack_cmd
         self.closed = False
@@ -67,6 +68,7 @@ class FakeBus:
 
     def request(self, frame, retries=3, timeout=None):
         self.requested.append(frame)
+        self.requested_at.append(time.monotonic())
         if frame.cmd == GET_VERSION:
             self.asked_tries.append(retries)
             return self._version_reply(frame)
@@ -177,9 +179,14 @@ class DegradedMaster(FakeBus):
         `quick_s` (61 ms) within `quick_gap` of the previous write, `slow_s`
         (358 ms) after a longer pause. This is what made "bus recovered by
         padding (512 -> 61 ms)" a false reading;
-      * no frame is executed and nobody answers - not the master's own 0x02,
-        not a relayed board ("no boards answering" for 100 s);
+      * no frame is executed and nobody answers - not the master's ACK to a
+        unicast STOP, not a relayed board ("no boards answering" for 100 s);
       * padding and a port reopen change NOTHING. Only usb_reset() cures it.
+
+    And as the REAL firmware answers when it is healthy (radxa-07, 2026-09-28
+    12:40): every unicast STOP / config is ACKed, and a 0x02 over the bus is
+    NEVER answered, healthy or not - so a health check built on 0x02 cannot
+    pass this suite (it read a healthy master as "silent" on the unit).
 
     The USB layer, for the runner's usb_reset= and link_token=: a reset
     takes `reset_s`, the node vanishes and is back `reenum_s` later - a new
@@ -194,7 +201,7 @@ class DegradedMaster(FakeBus):
                  reset_s=0.0, reenum_s=0.05, open_s=0.0,
                  port="/dev/ttyACM0", back_as=None, eacces=0,
                  reset_ok=True, reset_cures=True, half_cure=False):
-        super().__init__(deaf_boards=False)     # a healthy master answers 0x02
+        super().__init__(deaf_boards=False)     # a healthy master ACKs
         self.quick_s, self.slow_s, self.quick_gap = quick_s, slow_s, quick_gap
         self.reset_s, self.reenum_s, self.open_s = reset_s, reenum_s, open_s
         self.port, self.back_as, self.eacces_after_reset = port, back_as, eacces
@@ -224,11 +231,17 @@ class DegradedMaster(FakeBus):
 
     def request(self, frame, retries=3, timeout=None):
         self._write()
-        if self.degraded:
+        if self.degraded or frame.cmd == GET_VERSION:
             # Accepted, never answered - and a silence is only known once
             # the whole read window has passed, every try of it
-            # (transport.Bus.request), so the caller pays for that too.
+            # (transport.Bus.request), so the caller pays for that too. A
+            # 0x02 the same, healthy or not: the real firmware never
+            # answers one over the bus.
             self.requested.append(frame)
+            self.requested_at.append(time.monotonic())
+            if frame.cmd == GET_VERSION:
+                self.asked.append(frame)
+                self.asked_at.append(time.monotonic())
             window = 0.5 if timeout is None else timeout
             time.sleep(window * max(1, retries))
             return None
@@ -330,9 +343,12 @@ def make_runner(bus, **kwargs):
     # supply a fake one (DegradedMaster.usb_reset).
     kwargs.setdefault("usb_reset",
                       lambda port, timeout=None: (False, "not in the tests"))
-    # ...nor the real availability check (it would run `sudo -n true`).
+    # ...nor the real availability check (it would run `sudo -n true`). No
+    # reset means, unless a test says so: a sweep that finds nobody would
+    # otherwise reset the USB (_setup_usb_reset()) in every test of an
+    # empty or silent wall. DegradedMaster's tests supply reset_available.
     kwargs.setdefault("usb_reset_check",
-                      lambda port: (True, "not checked in the tests"))
+                      lambda port: (False, "not in the tests"))
     return DemoRunner(open_bus=lambda port: bus, **kwargs)
 
 

@@ -1835,6 +1835,7 @@ def degraded_runner(bus, **kwargs):
     kwargs.setdefault("port", None)
     kwargs.setdefault("link_token", bus.token)
     kwargs.setdefault("usb_reset", bus.usb_reset)
+    kwargs.setdefault("usb_reset_check", bus.reset_available)
     return recovery_runner(bus, **kwargs)
 
 
@@ -2118,10 +2119,16 @@ def test_the_endpoint_refuses_a_cue_that_is_about_to_fire():
 
 # ---- the fire-time re-send, after a USB reset (ON by default) ----
 
-def fire_on_a_degraded_master(monkeypatch, lead=0.5, **kwargs):
+def fire_on_a_degraded_master(monkeypatch, lead=0.5, signal=True, **kwargs):
     """Set up healthy, then the master degrades, then a cue is fired: its own
     show frame is the first write after a pause, so it blocks like the
-    unit's did (272-358 ms)."""
+    unit's did (272-358 ms).
+
+    `signal` is what _fire_resend_signal() answers: True "silent" by default
+    here, so the reset-and-re-send machinery these tests pin is still
+    exercised - the runner's own answer is None (no safe question at fire
+    time, 2026-09-28 12:40), which re-sends nothing; `signal="real"` keeps
+    it."""
     fake = {k: kwargs.pop(k) for k in list(kwargs)
             if k in ("reset_s", "reenum_s", "open_s", "reset_ok",
                      "reset_cures", "back_as", "eacces")}
@@ -2129,6 +2136,9 @@ def fire_on_a_degraded_master(monkeypatch, lead=0.5, **kwargs):
     bus.degraded = False
     kwargs.setdefault("resend_on_stall", True)      # it is off by default
     runner = degraded_runner(bus, guard_delay=0.05, **kwargs)
+    if signal != "real":
+        monkeypatch.setattr(runner, "_fire_resend_signal",
+                            lambda bus_, groups: signal)
     session = RemoteSession(runner)
     session.arm("c1", 6)
     assert wait_until(lambda: any("panels online" in l
@@ -2158,9 +2168,9 @@ def test_a_stalled_cue_is_reset_and_re_sent_exactly_once(monkeypatch):
     bus, runner, session, at = fire_on_a_degraded_master(monkeypatch,
                                                          **UNIT_TIMINGS)
     assert len(shows(bus)) == 2                   # the first, and ONE more
-    # The master was asked first, and was silent - that is what made it a
-    # re-send and not a slow frame (review H1).
-    assert any(f.cmd == 0x02 and f.dest == 1 for f in bus.requested)
+    # Nothing is ASKED on the wire at fire time: no 0x02 (never answered on
+    # this firmware) and no unicast frame either.
+    assert not any(f.cmd == 0x02 for f in bus.requested)
     # On the fire path the show frame is what follows the reset, and
     # nothing goes between (review M4 is for the idle and pre-cue paths).
     first, second = [i for i, f in enumerate(bus.sent) if f.cmd == SHOW][:2]
@@ -2188,6 +2198,22 @@ def test_the_re_send_survives_udev_refusing_the_first_opens(monkeypatch):
     assert runner.resend["by"] == "usb_reset"
     assert runner.resend["late_s"] <= FIRE_RESEND_BUDGET_S, runner.resend
     assert any("opened after 2 refusals" in l for l in runner.recent(40))
+
+
+def test_with_the_flag_on_a_stall_is_said_and_nothing_is_re_sent(monkeypatch):
+    """radxa-07, 2026-09-28 12:40: there is no safe second signal at fire
+    time (0x02 is never answered; a unicast STOP there would read a
+    repainting master as silent, and could cancel a delayed picture). So
+    --resend-on-stall says the stall and sends nothing else at all."""
+    bus, runner, session, at = fire_on_a_degraded_master(monkeypatch,
+                                                         signal="real")
+    assert len(shows(bus)) == 1 and bus.resets == [] and runner.resend is None
+    assert any("cue c1 stalled" in l
+               and "not re-sent (no safe question at fire time)" in l
+               for l in runner.recent(40))
+    assert not any(f.cmd == 0x02 for f in bus.requested)
+    fired = [i for i, f in enumerate(bus.sent) if f.cmd == SHOW][0]
+    assert all(f.dest == 0xFF for f in bus.sent[fired:])
 
 
 def test_no_resend_on_stall_leaves_a_stalled_cue_alone(monkeypatch):
@@ -2250,10 +2276,14 @@ def test_a_stall_on_a_master_that_answers_is_not_re_sent(monkeypatch):
     """Review of 349dcdd, H1 - the reviewer's t_fire case A: a healthy master
     and ONE show write that blocked 251 ms. With the re-send on, it still
     must not reset anything or send the frame twice: the master answers,
-    so the frame is being executed late, not lost."""
+    so the frame is being executed late, not lost. (The signal is the
+    stand-in "answers" here: the runner's own is None - see
+    test_with_the_flag_on_a_stall_is_said_and_nothing_is_re_sent.)"""
     bus = OneSlowShow(**UNIT_TIMINGS)
     monkeypatch.setattr("ui.runner.find_port", bus.find_port)
     runner = degraded_runner(bus, guard_delay=0.05, resend_on_stall=True)
+    monkeypatch.setattr(runner, "_fire_resend_signal",
+                        lambda bus_, groups: False)
     session = RemoteSession(runner)
     session.arm("c1", 6)
     assert wait_until(lambda: any("panels online" in l
@@ -3139,4 +3169,285 @@ def test_the_status_says_which_kill_switches_are_on():
     status = RemoteSession(off).status()
     assert status["precheck_s"] == 0
     assert status["port_watch"] is False and status["auto_recover"] is False
+
+
+# ---- final gate on 393ddcd: ownership is the PC's worker, nothing else ----
+
+def _owned_runner():
+    bus = FakeBus(deaf_boards=False)
+    resets = []
+    runner = make_runner(bus, boards=[1, 2, 3], verify_fire=False,
+                         usb_reset=lambda p, timeout=None: (
+                             resets.append(p), (False, "t"))[1])
+    return RemoteSession(runner), runner, bus, resets
+
+
+def test_an_uploaded_unit_is_owned_and_may_be_recovered():
+    """t_owned U: after an Upload (burn) the PC's REMOTE worker holds the
+    port although the phase still reads `local` - owned, so Recover bus is
+    offered and accepted. The phase was never the thing to ask."""
+    session, runner, bus, resets = _owned_runner()
+    session.burn([{"slot": 1, "boards": {1: array(1), 2: array(2),
+                                         3: array(3)},
+                   "delays": {}, "span_s": None}])
+    assert wait_until(lambda: (session.status().get("burn") or {}).get(
+        "state") not in (None, "burning"), timeout=30.0)
+    try:
+        assert runner.remote is session and runner.running
+        assert session.owned() is True
+        assert session.recover_refusal() is None
+        assert session.status()["owned"] is True
+    finally:
+        runner.stop()
+
+
+def test_a_unit_in_the_conductors_standby_is_not_owned():
+    """t_owned S: the per-unit Standby is a one-shot pattern worker, not the
+    PC's REMOTE worker - not owned, and the 409 says what to do."""
+    session, runner, bus, resets = _owned_runner()
+    session.standby()
+    assert wait_until(lambda: session.phase == STANDBY, timeout=10.0)
+    try:
+        assert runner.remote is not session
+        assert session.owned() is False
+        assert session.status()["owned"] is False
+        assert session.recover_refusal() == ("unit is in standby - Upload "
+                                             "first, then recover")
+        with pytest.raises(RemoteError, match="in standby"):
+            session.recover_bus(timeout=1.0)
+    finally:
+        runner.stop()
+    assert resets == []
+
+
+def test_a_fresh_unit_says_it_is_not_owned():
+    session, runner, bus = make_session()
+    assert session.status()["owned"] is False
+    assert session.recover_refusal() == ("unit is on its own menu - nothing "
+                                         "to recover from here")
+
+
+def test_a_recover_job_on_a_worker_that_exits_is_answered_at_once():
+    """Final gate, LOW: the job used to wait out RECOVER_WAIT_S (15 s) for a
+    worker thread that had already gone. Now the wait notices."""
+    session, runner, bus = make_session()
+    runner.remote = session
+    runner._thread = threading.Thread(target=time.sleep, args=(0.4,),
+                                      daemon=True)
+    runner._thread.start()
+    began = time.monotonic()
+    with pytest.raises(RemoteError, match="unit's worker is not running"):
+        session.recover_bus(timeout=15.0)
+    assert time.monotonic() - began < 2.0
+    assert session._recover_job is None
+    # ...and one asked for once it has gone is refused before it is queued.
+    with pytest.raises(RemoteError, match="unit's worker is not running"):
+        session.recover_bus(timeout=15.0)
+    assert session._recover_job is None
+
+
+def _stop_fails_once(monkeypatch, runner):
+    real = runner._send_timed
+    failed = []
+
+    def once(bus_, frame, what, **kwargs):
+        if frame.cmd == STOP and not failed:
+            failed.append(frame)
+            raise OSError("write timeout")
+        return real(bus_, frame, what, **kwargs)
+
+    monkeypatch.setattr(runner, "_send_timed", once)
+    return failed
+
+
+def test_a_precheck_whose_stop_fails_is_not_bus_ok(monkeypatch):
+    """Final gate, LOW: a STOP whose write raised can be fast, and was read
+    as "bus ok". It is "write failed", and the reset path follows as for a
+    silent master."""
+    bus = degraded(monkeypatch)
+    bus.degraded = False
+    runner = degraded_runner(bus, precheck=20.0, remote_guard_hold=HOLD)
+    failed = _stop_fails_once(monkeypatch, runner)
+    runner._precheck(bus, 2, "q07", time.monotonic() + HOLD + 3.5)
+    said = [l for l in runner.recent(20) if "precheck q07" in l]
+    assert failed and said, runner.recent(20)
+    assert "bus ok" not in said[0]
+    assert "write failed: write timeout" in said[0]
+    assert "→ usb reset" in said[0] and len(bus.resets) == 1
+    assert runner.precheck["by"] == "usb_reset"
+
+
+def test_a_failed_stop_is_not_clear_to_an_idle_recovery(monkeypatch):
+    """The same for Recover bus: a failed measuring STOP is not "nothing
+    was wrong" - the reset follows, and its proof decides."""
+    bus = degraded(monkeypatch)
+    bus.degraded = False
+    runner = degraded_runner(bus)
+    failed = _stop_fails_once(monkeypatch, runner)
+    result = runner._recover_bus(bus, 2)
+    assert failed and len(bus.resets) == 1
+    assert result["by"] == "usb_reset" and result["recovered"] is True
+
+
+def test_the_port_watch_survives_find_port_and_link_token_raising(
+        monkeypatch):
+    """Final gate, LOW: comports() or the node's stat can raise; the
+    watcher answers "nothing to do" instead of failing the session."""
+    bus = RecoveringBus("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+
+    def boom(*args):
+        raise OSError("comports failed")
+
+    monkeypatch.setattr("ui.runner.find_port", boom)
+    runner = recovery_runner(bus, port=None, link_token=boom, port_poll=0.01,
+                             port_back_wait=0.15)
+    assert runner._port_watch(bus, 2) is False     # cannot tell: no guess
+    assert bus.reopened == []
+    # The node gone for real, and the search for it raising every time:
+    # the ordinary ladder's answer, not an exception.
+    runner._link_token = lambda port: None
+    runner._next_port_poll = 0.0
+    assert runner._port_watch(bus, 2) is False
+    assert bus.reopened == []
+    assert any("port gone for" in l for l in runner.recent(20))
+
+
+# ---- radxa-07, 2026-09-28 12:40-12:46 (main 621669d), end to end ----
+
+def _wire(bus, since, until):
+    """Every frame handed to the port in [since, until), in order, as
+    (seconds, "send"/"ask", cmd, dest)."""
+    out = [(t, "send", f.cmd, f.dest) for f, t in zip(bus.sent, bus.sent_at)]
+    out += [(t, "ask", f.cmd, f.dest)
+            for f, t in zip(bus.requested, bus.requested_at)]
+    return [(round(t - until, 3), how, hex(cmd), dest)
+            for t, how, cmd, dest in sorted(out) if since <= t < until]
+
+
+def test_a_healthy_master_passes_the_precheck_with_two_frames(monkeypatch):
+    """12:40:28: `precheck q01: master silent (1 ms) → usb reset → master
+    still silent` on a HEALTHY master - the 0x02 it asked is never answered
+    on this firmware (the fake is now silent to 0x02 the same way). Asked a
+    unicast STOP instead, a healthy master ACKs: the whole check is one
+    broadcast STOP and one unicast STOP to board 1, and no reset."""
+    bus, runner, session, at = armed(monkeypatch, degrade=False)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
+    runner.stop()
+    before = _wire(bus, at - 3.6 - 0.2, at - 0.01)
+    assert [(how, cmd, dest) for _, how, cmd, dest in before] == [
+        ("send", "0x17", 0xFF), ("ask", "0x17", 1)], before
+    assert bus.resets == [] and runner.precheck["by"] is None
+    assert not any(f.cmd == 0x02 for f in bus.requested)
+    assert any("precheck c1: bus ok" in l and "master answers" in l
+               for l in runner.recent(30))
+    assert len(shows(bus)) >= 1
+
+
+def test_recover_bus_on_a_healthy_master_says_already_clear(monkeypatch):
+    """The same mistake on the idle path: with 0x02 as the signal a healthy
+    unit could never say "bus was already clear"."""
+    bus = degraded(monkeypatch)
+    bus.degraded = False
+    runner = degraded_runner(bus)
+    result = runner._recover_bus(bus, 2)
+    assert result == {"recovered": True, "by": None,
+                      "before_ms": result["before_ms"], "after_ms":
+                      result["after_ms"]}
+    assert bus.resets == []
+    assert any("bus is clear, nothing to recover" in l
+               for l in runner.recent(10))
+
+
+def test_a_sweep_that_finds_nobody_resets_the_usb_and_sweeps_again(
+        monkeypatch):
+    """Fix B: a degraded master at start-up (or Upload, standby, an owed
+    sweep) - the sweep finds no boards answering, the master's USB is reset
+    and the sweep runs again, instead of the reopen loop that never ends."""
+    bus = degraded(monkeypatch)                  # degraded from the start
+    runner = degraded_runner(bus, probe_sweeps=1)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2)})
+    assert wait_until(lambda: session.phase == READY, timeout=20.0)
+    runner.stop()
+    said = runner.recent(60)
+    assert len(bus.resets) == 1
+    assert any("no boards answering → usb reset → panels online: 2/2" in l
+               for l in said), said
+    assert not any("ERROR no boards answering" in l for l in said)
+    assert session.status()["saved"] == [1, 2]
+
+
+def test_the_setup_reset_is_bounded_and_then_the_old_loop_runs(monkeypatch):
+    bus = degraded(monkeypatch, reset_cures=False)
+    runner = degraded_runner(bus, probe_sweeps=1, recover_backoff=0.05)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2)})
+    assert wait_until(lambda: any("3 usb resets already" in l
+                                  for l in runner.recent(80)), timeout=40.0)
+    time.sleep(1.0)
+    runner.stop()
+    said = runner.recent(200)
+    assert len(bus.resets) == 3
+    assert sum("no boards answering → usb reset → still no boards" in l
+               for l in said) == 3
+    assert any("ERROR no boards answering" in l for l in said)
+
+
+def test_the_setup_reset_waits_for_the_last_picture_and_for_the_flag(
+        monkeypatch):
+    bus = degraded(monkeypatch)
+    runner = degraded_runner(bus, auto_recover=False)
+    runner.usb_reset_ok = True
+    assert runner._setup_usb_reset(bus) is None       # --no-auto-recover
+    runner = degraded_runner(bus)
+    runner.usb_reset_ok = True
+    runner._guard_floor = time.monotonic() + 30.0     # boards repainting
+    assert runner._setup_usb_reset(bus) is None
+    runner._guard_floor = None
+    runner.usb_reset_ok = False                       # no reset means
+    assert runner._setup_usb_reset(bus) is None
+    assert bus.resets == []
+
+
+def test_after_the_show_a_degraded_bus_is_recovered_before_the_owed_sweep(
+        monkeypatch):
+    """12:44:47-12:45:58: a reset earlier in the show left the probe sweep
+    owed; the master degraded during the show; after END the owed sweep ran
+    FIRST, found nothing and the unit looped on "no boards answering" until
+    somebody ran usbreset by hand. Now the owed sweep is begun only on a bus
+    whose timed STOP is fast and whose master ACKs; otherwise the recovery
+    ladder runs first - reset, proof - and the sweep follows it, and the
+    next preset paints."""
+    bus = degraded(monkeypatch)
+    bus.degraded = False
+    runner = degraded_runner(bus, owed_settle=0.3, precheck=0)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2)})
+    assert wait_until(lambda: session.phase == READY, timeout=10.0)
+    session.fire("c1", time.monotonic() + 0.2)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
+    time.sleep(0.5)
+    mark = len(runner.recent(500))
+    bus.degraded = True                          # ...during the show
+    runner._owed_at = time.monotonic()           # the sweep a reset left owed
+    runner._setup_owed = True
+    assert wait_until(lambda: any(
+        "panels online" in l for l in runner.recent(500)[mark:]),
+        timeout=20.0)
+    session.prepare("c2", {1: array(3), 2: array(4)})
+    assert wait_until(lambda: session.phase == READY
+                      and session.cue_id == "c2", timeout=10.0)
+    session.fire("c2", time.monotonic() + 0.2)
+    assert wait_until(lambda: session.phase == FIRED
+                      and session.cue_id == "c2", timeout=10.0)
+    runner.stop()
+    said = runner.recent(500)[mark:]
+    first = lambda text: next(i for i, l in enumerate(said) if text in l)
+    assert first("owed probe sweep: bus") < first("bus recovered by usb reset")
+    assert first("bus recovered by usb reset") < first("panels online")
+    assert "→ recovery first" in said[first("owed probe sweep: bus")]
+    assert not any("no boards answering" in l for l in said), said
+    assert len(bus.resets) == 1
+    assert len(shows(bus)) == 2 and session.status()["saved"] == [1, 2]
 

@@ -51,7 +51,7 @@ FRAME_S = 0.01             # conductor/sequence.py's FRAME_S: one table frame
 # re-upload that took every sweep off the timeline does not leave the
 # previous upload's tables in the boards.
 NO_TABLE = struct.pack(">64H", *([NO_DELAY] * 64))
-from epaper.transport import USBRESET_TIMEOUT_S, Bus, find_port
+from epaper.transport import ACK_TIMEOUT_S, USBRESET_TIMEOUT_S, Bus, find_port
 from epaper.transport import usb_reset as usb_reset_default
 from epaper.transport import usb_reset_available as usb_reset_check_default
 
@@ -219,9 +219,17 @@ STALL_LOG_MS = 50.0
 # padding path measured its STOP half a second after the padding and read
 # 61 ms: "bus recovered by padding (512 -> 61 ms)", three times, each one
 # false. So a recovery is PROVEN, never just timed (_prove_recovered()):
-# the master must answer a unicast 0x02 - a degraded master answers
-# nothing - AND a broadcast STOP sent after PROOF_GAP_S of silence must
-# take under RECOVERED_MS.
+# the master must ACK a unicast STOP - a degraded master answers nothing -
+# AND a broadcast STOP sent after PROOF_GAP_S of silence must take under
+# RECOVERED_MS.
+#
+# Why a unicast STOP and not 0x02 (radxa-07, 2026-09-28 12:40, main
+# 621669d): this firmware does not answer a 0x02 sent over the bus AT ALL,
+# healthy or not - the pre-cue check read "master silent (1 ms)" on a
+# healthy master and reset its USB 8 s before a cue, the idle proof could
+# never succeed, and Recover bus could never say "already clear". The
+# unicast STOP with its ACK is what the probe sweep itself asks every board
+# (_probe()), and what a healthy master demonstrably answers.
 #
 # A write this fast is a healthy port: on the real unit a clean broadcast
 # is +1..2 ms, so 100 ms is far above the noise and far below the 358 ms
@@ -245,10 +253,11 @@ RECOVER_MAX_ATTEMPTS = 3
 # a degraded master still read 61 ms, and short enough to be paid on every
 # recovery: a degraded master blocks ~270 ms by then and a healthy one 1-2.
 PROOF_GAP_S = 3.0
-# Asking the master a unicast 0x02: a read window per try, and two tries - a
-# healthy master answers in milliseconds, and a frame the degraded state ate
-# gets its second chance before the verdict is "silent".
-MASTER_ASK_S = 0.3
+# Asking the master (a unicast STOP, _master_answers()): the probe's own read
+# window per try (transport.ACK_TIMEOUT_S, as _probe() waits), and two tries
+# on the idle path - a healthy master ACKs in milliseconds, and a frame the
+# degraded state ate gets its second chance before the verdict is "silent".
+MASTER_ASK_S = ACK_TIMEOUT_S
 MASTER_ASK_TRIES = 2
 # After a USB reset the node goes away and comes back, possibly under a new
 # name - 0.44 s on the unit. It is waited for this long, polled every
@@ -269,16 +278,18 @@ RETRY_POLL_S = 0.05
 #  * SLOW but working (LOOK23, 2026-09-28 17:29): every picture appeared,
 #    each ~0.36 s late - a re-send there paints the slot twice.
 #
-# So the stall alone decides nothing: the master is asked one 0x02 first,
-# and only silence gets the reset and the re-send (_resend_on_stall()). Off
-# by default because the double paint is the worse outcome on stage and the
-# second signal has not been tried on a unit yet.
+# So the stall alone decides nothing - and at fire time there is NO second
+# signal left to ask (2026-09-28 12:40, radxa-07): the 0x02 it used is never
+# answered on this firmware, and the unicast STOP that replaced it everywhere
+# else cannot be sent here. Right after a show frame a working master is
+# repainting and deaf (silence would read as "degraded" - the double paint
+# again), and a STOP to a board whose sweep delay has not run out yet
+# cancels its picture. So _resend_on_stall() says the stall and re-sends
+# nothing, even with the flag on; the pre-cue check and the idle recovery are
+# where the cure runs.
 #
-# The budget, measured on the fake with the unit's own timings (the show
-# write 0.36 s, the 0x02 to a silent master its write plus the whole 0.3 s
-# read window, the reset 0.3 s, the node back 0.44 s, an open's 0.3 s
-# settle): the re-sent picture goes 1.80 s late, 1.88 / 1.92 s when udev
-# refuses the first open or two with EACCES as it did in Run 1.
+# The budget the re-send kept, measured on the fake with the unit's own
+# timings: the re-sent picture went 1.80 s late (1.88 / 1.92 s with EACCES).
 RESEND_STALL_MS = STALL_RECOVER_MS
 FIRE_RESEND_BUDGET_S = 2.5
 # ---- the pre-cue check: the next cue on time ----
@@ -287,9 +298,12 @@ FIRE_RESEND_BUDGET_S = 2.5
 # before the trigger.
 #
 # When: PRECHECK_S before every armed cue, one timed broadcast STOP and one
-# 0x02 to the master (both; the STOP alone could read fast if a heartbeat
-# had just gone out - see PROOF_GAP_S). A healthy port answers both in
-# milliseconds and that is the whole check.
+# unicast STOP to the master, which ACKs it (both; the broadcast alone could
+# read fast if a heartbeat had just gone out - see PROOF_GAP_S). A healthy
+# port answers both in milliseconds and that is the whole check - the whole
+# healthy wire at ~T-8.5 is those two frames. The USB reset follows ONLY a
+# broadcast STOP that blocked STALL_RECOVER_MS or more, whose write failed,
+# or a master that did not ACK.
 #
 # Two rules bound it, and both are the rules the heartbeat already lives by
 # (review of be1c0b5, F1/F3):
@@ -303,15 +317,18 @@ FIRE_RESEND_BUDGET_S = 2.5
 #   the heartbeat and the guard STOP use. So in a burst of cues closer
 #   together than that floor the check is skipped, which is intended.
 #
-# The budget, every write taken at a degraded 0.4 s, from T-8.5: the
-# measuring STOP ends by T-8.1, the 0x02 (one try, 0.4 + a 0.3 read) by
-# T-7.4, and the USB reset step - the reset 0.3, the node back ~0.45, the
-# open 0.3, the STOP straight after it (review M4) 0.4, and the 0x02 that
-# proves it 0.7 - needs USB_RESET_BUDGET_S = 2.2 s: done by T-5.2, before
-# T-5.0. The reset itself is bounded by T-5.0 whatever sudo does (review
-# M2). With the 3 s proof gap it would not fit, so the check proves by the
-# master's answer alone ("proof-lite"); the idle recovery proves with both.
-# A reset step fits from a lead of 5.0 + 0.4 + 0.7 + 2.2 = 8.3 s.
+# The budget, from T-8.5. A measuring STOP that stalled (>= 0.2 s, 0.4 at
+# worst) is not followed by the question - it goes straight to the USB reset
+# step: the reset 0.3, the node back ~0.45, the open 0.3, the STOP straight
+# after it (review M4) 0.4, and the unicast STOP that proves it (0.4 + the
+# 0.5 s read of ACK_TIMEOUT_S) 0.9 - USB_RESET_BUDGET_S = 2.4 s, done by
+# T-5.7. A STOP under 0.2 s is followed by the question (0.9 at worst, 0.56
+# on a degraded master right behind a write): the reset step then ends by
+# T-8.5 + 0.2 + 0.9 + 2.4 = T-5.0 at every limit. Each step is asked again
+# against the clock before it is begun, and the reset itself is bounded by
+# T-5.0 whatever sudo does (review M2). With the 3 s proof gap it would not
+# fit, so the check proves by the master's ACK alone ("proof-lite"); the
+# idle recovery proves with both.
 #
 # WHICH CUES GET ONE, in practice: the previous cue's guard floor has to be
 # past at T-8.5, and at the unit's --guard-delay 30 that floor is 30-38 s
@@ -323,7 +340,11 @@ PRECHECK_S = 8.5
 # THIS frame still go before the hold?
 DEGRADED_WRITE_S = 0.4
 MASTER_ASK_COST_S = DEGRADED_WRITE_S + MASTER_ASK_S
-USB_RESET_BUDGET_S = 2.2
+USB_RESET_BUDGET_S = 2.4
+# A probe sweep that finds no boards answering on an open port resets the
+# master's USB and sweeps again (_setup_usb_reset()) - at most this many
+# times per worker, recover_backoff apart, and then the old reopen loop.
+SETUP_RESETS_MAX = 3
 # How long the probe sweep a reset or a reopen owes waits after it before it
 # may start at all (re-review of e139a33). A recovery is what the operator
 # presses right before ② Show preset, and the preset follows within a
@@ -634,6 +655,9 @@ class DemoRunner:
         self._recover_next = 0.0           # monotonic: the backoff
         self._recover_said_enough = False  # the "leaving it to you" line
         self._recovering = False           # never re-entered
+        self._stop_failed = None           # the last timed STOP's raise
+        self._sweep_pending: "list[int]" = []
+        self._reset_setup_resets()
         # A reopen invalidates what the boards were told: the caches go,
         # and the full sweep is owed to _run_remote()'s own setup, where
         # it yields to every cue (_fire_before_probing()) instead of
@@ -1249,7 +1273,50 @@ class DemoRunner:
     def _setup_locked(self, bus, groups: int) -> bool:
         """_setup()'s body, with `_probing` held: no automatic bus
         recovery may run inside a sweep that is already asking every
-        board (and would reopen the port under it)."""
+        board (and would reopen the port under it).
+
+        A sweep that finds no boards answering on an open port is followed
+        by a USB reset of the master and one more sweep (_setup_usb_reset()
+        says when): `no boards answering → usb reset → panels online: 22/22`
+        or `… → usb reset → still no boards`, and then the verdict as ever.
+        """
+        absent_before = set(self.absent)
+        if not self._sweep_boards(bus, groups):
+            return False
+        if self._sweep_found_nothing():
+            reset = self._setup_usb_reset(bus)
+            if reset is not None:
+                done, how = reset
+                if not done:
+                    self.emit(f"no boards answering → usb reset → failed "
+                              f"({how})")
+                else:
+                    # The same sweep again, from what was known before the
+                    # first one (not three passes cut to one because the
+                    # dead master made every board look absent).
+                    with self._lock:
+                        self.absent = {b for b in absent_before
+                                       if b in self.boards}
+                    if not self._sweep_boards(bus, groups):
+                        return False
+                    self._setup_owed = False    # this is the sweep it owed
+                    if self._sweep_found_nothing() and not self.live:
+                        self.emit("no boards answering → usb reset → still "
+                                  "no boards")
+                    elif self._sweep_found_nothing():
+                        self.emit(f"no boards answering → usb reset → the USB "
+                                  f"board still silent ({len(self.live)}/"
+                                  f"{self.expected})")
+                    else:
+                        self.emit(f"no boards answering → usb reset → panels "
+                                  f"online: {len(self.live)}/{self.expected}")
+                        return self._sweep_verdict(said_online=True)
+        return self._sweep_verdict()
+
+    def _sweep_boards(self, bus, groups: int) -> bool:
+        """One probe sweep: the opening broadcast STOP, then every board on
+        the list PROBE_SWEEPS times. Sets live / absent; False only if it
+        was cut short (a stop)."""
         bus.send(stop(0xFF, groups))
         # This IS the "one broadcast stop when the worker takes the
         # port" the REMOTE loop owes at start-up - it is not sent twice,
@@ -1304,14 +1371,93 @@ class DemoRunner:
         self.absent = set(self.boards) - set(found)
         self.live = [b for b in self.boards if b in set(found)]
         self._next_reprobe = time.monotonic() + self.reprobe_interval
+        self._sweep_pending = pending
+        return True
+
+    def _sweep_found_nothing(self) -> bool:
+        """The sweep's "no boards answering": nobody at all, or the board
+        on the USB cable itself silent - through which every other board is
+        reached, so either way it is the master that is not answering."""
+        if not self.live:
+            return True
+        return USB_BOARD in self.boards and USB_BOARD not in self.live
+
+    def _sweep_verdict(self, said_online: bool = False) -> bool:
         if not self.live:
             self.error = "no boards answering"
             self.emit("ERROR no boards answering")
             return False
-        if pending:
-            self.emit(f"board {self._fmt_boards(pending)} absent, skipping")
-        self.emit(f"panels online: {len(self.live)}/{self.expected}")
+        if self._sweep_pending:
+            self.emit(f"board {self._fmt_boards(self._sweep_pending)} "
+                      f"absent, skipping")
+        if not said_online:
+            self.emit(f"panels online: {len(self.live)}/{self.expected}")
         return True
+
+    def _reset_setup_resets(self) -> None:
+        """A new worker gets SETUP_RESETS_MAX setup-path resets again."""
+        self._setup_resets = 0
+        self._setup_reset_next = 0.0
+        self._setup_resets_said = False
+
+    def _setup_usb_reset(self, bus) -> "tuple[bool, str] | None":
+        """A sweep found no boards answering on a port that is open: reset
+        the master's USB and let the caller sweep again (PM, radxa-07
+        2026-09-28 12:45 - after the show the owed sweep met a degraded
+        master, found nothing, and the unit went round "no boards answering
+        -> reopen the port -> sweep" for as long as nobody ran usbreset by
+        hand; one `sudo usbreset` cured it in 5 s). A reopen never cures
+        that state, so the old loop alone never ends.
+
+        Returns None when no reset was begun - and then the old behaviour
+        follows exactly as before. Begun only:
+        * with --auto-recover (the default) and a reset means this unit has
+          (`usb_reset_ok`); a unit started --no-auto-recover is one whose
+          master is not known to be address 1, where "the USB board silent"
+          means nothing;
+        * at most SETUP_RESETS_MAX times per worker, recover_backoff apart;
+        * not inside the last picture's repaint (`_guard_floor` - boards
+          repainting are deaf, which is not this state);
+        * not if the port is closed, and with a cue armed only if the whole
+          reset step fits before its hold (USB_RESET_BUDGET_S); the reset is
+          bounded by the hold and the port reopened by the trigger.
+        """
+        if not self.auto_recover or self.usb_reset_ok is not True:
+            return None
+        if self._stop.is_set() or self._recovering or self._bus_closed(bus):
+            return None
+        now = time.monotonic()
+        if self._setup_resets >= SETUP_RESETS_MAX:
+            if not self._setup_resets_said:
+                self._setup_resets_said = True
+                self.emit(f"no boards answering: {self._setup_resets} usb "
+                          f"resets already, leaving it to the port reopen")
+            return None
+        if now < self._setup_reset_next:
+            return None
+        if self._guard_floor is not None and now < self._guard_floor:
+            return None
+        give_up_at = reopen_by = None
+        session = self.remote
+        due = session.due() if session is not None else None
+        if due is not None:
+            give_up_at = due[1] - self.remote_guard_hold
+            reopen_by = due[1] - FIRE_SPIN_S
+            if now + USB_RESET_BUDGET_S > give_up_at:
+                self.emit("no boards answering → no time for a usb reset "
+                          "before the cue")
+                return None
+        self._setup_resets += 1
+        self._setup_reset_next = now + self.recover_backoff
+        self._recovering = True
+        try:
+            return self._usb_reset_reopen(bus, give_up_at=give_up_at,
+                                          reopen_by=reopen_by)
+        except Exception as exc:        # noqa: BLE001 - see _survived()
+            self._survived(bus, "usb reset", exc)
+            return False, f"raised: {exc or exc.__class__.__name__}"
+        finally:
+            self._recovering = False
 
     def _cycle(self, bus, groups: int, rng: random.Random) -> bool:
         self._reprobe(bus, groups)
@@ -2207,17 +2353,23 @@ class DemoRunner:
 
     def _master_answers(self, bus, groups: int,
                         tries: int = MASTER_ASK_TRIES) -> bool:
-        """Does the master on the USB cable answer a unicast 0x02?
+        """Does the master on the USB cable ACK a unicast STOP?
 
         The one question a degraded master fails whatever else is done: it
         relays nothing and answers nothing (radxa-07: "no boards answering"
-        for 100 s). Read-only - nothing is stored or played - and asked of
-        the USB board alone, never through the relay (WITNESS_USB). The
-        answer's content does not matter (production firmware answers
-        ACK_FAIL 0x0A); that it comes, from address 1, is the whole reading.
-        Callers keep it out of a picture: a board repainting is deaf too.
+        for 100 s). It is exactly the probe sweep's own first question
+        (_probe(): stop(board), one send, the transport's ACK_TIMEOUT_S read
+        window), asked of the USB board alone, never through the relay. NOT
+        0x02: this firmware never answers a 0x02 sent over the bus, healthy
+        or not (radxa-07, 2026-09-28 12:40 - see RECOVERED_MS).
+
+        Any answer from address 1 is the master alive - an ACK, and a BUSY
+        too (it is there, merely working). A STOP to an idle board changes
+        nothing on the glass; callers keep this out of a picture all the
+        same (a board repainting is deaf, and a STOP inside a sweep could
+        cancel a picture whose delay has not run out).
         """
-        frame = get_version(USB_BOARD, groups)
+        frame = stop(USB_BOARD, groups)
         for _ in range(max(1, tries)):
             try:
                 ack = bus.request(frame, retries=1, timeout=MASTER_ASK_S)
@@ -2374,8 +2526,8 @@ class DemoRunner:
                          ) -> "tuple[bool, float | None, str]":
         """PROOF that the bus is back - both, never just a timing:
 
-          1  the master answers a unicast 0x02 (a degraded one answers
-             nothing), and
+          1  the master ACKs a unicast STOP (_master_answers(); a
+             degraded one answers nothing), and
           2  a broadcast STOP sent after PROOF_GAP_S of silence takes under
              RECOVERED_MS. The gap is the point: on the degraded master a
              write half a second after another read 61 ms - the false
@@ -2384,7 +2536,7 @@ class DemoRunner:
 
         Both assume the board on the USB cable is bus address 1
         (ADDR_BUS_MASTER, SPECIFICATION 4.5): a master at another address
-        never answers the 0x02 and reads as silent.
+        never ACKs the STOP to address 1 and reads as silent.
 
         If a cue or a job comes up during the gap (_quiet_gap()), the proof
         ends there with the verdict so far - the master answered - rather
@@ -2400,6 +2552,10 @@ class DemoRunner:
         if cut:
             return True, None, f"master answers, {cut}"
         after = self._timed_stop(bus, groups)
+        if self._stop_failed is not None:
+            return False, after, (f"master answers, but the stop after "
+                                  f"{self.proof_gap:g} s: write failed: "
+                                  f"{self._stop_failed}")
         if after >= RECOVERED_MS:
             return False, after, (f"master answers, but a stop after "
                                   f"{self.proof_gap:g} s took {after:.0f} ms")
@@ -2419,14 +2575,21 @@ class DemoRunner:
         (bus_stall, and so the tile). The pre-cue check passes
         STALL_RECOVER_MS - a 60 ms block right before a cue is not worth an
         amber mark, only the state it exists to catch is (review F1(d)).
+
+        A write that raised leaves its reason in `self._stop_failed` (None
+        after one that went out): a failed write can be fast, and a fast
+        time must never read as "bus ok" or "clear" (final gate, LOW).
         """
         began = time.perf_counter()
+        self._stop_failed = None
         try:
             took_ms = self._send_timed(bus, stop(0xFF, groups), "stop",
                                        record_from_ms=record_from_ms)
         except Exception as exc:        # noqa: BLE001 - measured, not raised
             took_ms = (time.perf_counter() - began) * 1000.0
+            self._stop_failed = str(exc) or type(exc).__name__
             self.emit(f"bus recovery: the stop did not go out ({exc})")
+            return took_ms
         self._sent_broadcast_stop()
         return took_ms
 
@@ -2475,7 +2638,7 @@ class DemoRunner:
         "write failed: <error>" - never swallowed; the caller says it once.
         """
         if port is None:
-            port = self.port or find_port() or getattr(bus, "port", None)
+            port = self.port or self._safe_find_port() or getattr(bus, "port", None)
         opened = self._open_retrying(
             bus, port, give_up_at=None if at is None else at - FIRE_SPIN_S)
         if opened and opened != port:
@@ -2566,12 +2729,13 @@ class DemoRunner:
                 "before_ms": self.bus_recovery["before_ms"],
                 "after_ms": self.bus_recovery["after_ms"]}
 
-    def _recover_bus(self, bus, groups: int) -> dict:
+    def _recover_bus(self, bus, groups: int,
+                     measured: "float | None" = None) -> dict:
         """Get a bus that accepts frames and executes none working again -
         the idle recovery (two stalled heartbeats) and POST /bus/recover.
 
           0  what is wrong, measured NOW: a timed STOP, and if that is not
-             already a stall, a unicast 0x02 to the master. Only BOTH -
+             already a stall, a unicast STOP to the master. Only BOTH -
              the STOP under STALL_RECOVER_MS and the master answering - is
              "clear" ("bus was already clear" on the page). The STOP alone
              could read fast right behind the heartbeat that triggered this
@@ -2580,7 +2744,7 @@ class DemoRunner:
           1  the cure: the port closed, the master's USB device reset, its
              node waited for (it may come back renamed), the port opened
              again with retries while udev catches up (_usb_reset_reopen()).
-          2  the PROOF (_prove_recovered()): the master answers 0x02, and a
+          2  the PROOF (_prove_recovered()): the master ACKs, and a
              STOP after PROOF_GAP_S of silence is under RECOVERED_MS. Only
              then "by usb_reset"; anything less is "failed", with what was
              found, and the tile goes on saying "restart this unit".
@@ -2591,7 +2755,7 @@ class DemoRunner:
 
         Bounded: a degraded STOP 0.4 s, the reset 0.3, the node back ~0.45
         (USB_NODE_WAIT_S at most), the open 0.3 (+ OPEN_RETRY_S at most
-        while udev catches up), the 0x02 up to 1.4, the gap 3.0 and one
+        while udev catches up), the unicast STOP up to 1.8, the gap 3.0 and one
         STOP - about 6 s typical, 9 s at every limit; the agent waits 15.
         Every entry is gated on the last picture's floor and a minute with
         no cue (recover_refusal(), _recover_quiet()), and nothing here
@@ -2606,7 +2770,7 @@ class DemoRunner:
                     "before_ms": None, "after_ms": None}
         self._recovering = True
         try:
-            return self._recover_bus_steps(bus, groups)
+            return self._recover_bus_steps(bus, groups, measured)
         except Exception as exc:        # noqa: BLE001 - see _survived()
             self._survived(bus, "bus recovery", exc)
             return {"recovered": False, "by": None,
@@ -2614,12 +2778,20 @@ class DemoRunner:
         finally:
             self._recovering = False
 
-    def _recover_bus_steps(self, bus, groups: int) -> dict:
-        """_recover_bus()'s ladder, under its guard."""
-        before = self._timed_stop(bus, groups)
-        if before < STALL_RECOVER_MS and self._master_answers(bus, groups):
-            return self._recovery_done(None, before, before, True,
-                                       "master answers")
+    def _recover_bus_steps(self, bus, groups: int,
+                           measured: "float | None" = None) -> dict:
+        """_recover_bus()'s ladder, under its guard. `measured`: a caller
+        that has just found the bus bad (_owed_sweep_bus_ok()) hands over
+        its STOP's time and the ladder starts at the cure - measured again
+        right behind that STOP, a degraded master reads 61 ms."""
+        if measured is not None:
+            before = measured
+        else:
+            before = self._timed_stop(bus, groups)
+            if (self._stop_failed is None and before < STALL_RECOVER_MS
+                    and self._master_answers(bus, groups)):
+                return self._recovery_done(None, before, before, True,
+                                           "master answers")
         done, how = self._usb_reset_reopen(bus)
         if not done:
             return self._recovery_done(None, before, None, False, how)
@@ -2641,6 +2813,14 @@ class DemoRunner:
         if self._frame_refusal(at, DEGRADED_WRITE_S) is None:
             self._timed_stop(bus, groups, record_from_ms=STALL_RECOVER_MS)
 
+    def _fire_resend_signal(self, bus, groups: int) -> "bool | None":
+        """Right after a stalled show frame: True if the master is silent
+        (degraded - re-send), False if it answers (slow but working - do
+        not), None if there is no safe way to ask. On this firmware nothing
+        is safe to ask there (see _resend_on_stall()), so: None, and no frame
+        on the wire."""
+        return None
+
     def _resend_on_stall(self, bus, groups: int, frame, cue_id: str,
                          took_ms: float, at: float) -> "float | None":
         """The fire-time re-send (--resend-on-stall; OFF by default).
@@ -2659,23 +2839,28 @@ class DemoRunner:
           * SLOW but working (LOOK23, 2026-09-28 17:29): every picture
             appeared, each about 0.36 s late, and the master answers.
 
-        Re-sending in the second repaints the slot twice. So after a show
-        frame that blocked at least RESEND_STALL_MS the master is asked ONE
-        unicast 0x02 (one try, MASTER_ASK_S): an answer means the frame is
-        being executed late - "cue q05 stalled 251 ms, master answers - not
-        re-sent" and nothing else; only SILENCE gets the USB reset, the
-        reopen and the same frame once more, never twice, within
-        FIRE_RESEND_BUDGET_S of the cue's instant (the reset itself is given
-        only what is left of it).
-
-        Off by default (PM, after that review): the double paint it risks
-        where the reading is wrong is worse on stage than a cue that is
-        late, and the second signal is not yet tried on a unit.
+        Re-sending in the second repaints the slot twice, so a second signal
+        has to tell them apart - and there is none left at fire time
+        (2026-09-28 12:40, radxa-07): the unicast 0x02 this asked is never
+        answered on this firmware (so every stall read "silent"), and the
+        unicast STOP that replaced it elsewhere cannot go here - a working
+        master is repainting and deaf right after the show frame, and a STOP
+        to a board whose sweep delay has not run out cancels its picture. So
+        with the flag on the stall is SAID and nothing is re-sent: "cue q05
+        stalled 359 ms - not re-sent (no safe question at fire time)". The
+        pre-cue check and the idle recovery are where the cure runs. The
+        reset-and-re-send below is kept for a signal that is safe here, and
+        `_fire_resend_signal` is where one would be plugged in.
         """
         if not self.resend_on_stall or took_ms < RESEND_STALL_MS:
             return None
         give_up = at + FIRE_RESEND_BUDGET_S
-        if self._master_answers(bus, groups, tries=1):
+        silent = self._fire_resend_signal(bus, groups)
+        if silent is None:
+            self.emit(f"cue {cue_id} stalled {took_ms:.0f} ms - not re-sent "
+                      f"(no safe question at fire time)")
+            return None
+        if not silent:
             self.emit(f"cue {cue_id} stalled {took_ms:.0f} ms, master answers "
                       f"- not re-sent")
             return None
@@ -2715,11 +2900,11 @@ class DemoRunner:
     def _precheck(self, bus, groups: int, cue_id: str, at: float) -> None:
         """PRECHECK_S before a cue: is the port going to take the frame?
 
-        A timed broadcast STOP and a unicast 0x02 to the master. On a
+        A timed broadcast STOP and a unicast STOP the master ACKs. On a
         healthy unit that is two frames of a few milliseconds and the whole
         check. Either one bad - the STOP blocked STALL_RECOVER_MS or more,
         or the master silent - and the master's USB device is reset there
-        and then (_usb_reset_reopen()), proven by its answering 0x02 again
+        and then (_usb_reset_reopen()), proven by its ACK again
         ("proof-lite": the 3 s gap of the full proof does not fit here).
 
         Called on every tick of _fire_at()'s wait; it decides for itself
@@ -2754,7 +2939,10 @@ class DemoRunner:
         deadline = at - self.remote_guard_hold
 
         before = self._timed_stop(bus, groups, record_from_ms=STALL_RECOVER_MS)
-        stalled = before >= STALL_RECOVER_MS
+        # A STOP whose write raised went nowhere, however fast it failed:
+        # that is the reset path, as for a silent master (final gate, LOW).
+        failed = self._stop_failed
+        stalled = failed is not None or before >= STALL_RECOVER_MS
         asked = answers = False
         if not stalled and self._frame_fits(at, MASTER_ASK_COST_S):
             asked = True
@@ -2797,7 +2985,8 @@ class DemoRunner:
             said = ", master answers" if asked else ""
             self.emit(f"precheck {cue_id}: bus ok ({before:.0f} ms{said})")
             return
-        what = (f"stalled {before:.0f} ms" if stalled
+        what = (f"write failed: {failed}" if failed is not None
+                else f"stalled {before:.0f} ms" if stalled
                 else f"master silent ({before:.0f} ms)")
         chain = "".join(f" → {step}" for step in steps)
         self.emit(f"precheck {cue_id}: {what}{chain}")
@@ -2847,7 +3036,15 @@ class DemoRunner:
             return False
         self._next_port_poll = now + self.port_poll
         port = getattr(bus, "port", None) or self.port
-        if not port or self._link_token(port) is not None:
+        if not port:
+            return False
+        try:
+            if self._link_token(port) is not None:
+                return False
+        except Exception:               # noqa: BLE001 - see below
+            # Cannot tell whether the node is there: do nothing on a guess.
+            # Read as "gone" it would start a 3 s wait on every poll, and a
+            # raise here must never reach the session (final gate, LOW).
             return False
         began = now
         found = None
@@ -2861,8 +3058,8 @@ class DemoRunner:
                 break
             if wanted is not None and not wanted():
                 return False                # the cue was cancelled or moved
-            candidate = self.port or find_port()
-            if candidate and self._link_token(candidate) is not None:
+            candidate = self.port or self._safe_find_port()
+            if candidate and self._safe_token(candidate) is not None:
                 found = candidate
                 break
             pause = PORT_RETRY_S
@@ -2892,7 +3089,9 @@ class DemoRunner:
             why = self._frame_refusal(at, DEGRADED_WRITE_S)
             if why is None:
                 after = self._timed_stop(bus, groups)
-                state = (f"bus ok ({after:.0f} ms)" if after < RECOVERED_MS
+                state = (f"write failed: {self._stop_failed}"
+                         if self._stop_failed is not None
+                         else f"bus ok ({after:.0f} ms)" if after < RECOVERED_MS
                          else f"bus still stalled ({after:.0f} ms)")
             else:
                 state = f"reopened, not measured ({why})"
@@ -2969,6 +3168,57 @@ class DemoRunner:
             return False
         due = session.due()
         return due is None or due[1] - now >= self.recover_quiet
+
+    def _owed_sweep_bus_ok(self, bus, groups: int) -> bool:
+        """May the owed sweep run on this bus? Asked once _owed_setup_clear()
+        has said it may run at all (PM, radxa-07 2026-09-28 12:44): after the
+        show the owed sweep ran FIRST, on a master that had degraded during
+        it, found nothing and fell into the reopen loop, which never resets
+        USB and never let the idle recovery in.
+
+        So: a timed broadcast STOP under STALL_RECOVER_MS (a write that
+        raised is not) and the master's ACK to a unicast STOP - then True,
+        and the sweep runs. Otherwise the recovery ladder runs first
+        (_recover_bus() from its cure: reset, prove) and False: the reset owes
+        the sweep again, OWED_SETTLE_S from now, and this is asked again
+        then. The ladder counts against the idle recovery's own attempts
+        and backoff (recover_attempts_max, recover_backoff); once those are
+        spent, or with --no-auto-recover, the sweep runs as it always did
+        (and the setup's own reset, _setup_usb_reset(), is what is left).
+        """
+        try:
+            before = self._timed_stop(bus, groups,
+                                      record_from_ms=STALL_RECOVER_MS)
+            failed = self._stop_failed
+            stalled = failed is not None or before >= STALL_RECOVER_MS
+            if not stalled and self._master_answers(bus, groups):
+                return True
+        except Exception as exc:        # noqa: BLE001 - see _survived()
+            self._survived(bus, "owed sweep check", exc)
+            self._owed_at = time.monotonic()    # asked again after the settle
+            return False
+        what = (f"write failed: {failed}" if failed is not None
+                else f"stalled {before:.0f} ms" if stalled
+                else f"master silent ({before:.0f} ms)")
+        now = time.monotonic()
+        if (not self.auto_recover
+                or self._recover_tries >= self.recover_attempts_max):
+            self.emit(f"owed probe sweep: bus {what}, sweeping all the same")
+            return True
+        if now < self._recover_next:
+            # Stays owed; asked again after the settle.
+            self._owed_at = now
+            return False
+        self.emit(f"owed probe sweep: bus {what} → recovery first")
+        self._recover_tries += 1
+        self._recover_next = now + self.recover_backoff
+        self._stall_streak = 0
+        self._recover_bus(bus, groups, measured=before)
+        # A reset owes the sweep itself (from now); one that could not reset
+        # leaves it owed the same way, for the next attempt.
+        self._setup_owed = True
+        self._owed_at = time.monotonic()
+        return False
 
     def _recover_quiet(self, now: float) -> bool:
         """True when nothing is going to want the bus for recover_quiet.
@@ -3241,12 +3491,13 @@ class DemoRunner:
         self._stall_streak = self._recover_tries = 0
         self._recover_next = 0.0
         self._recover_said_enough = False
+        self._reset_setup_resets()
         self._setup_owed = False
         # Never carried over from a previous worker: a worker stopped with it
         # set would otherwise let THIS worker's start-up sweep stand down.
         self._setup_yields = False
         while not self._stop.is_set():
-            port = self.port or find_port()
+            port = self.port or self._safe_find_port()
             if not port:
                 if self.error != "no serial port":
                     self.emit("no serial port, waiting")
@@ -3478,7 +3729,8 @@ class DemoRunner:
                                 # The sweep about to run covers it - and it
                                 # is a start-up one, which never yields.
                                 self._setup_owed = False
-                            elif self._owed_setup_clear(session):
+                            elif (self._owed_setup_clear(session)
+                                  and self._owed_sweep_bus_ok(bus, groups)):
                                 # It runs HERE and only when nothing it sends
                                 # can land in a picture or near a trigger;
                                 # otherwise it stays owed and the loop goes
@@ -3602,8 +3854,9 @@ class DemoRunner:
     def _run(self) -> None:
         rng = random.Random(self._seed)
         groups = self._take_groups()
+        self._reset_setup_resets()
         while not self._stop.is_set():
-            port = self.port or find_port()
+            port = self.port or self._safe_find_port()
             if not port:
                 # Say it once. Standby waits for the port from boot, so a
                 # host with no panels attached would otherwise write this
@@ -3617,6 +3870,10 @@ class DemoRunner:
             try:
                 with self._open_bus(port) as bus:
                     self.emit(f"port {port}")
+                    if self.usb_reset_ok is None:
+                        # Standby and the demos cure a dead master in their
+                        # setup too (_setup_usb_reset()), so they ask once.
+                        self._check_usb_reset(port)
                     consecutive = 0
                     needs_setup = True
                     while not self._stop.is_set():

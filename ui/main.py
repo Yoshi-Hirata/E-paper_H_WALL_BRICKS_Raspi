@@ -321,14 +321,12 @@ def main() -> int:
     # and a re-send in the second paints the slot twice. When turned on it
     # asks the master a 0x02 first and re-sends only when it is silent.
     ap.add_argument("--resend-on-stall", action="store_true",
-                    help="re-send a cue whose own broadcast blocked 200 ms "
-                         "or more - but only if the master then does not "
-                         "answer a 0x02 (the 2026-09-28 state where it "
-                         "accepted frames and executed none): its USB "
-                         "device is reset and the same frame sent once "
-                         "more, about 1.8 s late. A master that answers is "
-                         "executing late and is left alone. Off by default: "
-                         "a wrong reading paints the slot twice")
+                    help="say a cue whose own broadcast blocked 200 ms or "
+                         "more; it is NOT re-sent - there is no safe way "
+                         "to ask the master right after a show frame (0x02 "
+                         "is never answered on this firmware, and a STOP "
+                         "could cancel a delayed picture; 2026-09-28). The "
+                         "pre-cue check and the idle recovery are the cure")
     ap.add_argument("--no-resend-on-stall", action="store_true",
                     help="(the default; accepted for service files that "
                          "name it)")
@@ -351,8 +349,10 @@ def main() -> int:
                          "re-enumeration is then found at the next write, "
                          "as before 2026-09-28")
     ap.add_argument("--no-auto-recover", action="store_true",
-                    help="do not recover the bus on its own after two "
-                         "stalled heartbeats; the PC's Recover bus button "
+                    help="do not recover the bus on its own: not after two "
+                         "stalled heartbeats, not before an owed probe "
+                         "sweep, and no USB reset when a sweep finds no "
+                         "boards answering; the PC's Recover bus button "
                          "still works")
     ap.add_argument("--verify-after", type=float, default=VERIFY_AFTER_S,
                     help=f"seconds after a cue's broadcast (and after the "

@@ -18,6 +18,47 @@
 
 ## 2. 直近で完成したもの
 
+**マスタへの問いを 0x02 からユニキャスト STOP に、掃引の前と掃引の中でも USB
+リセット(radxa-07 の実機、main 621669d、2026-09-28 12:33-12:46)**
+
+- 実機で見つかった 2 つ: ① 健全なマスタで `precheck …q01: master silent (1 ms)
+  → usb reset → master still silent` ―― **このファームウェアはバス越しの 0x02 に
+  健全でも答えない**。点検のたびに健全なマスタをリセットし、証明は通らず、
+  `already clear` も言えなかった。② そのリセットが預けた掃引が、END のあと
+  劣化したマスタで**先に**走り、`ERROR no boards answering` → 開き直し → 掃引の
+  輪から出られなかった(手で `sudo usbreset` したら 5 秒で `panels online: 22/22`)
+- **A** 問いは `_probe()` と同じ**アドレス 1 へのユニキャスト STOP と ACK**
+  (読みの窓 `ACK_TIMEOUT_S` 0.5 秒)。0x02 は健全さの判定に使わない。偽物の
+  マスタも実物どおり **0x02 には常に黙り、STOP には健全なときだけ ACK**
+- **B** 掃引が誰も見つけない(USB の基板自身が黙るときも)開いたポートでは USB
+  リセットしてもう一度掃引: `no boards answering → usb reset → panels online:
+  22/22` / `… → still no boards`。1 ワーカー 3 回まで、60 秒あけて、あとは従来
+- **C** 預けた掃引は、計った STOP が 200 ms 未満でマスタが ACK したときだけ。
+  そうでなければ先に復旧のはしご: `owed probe sweep: bus stalled 358 ms →
+  recovery first` → `bus recovered by usb reset (358 → 0 ms, master answers)` →
+  `panels online`
+- **D** 直前点検は、健全なら T−8.5 にブロードキャスト STOP とユニキャスト
+  STOP/ACK の 2 フレームだけ。リセットは STOP ≥ 200 ms・書き込み失敗・ACK 無し
+  のときだけ(予算 `USB_RESET_BUDGET_S` 2.4 秒、実測 T−7.05 / T−6.79 に終わる)
+- **発火時の再送は `--resend-on-stall` でも再送しない**: 発火直後に安全な問いが
+  無い(描き直し中のマスタは黙る、遅延の切れていない基板への STOP は絵を消す)。
+  `cue q05 stalled 359 ms - not re-sent (no safe question at fire time)`
+
+**Recover bus は「PC のワーカーがポートを持っている機体」だけ(393ddcd の最終ゲート)**
+
+- 判定は **`owned` = `runner.remote is self`** の一つだけ。`/status` と
+  `/api/fleet` に `owned` が出て、ボタンと ② Show preset 前の掃引はそれで決める
+  (フェーズは見ない)。Upload 直後でチップが `local` の機体は owned、Conductor の
+  `standby` は owned でない(白のスタンバイは一度きりのワーカー)―― 機体は
+  `unit is in standby - Upload first, then recover` で断る。`owned` を返さない
+  古い機体ソフトにはボタンを出さない。**本番前の点検は「Upload のあと、ready の
+  タイルで Recover bus を押す」**(CONDUCTOR_START 手順 6)
+- 測る STOP の書き込みが例外なら `bus ok` / `already clear` とは言わない
+  (`precheck q07: write failed: … → usb reset → …`)。ポート監視・高速の開き直し・
+  ワーカーの主ループの `find_port()` / ノード確認は例外を出さない版に。
+  ワーカーが終わった機体への Recover bus は 15 秒待たずに
+  `unit's worker is not running`
+
 **USB リセットの復旧を、レビューに合わせて締めた(349dcdd の敵対的レビュー:
 「`--no-resend-on-stall` で出せ」)**
 

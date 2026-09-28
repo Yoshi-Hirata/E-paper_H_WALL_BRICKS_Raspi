@@ -377,6 +377,12 @@ class UnitLink:
                 # this unit" on the tile; None (not asked yet, or an agent
                 # too old to say) puts nothing.
                 "usb_reset_ok": status.get("usb_reset_ok"),
+                # Whether the PC's worker holds the unit's port - the only
+                # time Recover bus means anything (ui/remote.py's owned()).
+                # Missing from an agent too old to say, which also has no
+                # /bus/recover: the page offers it no button and its sweep
+                # skips it.
+                "owned": status.get("owned"),
                 # Taking the show's pictures back out of slots 1-18 once
                 # the show is over (ui/remote.py's clear()): {"state",
                 # "done", "total", "failed"}, state "none" until one is

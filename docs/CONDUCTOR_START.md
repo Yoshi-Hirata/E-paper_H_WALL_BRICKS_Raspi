@@ -252,7 +252,10 @@ the show` と出る ― **本番前にこの文が出ていないことを確か
    - **`Boards (answering / expected)` の行が `16 / 16`**(その衣装の基板数。
      `2 / 16` のままなら 1. に戻る)
    - **タイル最下段のログ行が `panels online: 16/16`**(機体が基板を全部
-     見つけた行。行にマウスを置くとそれまでのログも出る)
+     見つけた行。行にマウスを置くとそれまでのログも出る)。
+     `no boards answering → usb reset → panels online: 16/16` も同じ意味で
+     よい(親基板が劣化していたので機体が自分で USB をリセットした)。
+     `no boards answering → usb reset → still no boards` なら 1. に戻る
    - **機体名の行の右端の丸いチップが `standby`、そのあと `ready`**(`standby` は白の
      スタンバイを描き終えた状態、`ready` は Conductor の指示待ち。
      `local` は機体が自分のメニューにいる状態なので、まだ Conductor のものに
@@ -272,13 +275,23 @@ the show` と出る ― **本番前にこの文が出ていないことを確か
    **琥珀色(amber)**で 1 行
    `radxa-01: bus degraded — press Recover bus (or reboot the Radxa), then Upload`
    (2 台以上なら `radxa-01, radxa-02: bus degraded — press Recover bus (or reboot these Radxas), then Upload`)
-   ―― **START は止めない**(詰まっていてもキューは出る、ただ遅れる)
-5. **`ready` のタイルそれぞれで Recover bus を 1 回押す**(ボタンはショーが
-   走っていない間、Conductor の手にある機体 ―― チップが `standby` / `ready` /
-   `armed` / `fired` / `failed` ―― のタイルの `Fired late by` の行に出る。
-   **`local`(機体が自分のメニューやデモにいる)のタイルには出ない**: そこで
+   ―― **START は止めない**(詰まっていてもキューは出る、ただ遅れる)。
+   赤い印の横に Recover bus が**出ていない**(チップが `standby` や `local` で、
+   Conductor のワーカーがまだ機体のポートを持っていない ―― 6. を参照)ときは、
+   その Radxa を再起動する
+5. **① Upload** → **「THE SHOW」カードが `pictures written on 10 / 10 units`**
+   になり、**全機体のタイルの `Pictures` 行が `written`** になったのを確認
+6. **Upload のあと、ready のタイルで Recover bus を押す**(1 台 1 回。ボタンは
+   ショーが走っていない間、**Conductor のワーカーが機体のポートを持っている**
+   タイル ―― Upload した機体、チップが `ready` / `armed` / `fired` / `failed` ――
+   の `Fired late by` の行に出る。機体の `/status` の `owned` がそれを言い、
+   チップの名前では決めない。**`standby` のタイルには出ない**: 白の
+   スタンバイは描き終えるとワーカーが終わり、ポートはもう誰のものでもない ――
+   機体も `unit is in standby - Upload first, then recover` で断る。
+   **`local`(機体が自分のメニューやデモにいる)のタイルにも出ない**: そこで
    押すと機体を乗っ取ってデモを止めてしまうので、機体も
-   `unit is on its own menu - nothing to recover from here` で断る)。
+   `unit is on its own menu - nothing to recover from here` で断る。
+   `owned` を返さない古い機体ソフトのタイルにも出ない)。
    トーストは **`radxa-01: bus was already clear`** でなければならない。
    **健全な衣装なのに `bus recovered…` や `bus recovery failed…` と出たら**、
    その機体は USB ケーブルの先の基板がアドレス 1 でないなどで、機体の判定が
@@ -286,9 +299,7 @@ the show` と出る ― **本番前にこの文が出ていないことを確か
    起動する**(直前点検と自動復旧を止める。SPECIFICATION §4.5 の「前提」)。
    タイルに琥珀色で **`no usb reset on this unit`** と出ている機体は、劣化しても
    自分では直せない ―― そうなったら Radxa の再起動か USB の挿し直ししかない
-6. **① Upload** → **「THE SHOW」カードが `pictures written on 10 / 10 units`**
-   になり、**全機体のタイルの `Pictures` 行が `written`** になったのを確認 →
-   **③ START**
+7. **③ START**
 
 - 琥珀色の `bus stalled n ms` が出るだけなら、基板が描画中で USB を
   取らなかった普通の事象(赤にはならない)。赤になるのは **3 つそろったとき
