@@ -97,10 +97,11 @@ DEFAULT_SLOT = 19
 # not just a ShowPlayer-run show).
 FIRE_IMMINENT_S = 0.05
 # How long POST /bus/recover waits for the worker's answer. The recovery
-# itself is bounded at about 11 s (ui/runner.py's _recover_bus()); this is
-# that with room for the worker to reach the job, and a 409 saying so
-# rather than an HTTP client left hanging.
-RECOVER_WAIT_S = 15.0
+# itself takes about 6 s typically and is bounded at about 20 s with every
+# limit hit at once (ui/runner.py's _recover_bus()); this is that with room
+# for the worker to reach the job, and a 409 saying so rather than an HTTP
+# client left hanging. conductor/fleet.py's RECOVER_TIMEOUT_S outlives it.
+RECOVER_WAIT_S = 22.0
 
 
 class RemoteError(ValueError):

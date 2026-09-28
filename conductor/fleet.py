@@ -57,10 +57,11 @@ T0_TOLERANCE_S = 0.05      # a unit's T0 further off than this is corrected
 SUPERVISE_EVERY_S = 3.0    # at most one correction per unit in this time
 DEMO_SAVE_TIMEOUT_S = TIMEOUT_S * 4    # /demo/save includes an eMMC write
 # POST /bus/recover holds the connection for as long as the recovery takes:
-# the unit bounds its own work at ~11 s and its wait at 15 s (ui/remote.py's
-# RECOVER_WAIT_S), so this has to outlive that and say "no answer" only when
-# the unit really has stopped answering.
-RECOVER_TIMEOUT_S = 20.0
+# the unit bounds its own work at ~20 s (every limit at once; ~6 s typical)
+# and its wait at 22 s (ui/remote.py's RECOVER_WAIT_S), so this has to
+# outlive that and say "no answer" only when the unit really has stopped
+# answering.
+RECOVER_TIMEOUT_S = 25.0
 # How often a unit is asked what demos it holds (GET /demo/list, from the
 # poll loop). The store only changes when someone writes or deletes one -
 # and those update the cache straight from the answer - so this is just

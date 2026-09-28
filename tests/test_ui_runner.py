@@ -186,7 +186,9 @@ class DegradedMaster(FakeBus):
     And as the REAL firmware answers when it is healthy (radxa-07, 2026-09-28
     12:40): every unicast STOP / config is ACKed, and a 0x02 over the bus is
     NEVER answered, healthy or not - so a health check built on 0x02 cannot
-    pass this suite (it read a healthy master as "silent" on the unit).
+    pass this suite (it read a healthy master as "silent" on the unit). And,
+    healthy, it misses the first unicast asked within 0.1 s of a broadcast
+    (radxa-07 on dc846a1: every precheck's first ask, whichever board).
 
     The USB layer, for the runner's usb_reset= and link_token=: a reset
     takes `reset_s`, the node vanishes and is back `reenum_s` later - a new
@@ -209,6 +211,11 @@ class DegradedMaster(FakeBus):
             reset_ok, reset_cures, half_cure)
         self.degraded = True
         self.slow_after_pause = False           # the half cure
+        # radxa-07, dc846a1: a healthy master misses the FIRST unicast asked
+        # within `relay_s` of a broadcast - it is still relaying it.
+        self.relay_s = 0.1
+        self.last_broadcast = float("-inf")
+        self.relaying = False
         self.last_write = time.monotonic()
         self.gen = 0
         self.node_back_at = 0.0
@@ -227,11 +234,19 @@ class DegradedMaster(FakeBus):
 
     def send(self, frame):
         self._write()
+        if frame.dest == 0xFF:
+            self.last_broadcast = time.monotonic()
+            self.relaying = True
         super().send(frame)
 
     def request(self, frame, retries=3, timeout=None):
         self._write()
-        if self.degraded or frame.cmd == GET_VERSION:
+        relayed_over = (self.relaying and frame.dest != 0xFF
+                        and time.monotonic() - self.last_broadcast
+                        < self.relay_s)
+        if frame.dest != 0xFF:
+            self.relaying = False
+        if self.degraded or frame.cmd == GET_VERSION or relayed_over:
             # Accepted, never answered - and a silence is only known once
             # the whole read window has passed, every try of it
             # (transport.Bus.request), so the caller pays for that too. A

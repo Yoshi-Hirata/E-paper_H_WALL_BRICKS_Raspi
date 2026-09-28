@@ -318,8 +318,10 @@ def main() -> int:
     # (PM, after the review of 349dcdd): a stalled show frame is one of two
     # states - DEGRADED (accepted, never executed, master silent: radxa-07)
     # or SLOW (every picture appears ~0.36 s late, master answers: LOOK23) -
-    # and a re-send in the second paints the slot twice. When turned on it
-    # asks the master a 0x02 first and re-sends only when it is silent.
+    # and a re-send in the second paints the slot twice. There is no safe
+    # question to tell them apart at fire time (0x02 is never answered on
+    # this firmware; a unicast STOP there could cancel a delayed picture),
+    # so even when turned on it only says the stall and re-sends nothing.
     ap.add_argument("--resend-on-stall", action="store_true",
                     help="say a cue whose own broadcast blocked 200 ms or "
                          "more; it is NOT re-sent - there is no safe way "
@@ -336,14 +338,18 @@ def main() -> int:
     ap.add_argument("--precheck", type=float, default=PRECHECK_S,
                     metavar="SECONDS",
                     help=f"how long before each cue the unit checks its "
-                         f"serial bus (a timed STOP and a 0x02 to the "
-                         f"master) and cures a degraded one with a USB "
-                         f"reset (default {PRECHECK_S:g}; 0 switches it "
-                         f"off). Never inside the 5 s before a trigger, "
-                         f"never inside the last picture - so only a cue "
-                         f"about 40 s or more after the one before it is "
-                         f"checked. Below 8.3 the USB reset no longer fits "
-                         f"before a trigger and the check only diagnoses")
+                         f"serial bus (a timed broadcast STOP and a "
+                         f"unicast STOP to a live board - its ACK is the "
+                         f"answer) "
+                         f"and cures a degraded one with a USB reset "
+                         f"(default {PRECHECK_S:g}; 0 switches it off). "
+                         f"Never inside the 5 s before a trigger, never "
+                         f"inside the last picture - so only a cue about "
+                         f"40 s or more after the one before it is checked. "
+                         f"At {PRECHECK_S:g} both questions and the reset "
+                         f"fit with every limit at once; with less, a check "
+                         f"can run out of time for the reset (and one miss "
+                         f"behind a fast STOP is then left unreset)")
     ap.add_argument("--no-port-watch", action="store_true",
                     help="do not watch the USB device node every 0.2 s; a "
                          "re-enumeration is then found at the next write, "

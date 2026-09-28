@@ -1,5 +1,16 @@
 # ショー UI(Conductor)の起動手順
 
+> **要約**
+> - **機体が自動で行うこと**: 基板の監視 / USB が切れたら即座に再接続 / 待機中の
+>   バスの自動修復(USB リセット)/ 間隔の空いたキューの 9 秒前の確認
+> - **オペレーターが行うこと**: 電源は 12 V → Radxa の順 / **① Upload** のあと、
+>   `ready` のタイルで **Recover bus** を 1 回押し、`bus was already clear` と出るのを
+>   確認 / タイルに赤で `bus degraded (n stalls) — press Recover bus, or reboot the Radxa`
+>   と出たら **Recover bus** / それでも直らなければ Radxa を再起動、または
+>   マスター基板の USB を抜き差し
+> - **ショー中にしてはいけないこと**: 機体の再起動 / DIP スイッチの変更 / USB の
+>   抜き差し / ① Upload
+
 ショー PC で動かす Web UI(http://localhost:8765)の起動・停止・困ったときの手順。
 UI 本体の使い方は README の「Conductor」の節を参照。
 
