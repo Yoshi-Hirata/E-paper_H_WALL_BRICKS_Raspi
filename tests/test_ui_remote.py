@@ -1967,8 +1967,15 @@ def test_the_recovery_backs_off_and_then_leaves_it_to_the_operator():
         runner._stall_streak = 1
         runner._maybe_recover(bus, 2, 359.0)
 
+    began = time.monotonic()
     try_recovery()
     assert runner._recover_tries == 1
+    # The attempt set its backoff a whole recover_backoff out from when it
+    # began. Pinned far ahead for the next step, so "inside the backoff"
+    # never depends on how long a recovery happened to take on a loaded
+    # machine (it failed once in the full suite, never alone).
+    assert runner._recover_next >= began + 10.0 - 0.05
+    runner._recover_next = time.monotonic() + 3600.0
     try_recovery()                       # inside the backoff: nothing
     assert runner._recover_tries == 1
     for _ in range(2):
