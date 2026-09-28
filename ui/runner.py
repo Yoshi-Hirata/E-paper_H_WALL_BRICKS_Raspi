@@ -281,14 +281,21 @@ RESEND_STALL_MS = STALL_RECOVER_MS
 #   (SPECIFICATION 4.2). So in a burst of cues closer together than that
 #   floor the check is skipped, which is intended and safe.
 #
-# 6.0 s is the PM's decision (2026-09-28). What it buys, worked out with
-# the budgets below and a degraded write of 0.4 s: the measuring STOP ends
-# at T-5.6 and the padding needs 0.85 s more to hand over its checking
-# STOP, which would be T-4.75 - inside the hold. So AT 6.0 THE CHECK
-# DIAGNOSES AND DOES NOT CURE a bus in the 2026-09-28 state; the padding
-# first fits at 6.5 s and the fast reopen behind it at 8.5 s. `--precheck
-# SECONDS` sets it on the unit.
-PRECHECK_S = 6.0
+# 8.5 s (PM, 2026-09-28): the shortest lead at which BOTH cures fit before
+# the hold, worked out with the budgets below and a degraded write of 0.4 s
+# - the measuring STOP ends at T-8.1, the padding hands over its checking
+# STOP by T-7.25 and that STOP ends by T-6.85, and the fast reopen hands
+# over its last frame by T-5.2, before T-5.0. At 6.0 the check could only
+# diagnose; the padding alone fits from 6.5.
+#
+# WHICH CUES GET ONE, in practice: the previous cue's guard floor has to be
+# past at T-8.5, and at the unit's --guard-delay 30 that floor is 30-38 s
+# after the fire for this show's refresh and span. So only a cue 38.5-46.5 s
+# or more after the one before it is checked - 14 of the 36 cue-to-cue gaps
+# of showdata/show.json, and NONE of the finale burst (11-28 s gaps).
+# radxa-07's 2026-09-28 failures came 10-30 s after the LAST cue; that is
+# the idle recovery's territory (_maybe_recover()), not this.
+PRECHECK_S = 8.5
 PRECHECK_MARGIN_S = 0.2
 # What each step of the check may cost, from its start to the moment its
 # LAST frame is handed to the port - the same "at the moment it is sent"

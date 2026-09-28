@@ -337,9 +337,11 @@ def main() -> int:
                          f"serial bus with one timed STOP and puts a stall "
                          f"right (default {PRECHECK_S:g}; 0 switches it "
                          f"off). Never inside the 5 s before a trigger, "
-                         f"never inside the last picture. At 6 s it can "
-                         f"only diagnose a 2026-09-28-class bus; 6.5 fits "
-                         f"the padding and 8.5 the port reopen as well")
+                         f"never inside the last picture - so only a cue "
+                         f"about 40 s or more after the one before it is "
+                         f"checked. Below 8.5 the port reopen no longer "
+                         f"fits before a trigger, below 6.5 neither does "
+                         f"the padding and the check only diagnoses")
     ap.add_argument("--no-port-watch", action="store_true",
                     help="do not watch the USB device node every 0.2 s; a "
                          "re-enumeration is then found at the next write, "
