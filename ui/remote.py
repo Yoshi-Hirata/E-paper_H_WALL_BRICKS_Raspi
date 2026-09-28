@@ -694,11 +694,17 @@ class RemoteSession:
         # has just said the PC's own worker is on the port. A unit on its
         # own menu is refused there, never taken over.
         self._wake.set()
-        if not done.wait(max(0.0, timeout)):
-            with self._lock:
-                if self._recover_job is job:
-                    self._recover_job = None
-            raise RemoteError("the worker did not answer in time")
+        # Waited in small steps, so a worker thread that dies meanwhile is
+        # answered at once rather than after the whole RECOVER_WAIT_S.
+        deadline = time.monotonic() + max(0.0, timeout)
+        while not done.wait(min(0.1, max(0.0, deadline - time.monotonic()))):
+            gone = not self.runner.running
+            if gone or time.monotonic() >= deadline:
+                with self._lock:
+                    if self._recover_job is job:
+                        self._recover_job = None
+                raise RemoteError("unit's worker is not running" if gone
+                                  else "the worker did not answer in time")
         result = dict(job["result"] or {})
         if result.get("error"):
             # The worker found a gate closed when it came to the job.
@@ -743,13 +749,32 @@ class RemoteSession:
             if left > 0:
                 return (f"a repaint is in progress - try again in "
                         f"{math.ceil(left)} s")
-        if not self.active or self.runner.remote is not self:
-            # On its own menu, or playing its own demo: the PC does not own
-            # this unit's port, and taking it (start_remote) would stop the
-            # demo and start a REMOTE worker that STOPs and probes every
-            # board (review of 6a2d136, N2). Nothing is started.
+        if not self.owned():
+            # The PC's worker is not on this port, so there is nothing of the
+            # PC's to recover - and taking the port (start_remote) would stop
+            # a demo and start a worker that STOPs and probes every board
+            # (review of 6a2d136, N2). Nothing is started. Which words: a
+            # unit the PC put in its white standby (a one-shot worker that
+            # has finished) is the PC's but idle; anything else is the
+            # unit's own (its menu, its demo).
+            if self.active:
+                return "unit is in standby - Upload first, then recover"
             return "unit is on its own menu - nothing to recover from here"
+        if not self.runner.running:
+            # Owned, but the worker thread is gone: nobody would ever take
+            # the job, so say so now rather than after RECOVER_WAIT_S.
+            return "unit's worker is not running"
         return None
+
+    def owned(self) -> bool:
+        """Does the PC's worker hold this unit's port right now?
+
+        THE test of ownership (final gate on 393ddcd, MED-1) - not `active`
+        and not the phase: an Upload's burn and ShowPlayer.load() start the
+        remote worker without setting either, so a freshly booted unit reads
+        `local` and inactive while the PC's worker is on its port - the very
+        first preset of the evening. /status reports it as `owned`."""
+        return self.runner.remote is self
 
     def take_recover_job(self) -> "dict | None":
         with self._lock:
@@ -1086,6 +1111,11 @@ class RemoteSession:
                 # the port; null until then. The tile marks a unit where it
                 # is false: every recovery there can only fail.
                 "usb_reset_ok": runner.usb_reset_ok,
+                # Whether the PC's worker holds this unit's port (owned()):
+                # the page offers Recover bus only then, and the preset's
+                # sweep only asks those units. Not the phase - an Upload
+                # owns the port while the phase still reads `local`.
+                "owned": self.owned(),
                 "burn": burn,
                 # Taking the pictures back out of slots 1-18 after the
                 # show (see the module docstring): {"state", "done",

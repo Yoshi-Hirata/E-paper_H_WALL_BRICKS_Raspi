@@ -4082,17 +4082,19 @@ const SHOWBOARD = (() => {
   // and FRESH (STALL_FRESH_S), so last hour's hiccup does not reopen a
   // healthy port. Not waiting for the fifth stall, though: two of 359 ms
   // are already this state. Never during a run - the unit would refuse it.
-  // The phases in which the PC owns a unit's port. A unit on its own menu or
-  // playing its own demo (`local`) is not recovered from here - the unit
-  // refuses it, and must never be taken over by it (review N2). A unit that
-  // does not say its phase (an old agent) is left to decide for itself.
-  const RECOVER_PHASES = ["standby", "ready", "armed", "fired", "failed"];
+  // Does the PC's worker hold this unit's port? The unit says so itself
+  // (/status `owned`, ui/remote.py's owned()) - and that, not the phase, is
+  // the test (final gate on 393ddcd): an Upload owns the port while the
+  // phase still reads `local`, and a unit in the PC's white standby reads
+  // `standby` with nobody on its port. Only an owned unit can be recovered
+  // from here; one on its own menu or demo must never be taken over (review
+  // N2). An agent too old to say has no /bus/recover either, so no.
+  const owned = u => !!u && u.owned === true;
   function recoverTargets(units, running) {
     if (running) return [];
     return (units || []).filter(u => {
       const s = u && u.bus_stall;
-      return u && u.online && s && typeof s.ms === "number"
-        && (u.phase === undefined || RECOVER_PHASES.includes(u.phase))
+      return u && u.online && owned(u) && s && typeof s.ms === "number"
         && s.ms >= STALL_DEGRADED_MS
         && typeof s.ago_s === "number" && s.ago_s <= STALL_FRESH_S;
     }).map(u => u.name);
@@ -4174,7 +4176,7 @@ const SHOWBOARD = (() => {
            STALL_STREAK_N, STALL_FRESH_S, STALL_DEGRADED_MS,
            mmss, secs, arrow, tone, isBag, phase, atRest, rowAt, rowText,
            ahead, firedAgo, header, boardsOf, busStall, vitals,
-           RECOVER_PHASES, recoverTargets, recoverText, recoverReport };
+           owned, recoverTargets, recoverText, recoverReport };
 })();
 // <<< /SHOWBOARD >>>
 
@@ -5034,12 +5036,12 @@ function usbResetMark(u) {
 // which is what shows the unit's verdicts can be trusted (review M3; the
 // master on the USB cable has to be bus address 1). Never mid-run: the unit
 // refuses it and the words on a tile must not change under the operator.
-// Only on a unit the PC OWNS (review of 6a2d136, N2): on its own menu or
-// playing its own demo (`local`) the unit refuses it anyway, and before
-// that fix it would have taken the port - stopping the demo.
+// Only on a unit whose port the PC's worker holds (SHOWBOARD.owned - the
+// unit's own `owned`, never the phase): after an Upload that includes a unit
+// still reading `local`; a unit on its own menu or demo, or idle in the PC's
+// white standby, gets none - it would refuse, and must not be taken over.
 function recoverButton(u) {
-  if (!u || !u.online || showMidRun()
-      || !SHOWBOARD.RECOVER_PHASES.includes(u.phase)) return "";
+  if (!u || !u.online || showMidRun() || !SHOWBOARD.owned(u)) return "";
   return ` <button class="small" data-recover-bus="${esc(u.name)}" `
     + `title="Reset the master's USB and check that it answers again - `
     + `what a reboot of the Radxa does to the bus, in a few seconds. A `

@@ -18,6 +18,21 @@
 
 ## 2. 直近で完成したもの
 
+**Recover bus は「PC のワーカーがポートを持っている機体」だけ(393ddcd の最終ゲート)**
+
+- 判定は **`owned` = `runner.remote is self`** の一つだけ。`/status` と
+  `/api/fleet` に `owned` が出て、ボタンと ② Show preset 前の掃引はそれで決める
+  (フェーズは見ない)。Upload 直後でチップが `local` の機体は owned、Conductor の
+  `standby` は owned でない(白のスタンバイは一度きりのワーカー)―― 機体は
+  `unit is in standby - Upload first, then recover` で断る。`owned` を返さない
+  古い機体ソフトにはボタンを出さない。**本番前の点検は「Upload のあと、ready の
+  タイルで Recover bus を押す」**(CONDUCTOR_START 手順 6)
+- 測る STOP の書き込みが例外なら `bus ok` / `already clear` とは言わない
+  (`precheck q07: write failed: … → usb reset → …`)。ポート監視・高速の開き直し・
+  ワーカーの主ループの `find_port()` / ノード確認は例外を出さない版に。
+  ワーカーが終わった機体への Recover bus は 15 秒待たずに
+  `unit's worker is not running`
+
 **USB リセットの復旧を、レビューに合わせて締めた(349dcdd の敵対的レビュー:
 「`--no-resend-on-stall` で出せ」)**
 

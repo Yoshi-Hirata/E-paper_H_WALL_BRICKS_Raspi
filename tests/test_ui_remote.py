@@ -3140,3 +3140,145 @@ def test_the_status_says_which_kill_switches_are_on():
     assert status["precheck_s"] == 0
     assert status["port_watch"] is False and status["auto_recover"] is False
 
+
+# ---- final gate on 393ddcd: ownership is the PC's worker, nothing else ----
+
+def _owned_runner():
+    bus = FakeBus(deaf_boards=False)
+    resets = []
+    runner = make_runner(bus, boards=[1, 2, 3], verify_fire=False,
+                         usb_reset=lambda p, timeout=None: (
+                             resets.append(p), (False, "t"))[1])
+    return RemoteSession(runner), runner, bus, resets
+
+
+def test_an_uploaded_unit_is_owned_and_may_be_recovered():
+    """t_owned U: after an Upload (burn) the PC's REMOTE worker holds the
+    port although the phase still reads `local` - owned, so Recover bus is
+    offered and accepted. The phase was never the thing to ask."""
+    session, runner, bus, resets = _owned_runner()
+    session.burn([{"slot": 1, "boards": {1: array(1), 2: array(2),
+                                         3: array(3)},
+                   "delays": {}, "span_s": None}])
+    assert wait_until(lambda: (session.status().get("burn") or {}).get(
+        "state") not in (None, "burning"), timeout=30.0)
+    try:
+        assert runner.remote is session and runner.running
+        assert session.owned() is True
+        assert session.recover_refusal() is None
+        assert session.status()["owned"] is True
+    finally:
+        runner.stop()
+
+
+def test_a_unit_in_the_conductors_standby_is_not_owned():
+    """t_owned S: the per-unit Standby is a one-shot pattern worker, not the
+    PC's REMOTE worker - not owned, and the 409 says what to do."""
+    session, runner, bus, resets = _owned_runner()
+    session.standby()
+    assert wait_until(lambda: session.phase == STANDBY, timeout=10.0)
+    try:
+        assert runner.remote is not session
+        assert session.owned() is False
+        assert session.status()["owned"] is False
+        assert session.recover_refusal() == ("unit is in standby - Upload "
+                                             "first, then recover")
+        with pytest.raises(RemoteError, match="in standby"):
+            session.recover_bus(timeout=1.0)
+    finally:
+        runner.stop()
+    assert resets == []
+
+
+def test_a_fresh_unit_says_it_is_not_owned():
+    session, runner, bus = make_session()
+    assert session.status()["owned"] is False
+    assert session.recover_refusal() == ("unit is on its own menu - nothing "
+                                         "to recover from here")
+
+
+def test_a_recover_job_on_a_worker_that_exits_is_answered_at_once():
+    """Final gate, LOW: the job used to wait out RECOVER_WAIT_S (15 s) for a
+    worker thread that had already gone. Now the wait notices."""
+    session, runner, bus = make_session()
+    runner.remote = session
+    runner._thread = threading.Thread(target=time.sleep, args=(0.4,),
+                                      daemon=True)
+    runner._thread.start()
+    began = time.monotonic()
+    with pytest.raises(RemoteError, match="unit's worker is not running"):
+        session.recover_bus(timeout=15.0)
+    assert time.monotonic() - began < 2.0
+    assert session._recover_job is None
+    # ...and one asked for once it has gone is refused before it is queued.
+    with pytest.raises(RemoteError, match="unit's worker is not running"):
+        session.recover_bus(timeout=15.0)
+    assert session._recover_job is None
+
+
+def _stop_fails_once(monkeypatch, runner):
+    real = runner._send_timed
+    failed = []
+
+    def once(bus_, frame, what, **kwargs):
+        if frame.cmd == STOP and not failed:
+            failed.append(frame)
+            raise OSError("write timeout")
+        return real(bus_, frame, what, **kwargs)
+
+    monkeypatch.setattr(runner, "_send_timed", once)
+    return failed
+
+
+def test_a_precheck_whose_stop_fails_is_not_bus_ok(monkeypatch):
+    """Final gate, LOW: a STOP whose write raised can be fast, and was read
+    as "bus ok". It is "write failed", and the reset path follows as for a
+    silent master."""
+    bus = degraded(monkeypatch)
+    bus.degraded = False
+    runner = degraded_runner(bus, precheck=20.0, remote_guard_hold=HOLD)
+    failed = _stop_fails_once(monkeypatch, runner)
+    runner._precheck(bus, 2, "q07", time.monotonic() + HOLD + 3.5)
+    said = [l for l in runner.recent(20) if "precheck q07" in l]
+    assert failed and said, runner.recent(20)
+    assert "bus ok" not in said[0]
+    assert "write failed: write timeout" in said[0]
+    assert "→ usb reset" in said[0] and len(bus.resets) == 1
+    assert runner.precheck["by"] == "usb_reset"
+
+
+def test_a_failed_stop_is_not_clear_to_an_idle_recovery(monkeypatch):
+    """The same for Recover bus: a failed measuring STOP is not "nothing
+    was wrong" - the reset follows, and its proof decides."""
+    bus = degraded(monkeypatch)
+    bus.degraded = False
+    runner = degraded_runner(bus)
+    failed = _stop_fails_once(monkeypatch, runner)
+    result = runner._recover_bus(bus, 2)
+    assert failed and len(bus.resets) == 1
+    assert result["by"] == "usb_reset" and result["recovered"] is True
+
+
+def test_the_port_watch_survives_find_port_and_link_token_raising(
+        monkeypatch):
+    """Final gate, LOW: comports() or the node's stat can raise; the
+    watcher answers "nothing to do" instead of failing the session."""
+    bus = RecoveringBus("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+
+    def boom(*args):
+        raise OSError("comports failed")
+
+    monkeypatch.setattr("ui.runner.find_port", boom)
+    runner = recovery_runner(bus, port=None, link_token=boom, port_poll=0.01,
+                             port_back_wait=0.15)
+    assert runner._port_watch(bus, 2) is False     # cannot tell: no guess
+    assert bus.reopened == []
+    # The node gone for real, and the search for it raising every time:
+    # the ordinary ladder's answer, not an exception.
+    runner._link_token = lambda port: None
+    runner._next_port_poll = 0.0
+    assert runner._port_watch(bus, 2) is False
+    assert bus.reopened == []
+    assert any("port gone for" in l for l in runner.recent(20))
+

@@ -621,8 +621,12 @@ STOP が 200 ms 以上か、マスタが黙っていれば、**その場で USB 
 ログ: `precheck q03: bus ok (2 ms, master answers)` /
 `precheck q03: stalled 358 ms → usb reset → ok (master answers)` /
 `precheck q03: master silent (61 ms) → usb reset → ok (master answers)` /
+`precheck q03: write failed: … → usb reset → …` /
 `… → usb reset → master still silent` / `… → no time for a usb reset` /
-`… → usb reset → failed (usb reset: …)`。
+`… → usb reset → failed (usb reset: …)`。測る STOP の書き込みが例外なら、
+どれほど速く失敗しても `bus ok` とは言わず、黙ったマスタと同じくリセットへ進む
+(Recover bus の「already clear」判定と、再列挙後の `bus ok` も同じ ―― 失敗した
+書き込みは `write failed: …`)。
 `/status` の **`precheck`**: `{"cue", "before_ms", "by" ("usb_reset" | null),
 "master_answers", "after_ms" (null), "at"}`。直前点検が測った 200 ms 未満の
 ブロックは `bus_stall` に記録しない。
@@ -678,10 +682,22 @@ USB リセットもポートの開き直しも、プローブ掃引を `_setup_o
 - `a show is running - stop it first`
 - `a cue fires in N s - stop the show first`(60 秒以内)
 - `a repaint is in progress - try again in N s`(直前の絵の `_guard_floor` まで)
+- **`unit is in standby - Upload first, then recover`** ―― Conductor の
+  per-unit Standby の後。白のスタンバイは一度きりのパターンワーカーで、描き
+  終えると終わる ―― PC のワーカーはポートを持っていない。
 - **`unit is on its own menu - nothing to recover from here`** ―― 機体が
   Conductor の手に無い(自分のメニュー、自分のデモ)。**ワーカーは起こさない**:
   以前はここで `start_remote()` を呼び、デモを止めて REMOTE ワーカーを立て、
   STOP と基板ごとの 0x17/0x1B を送っていた(6a2d136 のレビュー N2)。
+- `unit's worker is not running` ―― PC のワーカーのはずのスレッドがもう
+  終わっている。ジョブを積んだ後に終わった場合も、15 秒待たずにすぐこの答え。
+
+どちらの「手に無い」も判定は **`owned` ただ一つ ―― `runner.remote is self`
+(PC の REMOTE ワーカーがポートを持っている)** で、フェーズでは決めない
+(393ddcd の最終ゲート MED-1/2)。Upload した直後の機体はフェーズが `local` の
+ままでも owned、`standby` は owned ではない。文言は、セッションが active
+(Conductor が触った)なら standby の方、そうでなければ own menu の方。
+`/status` に `owned`(bool)として出て、Conductor の `/api/fleet` もそのまま渡す。
 
 **復旧の試みがセッションを落とすことは無い**(6a2d136 のレビュー N1)。
 `usb_reset()` は何が起きても例外ではなく答えを返し(`usb reset raised: …`、
@@ -702,16 +718,17 @@ usbreset の出力は `errors="replace"` で読む)、ランナー側もリセ�
 | `--resend-on-stall` | **再送しない(OFF)** | 付けると再送する ―― マスタが黙っているときだけ(§4.5.1)。`--no-resend-on-stall` は既定を書いただけで何もしない(古いサービスファイル用) |
 
 `/status` に `precheck_s` / `port_watch` / `auto_recover` / `resend_on_stall` /
-`usb_reset_ok` がそのまま出る。`raspi/epaper-ui.env` は変えていない ―― どれも既定値で動く。
+`usb_reset_ok` / `owned` がそのまま出る。`raspi/epaper-ui.env` は変えていない ―― どれも既定値で動く。
 
 #### Conductor 側
 
-**Recover bus** ボタンは、ショーが走っていない間、**Conductor の手にある
-(`standby` / `ready` / `armed` / `fired` / `failed`)オンラインのタイル**に
-出る(`local` には出ない ―― レビュー N2。「bus degraded」/「bus stalled」の印が
-あればその隣。② Show preset 前の掃引も `local` の機体は飛ばす)―― 健全な機体で
-押して `bus was already clear` を確かめるのが本番前の手順だから(上の「前提」、
-レビュー M3)。実行中は出ない、NOW → NEXT の行にも出ない。トーストは
+**Recover bus** ボタンは、ショーが走っていない間、**機体が `owned: true` と
+言っているオンラインのタイル**に出る(`SHOWBOARD.owned(u)` ―― フェーズは見ない。
+`standby` と `local` の機体、`owned` を返さない古い機体ソフトには出ない ――
+レビュー N2、393ddcd の最終ゲート MED-1/2。「bus degraded」/「bus stalled」の印が
+あればその隣。② Show preset 前の掃引も同じ判定で owned でない機体を飛ばす)――
+Upload のあと健全な機体で押して `bus was already clear` を確かめるのが本番前の
+手順だから(上の「前提」、レビュー M3、CONDUCTOR_START の手順 6)。実行中は出ない、NOW → NEXT の行にも出ない。トーストは
 `radxa-07: bus recovered by usb reset (358 → 2 ms)`(通常)、
 `radxa-07: bus was already clear`(通常 ―― 健全な機体で押したとき)、
 `radxa-07: bus recovery failed — reboot the Radxa or re-plug the master's USB`

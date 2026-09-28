@@ -634,6 +634,7 @@ class DemoRunner:
         self._recover_next = 0.0           # monotonic: the backoff
         self._recover_said_enough = False  # the "leaving it to you" line
         self._recovering = False           # never re-entered
+        self._stop_failed = None           # the last timed STOP's raise
         # A reopen invalidates what the boards were told: the caches go,
         # and the full sweep is owed to _run_remote()'s own setup, where
         # it yields to every cue (_fire_before_probing()) instead of
@@ -2400,6 +2401,10 @@ class DemoRunner:
         if cut:
             return True, None, f"master answers, {cut}"
         after = self._timed_stop(bus, groups)
+        if self._stop_failed is not None:
+            return False, after, (f"master answers, but the stop after "
+                                  f"{self.proof_gap:g} s: write failed: "
+                                  f"{self._stop_failed}")
         if after >= RECOVERED_MS:
             return False, after, (f"master answers, but a stop after "
                                   f"{self.proof_gap:g} s took {after:.0f} ms")
@@ -2419,14 +2424,21 @@ class DemoRunner:
         (bus_stall, and so the tile). The pre-cue check passes
         STALL_RECOVER_MS - a 60 ms block right before a cue is not worth an
         amber mark, only the state it exists to catch is (review F1(d)).
+
+        A write that raised leaves its reason in `self._stop_failed` (None
+        after one that went out): a failed write can be fast, and a fast
+        time must never read as "bus ok" or "clear" (final gate, LOW).
         """
         began = time.perf_counter()
+        self._stop_failed = None
         try:
             took_ms = self._send_timed(bus, stop(0xFF, groups), "stop",
                                        record_from_ms=record_from_ms)
         except Exception as exc:        # noqa: BLE001 - measured, not raised
             took_ms = (time.perf_counter() - began) * 1000.0
+            self._stop_failed = str(exc) or type(exc).__name__
             self.emit(f"bus recovery: the stop did not go out ({exc})")
+            return took_ms
         self._sent_broadcast_stop()
         return took_ms
 
@@ -2475,7 +2487,7 @@ class DemoRunner:
         "write failed: <error>" - never swallowed; the caller says it once.
         """
         if port is None:
-            port = self.port or find_port() or getattr(bus, "port", None)
+            port = self.port or self._safe_find_port() or getattr(bus, "port", None)
         opened = self._open_retrying(
             bus, port, give_up_at=None if at is None else at - FIRE_SPIN_S)
         if opened and opened != port:
@@ -2617,7 +2629,8 @@ class DemoRunner:
     def _recover_bus_steps(self, bus, groups: int) -> dict:
         """_recover_bus()'s ladder, under its guard."""
         before = self._timed_stop(bus, groups)
-        if before < STALL_RECOVER_MS and self._master_answers(bus, groups):
+        if (self._stop_failed is None and before < STALL_RECOVER_MS
+                and self._master_answers(bus, groups)):
             return self._recovery_done(None, before, before, True,
                                        "master answers")
         done, how = self._usb_reset_reopen(bus)
@@ -2754,7 +2767,10 @@ class DemoRunner:
         deadline = at - self.remote_guard_hold
 
         before = self._timed_stop(bus, groups, record_from_ms=STALL_RECOVER_MS)
-        stalled = before >= STALL_RECOVER_MS
+        # A STOP whose write raised went nowhere, however fast it failed:
+        # that is the reset path, as for a silent master (final gate, LOW).
+        failed = self._stop_failed
+        stalled = failed is not None or before >= STALL_RECOVER_MS
         asked = answers = False
         if not stalled and self._frame_fits(at, MASTER_ASK_COST_S):
             asked = True
@@ -2797,7 +2813,8 @@ class DemoRunner:
             said = ", master answers" if asked else ""
             self.emit(f"precheck {cue_id}: bus ok ({before:.0f} ms{said})")
             return
-        what = (f"stalled {before:.0f} ms" if stalled
+        what = (f"write failed: {failed}" if failed is not None
+                else f"stalled {before:.0f} ms" if stalled
                 else f"master silent ({before:.0f} ms)")
         chain = "".join(f" → {step}" for step in steps)
         self.emit(f"precheck {cue_id}: {what}{chain}")
@@ -2847,7 +2864,15 @@ class DemoRunner:
             return False
         self._next_port_poll = now + self.port_poll
         port = getattr(bus, "port", None) or self.port
-        if not port or self._link_token(port) is not None:
+        if not port:
+            return False
+        try:
+            if self._link_token(port) is not None:
+                return False
+        except Exception:               # noqa: BLE001 - see below
+            # Cannot tell whether the node is there: do nothing on a guess.
+            # Read as "gone" it would start a 3 s wait on every poll, and a
+            # raise here must never reach the session (final gate, LOW).
             return False
         began = now
         found = None
@@ -2861,8 +2886,8 @@ class DemoRunner:
                 break
             if wanted is not None and not wanted():
                 return False                # the cue was cancelled or moved
-            candidate = self.port or find_port()
-            if candidate and self._link_token(candidate) is not None:
+            candidate = self.port or self._safe_find_port()
+            if candidate and self._safe_token(candidate) is not None:
                 found = candidate
                 break
             pause = PORT_RETRY_S
@@ -2892,7 +2917,9 @@ class DemoRunner:
             why = self._frame_refusal(at, DEGRADED_WRITE_S)
             if why is None:
                 after = self._timed_stop(bus, groups)
-                state = (f"bus ok ({after:.0f} ms)" if after < RECOVERED_MS
+                state = (f"write failed: {self._stop_failed}"
+                         if self._stop_failed is not None
+                         else f"bus ok ({after:.0f} ms)" if after < RECOVERED_MS
                          else f"bus still stalled ({after:.0f} ms)")
             else:
                 state = f"reopened, not measured ({why})"
@@ -3246,7 +3273,7 @@ class DemoRunner:
         # set would otherwise let THIS worker's start-up sweep stand down.
         self._setup_yields = False
         while not self._stop.is_set():
-            port = self.port or find_port()
+            port = self.port or self._safe_find_port()
             if not port:
                 if self.error != "no serial port":
                     self.emit("no serial port, waiting")
@@ -3603,7 +3630,7 @@ class DemoRunner:
         rng = random.Random(self._seed)
         groups = self._take_groups()
         while not self._stop.is_set():
-            port = self.port or find_port()
+            port = self.port or self._safe_find_port()
             if not port:
                 # Say it once. Standby waits for the port from boot, so a
                 # host with no panels attached would otherwise write this

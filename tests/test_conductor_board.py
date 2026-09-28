@@ -233,11 +233,13 @@ def test_recover_bus_sits_on_the_mark_and_runs_before_the_preset_only():
     assert "data-recover-bus" in button and "esc(u.name)" in button
     # ...and the button is there on a HEALTHY tile too, for the pre-show
     # "bus was already clear" check (review M3) - never mid-run, and only on
-    # a unit the PC owns: never `local` (review N2).
+    # a unit the PC owns (review N2) - the unit's own `owned`, never the
+    # phase, and an older agent that does not say is not offered one (final
+    # gate on 393ddcd, MED-1).
     assert "showMidRun()" in button and "!u.online" in button
-    assert "SHOWBOARD.RECOVER_PHASES.includes(u.phase)" in button
-    assert ('const RECOVER_PHASES = ["standby", "ready", "armed", "fired", '
-            '"failed"];') in PAGE
+    assert "!SHOWBOARD.owned(u)" in button and "u.phase" not in button
+    assert "const owned = u => !!u && u.owned === true;" in PAGE
+    assert "RECOVER_PHASES" not in PAGE
     assert "${stallMark(u) || recoverButton(u)}" in PAGE
     # Not mid-run and not for a unit that is not answering: the unit would
     # refuse the first and cannot hear the second. Not on the NOW -> NEXT
@@ -287,6 +289,9 @@ def test_the_units_own_endpoint_decides_whether_a_recovery_is_safe():
                                      fleet_py.index("def recover_bus") + 1200]
     # ...and the unit's own report of the last recovery reaches the page.
     assert '"bus_recovery": status.get("bus_recovery")' in fleet_py
+    # ...and whether the PC's worker holds its port, which is what the
+    # button and the preset's sweep go by (final gate, MED-1).
+    assert '"owned": status.get("owned")' in fleet_py
 
 
 def test_the_board_asks_the_internet_for_nothing():
@@ -481,7 +486,7 @@ def _u(**kw):
     """A unit as /api/fleet reports it, healthy unless said otherwise."""
     u = {"name": "radxa-01", "online": True, "show_lag_ms": 4.0, "sync_ms": 3.0,
          "rtt_ms": 6.0, "live": 8, "boards": 8, "live_ids": [1, 2, 3, 4, 5, 6, 7, 8],
-         "late_ms": 8, "uptime_s": 7200}
+         "late_ms": 8, "uptime_s": 7200, "owned": True}
     u.update(kw)
     return u
 
@@ -619,13 +624,29 @@ CALLS = {
                                          [_u(name="radxa-07",
                                              bus_stall=_stall(ms=88.0))], False],
     # A unit on its own menu or playing its own demo is not the PC's to
-    # recover (review N2); one in a Conductor-owned phase is.
+    # recover (review N2); one whose port the PC's worker holds is - the
+    # unit's `owned`, never the phase (final gate, MED-1/2): `local` after an
+    # Upload is owned, `standby` is not, and an older agent that does not
+    # say is left alone.
     "recover_local_unit_left_alone": ["recoverTargets",
                                       [_u(name="radxa-07", phase="local",
+                                          owned=False,
                                           bus_stall=_stall())], False],
     "recover_ready_unit": ["recoverTargets",
                            [_u(name="radxa-07", phase="ready",
                                bus_stall=_stall())], False],
+    "recover_uploaded_local_unit": ["recoverTargets",
+                                    [_u(name="radxa-07", phase="local",
+                                        bus_stall=_stall())], False],
+    "recover_standby_unit_left_alone": ["recoverTargets",
+                                        [_u(name="radxa-07", phase="standby",
+                                            owned=False,
+                                            bus_stall=_stall())], False],
+    "recover_old_agent_left_alone": ["recoverTargets",
+                                     [{k: v for k, v in _u(
+                                         name="radxa-07", phase="ready",
+                                         bus_stall=_stall()).items()
+                                       if k != "owned"}], False],
     "recover_right_at_the_depth": ["recoverTargets",
                                    [_u(name="radxa-07",
                                        bus_stall=_stall(ms=150.0))], False],
@@ -1178,9 +1199,13 @@ def test_the_units_to_recover_are_the_ones_still_stalling_now(board):
     assert r["recover_before_it_is_red"] == ["radxa-07"]
     # The same depth S's red mark is drawn from: 150 ms counts, 88 does not.
     assert r["recover_right_at_the_depth"] == ["radxa-07"]
-    # Only a unit the PC owns (review N2).
+    # Only a unit the PC owns (review N2), by its `owned` and not its phase
+    # (final gate, MED-1/2).
     assert r["recover_ready_unit"] == ["radxa-07"]
+    assert r["recover_uploaded_local_unit"] == ["radxa-07"]
     assert r["recover_local_unit_left_alone"] == []
+    assert r["recover_standby_unit_left_alone"] == []
+    assert r["recover_old_agent_left_alone"] == []
     # Shallow, old, taken down by the unit itself, offline, mid-run, nothing
     # at all: a port is never reopened on any of these.
     for name in ("recover_shallow_stall_left_alone",
@@ -1277,7 +1302,7 @@ def _unit(name, **kw):
          "saved": 3, "failed": [], "prepare_s": None, "late_ms": 6,
          "verify": None, "demo_count": 0, "unit_error": None, "log": ["ok"],
          "show": None, "refused": None, "demos": [], "show_lag_ms": 4.0,
-         "clear": None}
+         "clear": None, "owned": True}
     u.update(kw)
     return u
 
@@ -1510,7 +1535,8 @@ class _Stand:
                                   _unit("radxa-05", show=show, clear=clear,
                                         usb_reset_ok=False,
                                         phase=("local" if stand.local5
-                                               else "ready"))],
+                                               else "ready"),
+                                        owned=not stand.local5)],
                         "last_fire": None, "run": _RUNS[stand.run],
                         "shows": ({n: {"id": "S1", "cues": 2, "boards": []}
                                    for n in ("radxa-01", "radxa-02",
