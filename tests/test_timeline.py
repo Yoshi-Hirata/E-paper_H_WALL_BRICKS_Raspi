@@ -16,9 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from conductor.timeline import (LEGACY_REFRESH_S, MAX_CUES_PER_UNIT,
                                 PANEL_REPAINT_S, REFRESH_S, apply_transitions,
                                 clean, complete_s, effective_refresh, ends,
-                                format_clock, min_interval, min_interval_of,
-                                panel_refresh, panel_repaint_of, parse_clock,
-                                resolve, times, validate)
+                                format_clock, keep_away_gaps, min_interval,
+                                min_interval_of, panel_refresh,
+                                panel_repaint_of, parse_clock, resolve, times,
+                                unit_picture_s, validate)
 
 OK = {"full": True, "partial": True}
 ITEMS = {
@@ -620,3 +621,56 @@ def test_what_a_unit_is_told_keeps_its_guard_after_the_real_end():
     # last cue of the run.
     assert min_interval(16) == 9.0 < guard_delay
     assert guard(PANEL_REPAINT_S, 1.0) > min_interval(16)
+
+
+# ---- the unit's STOP keep-away (SPECIFICATION 4.6) ----
+
+def _look26(spacings=None):
+    """LOOK26's skirt as showdata/show.json has it: 8:23, 8:38, 9:03, 9:14,
+    9:25, 9:37, each picture 8 s (refresh 7 + span 1, or 8 + 0)."""
+    cues = [cue("p", "Look22", 0, "p1", refresh_s=8.0)]
+    for n, (at, refresh_s, span) in enumerate(
+            ((503, 7.0, 1.0), (518, 7.0, 1.0), (543, 8.0, 0.0),
+             (554, 8.0, 0.0), (565, 7.0, 1.0), (577, 8.0, 0.0))):
+        one = cue(f"q{n}", "Look22", at, "p2", refresh_s=refresh_s)
+        one["span"] = span
+        cues.append(one)
+    return cues
+
+
+def test_the_real_look26_leaves_room_for_every_stop():
+    """11 s after an 8 s picture is 3 s of room: the keep-away's 0.5 s
+    after the picture and 1.5 s before the next cue both fit."""
+    assert keep_away_gaps(_look26(), REFRESH_S) == []
+    assert not [w for w in problems(_look26(), 655)[1] if "room" in w]
+
+
+def test_cues_closer_than_picture_plus_two_seconds_warn_after_60_s():
+    tight = [cue("p", "Look22", 0, "p1")] + [
+        cue(f"t{n}", "Look22", 503 + n * 9.5, "p2") for n in range(8)]
+    # 1.5 s before 8:23 to 0.5 s after the last picture (9:29.5 + 8 s).
+    assert keep_away_gaps(tight, REFRESH_S) == [(76.5, 503.0, 569.5)]
+    found, warnings = validate(tight, ITEMS, 655)
+    assert all(v == [] for v in found.values())       # a warning, not a problem
+    assert [w for w in warnings if "room" in w] == [
+        "Look22: 76 s of cues without room for a stop (8:23–9:30) - leave "
+        "2 s after a picture is complete"]
+    # 57.5 s of the same: under the 60, nothing to say.
+    assert keep_away_gaps(tight[:7], REFRESH_S) == []
+    # ...and 10.0 s apart is exactly the 2 s of room: fine however long.
+    roomy = [cue("p", "Look22", 0, "p1")] + [
+        cue(f"t{n}", "Look22", 503 + n * 10.0, "p2") for n in range(12)]
+    assert keep_away_gaps(roomy, REFRESH_S) == []
+
+
+def test_the_keep_away_room_is_measured_from_what_the_unit_is_told():
+    """The unit counts a picture complete at the refresh_s its show file
+    carries (panel_refresh: never below one 7 s repaint) + the span - not
+    the Timeline's modelled complete_s()."""
+    assert unit_picture_s([cue("a", "Look22", 5, "p1")], REFRESH_S) == 8.0
+    short = cue("a", "Look22", 5, "p1", refresh_s=3.0)
+    assert complete_s(short, REFRESH_S) == 3.0
+    assert unit_picture_s([short], REFRESH_S) == PANEL_REPAINT_S
+    swept = cue("b", "Look22", 5, "p1")
+    swept["span"] = 2.0
+    assert unit_picture_s([short, swept], REFRESH_S) == 10.0

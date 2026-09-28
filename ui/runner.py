@@ -459,6 +459,50 @@ GUARD_REFRESH_S = 7.0
 # so a show file or a /prepare body with a wild number cannot switch the
 # guard off altogether and hand the wall back to the factory autoplay.
 GUARD_MAX_S = 200.0
+# ---- the STOP keep-away (docs/SPECIFICATION.md 4.6) ----
+# The master board resumes its FACTORY AUTOPLAY about 85 s after the LAST
+# BROADCAST STOP it heard; show frames (0x1D) do not reset that clock. The
+# heartbeat above waits for the guard floor of the last fire (fire + 31 s
+# or so) and stands aside for the 5 s before a cue, so a run of cues closer
+# than ~36 s leaves the master with NO stop at all: LOOK26 (cues 15, 25,
+# 11, 11, 12 s apart) went 110 s without one, and in 5 of 5 runs, both
+# garments, the USB port was "disabled by hub (EMI?)" or the bus degraded
+# 86 s after the last stop, the last picture left half-drawn (PM's
+# analysis, 2026-09-28; LOOK28's old choreography the same, 9 of 9, at
+# 85 s). So the unit makes sure the master is never KEEPAWAY_MAX_GAP_S
+# without one: once KEEPAWAY_DUE_S have passed since the last broadcast
+# STOP it sends ONE at the first instant that is after the last picture is
+# COMPLETE (its fire + its own refresh + span + KEEPAWAY_AFTER_PICTURE_S -
+# a STOP inside a sweep leaves the picture half-drawn, and 0x17 does not
+# abort a refresh that is already running) and at least
+# KEEPAWAY_BEFORE_CUE_S before the next armed trigger. It is the one frame
+# the guard floor and the 5 s hold yield to, and only when the 40 s are
+# up. Cues so close that no such instant comes before the 60 s: it goes
+# anyway, KEEPAWAY_MIN_BEFORE_CUE_S before the trigger at the closest, and
+# says so once. --no-keep-away (ui/main.py) switches it off.
+#
+# What it can promise (review of a3f91b9, MED-2): after the 40 s mark the
+# worst wait is one picture plus the room around it, so the 60 s hold while
+# every gap between sends is at least picture + 1.5 s (0.5 after the picture,
+# the 1.0 s last-resort floor before the cue) and no picture runs past 18 s.
+# A gap under picture + 1.5 s has no instant a stop may use at all - the
+# Conductor's Timeline warns about those (timeline.keep_away_gaps(), at
+# picture + 2.0 s so the last resort is never the plan).
+#
+# The unit's OWN workers get the same guarantee (2026-09-28 20:11: a garment
+# kept autoplaying show pictures and boards NAKed a demo's slot config): a
+# local demo whose cycles are shorter than guard_delay sent no broadcast STOP
+# at all, and a burn writes for minutes without one. _keep_away_own() sends
+# one there too once KEEPAWAY_DUE_S have passed - after the last picture is
+# complete (LOCAL_PICTURE_S for a demo's own), between two boards' writes.
+KEEPAWAY_DUE_S = 40.0
+KEEPAWAY_MAX_GAP_S = 60.0
+KEEPAWAY_AFTER_PICTURE_S = 0.5
+KEEPAWAY_BEFORE_CUE_S = 1.5
+KEEPAWAY_MIN_BEFORE_CUE_S = 1.0
+# A local demo's picture: no sweep tables are written in LOCAL, so one
+# refresh - taken as the show's modelled 8 s, a second over the panel's 7.
+LOCAL_PICTURE_S = 8.0
 
 
 class _SweepYielded(Exception):
@@ -530,6 +574,13 @@ class DemoRunner:
                  link_guard: float = LINK_GUARD_S,
                  remote_guard: float = REMOTE_GUARD_S,
                  remote_guard_hold: float = REMOTE_GUARD_HOLD_S,
+                 keep_away: bool = True,
+                 keep_away_due: float = KEEPAWAY_DUE_S,
+                 keep_away_max_gap: float = KEEPAWAY_MAX_GAP_S,
+                 keep_away_after_picture: float = KEEPAWAY_AFTER_PICTURE_S,
+                 keep_away_before_cue: float = KEEPAWAY_BEFORE_CUE_S,
+                 keep_away_min_before_cue: float = KEEPAWAY_MIN_BEFORE_CUE_S,
+                 local_picture: float = LOCAL_PICTURE_S,
                  link_token=device_token,
                  probe_sweeps: int = PROBE_SWEEPS,
                  probe_sweep_delay: float = PROBE_SWEEP_DELAY_S,
@@ -639,6 +690,35 @@ class DemoRunner:
         # How near a cue may be when the heartbeat goes out. A parameter
         # only so a test can compress it along with everything else.
         self.remote_guard_hold = remote_guard_hold
+        # The STOP keep-away (KEEPAWAY_DUE_S): on by default, --no-keep-away
+        # switches it off. The timings are parameters only so a test can
+        # compress them with everything else.
+        self.keep_away = bool(keep_away)
+        self.keep_away_due = keep_away_due
+        self.keep_away_max_gap = keep_away_max_gap
+        self.keep_away_after_picture = keep_away_after_picture
+        self.keep_away_before_cue = keep_away_before_cue
+        self.keep_away_min_before_cue = keep_away_min_before_cue
+        self.local_picture = local_picture
+        self.keep_away_sent = 0            # /status keep_away_sent
+        self._keep_away_said_no_room = False   # the once-per-run line
+        # When the last keep-away STOP went out (the idle loop drops a guard
+        # STOP that would follow it within a second), and - after one whose
+        # write failed - when it may be tried again: not in the same run-up
+        # to a trigger, where a second 2 s write timeout would make the cue
+        # late (review of a3f91b9, MED-1).
+        self._keep_away_at: "float | None" = None
+        self._keep_away_retry_at = 0.0
+        # When a local demo last showed its picture (_cycle()).
+        self._local_shown_at: "float | None" = None
+        # When the last broadcast STOP was actually written (monotonic;
+        # None until one has been) - a fact about the master, so it is NOT
+        # reset with a worker. /status last_stop_ago_s.
+        self._last_stop_at: "float | None" = None
+        # When the last picture is COMPLETE: its show broadcast + that
+        # cue's own refresh + span (read at the fire, like _guard_floor).
+        self._picture_done_at: "float | None" = None
+        self._picture_s = 0.0
         self._link_token = link_token
         self.probe_sweeps = probe_sweeps
         self.probe_sweep_delay = probe_sweep_delay
@@ -774,6 +854,12 @@ class DemoRunner:
         if self.started_at is None:
             return self._elapsed_base
         return self._elapsed_base + time.monotonic() - self.started_at
+
+    @property
+    def last_stop_ago_s(self) -> "float | None":
+        """Seconds since the last broadcast STOP was written (/status)."""
+        last = self._last_stop_at
+        return None if last is None else round(time.monotonic() - last, 1)
 
     def recent(self, count: int) -> list[str]:
         with self._lock:
@@ -1579,6 +1665,7 @@ class DemoRunner:
         for _ in range(self.show_repeats):
             bus.send(show_single(0xFF, self.slot, groups,
                                  dev_type=active.dev_type))
+            self._local_shown_at = time.monotonic()     # the keep-away's
             time.sleep(self.show_gap)
 
         self.cycle += 1
@@ -1602,6 +1689,7 @@ class DemoRunner:
         if not self._sleep(self.guard_delay):
             return
         bus.send(stop(0xFF, groups))
+        self._sent_broadcast_stop()
         for board in list(self.live):
             self._request(bus, stop(board, groups), f"stop @{board:02d}")
 
@@ -1645,11 +1733,36 @@ class DemoRunner:
         active, _ = self.pattern.resolve(max(self.cycle - 1, 0))
         interval = active.interval or self.interval
         if 0 < self.guard_delay < interval:
-            if not self._sleep(self.guard_delay):
+            if not self._demo_wait(bus, groups, self.guard_delay):
                 return False
             bus.send(stop(0xFF, groups))    # suppress the factory autoplay
-            return self._sleep(interval - self.guard_delay)
-        return self._sleep(interval)
+            self._sent_broadcast_stop()
+            return self._demo_wait(bus, groups, interval - self.guard_delay)
+        return self._demo_wait(bus, groups, interval)
+
+    def _demo_wait(self, bus, groups: int, seconds: float) -> bool:
+        """_sleep() for a local demo's wait between cycles, with the
+        keep-away STOP in it (_keep_away_own()): a demo whose cycles are
+        shorter than guard_delay (SOLID16, RANDOM at 15-20 s) sent no
+        broadcast STOP at all, and the master went back to its autoplay
+        (2026-09-28 20:11). Checked every half second once the last picture
+        is complete; the next cycle's unicasts wait ASK_SETTLE_S behind it.
+        With the keep-away off this is _sleep(seconds) exactly."""
+        if not self.keep_away:
+            return self._sleep(seconds)
+        end = time.monotonic() + seconds
+        while True:
+            shown = self._local_shown_at
+            if self._keep_away_own(
+                    bus, groups,
+                    None if shown is None else shown + self.local_picture):
+                if not self._sleep(ASK_SETTLE_S):
+                    return False
+            left = end - time.monotonic()
+            if left <= 0:
+                return True
+            if not self._sleep(min(left, 0.5)):
+                return False
 
     # ---- remote cues and burns (ui/remote.py) ----
 
@@ -1810,6 +1923,11 @@ class DemoRunner:
             # anything), but an operator's own /prepare + /fire can be
             # armed while one runs, and a cue is a cue (R3, round 3).
             self._fire_before_probing(bus, groups)
+            # ...and it writes for minutes with no broadcast STOP of its own:
+            # the keep-away goes between two boards' writes, never inside a
+            # picture that is still drawing (_keep_away_own()).
+            if self._keep_away_own(bus, groups, self._picture_done_at):
+                self._sleep(ASK_SETTLE_S)
             if self._stop.is_set() or not session.burn_current(epoch):
                 # Taken off the port (KEY1 on a pattern, KEY2, a shutdown)
                 # or superseded (a newer burn(), a cancel_burn()). The
@@ -2013,6 +2131,21 @@ class DemoRunner:
         return max(self.guard_delay,
                    min(GUARD_MAX_S,
                        float(refresh_s) + float(span_s) + margin))
+
+    def _picture_for(self, session) -> float:
+        """Seconds from a show broadcast until that cue's picture is
+        COMPLETE: its own refresh + span - the numbers _guard_for() is
+        made from, without the guard's margin (the keep-away, see
+        KEEPAWAY_DUE_S). A cue that says no span keeps the flat guard
+        here too: it is the only number there is for such a cue, and a
+        sweep nobody knows the length of may run that long."""
+        span_s = getattr(session, "span_s", None)
+        if span_s is None:
+            return self.guard_delay
+        refresh_s = getattr(session, "refresh_s", None)
+        if refresh_s is None:
+            refresh_s = GUARD_REFRESH_S
+        return min(GUARD_MAX_S, float(refresh_s) + float(span_s))
 
     def _guard_after_fire(self, session) -> float:
         """When the guard STOP may go out after a cue.
@@ -2319,6 +2452,7 @@ class DemoRunner:
             # went out, not one worked out from whatever the session
             # holds by now.
             self._guard_floor = again + self._guard_hold_s
+            self._picture_done_at = again + self._picture_s
             resent = True
 
     def _record_verify(self, session, cue_id: str, landed: str,
@@ -2569,6 +2703,9 @@ class DemoRunner:
             # one thing that must follow is the reopen below (review N1 - an
             # uncaught raise here failed the session and lost the next cue).
             done, how = False, f"usb reset raised: {exc or exc.__class__.__name__}"
+        # The master is a new device as far as its USB goes, and no STOP has
+        # gone to it yet; the caller's own STOP, if it goes, takes this back.
+        self._stop_owed()
         if not done:
             if not how.startswith("usb reset raised"):
                 how = f"usb reset: {how}"
@@ -2739,6 +2876,7 @@ class DemoRunner:
             took_ms = (time.perf_counter() - began) * 1000.0
             self._stop_failed = str(exc) or type(exc).__name__
             self.emit(f"bus recovery: the stop did not go out ({exc})")
+            self._stop_owed()
             return took_ms
         self._sent_broadcast_stop()
         return took_ms
@@ -2799,6 +2937,9 @@ class DemoRunner:
         # OWED_SETTLE_S from now.
         self._setup_owed = True
         self._owed_at = time.monotonic()
+        # ...and so is a STOP, until the one below goes (LOW-2): a refused
+        # or unsent one leaves the keep-away due at its first legal instant.
+        self._stop_owed()
         if not frames:
             return 0, "no frames asked for"
         sent = 0
@@ -3575,7 +3716,7 @@ class DemoRunner:
         self._stall_streak = 0
         self._recover_bus(bus, groups)
 
-    def _sent_broadcast_stop(self) -> None:
+    def _sent_broadcast_stop(self, written: bool = True) -> None:
         """Note that a broadcast 0x17 just went out, whoever sent it.
 
         The REMOTE heartbeat counts from the LAST stop the boards heard,
@@ -3583,7 +3724,13 @@ class DemoRunner:
         the guard stop after a fire each silence the autoplay just as
         well, and a heartbeat right behind one is a frame for nothing.
         (And the health question waits ASK_SETTLE_S behind it.)
+
+        `written` False: the write raised, so the master heard nothing -
+        the heartbeat's clock still moves (it must not spin on a dead
+        port), but the keep-away's does not (KEEPAWAY_DUE_S).
         """
+        if written:
+            self._last_stop_at = time.monotonic()
         self._last_broadcast_at = time.monotonic()
         self._remote_guard_due = (None if self.remote_guard <= 0 else
                                   time.monotonic() + self.remote_guard)
@@ -3619,6 +3766,145 @@ class DemoRunner:
             return False
         return not session.pending_job()
 
+    def _keep_away_when(self, session, now: float) -> "tuple[bool, str]":
+        """Whether the keep-away STOP goes out NOW (KEEPAWAY_DUE_S), and
+        what the log line says about the cue ahead.
+
+        Due once `keep_away_due` has passed since the last broadcast STOP
+        the master heard; then the first instant that is both after the
+        last picture is complete (its own refresh + span, plus
+        `keep_away_after_picture`) and `keep_away_before_cue` or more
+        before the next armed trigger. Inside that last stretch before a
+        trigger it goes only if waiting for the next gap would take the
+        master past `keep_away_max_gap` - and never closer to the trigger
+        than `keep_away_min_before_cue`.
+        """
+        last = self._last_stop_at
+        if last is None or now - last < self.keep_away_due:
+            return False, ""
+        done = self._picture_done_at
+        if done is not None and now < done + self.keep_away_after_picture:
+            return False, ""
+        due = session.due()
+        if due is None:
+            return True, ""
+        left = due[1] - now
+        ahead = f", {left:.1f} s before {due[0]}"
+        if left >= self.keep_away_before_cue:
+            return True, ahead
+        if left < self.keep_away_min_before_cue:
+            return False, ""
+        # The earliest the next gap can open: the armed cue's own picture
+        # complete (the session carries ITS numbers by now). A bound, not
+        # a promise - the cue after it may be closer still, and then that
+        # gap is judged the same way when it comes.
+        next_gap = due[1] + self._picture_for(session) + self.keep_away_after_picture
+        if next_gap < last + self.keep_away_max_gap:
+            return False, ""
+        if not self._keep_away_said_no_room:
+            self._keep_away_said_no_room = True
+            fired = self._last_show_at
+            apart = (f"cues {due[1] - fired:.1f} s apart" if fired is not None
+                     else f"{left:.1f} s before the cue")
+            self.emit(f"keep-away: no room for a stop between these cues "
+                      f"({apart})")
+        return True, ahead
+
+    def _keep_away_tick(self, bus, groups: int) -> None:
+        """Send the keep-away STOP if it is due and this is its instant
+        (_keep_away_when()). Timed like every other broadcast, so a stall
+        is measured and logged; one log line per STOP sent."""
+        session = self.remote
+        if not self.keep_away or session is None:
+            return
+        now = time.monotonic()
+        if now < self._keep_away_retry_at:
+            return
+        go, ahead = self._keep_away_when(session, now)
+        if not go:
+            return
+        took_ms = self._keep_away_send(bus, groups, now, ahead)
+        if took_ms is None:
+            # Not again in this run-up: a write that failed may fail the
+            # same way (a 2 s write timeout), and the trigger comes first.
+            due = session.due()
+            self._keep_away_retry_at = (due[1] if due is not None
+                                        else time.monotonic() + 1.0)
+            return
+        # Fed to the stall trigger like a heartbeat's (review of a3f91b9,
+        # LOW-1): it is the same frame, and in a show of close cues often
+        # the only one. _maybe_recover() keeps its own quiet-window rule.
+        self._maybe_recover(bus, groups, took_ms)
+
+    def _keep_away_send(self, bus, groups: int, now: float,
+                        ahead: str = "") -> "float | None":
+        """The keep-away STOP itself, on every path: one log line, timed,
+        and counted with the heartbeats (it is the same frame doing the
+        same job, and a healthy show must not read "the heartbeat never got
+        a window" - review of a3f91b9, LOW-1). A write that RAISES is
+        survived, never passed on: it must not fail the session and drop
+        the armed cue (MED-1 - the precheck's N1 guard). Returns the
+        write's milliseconds, or None when it was not written."""
+        since = now - self._last_stop_at
+        self.keep_away_sent += 1
+        self.remote_guard_sent += 1
+        self._keep_away_at = now
+        self.emit(f"keep-away stop ({since:.0f} s since the last stop{ahead})")
+        written = False
+        took_ms = 0.0
+        try:
+            took_ms = self._send_timed(bus, stop(0xFF, groups),
+                                       "keep-away stop")
+            written = True
+        except Exception as exc:            # noqa: BLE001 - _survived()
+            self._survived(bus, "keep-away stop", exc)
+        finally:
+            self._sent_broadcast_stop(written)
+        return took_ms if written else None
+
+    def _keep_away_own(self, bus, groups: int,
+                       picture_done: "float | None") -> bool:
+        """The keep-away for the unit's OWN workers (a local demo, a burn):
+        a broadcast STOP once `keep_away_due` has passed since the last,
+        when no picture is mid-sweep (`picture_done` + the margin). There is
+        no trigger to keep clear of; the caller settles ASK_SETTLE_S behind
+        it before its next unicast (the master is still relaying). True
+        when one went out."""
+        if not self.keep_away or self._last_stop_at is None:
+            return False
+        now = time.monotonic()
+        if now - self._last_stop_at < self.keep_away_due:
+            return False
+        if (picture_done is not None
+                and now < picture_done + self.keep_away_after_picture):
+            return False
+        if now < self._keep_away_retry_at or self._trigger_due_soon():
+            return False                # (an operator's cue armed mid-burn)
+        if self._keep_away_send(bus, groups, now) is not None:
+            return True
+        self._keep_away_retry_at = time.monotonic() + 1.0
+        return False
+
+    def _stop_owed(self) -> None:
+        """A (re)open or USB reset whose own STOP was not sent: count the
+        master as unstopped since long enough that the keep-away goes at its
+        first legal instant (review of a3f91b9, LOW-2). A STOP that does go
+        out right after overwrites this (_sent_broadcast_stop()).
+
+        Inside a trigger's hold (REMOTE_GUARD_HOLD_S) the first legal
+        instant is after that cue: a port just re-enumerated in the run-up
+        gets its trigger and nothing else (the fast reopen's own frames are
+        refused there for the same reason - review F5), so the keep-away is
+        held until the trigger has gone."""
+        now = time.monotonic()
+        floor = now - self.keep_away_due
+        self._last_stop_at = (floor if self._last_stop_at is None
+                              else min(self._last_stop_at, floor))
+        session = self.remote
+        due = session.due() if session is not None else None
+        if due is not None and due[1] - now < self.remote_guard_hold:
+            self._keep_away_retry_at = max(self._keep_away_retry_at, due[1])
+
     def _remote_guard_tick(self, bus, groups: int) -> None:
         """Send the idle autoplay guard if one is due and clear to go.
 
@@ -3629,6 +3915,10 @@ class DemoRunner:
         the whole stretch between two cues - which is exactly the 11-38 s
         of silence that lost cues on 2026-09-27 (review, same day).
         """
+        # The keep-away first: the one STOP the rules below yield to, once
+        # the master has gone KEEPAWAY_DUE_S without one. Nothing at all
+        # when it is switched off.
+        self._keep_away_tick(bus, groups)
         session = self.remote
         if session is None or self._remote_guard_due is None:
             return
@@ -3643,10 +3933,12 @@ class DemoRunner:
                       f"{self.remote_guard:g} s while idle")
         self.remote_guard_sent += 1
         took_ms = 0.0
+        written = False
         try:
             took_ms = self._send_timed(bus, stop(0xFF, groups), "stop")
+            written = True
         finally:
-            self._sent_broadcast_stop()
+            self._sent_broadcast_stop(written)
         # This heartbeat is the one frame that goes out when NOTHING else
         # would touch the bus, which makes it the one honest sample of
         # the port's own health - and the place a recovery can run
@@ -3758,6 +4050,9 @@ class DemoRunner:
             # said nothing must keep the FLAT guard, not a 7 s refresh.
             self._guard_hold_s = self._guard_for(session)
             self._guard_floor = sent_at + self._guard_hold_s
+            # ...and when the picture is complete, for the keep-away STOP.
+            self._picture_s = self._picture_for(session)
+            self._picture_done_at = sent_at + self._picture_s
             # The time the PC is told is this FIRST send, whatever the
             # landing check does afterwards: "how late was the cue" is
             # about when the picture was asked for, and a re-send is a
@@ -3783,6 +4078,12 @@ class DemoRunner:
         self._remote_guard_due = None
         self._remote_guard_said = False
         self.remote_guard_sent = 0
+        # Counted and said per worker, like the heartbeat; the clock it runs
+        # on (_last_stop_at) and the last picture are the MASTER's, and go
+        # on across workers.
+        self.keep_away_sent = 0
+        self._keep_away_said_no_room = False
+        self._keep_away_retry_at = 0.0
         self._guard_floor = None
         self.bus_stall = None
         self.bus_recovery = self.resend = self.precheck = None
@@ -4092,7 +4393,17 @@ class DemoRunner:
                             # The heartbeat (REMOTE_GUARD_S), for a
                             # worker with no cue in hand at all: before
                             # START, after the last cue, on HOLD.
+                            kept = self._keep_away_at
                             self._remote_guard_tick(bus, groups)
+                            if (guard_due is not None
+                                    and self._keep_away_at != kept
+                                    and self._last_stop_at is not None
+                                    and self._last_stop_at >= self._keep_away_at
+                                    and guard_due - time.monotonic() <= 1.0):
+                                # The keep-away STOP just did the guard's
+                                # job a second early: no second STOP right
+                                # behind it (review of a3f91b9, LOW-3).
+                                guard_due = None
                         if self._reprobe(bus, groups):
                             pass                # joined boards take the next cue
                         # A re-enumeration while the unit is idle - which is

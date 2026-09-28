@@ -373,6 +373,17 @@ def main() -> int:
                          "sweep, and no USB reset when a sweep finds no "
                          "boards answering; the PC's Recover bus button "
                          "still works")
+    ap.add_argument("--no-keep-away", action="store_true",
+                    help="do not send the keep-away stop: by default the "
+                         "master is not left 60 s without a broadcast STOP "
+                         "(while the PC drives the unit, in a local demo "
+                         "and in a long burn) - once 40 s have "
+                         "passed one goes out after the last picture is "
+                         "complete and 1.5 s (at the closest 1.0 s) before "
+                         "the next cue, "
+                         "even inside the heartbeat's own hold (the master "
+                         "resumes its factory autoplay ~85 s after the last "
+                         "STOP; SPECIFICATION 4.6)")
     ap.add_argument("--verify-after", type=float, default=VERIFY_AFTER_S,
                     help=f"seconds after a cue's broadcast (and after the "
                          f"witness board's own sweep start) before that "
@@ -449,7 +460,8 @@ def main() -> int:
                         resend_on_stall=args.resend_on_stall,
                         precheck=args.precheck,
                         port_watch=not args.no_port_watch,
-                        auto_recover=not args.no_auto_recover)
+                        auto_recover=not args.no_auto_recover,
+                        keep_away=not args.no_keep_away)
 
     firmware = Path(args.firmware) if args.firmware else find_firmware()
     images = [firmware] if args.firmware else find_firmware_images()

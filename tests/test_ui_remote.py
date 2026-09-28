@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -32,8 +33,8 @@ from ui.patterns import BY_KEY
 from ui.remote import (ARMED, FAILED, FIRED, LOCAL, READY, STANDBY,
                        RemoteError, RemoteSession)
 from ui.runner import NO_DELAY, DemoRunner
-from tests.test_ui_runner import (DegradedMaster, FakeBus, RecoveringBus,
-                                  make_runner, wait_until)
+from tests.test_ui_runner import (AutoplayMaster, DegradedMaster, FakeBus,
+                                  RecoveringBus, make_runner, wait_until)
 
 SAVE, SHOW, STOP, CFG = 0x13, 0x1D, 0x17, 0x1B
 
@@ -3802,4 +3803,409 @@ def test_a_precheck_begun_too_late_to_ask_does_not_say_bus_ok():
     assert said[0].endswith("precheck q03: stop 0 ms, no time to ask a "
                             "board"), said
     assert not any(f.cmd == STOP and f.dest != 0xFF for f in bus.requested)
+
+
+# ---- the STOP keep-away (docs/SPECIFICATION.md 4.6) ----
+#
+# PM's analysis of every incident of 2026-09-27/28: the master resumes its
+# FACTORY AUTOPLAY ~85 s after the LAST broadcast STOP it heard - show frames
+# do not reset that clock - and the heartbeat, held off by the guard floor
+# and the 5 s hold, sent NOTHING through a run of cues closer than ~36 s.
+# LOOK26 (cues 15, 25, 11, 11, 12 s apart) went 110 s without a STOP and
+# went bad ~7 s after its last cue in 5 of 5 runs. AutoplayMaster
+# (tests/test_ui_runner.py) is that master.
+
+class _Due:
+    """A session reduced to what the keep-away reads."""
+
+    def __init__(self, at=None, cue="q05", span_s=0.0, refresh_s=8.0):
+        self.at, self.cue = at, cue
+        self.span_s, self.refresh_s = span_s, refresh_s
+
+    def due(self):
+        return None if self.at is None else (self.cue, self.at, 5, 3)
+
+
+def _keep_away_runner(bus=None, **kwargs):
+    kwargs.setdefault("boards", [1, 2])
+    return make_runner(bus or FakeBus(), **kwargs)
+
+
+def test_the_keep_away_rules_at_the_units_own_numbers():
+    """The rule itself, at the real 40 / 60 / 0.5 / 1.5 / 1.0 s."""
+    runner = _keep_away_runner()
+    now = 1000.0
+    when = runner._keep_away_when
+    runner._last_stop_at = now - 39.0               # not due yet
+    assert when(_Due(), now) == (False, "")
+    runner._last_stop_at = now - 45.0
+    assert when(_Due(), now) == (True, "")          # due, nothing armed
+    # Inside the last picture - even at 45 s: a STOP there is a half-drawn
+    # picture. Its own refresh + span + 0.5 s, not the guard floor.
+    runner._picture_done_at = now - 0.4
+    assert when(_Due(), now)[0] is False
+    runner._picture_done_at = now - 0.5
+    assert when(_Due(), now)[0] is True
+    # 1.5 s or more before the next trigger: yes, and the line says where.
+    assert when(_Due(now + 1.8), now) == (True, ", 1.8 s before q05")
+    # Closer than 1.5 s, and the next gap opens before the 60 s are up
+    # (trigger + 8 s picture + 0.5 = now + 9.5 < now + 15): it waits.
+    assert when(_Due(now + 1.0), now)[0] is False
+    assert not [l for l in runner.recent(5) if "keep-away" in l]
+    # ...but not when that gap would take the master past 60 s.
+    runner._last_stop_at = now - 55.0
+    runner._last_show_at = now - 8.5
+    assert when(_Due(now + 1.0), now) == (True, ", 1.0 s before q05")
+    # Never closer than 1.0 s (review of a3f91b9), whatever the clock says.
+    assert when(_Due(now + 0.9), now)[0] is False
+    runner._last_stop_at = now - 75.0
+    assert when(_Due(now + 0.5), now)[0] is False
+    assert when(_Due(now + 0.9), now)[0] is False
+    assert when(_Due(now + 1.0), now)[0] is True
+    said = [l for l in runner.recent(10) if "keep-away" in l]
+    assert len(said) == 1 and said[0].endswith(
+        "keep-away: no room for a stop between these cues "
+        "(cues 9.5 s apart)"), said
+
+
+def test_the_keep_away_stop_goes_out_timed_and_says_so_once():
+    bus = FakeBus()
+    runner = _keep_away_runner(bus)
+    runner.remote = _Due(time.monotonic() + 1.85)
+    runner._last_stop_at = time.monotonic() - 52.2
+    runner._keep_away_tick(bus, 2)
+    assert [(f.cmd, f.dest) for f in bus.sent] == [(STOP, 0xFF)]
+    assert runner.keep_away_sent == 1
+    said = [l for l in runner.recent(5) if "keep-away" in l]
+    assert len(said) == 1 and said[0].endswith(
+        "keep-away stop (52 s since the last stop, 1.8 s before q05)"), said
+    assert runner.last_stop_ago_s is not None and runner.last_stop_ago_s < 1
+    runner._keep_away_tick(bus, 2)                  # the clock starts again
+    assert len(bus.sent) == 1
+
+
+def test_no_keep_away_sends_nothing_at_all():
+    bus = FakeBus()
+    runner = _keep_away_runner(bus, keep_away=False)
+    runner.remote = _Due()
+    runner._last_stop_at = time.monotonic() - 500.0
+    runner._keep_away_tick(bus, 2)
+    assert bus.sent == [] and runner.keep_away_sent == 0
+
+
+# LOOK26, the skirt's cues of showdata/show.json (8:23, 8:38, 9:03, 9:14,
+# 9:25, 9:37 - 15, 25, 11, 11, 12 s apart), each picture refresh + span = 8 s.
+# Played at a tenth of real time, with the unit's own numbers scaled alike.
+LOOK26 = [("17", 2, 0.0, 7.0, 1.0), ("18", 3, 15.0, 7.0, 1.0),
+          ("35", 5, 40.0, 8.0, 0.0), ("36", 7, 51.0, 8.0, 0.0),
+          ("37", 6, 62.0, 7.0, 1.0), ("38", 8, 74.0, 8.0, 0.0)]
+
+
+def _scaled_runner(bus, scale, keep_away=True):
+    return _keep_away_runner(
+        bus, guard_delay=30.0 * scale, remote_guard=15.0 * scale,
+        remote_guard_hold=5.0 * scale, precheck=0, verify_fire=False,
+        auto_recover=False, keep_away=keep_away,
+        keep_away_due=40.0 * scale, keep_away_max_gap=60.0 * scale,
+        keep_away_after_picture=0.5 * scale,
+        keep_away_before_cue=1.5 * scale,
+        keep_away_min_before_cue=0.5 * scale)
+
+
+def _play(session, cues, t1, scale):
+    """Fire `cues` from t1 the way ui/showplay.py does: the next one armed
+    the moment the current one is FIRED. Returns the trigger times."""
+    triggers = []
+    for cue_id, slot, at, refresh, span in cues:
+        at = t1 + at * scale
+        session.arm(cue_id, slot, span_s=span * scale,
+                    refresh_s=refresh * scale)
+        session.fire(cue_id, at)
+        triggers.append(at)
+        assert wait_until(lambda: session.phase == FIRED
+                          and session.cue_id == cue_id,
+                          timeout=max(0.0, at - time.monotonic()) + 5.0)
+    return triggers
+
+
+def _stops_obey_the_rules(bus, cues, scale, before_cue):
+    """Every broadcast STOP on the wire: never before the last picture is
+    COMPLETE (its show + refresh + span), never within `before_cue` of the
+    next trigger."""
+    picture = {slot: (refresh + span) * scale
+               for _, slot, _, refresh, span in cues}
+    shows = [(t, slot) for t, cmd, slot in bus.wire if cmd == SHOW]
+    for t, cmd, _ in bus.wire:
+        if cmd != STOP:
+            continue
+        before = [(s, slot) for s, slot in shows if s <= t]
+        if before:
+            s, slot = before[-1]
+            assert t >= s + picture[slot], (t - s, picture[slot])
+        after = [s for s, _ in shows if s > t]
+        if after:
+            assert after[0] - t >= before_cue - 0.01, after[0] - t
+
+
+def _run_look26(keep_away):
+    scale = 0.1
+    bus = AutoplayMaster(autoplay_after=85.0 * scale)
+    runner = _scaled_runner(bus, scale, keep_away=keep_away)
+    session = RemoteSession(runner)
+    session.arm("17", 2, span_s=0.1, refresh_s=0.7)
+    # The long wait before 8:23: the heartbeat going every 15 s.
+    assert wait_until(lambda: runner.remote_guard_sent >= 1, timeout=5.0)
+    beat = max(t for t, cmd, _ in bus.wire if cmd == STOP)
+    t1 = beat + 2.05            # so the last heartbeat is ~5 s before 8:23
+    triggers = _play(session, LOOK26, t1, scale)
+    time.sleep(max(0.0, triggers[-1] + 3.5 - time.monotonic()))
+    bus.autoplaying()
+    status = session.status()
+    runner.stop()
+    return bus, runner, status, triggers, scale
+
+
+def test_look26_without_the_keep_away_the_master_autoplays_after_the_last_cue():
+    """The incident as it happened, reproduced: no STOP from ~5 s before the
+    first cue until the guard floor of the last - and the master is in its
+    autoplay ~6 s (scaled) after the last cue, the picture half-drawn."""
+    bus, runner, status, triggers, scale = _run_look26(keep_away=False)
+    assert bus.autoplay_at is not None
+    assert triggers[-1] < bus.autoplay_at < triggers[-1] + 12.0 * scale
+    stops = [t for t, cmd, _ in bus.wire if cmd == STOP]
+    assert not [t for t in stops if triggers[0] <= t < bus.autoplay_at]
+    assert runner.keep_away_sent == 0 and status["keep_away"] is False
+    assert not [l for l in runner.recent(200) if "keep-away" in l]
+
+
+def test_look26_with_the_keep_away_the_master_never_autoplays():
+    bus, runner, status, triggers, scale = _run_look26(keep_away=True)
+    assert bus.autoplay_at is None and bus.ignored == []
+    assert runner.keep_away_sent >= 2 and status["keep_away_sent"] >= 2
+    assert status["keep_away"] is True and status["last_stop_ago_s"] < 6.0
+    _stops_obey_the_rules(bus, LOOK26, scale, 1.5 * scale)
+    # ...and never 60 s (scaled) without one, first stop to the end.
+    stops = [t for t, cmd, _ in bus.wire if cmd == STOP]
+    gaps = [b - a for a, b in zip(stops, stops[1:])]
+    assert max(gaps) <= 60.0 * scale, gaps
+    # Every cue went out on time, all six of them.
+    shown = [t for t, cmd, _ in bus.wire if cmd == SHOW]
+    assert len(shown) == 6
+    assert all(0 <= s - t < 0.05 for s, t in zip(shown, triggers))
+    said = [l for l in runner.recent(200) if "keep-away stop (" in l]
+    assert len(said) == runner.keep_away_sent
+
+
+def test_cues_with_no_room_get_their_stop_at_the_one_second_floor():
+    """Cues 9.9 s apart with 8 s pictures: never 1.5 s clear of a trigger
+    once a picture is complete, so the stop goes inside that, said once,
+    and never within 1.0 s of the trigger. At a quarter of real time."""
+    scale = 0.25
+    cues = [(f"q{n:02d}", 1 + n % 2, n * 9.9, 8.0, 0.0) for n in range(6)]
+    bus = AutoplayMaster(autoplay_after=85.0 * scale)
+    runner = _scaled_runner(bus, scale)
+    session = RemoteSession(runner)
+    session.arm("q00", 1, span_s=0.0, refresh_s=8.0 * scale)
+    assert wait_until(lambda: any(cmd == STOP for _, cmd, _ in bus.wire))
+    opened = max(t for t, cmd, _ in bus.wire if cmd == STOP)
+    triggers = _play(session, cues, opened + 6.0 * scale, scale)
+    time.sleep(max(0.0, triggers[-1] + 0.5 - time.monotonic()))
+    runner.stop()
+    assert bus.autoplay_at is None
+    said = [l for l in runner.recent(200) if "no room" in l]
+    assert len(said) == 1 and said[0].endswith(
+        "keep-away: no room for a stop between these cues "
+        "(cues 2.5 s apart)"), said
+    _stops_obey_the_rules(bus, cues, scale, 1.0 * scale)
+    shows = [t for t, cmd, _ in bus.wire if cmd == SHOW]
+    kept = [t for t, cmd, _ in bus.wire if cmd == STOP and t > triggers[0]]
+    assert kept, "no keep-away stop at all"
+    left = min(s for s in shows if s > kept[0]) - kept[0]
+    assert 1.0 * scale - 0.01 <= left < 1.5 * scale, left
+    stops = [t for t, cmd, _ in bus.wire if cmd == STOP]
+    assert max(b - a for a, b in zip(stops, stops[1:])) <= 60.0 * scale
+
+
+def _swept(runner) -> bool:
+    """The worker's start-up probe sweep is over (it yields to any cue
+    fired inside it and probes on behind it - not what these test)."""
+    return any("panels online" in line for line in runner.recent(20))
+
+
+class _KeepAwayFails(AutoplayMaster):
+    """The next broadcast STOP (armed by the test in a trigger's run-up,
+    where only the keep-away sends one) raises EIO, or blocks `fail_stall`
+    and then raises the way transport's 2 s write timeout does."""
+
+    def __init__(self, stall_s=0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.fail_next, self.fail_stall = False, stall_s
+        self.failed_at: "float | None" = None
+
+    def send(self, frame):
+        if self.fail_next and frame.cmd == STOP and frame.dest == 0xFF:
+            self.fail_next = False
+            self.failed_at = time.monotonic()
+            if self.fail_stall:
+                time.sleep(self.fail_stall)
+                raise OSError("Write timeout")
+            raise OSError(5, "Input/output error")
+        super().send(frame)
+
+
+@pytest.mark.parametrize("stall_s", [0.0, 0.2])
+def test_a_keep_away_stop_that_fails_loses_no_cue(stall_s):
+    """Review of a3f91b9, MED-1: a keep-away write that raised went through
+    _fire_at() to the worker's except - the session FAILED, the armed cue
+    was healed late, and the start-up sweep's STOP and probes went out
+    right behind the SHOW. Now it is survived like the precheck's. At a
+    tenth of real time, about T-1.5 s: EIO, or a 2 s write timeout."""
+    scale = 0.1
+    bus = _KeepAwayFails(stall_s=stall_s, autoplay_after=85.0 * scale)
+    runner = _scaled_runner(bus, scale)
+    runner.keep_away_due = 1000.0               # held off until the run-up
+    session = RemoteSession(runner)
+    session.arm("q01", 3, span_s=0.0, refresh_s=0.8)
+    assert wait_until(lambda: _swept(runner))
+    at = time.monotonic() + 0.6
+    session.fire("q01", at)
+    time.sleep(max(0.0, at - 0.2 - time.monotonic()))
+    bus.fail_next = True
+    runner._last_stop_at = time.monotonic() - 10.0      # long overdue
+    runner.keep_away_due = 40.0 * scale
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    shown = session.fired_at
+    time.sleep(1.0)
+    status = session.status()
+    runner.stop()
+    assert bus.failed_at is not None and at - bus.failed_at >= 0.15 - 0.01
+    assert runner.error is None and status["phase"] == FIRED
+    # On time - or late by no more than the write that blocked.
+    assert 0 <= shown - at < stall_s + 0.05, shown - at
+    said = [l for l in runner.recent(40) if "keep-away stop raised" in l]
+    assert len(said) == 1, runner.recent(40)
+    # Nothing of a start-up sweep behind the SHOW: no probe at all, and no
+    # broadcast STOP inside its picture (0.8 s here).
+    assert [t for t in bus.requested_at if shown < t < shown + 1.0] == []
+    assert [t for t, cmd, _ in bus.wire
+            if cmd == STOP and shown < t < shown + 0.8] == []
+    assert len([1 for _, cmd, _ in bus.wire if cmd == SHOW]) == 1
+
+
+def test_a_guard_stop_right_behind_a_keep_away_stop_is_dropped():
+    """LOW-3: the idle loop's guard STOP within a second of a keep-away STOP
+    that just went is the same job twice."""
+    bus = StampedBus()
+    runner = _keep_away_runner(bus, guard_delay=0.6, remote_guard=0.0,
+                               precheck=0, verify_fire=False,
+                               keep_away_due=2.0, keep_away_after_picture=0.0)
+    session = RemoteSession(runner)
+    session.arm("q01", 3, span_s=0.0, refresh_s=0.2)
+    assert wait_until(lambda: _swept(runner))
+    runner._last_stop_at = time.monotonic() - 10.0
+    session.fire("q01", time.monotonic() + 0.05)
+    assert wait_until(lambda: session.phase == FIRED)
+    fired = session.fired_at
+    # The keep-away goes when the picture is complete (+0.2 s); the guard
+    # was due at +0.6, within the second: dropped.
+    time.sleep(1.2)
+    runner.stop()
+    after = [t - fired for t in bus.broadcast_stops if t > fired]
+    assert len(after) == 1 and 0.2 - 0.02 <= after[0] < 0.4, after
+    assert runner.keep_away_sent == 1
+
+
+def test_a_reopen_whose_stop_did_not_go_leaves_the_keep_away_due():
+    """LOW-2: after a (re)open or reset whose own STOP was refused or never
+    sent, the master counts as unstopped - the keep-away goes at the first
+    legal instant instead of 40 s later."""
+    runner = _keep_away_runner()
+    runner._last_stop_at = time.monotonic()
+    runner._stop_owed()
+    assert runner.last_stop_ago_s >= runner.keep_away_due - 0.1
+    runner._last_stop_at = time.monotonic() - 100.0
+    runner._stop_owed()                             # never moves it forward
+    assert runner.last_stop_ago_s >= 99.0
+    # In a trigger's 5 s hold, the first legal instant is after that cue:
+    # a port re-enumerated in the run-up gets its trigger and nothing else.
+    at = time.monotonic() + 2.0
+    runner.remote = _Due(at)
+    runner._stop_owed()
+    assert runner._keep_away_retry_at == at
+    assert runner._keep_away_when(runner.remote, time.monotonic())[0] is True
+    bus = FakeBus()
+    runner._keep_away_tick(bus, 2)
+    assert bus.sent == []
+
+
+# ---- the unit's own workers: a local demo and a long burn ----
+#
+# 2026-09-28 20:11: a garment kept autoplaying show pictures and its boards
+# NAKed a demo's slot config - the same root cause. A demo whose cycles are
+# shorter than guard_delay (SOLID16 15 s, RANDOM 20 s against 30) sent no
+# broadcast STOP at all, and a burn writes for minutes without one.
+
+def _own_runner(bus, scale, keep_away=True, **kwargs):
+    return _keep_away_runner(
+        bus, guard_delay=30.0 * scale, keep_away=keep_away,
+        keep_away_due=40.0 * scale, keep_away_max_gap=60.0 * scale,
+        keep_away_after_picture=0.5 * scale,
+        local_picture=8.0 * scale, **kwargs)
+
+
+@pytest.mark.parametrize("keep_away", [True, False])
+def test_a_local_demo_keeps_the_master_off_its_autoplay(keep_away):
+    """SOLID16 at its own 15 s for eight cycles (120 s), at a tenth of real
+    time: without the keep-away the master is in its autoplay by 85 s."""
+    scale = 0.1
+    bus = AutoplayMaster(autoplay_after=85.0 * scale)
+    runner = _own_runner(bus, scale, keep_away=keep_away)
+    runner.start(replace(BY_KEY["solid16"], interval=15.0 * scale))
+    assert wait_until(lambda: runner.cycle >= 8 or bus.autoplaying(),
+                      timeout=20.0)
+    runner.stop()
+    if not keep_away:
+        assert bus.autoplay_at is not None and runner.keep_away_sent == 0
+        return
+    assert bus.autoplay_at is None and runner.keep_away_sent >= 2
+    stops = [t for t, cmd, _ in bus.wire if cmd == STOP]
+    assert max(b - a for a, b in zip(stops, stops[1:])) <= 60.0 * scale
+    shows = [t for t, cmd, _ in bus.wire if cmd == SHOW]
+    for t in stops:
+        before = [s for s in shows if s <= t]
+        if before:                      # never inside the demo's picture
+            assert t - before[-1] >= 8.0 * scale, t - before[-1]
+
+
+class _SlowSaves(AutoplayMaster):
+    def request(self, frame, retries=3, timeout=None):
+        if frame.cmd == SAVE:
+            time.sleep(0.25)
+        return super().request(frame, retries=retries, timeout=timeout)
+
+
+@pytest.mark.parametrize("keep_away", [True, False])
+def test_a_long_burn_keeps_the_master_off_its_autoplay(keep_away):
+    """A 100 s burn (36 saves, a tenth of real time) sends no broadcast STOP
+    of its own: the keep-away goes between two boards' writes."""
+    scale = 0.1
+    bus = _SlowSaves(autoplay_after=85.0 * scale)
+    runner = _own_runner(bus, scale, keep_away=keep_away, verify_fire=False,
+                         remote_guard=0.0)
+    session = RemoteSession(runner)
+    cues = [{"slot": n, "boards": {1: array(n), 2: array(n)}, "delays": {}}
+            for n in range(1, 19)]
+    session.burn(cues, dev_type=3)
+    assert wait_until(lambda: (session.burn_status() or {}).get("state")
+                      in ("burned", "failed"), timeout=30.0)
+    bus.autoplaying()
+    state = session.burn_status()["state"]
+    runner.stop()
+    if not keep_away:
+        assert bus.autoplay_at is not None
+        return
+    assert bus.autoplay_at is None and state == "burned"
+    assert runner.keep_away_sent >= 1
+    said = [l for l in runner.recent(200) if "keep-away stop (" in l]
+    assert len(said) == runner.keep_away_sent
 

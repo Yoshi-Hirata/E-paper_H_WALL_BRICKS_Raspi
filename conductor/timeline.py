@@ -131,6 +131,21 @@ MAX_DURATION_S = 900.0
 DURATION_TOO_LONG = "A show is at most 15:00"
 
 
+# The unit's STOP keep-away (ui/runner.py's KEEPAWAY_*, SPECIFICATION 4.6):
+# the master resumes its factory autoplay ~85 s after the last broadcast
+# STOP, so the unit sends one at least every KEEPAWAY_MAX_GAP_S - after a
+# picture is complete (the refresh + span the UNIT is told, plus
+# KEEPAWAY_AFTER_PICTURE_S) and KEEPAWAY_BEFORE_CUE_S or more before the
+# next send. A garment whose sends leave no such room for longer than
+# KEEPAWAY_MAX_GAP_S gets a warning (keep_away_gaps() below): the unit still
+# squeezes a stop in down to half a second before a trigger, but that is
+# the last resort, not the plan.
+KEEPAWAY_MAX_GAP_S = 60.0
+KEEPAWAY_AFTER_PICTURE_S = 0.5
+KEEPAWAY_BEFORE_CUE_S = 1.5
+KEEPAWAY_ROOM_S = KEEPAWAY_AFTER_PICTURE_S + KEEPAWAY_BEFORE_CUE_S   # 2.0
+
+
 def check_duration(value) -> float:
     """A show length as the operator or a show file gave it (seconds, or
     'm:ss'), in seconds - or ValueError saying why it cannot be one."""
@@ -285,6 +300,53 @@ def panel_refresh(cue: dict, refresh: float = REFRESH_S) -> float:
     PANEL_REPAINT_S however short a refresh the show declares.
     """
     return max(PANEL_REPAINT_S, effective_refresh(cue, refresh))
+
+
+def unit_picture_s(group: "list[dict]", refresh: float = REFRESH_S) -> float:
+    """Seconds after one send until the UNIT counts its picture complete:
+    the refresh_s its show file carries for that send (showfile.py: the
+    slowest panel_refresh() of the moment) plus the moment's longest span -
+    what ui/runner.py's keep-away measures from (_picture_for())."""
+    return (max(panel_refresh(c, refresh) for c in group)
+            + max(span_of(c) for c in group))
+
+
+def keep_away_gaps(unit_cues: "list[dict]", refresh: float = REFRESH_S
+                   ) -> "list[tuple[float, float, float]]":
+    """[(seconds, first send, last send)] for every stretch of ONE unit's
+    sends that leaves the unit's keep-away STOP no room for longer than
+    KEEPAWAY_MAX_GAP_S.
+
+    After a send there is room for a stop when the next send is at least
+    KEEPAWAY_ROOM_S (2 s) after its picture is complete (unit_picture_s()):
+    the stop goes KEEPAWAY_AFTER_PICTURE_S after the picture and
+    KEEPAWAY_BEFORE_CUE_S before the next send. Before the first send and
+    after the last there is always room. A stretch runs from the end of one
+    room (the latest a stop could go, 1.5 s before the stretch's first
+    send) to the start of the next (0.5 s after the stretch's last picture)
+    - the shortest the master can possibly go without a stop there. Sends
+    at the same instant are one broadcast (showfile.py), as in validate().
+    """
+    moment_cues: "dict[float, list[dict]]" = {}
+    for cue in unit_cues:
+        moment_cues.setdefault(times(cue, refresh)[0], []).append(cue)
+    moments = sorted(moment_cues)
+    found: "list[tuple[float, float, float]]" = []
+    if not moments:
+        return found
+    room_end, first = moments[0] - KEEPAWAY_BEFORE_CUE_S, moments[0]
+    for index, sent in enumerate(moments):
+        opens = (sent + unit_picture_s(moment_cues[sent], refresh)
+                 + KEEPAWAY_AFTER_PICTURE_S)
+        after = moments[index + 1] if index + 1 < len(moments) else None
+        if after is not None and after - KEEPAWAY_BEFORE_CUE_S < opens:
+            continue                    # no room between these two sends
+        stretch = round(opens - room_end, 3)
+        if stretch > KEEPAWAY_MAX_GAP_S:
+            found.append((stretch, first, sent))
+        if after is not None:
+            room_end, first = after - KEEPAWAY_BEFORE_CUE_S, after
+    return found
 
 
 def times(cue: dict, refresh: float = REFRESH_S) -> "tuple[float, float]":
@@ -540,6 +602,21 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                             f"on {unit}; at least {need:.1f} s is needed "
                             f"({detail})")
             previous_sent, previous_group = sent, group
+
+        # The unit's STOP keep-away needs room between pictures and the next
+        # send (keep_away_gaps()). A warning, never a problem: the unit
+        # still gets its stop in, down to half a second before a trigger.
+        names = " + ".join(sorted({items[c["item"].lower()]["item"]
+                                   for c in unit_cues}, key=str.lower))
+        for stretch, first, last in keep_away_gaps(unit_cues, refresh):
+            first = max(0.0, first)
+            span = (format_clock(first) if format_clock(first)
+                    == format_clock(last) else
+                    f"{format_clock(first)}–{format_clock(last)}")
+            warnings.append(f"{names}: {stretch:.0f} s of cues without room "
+                            f"for a stop ({span}) - leave "
+                            f"{KEEPAWAY_ROOM_S:g} s after a picture is "
+                            "complete")
 
     for key, item in sorted(items.items()):
         track = [c for c in cues if c["item"].lower() == key]

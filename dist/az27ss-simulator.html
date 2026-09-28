@@ -1708,6 +1708,13 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   const LEGACY_REFRESH_S = 7.0;
   const REFRESH_RANGE_S = [1.0, 60.0];
   const GAP_AFTER_REFRESH_S = 1.0;
+  // conductor/timeline.py's KEEPAWAY_*: the unit's STOP keep-away
+  // (SPECIFICATION 4.6) wants a stop at least every 60 s, 0.5 s after a
+  // picture is complete and 1.5 s before the next send.
+  const KEEPAWAY_MAX_GAP_S = 60.0;
+  const KEEPAWAY_AFTER_PICTURE_S = 0.5;
+  const KEEPAWAY_BEFORE_CUE_S = 1.5;
+  const KEEPAWAY_ROOM_S = KEEPAWAY_AFTER_PICTURE_S + KEEPAWAY_BEFORE_CUE_S;
   // Pre-burn conductor (main, 2026-09-25+): every picture is written to
   // its on-board slot at Upload time (showfile.py), so nothing is
   // written any more while the show runs - a running send is one
@@ -1813,6 +1820,45 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     let longest = completeS(unitCues[0], refresh);
     unitCues.forEach(c => { longest = pyMax2(longest, completeS(c, refresh)); });
     return longest + gap;
+  }
+
+  // conductor/timeline.py's unit_picture_s(): seconds after one send until
+  // the UNIT counts its picture complete - the refresh_s its show file
+  // carries for the moment (the slowest panelRefresh()) + the longest span.
+  function unitPictureS(group, refresh) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    let slow = panelRefresh(group[0], refresh), span = spanOf(group[0]);
+    group.forEach(c => {
+      slow = pyMax2(slow, panelRefresh(c, refresh));
+      span = pyMax2(span, spanOf(c));
+    });
+    return slow + span;
+  }
+
+  // conductor/timeline.py's keep_away_gaps(): [[seconds, first, last]] for
+  // every stretch of ONE unit's sends that leaves the unit's keep-away STOP
+  // no room (the next send KEEPAWAY_ROOM_S after a picture is complete) for
+  // longer than KEEPAWAY_MAX_GAP_S. Same arithmetic, same order.
+  function keepAwayGaps(unitCues, refresh) {
+    if (refresh === undefined) refresh = REFRESH_S;
+    const momentCues = Object.create(null);
+    unitCues.forEach(cue => {
+      const sent = times(cue, refresh)[0];
+      (momentCues[sent] = momentCues[sent] || []).push(cue);
+    });
+    const moments = Object.keys(momentCues).map(Number).sort((a, b) => a - b);
+    const found = [];
+    if (!moments.length) return found;
+    let roomEnd = moments[0] - KEEPAWAY_BEFORE_CUE_S, first = moments[0];
+    moments.forEach((sent, index) => {
+      const opens = sent + unitPictureS(momentCues[sent], refresh) + KEEPAWAY_AFTER_PICTURE_S;
+      const after = index + 1 < moments.length ? moments[index + 1] : null;
+      if (after !== null && after - KEEPAWAY_BEFORE_CUE_S < opens) return;
+      const stretch = fmt.round(opens - roomEnd, 3);
+      if (stretch > KEEPAWAY_MAX_GAP_S) found.push([stretch, first, sent]);
+      if (after !== null) { roomEnd = after - KEEPAWAY_BEFORE_CUE_S; first = after; }
+    });
+    return found;
   }
 
   function times(cue, refresh) {
@@ -2031,6 +2077,22 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
         }
         previousSent = sent; previousGroup = group;
       });
+
+      // The unit's STOP keep-away needs room between pictures and the next
+      // send (keepAwayGaps()). A warning, never a problem.
+      const nameSet = Object.create(null);
+      byUnit[unit].forEach(c => { const n = items[c.item.toLowerCase()].item; nameSet[n] = true; });
+      const names = Object.keys(nameSet).sort((a, b) => {
+        const la = a.toLowerCase(), lb = b.toLowerCase();
+        return la < lb ? -1 : la > lb ? 1 : 0;
+      }).join(" + ");
+      keepAwayGaps(byUnit[unit], refresh).forEach(([stretch, firstRaw, last]) => {
+        const first = pyMax2(0.0, firstRaw);
+        const span = formatClock(first) === formatClock(last)
+          ? formatClock(first) : `${formatClock(first)}–${formatClock(last)}`;
+        warnings.push(`${names}: ${fmt.fixed(stretch, 0)} s of cues without room for a stop `
+          + `(${span}) - leave ${fmt.g(KEEPAWAY_ROOM_S)} s after a picture is complete`);
+      });
     });
 
     Object.keys(items).sort().forEach(key => {
@@ -2047,8 +2109,10 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     REFRESH_S, LEGACY_REFRESH_S, PANEL_REPAINT_S, REFRESH_RANGE_S,
     GAP_AFTER_REFRESH_S,
     SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S, MAX_DURATION_S,
+    KEEPAWAY_MAX_GAP_S, KEEPAWAY_AFTER_PICTURE_S, KEEPAWAY_BEFORE_CUE_S,
+    KEEPAWAY_ROOM_S,
     parseClock, formatClock, cleanRefresh, effectiveRefresh, completeS,
-    panelRepaintOf, panelRefresh, spanOf,
+    panelRepaintOf, panelRefresh, spanOf, unitPictureS, keepAwayGaps,
     sweeps, clean, resolve, applyTransitions, times, ends, minInterval,
     minIntervalOf, validate,
   };

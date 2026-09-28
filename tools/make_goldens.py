@@ -903,6 +903,40 @@ def timeline_cases() -> list:
         "refresh8_preset_that_sweeps",
         [preset_sweep, _cue("b", "Look22", 60, "p2")], sweep8, refresh=eight))
 
+    # The unit's STOP keep-away (timeline.keep_away_gaps(), SPECIFICATION
+    # 4.6): a warning when a unit's sends leave no room for a stop (the next
+    # send 2 s after a picture is complete) for longer than 60 s. LOOK26 as
+    # the real show has it (15/25/11/11/12 s apart, 8 s pictures) has room
+    # everywhere; cues 9.5 s apart do not, and a run of them warns.
+    look26 = [_cue("p", "Look22", 0, "p1", refresh_s=8.0)]
+    for n, (at, refresh_s, span) in enumerate(
+            ((503, 7.0, 1.0), (518, 7.0, 1.0), (543, 8.0, 0.0),
+             (554, 8.0, 0.0), (565, 7.0, 1.0), (577, 8.0, 0.0))):
+        look26.append(_cue(f"q{n}", "Look22", at, "p2", refresh_s=refresh_s,
+                           span=span))
+    cases.append(_run_timeline_case("keep_away_look26_has_room", look26,
+                                    sweep8, 655.0, eight))
+    tight = [_cue("p", "Look22", 0, "p1")] + [
+        _cue(f"t{n}", "Look22", 503 + n * 9.5, "p2") for n in range(8)]
+    cases.append(_run_timeline_case("keep_away_no_room_warns", tight,
+                                    sweep8, 655.0, eight))
+    # Six of them (1.5 s before the first to 0.5 s after the last picture:
+    # 57.5 s) stay under 60 s: no warning.
+    cases.append(_run_timeline_case("keep_away_no_room_short", tight[:7],
+                                    sweep8, 655.0, eight))
+    # Two items sharing a unit share its master: named together, and one
+    # send for both at the same instant.
+    shared = {"top": {"item": "Top", "unit": "radxa-05", "boards": 8,
+                      "designs": {"p1": OK, "p2": OK}},
+              "skirt": {"item": "Skirt", "unit": "radxa-05", "boards": 8,
+                        "designs": {"p1": OK, "p2": OK}}}
+    both = []
+    for n in range(8):
+        both.append(_cue(f"s{n}", "Skirt", 100 + n * 9.5, "p2"))
+        both.append(_cue(f"u{n}", "Top", 100 + n * 9.5, "p1"))
+    cases.append(_run_timeline_case("keep_away_shared_unit", both, shared,
+                                    655.0, eight))
+
     return cases
 
 
