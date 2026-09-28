@@ -252,7 +252,10 @@ the show` と出る ― **本番前にこの文が出ていないことを確か
    - **`Boards (answering / expected)` の行が `16 / 16`**(その衣装の基板数。
      `2 / 16` のままなら 1. に戻る)
    - **タイル最下段のログ行が `panels online: 16/16`**(機体が基板を全部
-     見つけた行。行にマウスを置くとそれまでのログも出る)
+     見つけた行。行にマウスを置くとそれまでのログも出る)。
+     `no boards answering → usb reset → panels online: 16/16` も同じ意味で
+     よい(親基板が劣化していたので機体が自分で USB をリセットした)。
+     `no boards answering → usb reset → still no boards` なら 1. に戻る
    - **機体名の行の右端の丸いチップが `standby`、そのあと `ready`**(`standby` は白の
      スタンバイを描き終えた状態、`ready` は Conductor の指示待ち。
      `local` は機体が自分のメニューにいる状態なので、まだ Conductor のものに
