@@ -2558,7 +2558,129 @@ def test_a_port_lost_just_outside_the_hold_comes_back_as_the_port_only(
     bus, runner = _lost_at(monkeypatch, lead=5.1)
     assert bus.reopened == ["/dev/ttyACM1"]
     assert bus.sent == [] and bus.requested == []
-    assert any("port only" in line for line in runner.recent(20))
+    assert any("port only (a cue is too near)" in line
+               for line in runner.recent(20))
+
+
+def _idle_loss(monkeypatch, floor_in):
+    """An IDLE re-enumeration - no cue armed, the watcher's `at` is None -
+    with the last picture's floor `floor_in` seconds away (negative: past)."""
+    bus = RecoveringBus("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+    monkeypatch.setattr("ui.runner.find_port", lambda: "/dev/ttyACM1")
+    runner = recovery_runner(bus, port=None, link_token=bus.token,
+                             port_poll=0.01)
+    runner.remote = RemoteSession(runner)          # nothing armed
+    runner._guard_floor = time.monotonic() + floor_in
+    bus.unplug(back_as="/dev/ttyACM1")
+    assert runner._port_watch(bus, 2) is True      # at=None: the idle call
+    return bus, runner
+
+
+def test_an_idle_port_loss_inside_the_last_picture_sends_no_frame(monkeypatch):
+    """Round-3 review HIGH: with at=None - the idle loop's call - both frames
+    of the reopen went out UNCHECKED, into the repaint of the last picture
+    (t_idle_floor.py: a 0x17 and a 0x1B at +1.5 s, the floor at +10 s).
+    That is LOOK28 exactly: a re-enumeration 10-30 s after the last cue,
+    which would leave the last look half-drawn."""
+    bus, runner = _idle_loss(monkeypatch, floor_in=10.0)
+    assert bus.reopened == ["/dev/ttyACM1"]
+    assert bus.sent == [] and bus.requested == [], (bus.sent, bus.requested)
+    assert any("port only (the last picture is still repainting)" in line
+               for line in runner.recent(20))
+
+
+def test_an_idle_port_loss_after_the_last_picture_is_reopened_and_measured(
+        monkeypatch):
+    bus, runner = _idle_loss(monkeypatch, floor_in=-1.0)
+    assert [f.cmd for f in bus.sent][:1] == [STOP]          # frames went
+    assert [f.dest for f in bus.requested] == [1]           # master config
+    assert any("bus ok" in line for line in runner.recent(20))
+
+
+def test_the_idle_worker_itself_keeps_frames_out_of_the_last_picture(
+        monkeypatch):
+    """The reviewer's t_idle_floor.py end to end: the worker's own idle loop
+    finds the loss 1.5 s after the fire, well inside the floor."""
+    bus = RecoveringBus("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+    names = ["/dev/ttyACM0"]
+    monkeypatch.setattr("ui.runner.find_port", lambda: names[-1])
+    runner = recovery_runner(bus, port=None, link_token=bus.token,
+                             port_poll=0.02, port_back_wait=1.0, precheck=0)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2)}, span_s=4.0,
+                    refresh_s=6.0)
+    assert wait_until(lambda: session.phase == READY, timeout=10.0)
+    session.fire("c1", time.monotonic() + 1.0)
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    floor = runner._guard_floor
+    assert floor is not None and floor - time.monotonic() > 5.0
+    mark_sent, mark_req = len(bus.sent), len(bus.requested)
+    names.append("/dev/ttyACM1")
+    bus.unplug(back_as="/dev/ttyACM1")
+    assert wait_until(lambda: bus.reopened, timeout=5.0)
+    time.sleep(0.3)
+    inside = time.monotonic() < floor
+    new_sent, new_req = bus.sent[mark_sent:], bus.requested[mark_req:]
+    runner.stop()
+    assert inside, "the check ran past the floor - lengthen the refresh"
+    assert new_sent == [] and new_req == [], (new_sent, new_req)
+    assert any("port only (the last picture is still repainting)" in line
+               for line in runner.recent(40))
+
+
+class FailingAfterOpenBus(RecoveringBus):
+    """Reopens fine; the first frame on the new port raises."""
+
+    def send(self, frame):
+        if self.reopened:
+            raise OSError(5, "Input/output error")
+        super().send(frame)
+
+
+def test_a_write_that_fails_after_the_reopen_is_said_not_swallowed(monkeypatch):
+    """Round-3 review LOW-4: the reason frames did not go is always named -
+    and a failed write is one of them, never passed over in silence."""
+    bus, runner = _lost_at(monkeypatch, lead=30.0,
+                           bus_class=FailingAfterOpenBus)
+    said = [line for line in runner.recent(20) if "port lost" in line]
+    assert said and "port only (write failed:" in said[0], said
+    assert "Input/output error" in said[0]
+
+
+def test_the_precheck_is_not_begun_inside_one_degraded_write_of_the_hold():
+    """Round-3 review LOW-3: the measuring STOP is itself a write that may
+    block DEGRADED_WRITE_S (0.4 s), so the bound is hold + 0.4 = 5.4 s -
+    begun at T-5.25 it could block on to T-4.84, inside the hold."""
+    bus = RecoveringBus("padding")
+    bus.stalled = False
+    runner = recovery_runner(bus)                  # the REAL 5 s hold
+    runner._precheck(bus, 2, "c1", time.monotonic() + 5.39)
+    assert runner.precheck is None and bus.sent == []
+    runner._precheck(bus, 2, "c2", time.monotonic() + 5.41)
+    assert runner.precheck is not None and runner.precheck["cue"] == "c2"
+
+
+def test_a_start_up_sweep_never_stands_down_even_if_a_worker_left_the_flag():
+    """Round-3 review LOW-1: `_setup_yields` could outlive the pass that set
+    it - a worker stopped with it set let the NEXT worker's start-up sweep
+    stand down. It is reset per worker, and set in exactly one place."""
+    bus = RecoveringBus("padding")
+    bus.stalled = False
+    runner = recovery_runner(bus, boards=[1, 2, 3, 4])
+    runner._setup_yields = True                    # left over by a worker
+    session = RemoteSession(runner)
+    session.arm("c1", 1)
+    session.fire("c1", time.monotonic() + 0.15)    # fires inside the sweep
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
+    assert wait_until(lambda: any("panels online" in line
+                                  for line in runner.recent(40)), timeout=10.0)
+    runner.stop()
+    assert not [l for l in runner.recent(60) if "stood aside" in l]
+    source = (Path(__file__).resolve().parents[1] / "ui" / "runner.py"
+              ).read_text(encoding="utf-8")
+    assert source.count("self._setup_yields = True") == 1
 
 
 def test_the_frames_are_decided_after_the_slow_open_not_before_it(monkeypatch):
