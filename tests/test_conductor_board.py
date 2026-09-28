@@ -172,8 +172,10 @@ def test_one_bus_verdict_serves_the_tile_the_row_and_the_notes():
     # The note's words, and the order the operator has to work in - said once
     # for all the named units rather than once per unit.
     note = _function_body("degradedNote")
-    assert "bus degraded — restart " in note
-    assert '"the unit" : "these units"' in note and "then Upload" in note
+    assert "bus degraded — press Recover bus (or reboot " in note
+    assert '"the Radxa" : "these Radxas"' in note and "then Upload" in note
+    # Never "restart": a UI restart does not cure a degraded master.
+    assert "restart" not in note
 
 
 def test_a_unit_still_playing_counts_as_mid_show():
@@ -226,7 +228,17 @@ def test_recover_bus_sits_on_the_mark_and_runs_before_the_preset_only():
     # already looking, and it carries the unit's name for the delegated
     # click handler (2026-09-28).
     mark = _function_body("stallMark")
-    assert "data-recover-bus" in mark and "esc(u.name)" in mark
+    assert "recoverButton(u)" in mark
+    button = _function_body("recoverButton")
+    assert "data-recover-bus" in button and "esc(u.name)" in button
+    # ...and the button is there on a HEALTHY tile too, for the pre-show
+    # "bus was already clear" check (review M3) - never mid-run, and only on
+    # a unit the PC owns: never `local` (review N2).
+    assert "showMidRun()" in button and "!u.online" in button
+    assert "SHOWBOARD.RECOVER_PHASES.includes(u.phase)" in button
+    assert ('const RECOVER_PHASES = ["standby", "ready", "armed", "fired", '
+            '"failed"];') in PAGE
+    assert "${stallMark(u) || recoverButton(u)}" in PAGE
     # Not mid-run and not for a unit that is not answering: the unit would
     # refuse the first and cannot hear the second. Not on the NOW -> NEXT
     # row either (`short`), for M1's own reason - a button in that one grid
@@ -244,7 +256,10 @@ def test_recover_bus_sits_on_the_mark_and_runs_before_the_preset_only():
     before = _function_body("recoverBeforePreset")
     assert before.count("SHOWBOARD.recoverTargets") == 1
     assert "PRESET_RECOVER_WAIT_MS" in before
-    assert "const PRESET_RECOVER_WAIT_MS = 3000;" in PAGE
+    # Six seconds, not three (review L1): a USB reset plus the 3 s proof is
+    # about 4.5 s, and the preset is not time-critical. The toast says so.
+    assert "const PRESET_RECOVER_WAIT_MS = 6000;" in PAGE
+    assert "(up to ${Math.round(waitMs / 1000)} s)" in sweep
     assert "AbortController" in sweep and "abort.abort()" in sweep
     clicks = PAGE[PAGE.index('e.target.id === "show-preset"'):]
     preset = clicks[:clicks.index('e.target.id === "show-start"')]
@@ -603,6 +618,14 @@ CALLS = {
     "recover_shallow_stall_left_alone": ["recoverTargets",
                                          [_u(name="radxa-07",
                                              bus_stall=_stall(ms=88.0))], False],
+    # A unit on its own menu or playing its own demo is not the PC's to
+    # recover (review N2); one in a Conductor-owned phase is.
+    "recover_local_unit_left_alone": ["recoverTargets",
+                                      [_u(name="radxa-07", phase="local",
+                                          bus_stall=_stall())], False],
+    "recover_ready_unit": ["recoverTargets",
+                           [_u(name="radxa-07", phase="ready",
+                               bus_stall=_stall())], False],
     "recover_right_at_the_depth": ["recoverTargets",
                                    [_u(name="radxa-07",
                                        bus_stall=_stall(ms=150.0))], False],
@@ -623,11 +646,11 @@ CALLS = {
                                   [_u(name="radxa-07", bus_stall=_stall())], True],
     "recover_no_units_at_all": ["recoverTargets", [], False],
     # ---- and what each answer reads as
-    "recover_said_padding": ["recoverText", "radxa-07",
-                             {"recovered": True, "by": "padding",
+    "recover_said_usb_reset": ["recoverText", "radxa-07",
+                               {"recovered": True, "by": "usb_reset",
                               "before_ms": 359.0, "after_ms": 2.0}],
-    "recover_said_reopen": ["recoverText", "radxa-07",
-                            {"recovered": True, "by": "reopen",
+    "recover_said_usb_reset_2": ["recoverText", "radxa-07",
+                                 {"recovered": True, "by": "usb_reset",
                              "before_ms": 359.4, "after_ms": 3.2}],
     "recover_said_failed": ["recoverText", "radxa-07",
                             {"recovered": False, "by": None,
@@ -640,14 +663,14 @@ CALLS = {
     "recover_said_nothing": ["recoverText", "radxa-07", None],
     "recover_report_all_well": ["recoverReport",
                                 [{"name": "radxa-07",
-                                  "result": {"recovered": True, "by": "padding",
+                                  "result": {"recovered": True, "by": "usb_reset",
                                              "before_ms": 359.0, "after_ms": 2.0}},
                                  {"name": "radxa-03",
-                                  "result": {"recovered": True, "by": "reopen",
+                                  "result": {"recovered": True, "by": "usb_reset",
                                              "before_ms": 300.0, "after_ms": 3.0}}]],
     "recover_report_one_hopeless": ["recoverReport",
                                     [{"name": "radxa-07",
-                                      "result": {"recovered": True, "by": "padding",
+                                      "result": {"recovered": True, "by": "usb_reset",
                                                  "before_ms": 359.0, "after_ms": 2.0}},
                                      {"name": "radxa-03",
                                       "result": {"recovered": False, "by": None,
@@ -1036,7 +1059,7 @@ def test_a_missing_board_is_counted_against_its_own_garment(board):
 # after the show. In the second the operator restarted the unit with the
 # boards already powered: every cue +1..6 ms, and no stall since.
 
-DEGRADED_TILE = "bus degraded (37 stalls) — restart this unit before START"
+DEGRADED_TILE = "bus degraded (37 stalls) — press Recover bus, or reboot the Radxa"
 
 
 def test_five_stalls_with_a_fresh_one_is_a_unit_to_restart(board):
@@ -1057,7 +1080,7 @@ def test_five_stalls_with_a_fresh_one_is_a_unit_to_restart(board):
     # At five it turns red and says the one thing that fixes it.
     five = r["stall_degraded"]
     assert five["degraded"] is True
-    assert five["text"] == "bus degraded (5 stalls) — restart this unit before START"
+    assert five["text"] == "bus degraded (5 stalls) — press Recover bus, or reboot the Radxa"
     assert r["stall_degraded_many"]["text"] == DEGRADED_TILE
     # ...and the tooltip names the pre-show procedure, in the order it is to
     # be done - the boards powered FIRST, the restart after it - in the words
@@ -1068,6 +1091,13 @@ def test_five_stalls_with_a_fresh_one_is_a_unit_to_restart(board):
     assert "standby" in title and "ready" in title, title
     assert "REMOTE" not in title, title
     assert "本番前の起動手順" in title, title
+    # radxa-07, 2026-09-28: a UI restart does NOT cure it, a reboot does.
+    assert "does NOT cure it" in title and "REBOOT of the Radxa" in title, title
+    # Two states hide behind the mark, so it claims neither (review L3).
+    assert "none is executed" not in title, title
+    assert "late" in title and "not being executed" in title, title
+    assert "Recover bus" in title, title
+    assert "re-plugging the master's" in title, title
 
 
 def test_an_ordinary_stall_stays_amber_however_many_of_them_there_are(board):
@@ -1135,7 +1165,7 @@ def test_the_now_next_row_carries_the_same_verdict(board):
 # ---- "Recover bus" (2026-09-28, LOOK28 / radxa-07) ----
 #
 # The state the red mark above asks for a restart over has a cheaper cure the
-# unit can run itself: the resync padding, and a port reopen behind it
+# unit can run itself: a USB reset of the master, proven before it is believed
 # (ui/runner.py's _recover_bus()). ② Show preset and ③ START try it FIRST,
 # because a degraded unit takes the preset and refreshes no panel.
 
@@ -1148,6 +1178,9 @@ def test_the_units_to_recover_are_the_ones_still_stalling_now(board):
     assert r["recover_before_it_is_red"] == ["radxa-07"]
     # The same depth S's red mark is drawn from: 150 ms counts, 88 does not.
     assert r["recover_right_at_the_depth"] == ["radxa-07"]
+    # Only a unit the PC owns (review N2).
+    assert r["recover_ready_unit"] == ["radxa-07"]
+    assert r["recover_local_unit_left_alone"] == []
     # Shallow, old, taken down by the unit itself, offline, mid-run, nothing
     # at all: a port is never reopened on any of these.
     for name in ("recover_shallow_stall_left_alone",
@@ -1159,15 +1192,16 @@ def test_the_units_to_recover_are_the_ones_still_stalling_now(board):
 
 def test_each_answer_reads_as_what_it_took_or_what_is_left_to_do(board):
     r = board["results"]
-    padded = r["recover_said_padding"]
-    assert padded["text"] == "radxa-07: bus recovered by padding (359 → 2 ms)"
+    padded = r["recover_said_usb_reset"]
+    # "usb_reset" on the wire, "usb reset" to the operator.
+    assert padded["text"] == "radxa-07: bus recovered by usb reset (359 → 2 ms)"
     assert padded["ok"] is True and padded["tone"] == ""
-    assert r["recover_said_reopen"]["text"] == \
-        "radxa-07: bus recovered by reopen (359 → 3 ms)"
+    assert r["recover_said_usb_reset_2"]["text"] == \
+        "radxa-07: bus recovered by usb reset (359 → 3 ms)"
     # A failure names the cure and NO numbers: "358 ms" is nothing the
     # operator can act on at 19:58.
     failed = r["recover_said_failed"]
-    assert failed["text"] == "radxa-07: bus recovery failed — restart the unit"
+    assert failed["text"] == "radxa-07: bus recovery failed — reboot the Radxa or re-plug the master's USB"
     assert failed["ok"] is False and failed["tone"] == "warn"
     # A healthy unit: the button is not a lie either way.
     assert r["recover_said_nothing_wrong"]["text"] == "radxa-07: bus was already clear"
@@ -1184,11 +1218,11 @@ def test_one_unit_that_still_needs_restarting_is_the_whole_message(board):
     r = board["results"]
     good = r["recover_report_all_well"]
     assert good["ok"] is True and good["tone"] == ""
-    assert good["text"] == ("radxa-07: bus recovered by padding (359 → 2 ms) · "
-                           "radxa-03: bus recovered by reopen (300 → 3 ms)")
+    assert good["text"] == ("radxa-07: bus recovered by usb reset (359 → 2 ms) · "
+                           "radxa-03: bus recovered by usb reset (300 → 3 ms)")
     bad = r["recover_report_one_hopeless"]
     assert bad["ok"] is False and bad["tone"] == "warn"
-    assert "radxa-03: bus recovery failed — restart the unit" in bad["text"]
+    assert "radxa-03: bus recovery failed — reboot the Radxa or re-plug the master's USB" in bad["text"]
     # Nothing was recovered, so there is nothing to say - not an empty toast.
     assert r["recover_report_of_nothing"] is None
 
@@ -1364,10 +1398,13 @@ class _Stand:
         # neither is evidence that THIS show is on stage.
         self.demo4 = False
         self.stale3 = False
-        # What POST /api/units/<name>/bus/recover answers: "padding" and
-        # "reopen" are the two cures, "never" the unit that has to be
+        # What POST /api/units/<name>/bus/recover answers: "usb_reset" is
+        # the cure, "never" the unit that has to be
         # restarted (ui/runner.py's _recover_bus()).
-        self.recover = "padding"
+        self.recover = "usb_reset"
+        # radxa-05 back on its own menu (phase `local`): no Recover bus on
+        # its tile (review N2).
+        self.local5 = False
         # Every command in the order it arrived, so a test can say that the
         # recovery ran BEFORE the preset and not merely that both happened.
         self.asked = []
@@ -1467,7 +1504,13 @@ class _Stand:
                                   _unit("radxa-03", online=False, error="no answer",
                                         show=three),
                                   _unit("radxa-04", show=four, clear=clear),
-                                  _unit("radxa-05", show=show, clear=clear)],
+                                  # A unit that cannot reset its master's
+                                  # USB at all (review L2); the others have
+                                  # not said, as an older agent would not.
+                                  _unit("radxa-05", show=show, clear=clear,
+                                        usb_reset_ok=False,
+                                        phase=("local" if stand.local5
+                                               else "ready"))],
                         "last_fire": None, "run": _RUNS[stand.run],
                         "shows": ({n: {"id": "S1", "cues": 2, "boards": []}
                                    for n in ("radxa-01", "radxa-02",
@@ -1487,6 +1530,8 @@ class _Stand:
                     stand.unit_clear = args.get("clear", stand.unit_clear)
                     stand.stall = args.get("stall", stand.stall)
                     stand.stall2 = args.get("stall2", stand.stall2)
+                    if "local5" in args:
+                        stand.local5 = args["local5"] == "1"
                     if "demo4" in args:
                         stand.demo4 = args["demo4"] == "1"
                     if "stale3" in args:
@@ -1828,7 +1873,7 @@ _PAGE_PROBE = """
 
       // 15. "Recover bus" (2026-09-28): the button beside the mark, and the
       //     sweep (2) Show preset makes before it sends anything.
-      await fetch("/test/fleet?run=none&stall=degraded&recover=padding");
+      await fetch("/test/fleet?run=none&stall=degraded&recover=usb_reset");
       await wait(1600);
       var btn = document.querySelector("[data-recover-bus]");
       out.recoverButton = { there: !!btn, unit: btn && btn.dataset.recoverBus,
@@ -1846,11 +1891,30 @@ _PAGE_PROBE = """
       out.recoverFailedToast = { text: document.querySelector("#toast").textContent,
                                  cls: document.querySelector("#toast").className };
       // (2) Show preset sweeps first, then sends the preset.
-      await fetch("/test/fleet?recover=padding&uploaded=1&show=ran");
+      await fetch("/test/fleet?recover=usb_reset&uploaded=1&show=ran");
       await wait(1600);
       document.querySelector("#show-preset").click();
       await wait(1600);
       out.presetOrder = await (await fetch("/test/asked")).json();
+
+      // 16. A unit that cannot reset its master's USB at all is marked
+      //     amber on its tile, and only that one (review L2).
+      out.usbMark = [].map.call(document.querySelectorAll("#tiles .tile"),
+        function (t) { return t.textContent.indexOf("no usb reset on this unit") >= 0; });
+      out.usbMarkTiles = [].map.call(document.querySelectorAll("#tiles .tile"),
+        function (t) { return t.textContent.slice(0, 40); });
+      // 17. Recover bus is on every ONLINE tile while nothing runs - healthy
+      //     ones included, for the pre-show check (review M3).
+      out.recoverOnTiles = [].map.call(document.querySelectorAll("#tiles .tile"),
+        function (t) { return !!t.querySelector("[data-recover-bus]"); });
+
+      // 18. ...but not on a unit back on its own menu (review N2): the unit
+      //     would refuse it, and must never be taken over by it.
+      await fetch("/test/fleet?local5=1");
+      await wait(1600);
+      out.recoverWhenLocal = [].map.call(document.querySelectorAll("#tiles .tile"),
+        function (t) { return [t.textContent.indexOf("radxa-05") >= 0,
+                               !!t.querySelector("[data-recover-bus]")]; });
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -2224,7 +2288,7 @@ def test_one_stall_stays_amber_and_says_nothing_under_start(page):
 
 def test_a_degraded_bus_is_red_on_the_tile_the_row_and_both_notes(page):
     d = page["degraded"]
-    assert "bus degraded (37 stalls) — restart this unit before START" in d["red"], d["red"]
+    assert "bus degraded (37 stalls) — press Recover bus, or reboot the Radxa" in d["red"], d["red"]
     assert "本番前の起動手順" in d["title"], d["title"]
     assert "panels online: 16/16" in d["title"], d["title"]
     # The garment's own row on the NOW -> NEXT board, red, in two words.
@@ -2233,10 +2297,10 @@ def test_a_degraded_bus_is_red_on_the_tile_the_row_and_both_notes(page):
     # Its state cell too - and there the SHORT form only: the sentence that
     # fits a tile would push the row's own numbers off it (M1).
     assert d["cellRed"] == ["bus degraded"], d["cellRed"]
-    assert "restart this unit before START" not in d["cell"], d["cell"]
+    assert "press Recover bus, or reboot the Radxa" not in d["cell"], d["cell"]
     # One amber line under ③ START, and the same one in WRITE TO UNITS -
     # both naming the unit and the order to work in.
-    assert d["note"] == "radxa-01: bus degraded — restart the unit, then Upload", d["note"]
+    assert d["note"] == "radxa-01: bus degraded — press Recover bus (or reboot the Radxa), then Upload", d["note"]
     assert page["degradedDialog"] == d["note"], page["degradedDialog"]
     assert d["noteHeight"] > 0, "the note is there but takes no room"
     # START is NOT gated: a degraded unit still shows every cue, only late.
@@ -2247,7 +2311,8 @@ def test_two_degraded_units_share_one_sentence(page):
     # The names, then what is wrong once and what to do once, in the plural -
     # not the same sentence twice across the panel (L4).
     assert page["degradedTwo"] == ("radxa-01, radxa-02: bus degraded — "
-                                   "restart these units, then Upload"), page["degradedTwo"]
+                                   "press Recover bus (or reboot these Radxas), "
+                                   "then Upload"), page["degradedTwo"]
 
 
 def test_a_unit_still_playing_keeps_the_wording_it_had(page):
@@ -2259,7 +2324,7 @@ def test_a_unit_still_playing_keeps_the_wording_it_had(page):
     assert p["note"] == "", p["note"]
 
 
-DEGRADED_NOTE = "radxa-01: bus degraded — restart the unit, then Upload"
+DEGRADED_NOTE = "radxa-01: bus degraded — press Recover bus (or reboot the Radxa), then Upload"
 
 
 def test_a_demo_on_one_unit_does_not_silence_the_other_nine(page):
@@ -2299,13 +2364,43 @@ def test_recover_bus_is_pressed_from_the_tile_and_reports_what_it_took(page):
     # The toast the operator reads: what was wrong, what fixed it, and the
     # two numbers that show it really is fixed.
     toast = page["recoverToast"]
-    assert toast["text"] == "radxa-01: bus recovered by padding (359 → 2 ms)", toast
+    assert toast["text"] == "radxa-01: bus recovered by usb reset (359 → 2 ms)", toast
     assert toast["cls"] == "", "a recovery that worked is not a warning"
     assert page["recoverAsked"]["asked"] == ["recover:radxa-01"]
     # A unit nothing here can fix names the one thing left to do, in amber.
     failed = page["recoverFailedToast"]
-    assert failed["text"] == "radxa-01: bus recovery failed — restart the unit", failed
+    assert failed["text"] == "radxa-01: bus recovery failed — reboot the Radxa or re-plug the master's USB", failed
     assert failed["cls"] == "warn", failed
+
+
+def test_a_unit_that_cannot_reset_usb_is_marked_before_the_show(page):
+    """Review L2: every recovery on such a unit can only fail, so it is said
+    in amber on its tile before the show - on that unit's tile alone."""
+    marked = [name for name, on in zip(page["usbMarkTiles"], page["usbMark"])
+              if on]
+    assert len(marked) == 1 and "radxa-05" in marked[0], (
+        page["usbMarkTiles"], page["usbMark"])
+
+
+def test_recover_bus_can_be_pressed_on_a_healthy_unit(page):
+    """Review M3: the pre-show check presses Recover bus on each HEALTHY
+    unit and wants "bus was already clear" - so the button cannot live only
+    beside a stall mark. On every online tile; not on the offline one."""
+    tiles = list(zip(page["usbMarkTiles"], page["recoverOnTiles"]))
+    has = {name: on for text, on in tiles
+           for name in ("radxa-01", "radxa-02", "radxa-03", "radxa-04",
+                        "radxa-05") if name in text}
+    assert has == {"radxa-01": True, "radxa-02": True, "radxa-03": False,
+                   "radxa-04": True, "radxa-05": True}, tiles
+
+
+def test_no_recover_bus_on_a_unit_on_its_own_menu(page):
+    """Review of 6a2d136, N2: only on a tile the PC owns - a unit that is
+    `local` (its own menu, its own demo) gets no button."""
+    five = [has for is_five, has in page["recoverWhenLocal"] if is_five]
+    others = [has for is_five, has in page["recoverWhenLocal"] if not is_five]
+    assert five == [False], page["recoverWhenLocal"]
+    assert others.count(True) == 3, page["recoverWhenLocal"]   # 01, 02, 04
 
 
 def test_show_preset_recovers_before_it_sends_anything(page):

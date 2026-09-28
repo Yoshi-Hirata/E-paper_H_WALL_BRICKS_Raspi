@@ -371,6 +371,12 @@ class UnitLink:
                 # page's "Recover bus" says "too old" rather than
                 # pretending it worked.
                 "bus_recovery": status.get("bus_recovery"),
+                # Whether the unit can reset its master's USB at all - the
+                # one cure for a degraded bus (ui/runner.py's
+                # _check_usb_reset()). False puts an amber "no usb reset on
+                # this unit" on the tile; None (not asked yet, or an agent
+                # too old to say) puts nothing.
+                "usb_reset_ok": status.get("usb_reset_ok"),
                 # Taking the show's pictures back out of slots 1-18 once
                 # the show is over (ui/remote.py's clear()): {"state",
                 # "done", "total", "failed"}, state "none" until one is

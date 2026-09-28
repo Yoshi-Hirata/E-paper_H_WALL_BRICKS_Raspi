@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import struct
 import sys
 import time
@@ -169,6 +170,123 @@ class RecoveringBus(FakeBus):
         return super().request(frame, retries=retries, timeout=timeout)
 
 
+class DegradedMaster(FakeBus):
+    """The degraded master of 2026-09-28 as radxa-07 showed it, measured:
+
+      * every write BLOCKS, and how long grows with the idle gap before it -
+        `quick_s` (61 ms) within `quick_gap` of the previous write, `slow_s`
+        (358 ms) after a longer pause. This is what made "bus recovered by
+        padding (512 -> 61 ms)" a false reading;
+      * no frame is executed and nobody answers - not the master's own 0x02,
+        not a relayed board ("no boards answering" for 100 s);
+      * padding and a port reopen change NOTHING. Only usb_reset() cures it.
+
+    The USB layer, for the runner's usb_reset= and link_token=: a reset
+    takes `reset_s`, the node vanishes and is back `reenum_s` later - a new
+    node, under `back_as` if given - and the first `eacces` opens after it
+    are refused EACCES (udev not done). `reset_ok=False` is a unit that
+    cannot reset at all; `reset_cures=False` a reset that does not take; and
+    `half_cure=True` one after which the master answers 0x02 but writes
+    after a pause still block - the second half of the proof's reason.
+    """
+
+    def __init__(self, *, quick_s=0.061, slow_s=0.358, quick_gap=0.2,
+                 reset_s=0.0, reenum_s=0.05, open_s=0.0,
+                 port="/dev/ttyACM0", back_as=None, eacces=0,
+                 reset_ok=True, reset_cures=True, half_cure=False):
+        super().__init__(deaf_boards=False)     # a healthy master answers 0x02
+        self.quick_s, self.slow_s, self.quick_gap = quick_s, slow_s, quick_gap
+        self.reset_s, self.reenum_s, self.open_s = reset_s, reenum_s, open_s
+        self.port, self.back_as, self.eacces_after_reset = port, back_as, eacces
+        self.reset_ok, self.reset_cures, self.half_cure = (
+            reset_ok, reset_cures, half_cure)
+        self.degraded = True
+        self.slow_after_pause = False           # the half cure
+        self.last_write = time.monotonic()
+        self.gen = 0
+        self.node_back_at = 0.0
+        self.eacces_left = 0
+        self.resets: "list[str]" = []
+        self.reopened: "list[str]" = []
+        self.padded: "list[int]" = []
+        self.closes = 0
+
+    # ---- the wire ----
+    def _write(self):
+        if self.degraded or self.slow_after_pause:
+            gap = time.monotonic() - self.last_write
+            time.sleep(self.quick_s if gap < self.quick_gap else self.slow_s)
+        self.last_write = time.monotonic()
+
+    def send(self, frame):
+        self._write()
+        super().send(frame)
+
+    def request(self, frame, retries=3, timeout=None):
+        self._write()
+        if self.degraded:
+            # Accepted, never answered - and a silence is only known once
+            # the whole read window has passed, every try of it
+            # (transport.Bus.request), so the caller pays for that too.
+            self.requested.append(frame)
+            window = 0.5 if timeout is None else timeout
+            time.sleep(window * max(1, retries))
+            return None
+        return super().request(frame, retries=retries, timeout=timeout)
+
+    def pad(self, count=8):
+        self.padded.append(count)               # cures nothing
+
+    # ---- the port ----
+    def close(self):
+        self.closes += 1
+
+    def reopen(self, port=None):
+        # A refused open fails at os.open(), at once; only one that
+        # succeeds pays transport.Bus._open's settle.
+        port = port or self.port
+        if self.eacces_left > 0:
+            self.eacces_left -= 1
+            raise PermissionError(errno.EACCES, "Permission denied")
+        if port != self.port or time.monotonic() < self.node_back_at:
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory")
+        time.sleep(self.open_s)
+        self.reopened.append(port)              # cures nothing either
+        return port
+
+    def token(self, port):
+        if port != self.port or time.monotonic() < self.node_back_at:
+            return None
+        return ("node", self.gen)
+
+    def find_port(self):
+        return self.port if self.token(self.port) is not None else None
+
+    # ---- the USB layer ----
+    def usb_reset(self, port, timeout=None):
+        if not self.reset_ok:
+            return False, "unsupported on this test unit"
+        if timeout is not None and self.reset_s > timeout:
+            # A sudo that hangs, killed at the caller's timeout: nothing
+            # was reset, as far as anyone can tell.
+            time.sleep(timeout)
+            return False, f"sudo usbreset: no answer in {timeout:.1f} s"
+        time.sleep(self.reset_s)
+        self.resets.append(port)
+        self.gen += 1
+        self.node_back_at = time.monotonic() + self.reenum_s
+        if self.back_as:
+            self.port = self.back_as
+        self.eacces_left = self.eacces_after_reset
+        if self.reset_cures:
+            self.degraded = False
+            self.slow_after_pause = self.half_cure
+        return True, "ioctl"
+
+    def reset_available(self, port):
+        return (True, "ioctl") if self.reset_ok else (False, "no usbreset here")
+
+
 def wait_until(predicate, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -207,6 +325,14 @@ def make_runner(bus, **kwargs):
     # The fake port has no device node, so standby would read every poll
     # as an unplug. Tests that care about that supply their own.
     kwargs.setdefault("link_token", lambda port: "up")
+    # Never the real transport.usb_reset in a test: the suite runs on the
+    # Radxas too, and a real master may be plugged in. Tests of the reset
+    # supply a fake one (DegradedMaster.usb_reset).
+    kwargs.setdefault("usb_reset",
+                      lambda port, timeout=None: (False, "not in the tests"))
+    # ...nor the real availability check (it would run `sudo -n true`).
+    kwargs.setdefault("usb_reset_check",
+                      lambda port: (True, "not checked in the tests"))
     return DemoRunner(open_bus=lambda port: bus, **kwargs)
 
 

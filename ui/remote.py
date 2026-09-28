@@ -673,9 +673,9 @@ class RemoteSession:
         The worker thread owns the port, so this queues the job, wakes
         it and waits for the answer - the same shape as a clear, with a
         reply instead of a progress record. Answers {"recovered", "by"
-        ("padding" | "reopen" | null), "before_ms", "after_ms"}; `by`
-        null with recovered true is "there was nothing wrong", which is
-        the honest answer to a button pressed on a healthy unit.
+        ("usb_reset" | null), "before_ms", "after_ms"}; `by` null with
+        recovered true is "there was nothing wrong", which is the honest
+        answer to a button pressed on a healthy unit.
 
         Refused (409) while anything else could want the bus - see
         recover_refusal(), which the worker asks AGAIN when it takes the
@@ -690,13 +690,9 @@ class RemoteSession:
         job = {"done": done, "result": None}
         with self._lock:
             self._recover_job = job
-        # Nobody on the port at all (the unit on its own menu): the same
-        # move a clear makes - the worker that does this work is started,
-        # and it picks the job up as soon as it has the bus.
-        if not self.runner.remote and self.runner.start_remote(self) is False:
-            with self._lock:
-                self._recover_job = None
-            raise RemoteError("bus busy: the previous worker has not finished")
+        # No start_remote() here, on purpose (review N2): recover_refusal()
+        # has just said the PC's own worker is on the port. A unit on its
+        # own menu is refused there, never taken over.
         self._wake.set()
         if not done.wait(max(0.0, timeout)):
             with self._lock:
@@ -713,7 +709,10 @@ class RemoteSession:
         """Why a bus recovery may not run now, or None when it may.
 
         A recovery reopens the port and sends frames, so it stands aside
-        for everything a cue or a picture could be hurt by (review F6):
+        for everything a cue or a picture could be hurt by (review F6) -
+        and it only ever runs on a port the PC already owns: a unit on its
+        own menu or playing its own demo is refused, never taken over
+        (review N2, last below):
 
         * an OTA, a scan or a reboot owning the unit;
         * a show being played or held;
@@ -744,6 +743,12 @@ class RemoteSession:
             if left > 0:
                 return (f"a repaint is in progress - try again in "
                         f"{math.ceil(left)} s")
+        if not self.active or self.runner.remote is not self:
+            # On its own menu, or playing its own demo: the PC does not own
+            # this unit's port, and taking it (start_remote) would stop the
+            # demo and start a REMOTE worker that STOPs and probes every
+            # board (review of 6a2d136, N2). Nothing is started.
+            return "unit is on its own menu - nothing to recover from here"
         return None
 
     def take_recover_job(self) -> "dict | None":
@@ -1053,20 +1058,21 @@ class RemoteSession:
                 "bus_stall": _with_age(runner.bus_stall),
                 # The last time a bus that was accepting frames and
                 # executing none was got working again (ui/runner.py's
-                # _recover_bus()): {"by" ("padding" | "reopen" | null),
-                # "before_ms", "after_ms", "at" (wall clock), "ago_s",
-                # "count"}. None until one has been run in this worker.
+                # _recover_bus()): {"by" ("usb_reset" | null), "before_ms",
+                # "after_ms", "at" (wall clock), "ago_s", "count"}. None
+                # until one has been run in this worker.
                 "bus_recovery": _with_age(runner.bus_recovery),
-                # The opt-in fire-time re-send (--resend-on-stall), and
-                # whether this unit has it on at all: a cue whose own
-                # broadcast blocked, sent again once. None until one has.
+                # The fire-time re-send after a USB reset (ON by default;
+                # --no-resend-on-stall), and whether this unit has it on:
+                # {"cue", "before_ms", "after_ms", "late_s", "by", "at",
+                # "ago_s", "count"}. None until a cue has stalled.
                 "resend_on_stall": bool(runner.resend_on_stall),
                 "resend": _with_age(runner.resend),
-                # The health check two seconds before the last cue
-                # (ui/runner.py's PRECHECK_S): {"cue", "before_ms", "by"
-                # ("padding" | "reopen" | null), "after_ms", "at",
-                # "ago_s"}. `before_ms` of 1-2 ms with `by` null is the
-                # normal answer - the port was fine and nothing was done.
+                # The check PRECHECK_S before the last cue that had one:
+                # {"cue", "before_ms", "by" ("usb_reset" | null),
+                # "master_answers", "after_ms" (null: no timed STOP after a
+                # reset there), "at", "ago_s"}. A `before_ms` of 1-2 ms with
+                # the master answering and `by` null is the normal answer.
                 "precheck": _with_age(runner.precheck),
                 # The three kill switches as the unit is actually running
                 # them (ui/main.py's --precheck SECONDS, --no-port-watch,
@@ -1074,6 +1080,12 @@ class RemoteSession:
                 "precheck_s": runner.precheck_s,
                 "port_watch": bool(runner.port_watch),
                 "auto_recover": bool(runner.auto_recover),
+                # Whether the one cure - a USB reset of the master - can be
+                # done on this unit at all (ioctl node writable, or sudo -n
+                # and usbreset there), asked once when a worker first had
+                # the port; null until then. The tile marks a unit where it
+                # is false: every recovery there can only fail.
+                "usb_reset_ok": runner.usb_reset_ok,
                 "burn": burn,
                 # Taking the pictures back out of slots 1-18 after the
                 # show (see the module docstring): {"state", "done",

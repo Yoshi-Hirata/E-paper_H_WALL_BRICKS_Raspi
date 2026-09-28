@@ -18,6 +18,126 @@
 
 ## 2. 直近で完成したもの
 
+**USB リセットの復旧を、レビューに合わせて締めた(349dcdd の敵対的レビュー:
+「`--no-resend-on-stall` で出せ」)**
+
+- **発火時の再送は既定 OFF に戻した**(`--resend-on-stall` で有効、
+  `--no-resend-on-stall` は何もしない別名)。詰まった show フレームの裏には
+  **2 つの状態**がある ―― **劣化**(radxa-07 Run 2: 実行されない、マスタは
+  黙る)と、**遅いが動いている**(LOOK23 17:29: 絵は全部出た、約 0.36 秒遅れ、
+  マスタは答える)。後者で再送すると 2 度描く(レビューの t_fire A: 健全な
+  マスタで 251 ms の書き込み 1 回 → USB リセットして 2 度送っていた)。有効に
+  しても、詰まりの直後にマスタへ **0x02 を 1 回**聞き、**答えたら**
+  `cue q05 stalled 251 ms, master answers - not re-sent` で終わり、**黙って
+  いたときだけ**リセットして再送。予算 2.5 秒
+- `sudo -n usbreset` には **`BBB/DDD`**(バス/デバイス番号)を渡す。VID:PID は
+  この型のマスタ全部を指す
+- **リセットは呼び出し側の残り予算で打ち切る**(固まった sudo でワーカーが
+  5.25 秒止まり、キューが +5251 ms と報告されていた)。直前点検のリセットは
+  T−5.0 まで。再送を断念したら、キューの時刻・`late_ms`・床は**最初の
+  フレーム**のもの。断念したリセットのあとも**ポートは閉じたままにしない**
+  (もう 1 回開く、だめなら監視に引き渡す)
+- アイドルと直前点検では、**リセット後の開き直しの直後にブロードキャスト STOP**
+  (リセットで工場出荷時の自動巡回が再開しても止める)。発火時の経路では送らない
+- 証明の 3 秒の沈黙は、**キューが武装されたら打ち切る**(`… master answers,
+  proof cut short by a cue`)―― Recover bus の直後の START が遅れない
+- `/status` に **`usb_reset_ok`**(この機体でリセットできるか。最初に 1 回だけ
+  確かめる)。false ならタイルに琥珀色で **`no usb reset on this unit`**
+- **Conductor**: 赤い印は `bus degraded (N stalls) — press Recover bus, or reboot
+  the Radxa`、START の下は `radxa-01: bus degraded — press Recover bus (or
+  reboot the Radxa), then Upload`(下の古い項目にある「restart」の文言は
+  これで置き換わった)。ツールチップは 2 つの状態のどちらとも言い切らない。
+  ② Show preset の前の復旧は**最大 6 秒**(`(up to 6 s)`)。**Recover bus は
+  走行中でなければ、どのオンラインのタイルにも出る** ―― 健全な機体でも押せる
+  ように
+- **本番前の新しい手順**(CONDUCTOR_START.md §6 の 5.): 健全な機体それぞれで
+  Recover bus を 1 回押し、**`bus was already clear`** を確かめる。判定は
+  **USB ケーブルの先の基板がバスアドレス 1** であることを前提にしている。
+  健全な衣装で `recovered` / `failed` と出た機体は `--precheck 0
+  --no-auto-recover` で起動する
+
+**再レビュー(6a2d136、判定「既定のフラグで出せる」)の 2 点**:
+
+- **N1**: リセットが例外を投げると(comports()、usbreset の読めない出力、何でも)
+  ポートが閉じたまま `_run_remote` まで抜け、`ERROR bus boom` でセッションが
+  落ちて次のキューが出なかった(t_raise)。いまは `usb_reset()` 自体が例外を
+  答えに変え、ランナーもリセット呼び出し・`find_port()`・ノード確認・直前点検・
+  再送・アイドルの復旧をそれぞれ守る。例外でも言って、ポートを開き直し、
+  キューはそのまま出る(t_raise の c2 は +1 ms)
+- **N2**: `local`(自分のメニュー/デモ)の機体で Recover bus を押すと、機体を
+  乗っ取っていた(デモが止まり、REMOTE ワーカーが立ち、STOP と基板ごとの
+  プローブ)。いまは機体が `unit is on its own menu - nothing to recover from
+  here` の 409 で断り何も起こさず、ページも Conductor の手にある機体
+  (standby/ready/armed/fired/failed)のタイルにしかボタンを出さない
+
+**実測**(偽物のマスタに実機の時間。黙っている機器への 0x02 は読みの窓を
+まるごと払うように偽物を直した): 発火時の再送 **1.80 秒**遅れ(EACCES 1 回で
+1.88、2 回で 1.92)、直前点検は T−8.5 から始めて **T−7.05** に終わる、
+アイドルの復旧 **4.44 秒**。USB リセットの段が直前点検に入るのは先行 8.3 秒から。
+
+**劣化したバスは USB リセットで直す ―― 直ったことは計らずに証明する
+(2026-09-28、radxa-07 の実機証拠。下の「詰まったバスを機体自身が直せるように
+した」のパディング/開き直しの治療はこれで置き換わった)**
+
+**証拠(LOOK28 / radxa-07、main b372d41、同日)**:
+
+- *Run 1*: 全キュー +1 ms。最後のキューの 10 秒後にカーネルが
+  `usb usb1-port1: disabled by hub (EMI?)` → 0.44 秒で ttyACM1 として再列挙。
+  監視は `port lost → /dev/ttyACM1 back in 0.4 s, but it would not open
+  ([Errno 13] … Permission denied)`(udev がまだノードのグループを付けて
+  いない)、1 秒後に `port only (the last picture is still repainting)`、以後健全
+- *Run 2*: USB の出来事なし。最後のキューの床のあと最初のハートビートが 393 ms、
+  以後はずっと 358 ms(**劣化したマスタ**)。END のあと自動復旧が 3 回走り、
+  3 回とも **`bus recovered by padding (512 → 61 ms)` ―― 嘘**: 15 秒後にまた
+  358 ms、「復旧」の 8 秒後のプリセットは 272 ms ブロックして**実行されず**
+  (パネルは変わらず)。書き込みは直前の書き込みから 0.5 秒後で 61 ms、8 秒後で
+  272 ms、15 秒後で 358 ms。`/standby`(新しいワーカー: ポート開き直し + STOP +
+  プローブ掃引)は 100 秒間 `no boards answering` ―― 劣化したマスタは何も中継
+  せず、0x02 にも答えない。そこで **`sudo -n usbreset 0483:5740`**(カーネル:
+  `usb 1-1: reset full-speed USB device`、0.3 秒、ノードは ttyACM0 で戻る)→
+  機体が開き直し → 8 秒後に `panels online: 22/22`、白のスタンバイ、焼き込みは
+  そのまま
+- **前日の「再起動で直った」はどれも Radxa の再起動(USB の電源が入り直す)
+  だった。STOP・パディング・開き直し・再探索は直さない。USB リセットが 0.3 秒で
+  直す。UI サービスの再起動では直らない。**
+
+**変えたこと**(§4.5):
+
+- `transport.usb_reset(port)`: そのポートの裏の USB デバイスだけを
+  リセット ―― 書けるなら ioctl `USBDEVFS_RESET`、でなければ
+  `sudo -n usbreset VID:PID`(5 秒で打ち切り)。Linux 以外は「unsupported」
+- **復旧のはしご**: STOP を計り、詰まりでなければマスタに 0x02 ―― **両方良い
+  ときだけ「きれい」**。でなければ ポートを閉じる → USB リセット → 新しい
+  ノードを待つ(名前が変わってもよい)→ 開く(EACCES/ENOENT は 2 秒まで
+  再試行)→ **証明**: マスタが 0x02 に答え、**かつ 3 秒の沈黙のあと**の STOP が
+  100 ms 未満。そろって初めて `bus recovered by usb reset (358 → 2 ms, master
+  answers)`。パディングと開き直しは治療としては出さない(ポートが勝手に消えた
+  ときの監視の開き直しだけ残る)
+- **発火時の再送は既定 ON**(`--no-resend-on-stall` で止める): キューの show
+  フレームが 200 ms 以上ブロックしたら USB リセット → 開き直し → 同じフレームを
+  **1 回だけ**再送。`cue q05 re-sent after usb reset (stall 272 ms → 2 ms, 1.4 s
+  late)`
+- **直前点検**も STOP と 0x02 の両方を見て、悪ければ USB リセット + マスタの答え
+  で確かめる。T−8.5 から始めて T−5.0 より前に終わる
+- **Conductor**: トーストは `bus recovered by usb reset (…)`、失敗は
+  `bus recovery failed — reboot the Radxa or re-plug the master's USB`。赤い印の
+  ツールチップと CONDUCTOR_START.md §6 本番前の起動手順が「UI の再起動では
+  直らない、USB リセット/Radxa の再起動/USB の挿し直しが直す」と言う
+
+**測った予算**(偽物のマスタに実機の時間 ―― 書き込み 358 ms、リセット 0.3 秒、
+ノード復帰 0.44 秒、オープン 0.3 秒):
+
+| 場面 | 実測 |
+|---|---|
+| 発火時の再送の遅れ | **1.44 秒**、EACCES 1 回で 1.51、2 回で 1.57 → 予算 `FIRE_RESEND_BUDGET_S` = **2.0 秒**(目標の 1.5 では Run 1 の EACCES の場合に再送を捨てる) |
+| 直前点検(T−8.5 から) | **T−7.06 に終わる**(T−5.0 まで 2 秒の余裕)。USB リセットの段が入るのは先行 7.9 秒から |
+| アイドルの復旧(3 秒の沈黙込み) | **4.45 秒**(エージェントの待ちは 15 秒) |
+
+**② Show preset の前の 3 秒**: USB リセットと 3 秒の沈黙を含む復旧は約 4.5 秒
+なので、劣化した機体では 3 秒で `no answer within 3 s` の警告が出て、プリセット
+はそのまま送られる(機体は復旧を続け、終わってからプリセットを受け取る)。
+必要なら `PRESET_RECOVER_WAIT_MS` を 6 秒に上げる判断は PM に。
+
 **詰まったバスを機体自身が直せるようにした(2026-09-28 LOOK28 リハーサル後)**
 
 **証拠(同日、LOOK28 / radxa-07 / AZ271SD1307、22 枚 ―― 最大の衣装)。4 回中
