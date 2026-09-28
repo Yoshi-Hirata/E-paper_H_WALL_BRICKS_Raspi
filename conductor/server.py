@@ -106,7 +106,44 @@ _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # only the fallback for a show that ends with the PC gone. Counting it would
 # turn ten green chips amber and ask for a three-minute re-Upload, the evening
 # of the show, for a flag the clear does not need.
-_REVISION_IGNORES = {"music", "labels", "clear_after_show"}
+#
+# `start_countdown_s` never reaches a unit at all: it is only the lead THE
+# SHOW's ③ START gives the fleet (fleet.start_show(lead_s=...)), so it is
+# not in any unit's show file, not in the show id, and changing it must never
+# ask for an Upload.
+_REVISION_IGNORES = {"music", "labels", "clear_after_show", "start_countdown_s"}
+# THE SHOW's "Countdown before START" (show.json's `start_countdown_s`): how
+# long ③ START counts down, -0:11 ... -0:01, before the show's 0:00. The
+# owner's request (2026-09-29): 「ショー開始までのカウントダウン時間を設定
+# できるように ... -11秒スタートとなるようにして」. A show without the key
+# counts down START_COUNTDOWN_S. NEXT / MOVE keep their own, shorter lead.
+START_COUNTDOWN_S = 11.0
+START_COUNTDOWN_RANGE_S = (3.0, 60.0)
+
+
+def check_start_countdown(value) -> float:
+    """A countdown before START in seconds (whole or decimal, to a tenth),
+    or ValueError naming the range."""
+    low, high = START_COUNTDOWN_RANGE_S
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"start_countdown_s: {low:.0f} to {high:.0f} seconds")
+    try:
+        seconds = round(float(value), 1)
+    except (TypeError, ValueError):
+        raise ValueError(f"start_countdown_s: {low:.0f} to {high:.0f} seconds")
+    if not low <= seconds <= high:          # NaN fails this too
+        raise ValueError(f"start_countdown_s: {low:.0f} to {high:.0f} seconds")
+    return seconds
+
+
+def start_countdown_of(show: dict) -> float:
+    """show.json's countdown before START; absent (every show written
+    before it existed) or unreadable is the default, 11 s."""
+    try:
+        return check_start_countdown(show.get("start_countdown_s",
+                                              START_COUNTDOWN_S))
+    except ValueError:
+        return START_COUNTDOWN_S
 # A CSV's name is conductor/look.py's business now (normalize_name /
 # name_problem, the same rule the designers' simulator applies): this one
 # is only for the MUSIC blob, which is a file on disk and nothing else -
@@ -898,6 +935,33 @@ class Workspace:
                 after.pop("clear_after_show", None)
             self._commit(before, after)
 
+    def set_start_countdown(self, seconds) -> None:
+        """THE SHOW's "Countdown before START" (show.json's
+        `start_countdown_s`, undoable like any other edit of the show).
+
+        Stored with the show, not in the browser, for the same reason as
+        "Clear pictures after the show": it is how THIS evening starts, and
+        it has to survive a reload and a second PC. The default (11 s) is
+        stored as no key at all, so a show.json says only what somebody
+        chose. Never part of what reaches a unit (_REVISION_IGNORES)."""
+        seconds = check_start_countdown(seconds)
+        with self._lock:
+            before = self._load_show()
+            want = None if seconds == START_COUNTDOWN_S else seconds
+            if before.get("start_countdown_s") == want:
+                return                          # nothing changed: not a step
+            after = dict(before)
+            if want is None:
+                after.pop("start_countdown_s", None)
+            else:
+                after["start_countdown_s"] = want
+            self._commit(before, after)
+
+    def start_countdown(self) -> float:
+        """The show's countdown before ③ START (see set_start_countdown)."""
+        with self._lock:
+            return start_countdown_of(self._load_show())
+
     def set_transition(self, design: str, sequence_id, span_s) -> None:
         """A design's own transition (show.json, undoable): every cue that
         wears it and is not itself "custom" sweeps this way. Natural, or
@@ -1029,6 +1093,9 @@ class Workspace:
             # Travels with the show, because it is part of how this
             # evening is run (see Workspace.set_clear_after_show).
             "clear_after_show": bool(show.get("clear_after_show")),
+            # ...and so does the countdown before ③ START (11 s unless
+            # somebody chose otherwise - Workspace.set_start_countdown).
+            "start_countdown_s": start_countdown_of(show),
             "transitions": show.get("transitions") or {},
             "labels": show.get("labels") or {},
             "units": show.get("units") or {},
@@ -1079,6 +1146,13 @@ class Workspace:
             if not isinstance(payload["clear_after_show"], bool):
                 raise ValueError("clear_after_show: must be true or false")
             changes["clear_after_show"] = payload["clear_after_show"]
+        # The same "leave it alone" rule: a show file or a designers' bundle
+        # without the key (their simulator has no fleet and no START) keeps
+        # whatever this workspace counts down - 11 s unless somebody changed
+        # it here. An explicit null is "not setting it", like refresh_s.
+        if payload.get("start_countdown_s") is not None:
+            changes["start_countdown_s"] = check_start_countdown(
+                payload["start_countdown_s"])
         if "transitions" in payload:
             if not isinstance(payload["transitions"], dict):
                 raise ValueError("transitions: must be an object")
@@ -2101,6 +2175,10 @@ class Workspace:
                          # stopped (Workspace.set_clear_after_show).
                          "clear_after_show": bool(
                              show.get("clear_after_show")),
+                         # The field next to ③ START: the lead START
+                         # gives the fleet, counted down -0:11 ... 0:00
+                         # (Workspace.set_start_countdown).
+                         "start_countdown_s": start_countdown_of(show),
                          # The current default, so the page never has a
                          # refresh number of its own: it labels the "show
                          # default" choice with refresh_s and offers the
@@ -2569,6 +2647,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/show/clear_after":
                 self.workspace.set_clear_after_show(body.get("on"))
                 return self._json({"ok": True})
+            if self.path == "/api/show/start_countdown":
+                self.workspace.set_start_countdown(body.get("s"))
+                return self._json({"ok": True})
             if self.path == "/api/show/import":
                 cues, warnings = self.workspace.import_show(body)
                 return self._json({"ok": True, "cues": cues,
@@ -2865,7 +2946,12 @@ class Handler(BaseHTTPRequestHandler):
                                "mode": mode, "to_s": to_s,
                                "start_at": snap["start_at"], "note": note})
         if command in ("start", "next"):
-            lead = float(body.get("lead_s", DEFAULT_LEAD_S))
+            # The page always says which lead it means (START: the show's
+            # "Countdown before START"; NEXT: the "take effect in" field).
+            # A START that does not say gets the show's countdown too.
+            default = (self.workspace.start_countdown() if command == "start"
+                       else DEFAULT_LEAD_S)
+            lead = float(body.get("lead_s", default))
             if not 0.5 <= lead <= 60:
                 raise ValueError("lead time is 0.5-60 s")
             if command == "start":

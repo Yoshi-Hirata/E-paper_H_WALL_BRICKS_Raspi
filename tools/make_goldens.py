@@ -939,6 +939,9 @@ def build_reference_state(project: dict) -> dict:
     # than taught to SIM.buildState(), and a bundle that never mentions the
     # key leaves the operator's own answer alone (import_bundle()).
     state["show"].pop("clear_after_show", None)
+    # The countdown before ③ START (2026-09-29) is the same kind of thing:
+    # the lead the fleet's START is given. No fleet in the simulator.
+    state["show"].pop("start_countdown_s", None)
     music = show.get("music")
     state["music"] = {"name": music.get("name") if isinstance(music, dict) else None, "url": None}
     return state
