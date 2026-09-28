@@ -21,7 +21,7 @@ FW VERSION asks every configured address its OTA state (0x29) and
 lists what each answering board runs (ui/versions.py) - the runner is
 stopped for the scan and stays stopped on the way out, no repaint.
 
-BOARD INFO (ui/boardinfo.py) names the board on the USB cable - the only
+BOARD INFO (ui/boardinfo.py, the last row) names the board on the USB cable - the only
 one a unit can name: its USB serial (the STM32 unique ID), its TYPE (the
 serial's last four characters; most of the fleet reads 324C), what FW
 VERSION's own scan says it runs, and this unit's flash record for it.
@@ -164,17 +164,18 @@ class App:
         self.versions = versions
         if versions is not None:
             self.patterns.append(versions.menu_entry)
-        # BOARD INFO reads FW through `versions` (the same worker, so its
-        # scan already counts in remote.busy below).
-        self.boardinfo = boardinfo
-        if boardinfo is not None:
-            self.patterns.append(boardinfo.menu_entry)
         self.puller = puller
         if puller is not None:
             self.patterns.append(puller.menu_entry)
         self.rebooter = rebooter
         if rebooter is not None:
             self.patterns.append(rebooter.menu_entry)
+        # BOARD INFO is the last row, so GIT PULL and REBOOT keep theirs.
+        # It reads FW through `versions` (the same worker, so its scan
+        # already counts in remote.busy below).
+        self.boardinfo = boardinfo
+        if boardinfo is not None:
+            self.patterns.append(boardinfo.menu_entry)
         # The show PC's session (ui/remote.py). It may not take the port
         # while something that must not be interrupted holds the unit.
         self.remote = remote
@@ -908,7 +909,8 @@ class App:
                 updater.recent(LOG_LINES), error=updater.error,
                 locked=self.locked, host=self.host,
                 image_choice=updater.image_choice,
-                usb_board=getattr(updater, "usb_board", None))
+                usb_board=getattr(updater, "usb_board", None),
+                bus_shared=bool(getattr(updater, "bus_shared", False)))
         if self.screen is Screen.VERSIONS:
             versions = self.versions
             return render.versions_screen(
@@ -988,7 +990,8 @@ class App:
                         tuple(updater.recent(LOG_LINES)), updater.error,
                         self.locked,
                         tuple(sorted((getattr(updater, "usb_board", None)
-                                      or {}).items())))
+                                      or {}).items())),
+                        bool(getattr(updater, "bus_shared", False)))
             if self.screen is Screen.VERSIONS:
                 versions = self.versions
                 return ("versions", versions.phase, tuple(versions.rows),

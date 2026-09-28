@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 import serial
@@ -120,6 +121,51 @@ def usb_board_info(port: "str | None") -> dict:
         pass
     info["family"] = usb_board_family(info["serial"])
     return info
+
+
+# How long anyone waits for one descriptor read. Reading a USB device's
+# sysfs strings (serial, bcdDevice - and list_ports reads them too) takes
+# the kernel's USB device lock, which a USB reset holds for its whole
+# duration: a read can hang exactly while the unit is curing its master.
+USB_BOARD_READ_S = 2.0
+
+
+def usb_board_info_bounded(port: "str | None",
+                           timeout: float = USB_BOARD_READ_S,
+                           read=None, guard: "threading.Lock | None" = None
+                           ) -> "dict | None":
+    """`read(port)` (default usb_board_info) on a daemon thread of its own,
+    waited for at most `timeout` - never joined past it, never a raise.
+
+    None when it did not finish in time, or when `guard` (the caller's
+    in-flight lock) shows a read of the caller's still running - a hung one
+    included, so hung reads never pile up. A read that finishes late just
+    releases the guard; its answer is dropped.
+    """
+    read = read or usb_board_info
+    guard = guard or threading.Lock()
+    if not guard.acquire(blocking=False):
+        return None
+    result: dict = {}
+    done = threading.Event()
+
+    def work():
+        try:
+            result["info"] = read(port)
+        except Exception:               # noqa: BLE001 - an answer, not a raise
+            result["info"] = None
+        finally:
+            guard.release()
+            done.set()
+    try:
+        threading.Thread(target=work, daemon=True,
+                         name="usb-board-read").start()
+    except Exception:                   # noqa: BLE001 - no thread, no read
+        guard.release()
+        return None
+    if not done.wait(max(0.0, timeout)):
+        return None
+    return result.get("info")
 
 
 def find_port() -> str | None:

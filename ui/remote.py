@@ -1038,9 +1038,10 @@ class RemoteSession:
 
     def status(self) -> dict:
         runner = self.runner
-        # Outside the lock: after a port open this reads the USB descriptor
-        # (list_ports / sysfs, a few ms) - cached otherwise (ui/runner.py's
-        # usb_board()). Absent from a stand-in runner that has no such call.
+        # The CACHED value only (ui/runner.py's usb_board()) - nothing is
+        # read here: a descriptor read can wait behind a USB reset, and this
+        # answers every second through a show. Absent from a stand-in
+        # runner that has no such call.
         usb_board = (runner.usb_board() if callable(getattr(runner, "usb_board", None))
                      else None)
         with self._lock:
@@ -1121,8 +1122,9 @@ class RemoteSession:
                 # can name: {"serial": "5CF26F473930", "family": "3930"}
                 # (family: the serial's last four, "324C" | "3930" |
                 # "other"; transport.usb_board_info). Read-only, from the
-                # USB descriptor, never a frame; null until a worker has
-                # had the port. The tile marks a family other than 324C.
+                # USB descriptor by the runner's reader thread, never a
+                # frame; null until it has been read. The tile marks a
+                # family other than 324C.
                 "usb_board": usb_board,
                 # Whether the PC's worker holds this unit's port (owned()):
                 # the page offers Recover bus only then, and the preset's

@@ -211,13 +211,22 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
     return image
 
 
-def usb_board_line(usb_board: dict) -> "tuple[str, tuple]":
+def usb_board_line(usb_board: dict, shared: bool = False
+                   ) -> "tuple[str, tuple]":
     """'SERIAL 5CF26F473930  TYPE 3930' and its tint: amber for a type
-    other than the fleet's usual 324C, red when there is no serial."""
+    other than the fleet's usual 324C, red when there is no serial.
+
+    `shared` (the scan found several boards - the 485 is in): the serial
+    is still only the board on the USB cable, while the target comes from
+    the scan, so it is named as that and nothing more -
+    'USB BOARD 5CF2…3930', dim (review of 59fbded, LOW-3)."""
     serial = usb_board.get("serial")
     family = usb_board.get("family")
     if not serial:
         return "SERIAL none - no USB serial", ERR
+    if shared:
+        short = serial if len(serial) <= 9 else f"{serial[:4]}…{serial[-4:]}"
+        return f"USB BOARD {short}", DIM
     return (f"SERIAL {serial}  TYPE {family}",
             DIM if family == "324C" else WARN)
 
@@ -237,7 +246,8 @@ def update_screen(firmware: str, size: int, addr: int, phase: str,
                   locked: bool = False,
                   host: str | None = None,
                   image_choice: str = "",
-                  usb_board: "dict | None" = None) -> Image.Image:
+                  usb_board: "dict | None" = None,
+                  bus_shared: bool = False) -> Image.Image:
     """Firmware update: image, target board, transfer bar, log tail.
 
     `phase` is one of ui.updater's IDLE/FLASHING/VERIFYING/DONE/FAILED.
@@ -279,7 +289,7 @@ def update_screen(firmware: str, size: int, addr: int, phase: str,
 
     top = 108
     if usb_board is not None:
-        text, tint = usb_board_line(usb_board)
+        text, tint = usb_board_line(usb_board, shared=bus_shared)
         draw.text((8, 106), _ellipsize(text, FONT_S, WIDTH - 16),
                   font=FONT_S, fill=tint)
         top = 122

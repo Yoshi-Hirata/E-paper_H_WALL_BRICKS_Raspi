@@ -133,6 +133,10 @@ def make_updater(image, bus=None, **kwargs):
     kwargs.setdefault("locate", lambda: "/dev/fake")
     kwargs.setdefault("echo_log", False)
     kwargs.setdefault("boards", [1, 20])
+    # Never the real USB descriptor read: comports() finishing late on
+    # this machine made a repaint count flaky (review of 59fbded, LOW-2).
+    kwargs.setdefault("board_info", lambda port: {"serial": None,
+                                                  "family": None})
     return FirmwareUpdater(image, **kwargs), calls
 
 

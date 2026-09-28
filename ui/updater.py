@@ -43,7 +43,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 import serial
 
 import ota
-from epaper.transport import Bus, find_port, port_serial, usb_board_info
+from epaper.transport import (USB_BOARD_READ_S, Bus, find_port, port_serial,
+                              usb_board_info, usb_board_info_bounded)
 
 from . import flashlog
 from .config import LOG_HISTORY
@@ -168,6 +169,10 @@ class FirmwareUpdater:
         # read at every scan, None until the first one.
         self._board_info = board_info
         self.usb_board: dict | None = None
+        self._usb_board_guard = threading.Lock()
+        # Set by ui/main.py to the runner's note_usb_board: a read made
+        # here (runner stopped, the unit its own) also fills /status.
+        self.usb_board_sink = None
         self.flash_log = Path(flash_log)
         self.boards = list(boards) if boards else list(range(1, 21))
         self.port = port
@@ -340,11 +345,23 @@ class FirmwareUpdater:
                 self.board_state = state
 
     def _read_usb_board(self) -> None:
-        try:
+        """On the probe thread, bounded (transport.usb_board_info_bounded):
+        a descriptor read can hang behind a USB reset, and the scan must go
+        on regardless - a read that does not come back shows as "none"."""
+        def work(_):
             port = self.port or self._locate()
-            self.usb_board = dict(self._board_info(port) or {})
+            return dict(self._board_info(port) or {}) if port else None
+        try:
+            got = usb_board_info_bounded(None, USB_BOARD_READ_S, read=work,
+                                         guard=self._usb_board_guard)
         except Exception:                 # noqa: BLE001 - shown as "none"
-            self.usb_board = {"serial": None, "family": None}
+            got = None
+        self.usb_board = got or {"serial": None, "family": None}
+        if got and self.usb_board_sink is not None:
+            try:
+                self.usb_board_sink(got)      # the runner's /status cache
+            except Exception:                 # noqa: BLE001 - optional
+                pass
 
     def _scan(self) -> None:
         self._read_usb_board()

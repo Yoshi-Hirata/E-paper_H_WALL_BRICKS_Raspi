@@ -55,17 +55,17 @@ from epaper.transport import ACK_TIMEOUT_S, USBRESET_TIMEOUT_S, Bus, find_port
 from epaper.transport import usb_reset as usb_reset_default
 from epaper.transport import usb_reset_available as usb_reset_check_default
 from epaper.transport import usb_board_info as usb_board_info_default
+from epaper.transport import USB_BOARD_READ_S, usb_board_info_bounded
 
 from .config import LOG_HISTORY
 from .patterns import DEFAULT_PALETTE, Pattern
 from .remote import READY          # ui/remote.py imports nothing of ours
 
-# /status usb_board: how long a serial read at a worker's open stands
-# before the next /status reads it again. A reopen after a USB reset may
-# rename the node, and a master can be swapped by hand without a new
-# worker - both are caught within this, with no hook in the paths that
-# reopen the port.
-USB_BOARD_RECHECK_S = 60.0
+# /status usb_board: how often the reader thread (_usb_board_loop) looks
+# whether a worker has opened or reopened the port since its last read.
+# /status itself never reads - a descriptor read can hang behind a USB
+# reset (review of 59fbded, MED-1) - it returns the cached value.
+USB_BOARD_POLL_S = 1.0
 
 # A garment carries up to 60 boards, addressed 1..n by rank. Without a
 # list from the show PC the runner explores: it probes upwards from 1 and
@@ -618,13 +618,17 @@ class DemoRunner:
         self.usb_reset_ok: "bool | None" = None
         self.usb_reset_why: "str | None" = None
         # Who is on the USB cable (/status usb_board, see usb_board()): the
-        # port a worker last opened, and how many opens - two plain
-        # assignments in the worker, never a read of anything there. The
-        # serial itself is read by whoever asks for /status, off this
-        # thread, once per open and again every USB_BOARD_RECHECK_S.
+        # port a worker last opened or reopened, and how many times - a
+        # plain assignment in the worker (_saw_port()), never a read there.
+        # The serial is read by a small daemon thread of its own
+        # (_usb_board_loop()), bounded and never while anything is due on
+        # the bus; /status and the LCD only ever read the cache.
         self._usb_board_info = usb_board_info or usb_board_info_default
         self._usb_board_seen: "tuple[str | None, int]" = (None, 0)
-        self._usb_board_cache: "tuple | None" = None
+        self._usb_board: "dict | None" = None      # the cache
+        self._usb_board_read = 0      # the open count the cache was read at
+        self._usb_board_guard = threading.Lock()  # one read in flight
+        self._usb_board_thread: "threading.Thread | None" = None
         # Set when a port could not be reopened after an abandoned reset:
         # the watcher keeps trying on its own poll (_port_watch()).
         self._needs_reopen = False
@@ -2416,6 +2420,9 @@ class DemoRunner:
                 if not self._sleep(RETRY_POLL_S):
                     raise
                 continue
+            # /status usb_board: the reader thread reads the serial again
+            # later, once nothing is due (one assignment - no I/O here).
+            self._saw_port(opened or port)
             if refused:
                 self.emit(f"port {opened or port} opened after {refused} "
                           f"refusal{'' if refused == 1 else 's'} (not ready)")
@@ -3319,40 +3326,90 @@ class DemoRunner:
             self.emit(f"no usb reset on this unit ({why})")
 
     def _saw_port(self, port: "str | None") -> None:
-        """A worker has just opened `port`: /status reads the USB serial
-        again on its next ask (usb_board()). One assignment, no I/O."""
+        """A worker has just opened (or reopened) `port`: the reader thread
+        reads the USB serial again. One assignment, no I/O, no lock."""
         self._usb_board_seen = (port, self._usb_board_seen[1] + 1)
 
     def usb_board(self) -> "dict | None":
-        """/status usb_board: {"serial", "family"} of the board on this
-        unit's USB cable (transport.usb_board_info - the descriptor via
-        list_ports / sysfs, never a frame), or None until a worker has had
-        the port. Read on the CALLER's thread (the agent's HTTP thread, or
-        the LCD's), once after each open and at most every
-        USB_BOARD_RECHECK_S after that; cached in between. Never raises."""
-        seen = self._usb_board_seen
-        if not seen[1]:
-            return None
-        now = time.monotonic()
-        cached = self._usb_board_cache
-        if (cached is not None and cached[0] == seen
-                and now - cached[1] < USB_BOARD_RECHECK_S):
-            return dict(cached[2])
-        port = seen[0]
+        """/status usb_board: the CACHED {"serial", "family"} of the board on
+        this unit's USB cable, or None until it has been read. Never reads
+        anything: a descriptor read takes the kernel's USB device lock, which
+        a USB reset holds - /status (polled every second through a show),
+        POST replies and the LCD loop must never wait behind the unit's own
+        recovery (review of 59fbded, MED-1)."""
+        board = self._usb_board
+        return None if board is None else dict(board)
+
+    def note_usb_board(self, info: "dict | None") -> None:
+        """Fill the cache from a read made elsewhere - BOARD INFO / UPDATE
+        FW on the unit's own screen, with the runner stopped."""
+        if info is None:
+            return
+        self._usb_board = {"serial": info.get("serial"),
+                           "family": info.get("family")}
+        self._usb_board_read = self._usb_board_seen[1]
+
+    def _start_usb_board_reader(self) -> None:
+        """Called by a worker right after it has the port: start the reader
+        thread unless it is already running. Starting a thread, nothing
+        read here."""
+        thread = self._usb_board_thread
+        if thread is not None and thread.is_alive():
+            return
         try:
-            # A re-enumeration may have renamed the node since the open;
-            # this port's current name is what find_port() says, as in the
-            # worker's own `self.port or self._safe_find_port()`.
-            info = self._usb_board_info(port) or {}
-            if not info.get("serial") and not self.port:
-                other = self._safe_find_port()
-                if other and other != port:
-                    info = self._usb_board_info(other) or {}
-            board = {"serial": info.get("serial"), "family": info.get("family")}
-        except Exception:               # noqa: BLE001 - unknown is null
-            board = {"serial": None, "family": None}
-        self._usb_board_cache = (seen, now, board)
-        return dict(board)
+            thread = threading.Thread(target=self._usb_board_loop, daemon=True,
+                                      name="usb-board")
+            thread.start()
+            self._usb_board_thread = thread
+        except Exception:               # noqa: BLE001 - no reader, no field
+            pass
+
+    def _usb_board_quiet(self) -> bool:
+        """May the reader look at the USB descriptor now? Not during a
+        recovery or USB reset, a fire, a cue armed, a show played or held,
+        or with the port left closed by an abandoned reset."""
+        if self._recovering or self._firing or self._needs_reopen:
+            return False
+        session = self.remote
+        if session is None:
+            return True
+        try:
+            return not session.playing() and session.due() is None
+        except Exception:               # noqa: BLE001 - unsure is "not now"
+            return False
+
+    def _read_usb_board(self, port: "str | None") -> dict:
+        """The read itself, on the bounded reader's own thread. A
+        re-enumeration may have renamed the node since the open; the port's
+        current name is what find_port() says, as in the worker's own
+        `self.port or self._safe_find_port()`."""
+        info = self._usb_board_info(port) or {}
+        if not info.get("serial") and not self.port:
+            other = self._safe_find_port()
+            if other and other != port:
+                info = self._usb_board_info(other) or {}
+        return {"serial": info.get("serial"), "family": info.get("family")}
+
+    def _usb_board_loop(self) -> None:
+        """The reader: once after each open / reopen (`_usb_board_seen`),
+        only when _usb_board_quiet(), each read bounded by USB_BOARD_READ_S
+        (a hung read leaves the cache as it was, and the next is not
+        started until it returns). Ends with the worker (`_stop`); the next
+        worker's open starts it again. Never raises."""
+        while not self._stop.is_set():
+            try:
+                seen = self._usb_board_seen
+                if (seen[1] and self._usb_board_read != seen[1]
+                        and self._usb_board_quiet()):
+                    board = usb_board_info_bounded(
+                        seen[0], USB_BOARD_READ_S, read=self._read_usb_board,
+                        guard=self._usb_board_guard)
+                    if board is not None:
+                        self._usb_board = board
+                        self._usb_board_read = seen[1]
+            except Exception:           # noqa: BLE001 - try again later
+                pass
+            self._stop.wait(USB_BOARD_POLL_S)
 
     def _reopen_handed_over(self, bus, groups: int,
                             at: "float | None" = None) -> bool:
@@ -3750,6 +3807,7 @@ class DemoRunner:
                 with self._open_bus(port) as bus:
                     self.emit(f"port {port}")
                     self._saw_port(port)            # /status usb_board
+                    self._start_usb_board_reader()
                     needs_setup = True
                     self._needs_reopen = False      # a fresh open is open
                     groups = self._take_groups()
@@ -4112,6 +4170,7 @@ class DemoRunner:
                 with self._open_bus(port) as bus:
                     self.emit(f"port {port}")
                     self._saw_port(port)            # /status usb_board
+                    self._start_usb_board_reader()
                     if self.usb_reset_ok is None:
                         # Standby and the demos cure a dead master in their
                         # setup too (_setup_usb_reset()), so they ask once.

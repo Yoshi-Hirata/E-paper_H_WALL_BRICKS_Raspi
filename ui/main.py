@@ -459,7 +459,11 @@ def main() -> int:
     puller = RepoPuller()
     rebooter = Rebooter()
     versions = BoardVersions(boards=args.boards, port=args.port)
-    boardinfo = BoardInfo(versions, port=args.port)
+    # Their own (bounded) USB descriptor reads also fill the runner's cache
+    # behind /status usb_board - read on the unit's own screen, never by
+    # /status itself.
+    boardinfo = BoardInfo(versions, port=args.port, cache=runner)
+    updater.usb_board_sink = runner.note_usb_board
     host = socket.gethostname() or None
 
     remote = agent = demo_store = None
