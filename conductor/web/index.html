@@ -4029,14 +4029,22 @@ const SHOWBOARD = (() => {
   // own Boards row and the unit's log line on it, not anything out of the
   // unit's journal. "REMOTE" is not a word on this page - the phase chip
   // says `standby`, then `ready`.
-  const DEGRADED_WHY = "Every frame to this unit is being delayed. A garment"
-    + " master whose 12 V or USB came up roughly can stay in this state and"
-    + " hold up every write by about 360 ms — that is how q03-q06 ran late on"
-    + " 2026-09-28. Power the garment's boards FIRST, then restart this unit,"
-    + " and wait for its tile: Boards 16 / 16, the log line"
-    + " “panels online: 16/16”, the phase chip on standby and then ready."
-    + " ① Upload after that, until Pictures says “written”. See"
-    + " docs/CONDUCTOR_START.md §6 本番前の起動手順.";
+  // What cures it, as of the radxa-07 evidence (2026-09-28): a USB reset of
+  // the master - which the unit now tries by itself, and "Recover bus" asks
+  // for - or a REBOOT of the Radxa (a USB power cycle), or re-plugging the
+  // master's USB. Restarting the unit's UI service does NOT: that reopens
+  // the port and re-probes, and a degraded master answers neither.
+  const DEGRADED_WHY = "Every frame to this unit is being delayed and none is"
+    + " executed: the garment's master is in the degraded state of 2026-09-28"
+    + " (writes blocked about 360 ms and the preset changed no panel). The"
+    + " unit resets the master's USB by itself; “Recover bus” asks it to now."
+    + " If the mark stays: restarting the unit's UI service does NOT cure it —"
+    + " only a USB reset, a REBOOT of the Radxa, or re-plugging the master's"
+    + " USB does. Power the garment's boards FIRST, then reboot, and wait for"
+    + " its tile: Boards 16 / 16, the log line “panels online: 16/16”, the"
+    + " phase chip on standby and then ready. ① Upload after that, until"
+    + " Pictures says “written”. See docs/CONDUCTOR_START.md §6"
+    + " 本番前の起動手順.";
   function busStall(u, running) {
     const s = u && u.bus_stall;
     if (!s || !s.ms) return null;
@@ -4080,7 +4088,10 @@ const SHOWBOARD = (() => {
   }
   // One unit's answer in the words the operator needs: what it took, or the
   // one thing left to do about it. A failure names the cure and no numbers -
-  // "358 ms" tells the operator nothing they can act on at 19:58.
+  // "358 ms" tells the operator nothing they can act on at 19:58 - and the
+  // cure it names is one that WORKS: a reboot of the Radxa or a re-plug of
+  // the master's USB. Restarting the unit's UI does not (radxa-07,
+  // 2026-09-28), so "restart the unit" would send the operator the wrong way.
   function recoverText(name, result) {
     if (!result || result.error)
       return { name, ok: false, tone: "warn",
@@ -4092,11 +4103,12 @@ const SHOWBOARD = (() => {
       : ` (${before} → ${after} ms)`;
     if (!result.recovered)
       return { name, ok: false, tone: "warn",
-               text: `${name}: bus recovery failed — restart the unit` };
+               text: `${name}: bus recovery failed — reboot the Radxa or re-plug the master's USB` };
     if (!result.by)
       return { name, ok: true, tone: "", text: `${name}: bus was already clear` };
+    // "usb_reset" on the wire, "usb reset" to the operator.
     return { name, ok: true, tone: "",
-             text: `${name}: bus recovered by ${result.by}${span}` };
+             text: `${name}: bus recovered by ${String(result.by).replace(/_/g, " ")}${span}` };
   }
   // Every unit of one sweep on one line, worst tone wins: one unit that
   // still needs restarting is the whole message, whatever the others did.

@@ -623,11 +623,11 @@ CALLS = {
                                   [_u(name="radxa-07", bus_stall=_stall())], True],
     "recover_no_units_at_all": ["recoverTargets", [], False],
     # ---- and what each answer reads as
-    "recover_said_padding": ["recoverText", "radxa-07",
-                             {"recovered": True, "by": "padding",
+    "recover_said_usb_reset": ["recoverText", "radxa-07",
+                               {"recovered": True, "by": "usb_reset",
                               "before_ms": 359.0, "after_ms": 2.0}],
-    "recover_said_reopen": ["recoverText", "radxa-07",
-                            {"recovered": True, "by": "reopen",
+    "recover_said_usb_reset_2": ["recoverText", "radxa-07",
+                                 {"recovered": True, "by": "usb_reset",
                              "before_ms": 359.4, "after_ms": 3.2}],
     "recover_said_failed": ["recoverText", "radxa-07",
                             {"recovered": False, "by": None,
@@ -640,14 +640,14 @@ CALLS = {
     "recover_said_nothing": ["recoverText", "radxa-07", None],
     "recover_report_all_well": ["recoverReport",
                                 [{"name": "radxa-07",
-                                  "result": {"recovered": True, "by": "padding",
+                                  "result": {"recovered": True, "by": "usb_reset",
                                              "before_ms": 359.0, "after_ms": 2.0}},
                                  {"name": "radxa-03",
-                                  "result": {"recovered": True, "by": "reopen",
+                                  "result": {"recovered": True, "by": "usb_reset",
                                              "before_ms": 300.0, "after_ms": 3.0}}]],
     "recover_report_one_hopeless": ["recoverReport",
                                     [{"name": "radxa-07",
-                                      "result": {"recovered": True, "by": "padding",
+                                      "result": {"recovered": True, "by": "usb_reset",
                                                  "before_ms": 359.0, "after_ms": 2.0}},
                                      {"name": "radxa-03",
                                       "result": {"recovered": False, "by": None,
@@ -1068,6 +1068,9 @@ def test_five_stalls_with_a_fresh_one_is_a_unit_to_restart(board):
     assert "standby" in title and "ready" in title, title
     assert "REMOTE" not in title, title
     assert "本番前の起動手順" in title, title
+    # radxa-07, 2026-09-28: a UI restart does NOT cure it, a reboot does.
+    assert "does NOT cure it" in title and "REBOOT of the Radxa" in title, title
+    assert "re-plugging the master's" in title, title
 
 
 def test_an_ordinary_stall_stays_amber_however_many_of_them_there_are(board):
@@ -1135,7 +1138,7 @@ def test_the_now_next_row_carries_the_same_verdict(board):
 # ---- "Recover bus" (2026-09-28, LOOK28 / radxa-07) ----
 #
 # The state the red mark above asks for a restart over has a cheaper cure the
-# unit can run itself: the resync padding, and a port reopen behind it
+# unit can run itself: a USB reset of the master, proven before it is believed
 # (ui/runner.py's _recover_bus()). ② Show preset and ③ START try it FIRST,
 # because a degraded unit takes the preset and refreshes no panel.
 
@@ -1159,15 +1162,16 @@ def test_the_units_to_recover_are_the_ones_still_stalling_now(board):
 
 def test_each_answer_reads_as_what_it_took_or_what_is_left_to_do(board):
     r = board["results"]
-    padded = r["recover_said_padding"]
-    assert padded["text"] == "radxa-07: bus recovered by padding (359 → 2 ms)"
+    padded = r["recover_said_usb_reset"]
+    # "usb_reset" on the wire, "usb reset" to the operator.
+    assert padded["text"] == "radxa-07: bus recovered by usb reset (359 → 2 ms)"
     assert padded["ok"] is True and padded["tone"] == ""
-    assert r["recover_said_reopen"]["text"] == \
-        "radxa-07: bus recovered by reopen (359 → 3 ms)"
+    assert r["recover_said_usb_reset_2"]["text"] == \
+        "radxa-07: bus recovered by usb reset (359 → 3 ms)"
     # A failure names the cure and NO numbers: "358 ms" is nothing the
     # operator can act on at 19:58.
     failed = r["recover_said_failed"]
-    assert failed["text"] == "radxa-07: bus recovery failed — restart the unit"
+    assert failed["text"] == "radxa-07: bus recovery failed — reboot the Radxa or re-plug the master's USB"
     assert failed["ok"] is False and failed["tone"] == "warn"
     # A healthy unit: the button is not a lie either way.
     assert r["recover_said_nothing_wrong"]["text"] == "radxa-07: bus was already clear"
@@ -1184,11 +1188,11 @@ def test_one_unit_that_still_needs_restarting_is_the_whole_message(board):
     r = board["results"]
     good = r["recover_report_all_well"]
     assert good["ok"] is True and good["tone"] == ""
-    assert good["text"] == ("radxa-07: bus recovered by padding (359 → 2 ms) · "
-                           "radxa-03: bus recovered by reopen (300 → 3 ms)")
+    assert good["text"] == ("radxa-07: bus recovered by usb reset (359 → 2 ms) · "
+                           "radxa-03: bus recovered by usb reset (300 → 3 ms)")
     bad = r["recover_report_one_hopeless"]
     assert bad["ok"] is False and bad["tone"] == "warn"
-    assert "radxa-03: bus recovery failed — restart the unit" in bad["text"]
+    assert "radxa-03: bus recovery failed — reboot the Radxa or re-plug the master's USB" in bad["text"]
     # Nothing was recovered, so there is nothing to say - not an empty toast.
     assert r["recover_report_of_nothing"] is None
 
@@ -1364,10 +1368,10 @@ class _Stand:
         # neither is evidence that THIS show is on stage.
         self.demo4 = False
         self.stale3 = False
-        # What POST /api/units/<name>/bus/recover answers: "padding" and
-        # "reopen" are the two cures, "never" the unit that has to be
+        # What POST /api/units/<name>/bus/recover answers: "usb_reset" is
+        # the cure, "never" the unit that has to be
         # restarted (ui/runner.py's _recover_bus()).
-        self.recover = "padding"
+        self.recover = "usb_reset"
         # Every command in the order it arrived, so a test can say that the
         # recovery ran BEFORE the preset and not merely that both happened.
         self.asked = []
@@ -1828,7 +1832,7 @@ _PAGE_PROBE = """
 
       // 15. "Recover bus" (2026-09-28): the button beside the mark, and the
       //     sweep (2) Show preset makes before it sends anything.
-      await fetch("/test/fleet?run=none&stall=degraded&recover=padding");
+      await fetch("/test/fleet?run=none&stall=degraded&recover=usb_reset");
       await wait(1600);
       var btn = document.querySelector("[data-recover-bus]");
       out.recoverButton = { there: !!btn, unit: btn && btn.dataset.recoverBus,
@@ -1846,7 +1850,7 @@ _PAGE_PROBE = """
       out.recoverFailedToast = { text: document.querySelector("#toast").textContent,
                                  cls: document.querySelector("#toast").className };
       // (2) Show preset sweeps first, then sends the preset.
-      await fetch("/test/fleet?recover=padding&uploaded=1&show=ran");
+      await fetch("/test/fleet?recover=usb_reset&uploaded=1&show=ran");
       await wait(1600);
       document.querySelector("#show-preset").click();
       await wait(1600);
@@ -2299,12 +2303,12 @@ def test_recover_bus_is_pressed_from_the_tile_and_reports_what_it_took(page):
     # The toast the operator reads: what was wrong, what fixed it, and the
     # two numbers that show it really is fixed.
     toast = page["recoverToast"]
-    assert toast["text"] == "radxa-01: bus recovered by padding (359 → 2 ms)", toast
+    assert toast["text"] == "radxa-01: bus recovered by usb reset (359 → 2 ms)", toast
     assert toast["cls"] == "", "a recovery that worked is not a warning"
     assert page["recoverAsked"]["asked"] == ["recover:radxa-01"]
     # A unit nothing here can fix names the one thing left to do, in amber.
     failed = page["recoverFailedToast"]
-    assert failed["text"] == "radxa-01: bus recovery failed — restart the unit", failed
+    assert failed["text"] == "radxa-01: bus recovery failed — reboot the Radxa or re-plug the master's USB", failed
     assert failed["cls"] == "warn", failed
 
 
