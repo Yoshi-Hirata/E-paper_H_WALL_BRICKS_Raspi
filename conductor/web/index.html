@@ -382,7 +382,8 @@ button.small { font-size: 11px; padding: 1px 6px; vertical-align: baseline; }
    the same thing in both places or they mean nothing (2026-09-28). */
 .nn-state .vf { font-weight: 600; margin-left: 6px; }
 .nn-state .vf.re { color: var(--warn); } .nn-state .vf.no { color: var(--err); }
-/* "restart these units before START", under ③ START and in the dialog. Only
+/* "press Recover bus (or reboot these Radxas), then Upload", under ③ START
+   and in the dialog. Only
    there when it has something to say: an empty warning line still costs its
    own margin, and both panels are tight. */
 #show-degraded, #write-degraded { margin-top: 6px; }
@@ -4034,17 +4035,21 @@ const SHOWBOARD = (() => {
   // for - or a REBOOT of the Radxa (a USB power cycle), or re-plugging the
   // master's USB. Restarting the unit's UI service does NOT: that reopens
   // the port and re-probes, and a degraded master answers neither.
-  const DEGRADED_WHY = "Every frame to this unit is being delayed and none is"
-    + " executed: the garment's master is in the degraded state of 2026-09-28"
-    + " (writes blocked about 360 ms and the preset changed no panel). The"
-    + " unit resets the master's USB by itself; “Recover bus” asks it to now."
-    + " If the mark stays: restarting the unit's UI service does NOT cure it —"
-    + " only a USB reset, a REBOOT of the Radxa, or re-plugging the master's"
-    + " USB does. Power the garment's boards FIRST, then reboot, and wait for"
-    + " its tile: Boards 16 / 16, the log line “panels online: 16/16”, the"
-    + " phase chip on standby and then ready. ① Upload after that, until"
-    + " Pictures says “written”. See docs/CONDUCTOR_START.md §6"
-    + " 本番前の起動手順.";
+  // Two states hide behind this mark (review of 349dcdd): frames delayed
+  // about 360 ms but still executed (LOOK23, every picture appeared late),
+  // or accepted and NOT executed (radxa-07, the preset changed no panel). So
+  // the tooltip claims neither - it says what both need.
+  const DEGRADED_WHY = "Every frame to this unit is being delayed by about"
+    + " 360 ms. On 2026-09-28 that meant pictures appearing late on one"
+    + " garment, and on another frames not being executed at all - the"
+    + " preset changed no panel. Press “Recover bus”: the unit resets the"
+    + " master's USB (it also tries on its own). If the mark stays:"
+    + " restarting the unit's UI service does NOT cure it — only a USB reset,"
+    + " a REBOOT of the Radxa, or re-plugging the master's USB does. Power the"
+    + " garment's boards FIRST, then reboot, and wait for its tile: Boards"
+    + " 16 / 16, the log line “panels online: 16/16”, the phase chip on"
+    + " standby and then ready. ① Upload after that, until Pictures says"
+    + " “written”. See docs/CONDUCTOR_START.md §6 本番前の起動手順.";
   function busStall(u, running) {
     const s = u && u.bus_stall;
     if (!s || !s.ms) return null;
@@ -4054,7 +4059,7 @@ const SHOWBOARD = (() => {
     const fresh = ago !== null && ago <= STALL_FRESH_S;
     if (!running && count >= STALL_STREAK_N && fresh && ms >= STALL_DEGRADED_MS)
       return { degraded: true, count, ms, ago, short: "bus degraded",
-               text: `bus degraded (${count} stalls) — restart this unit before START`,
+               text: `bus degraded (${count} stalls) — press Recover bus, or reboot the Radxa`,
                title: DEGRADED_WHY };
     return { degraded: false, count, ms, ago,
              text: `bus stalled ${ms} ms`, short: `bus stalled ${ms} ms`,
@@ -5003,6 +5008,20 @@ const showMidRun = () => ["running", "holding"].includes((fleet?.run || {}).stat
 // refuse it and the words on a tile must not change under the operator.
 // Never in `short` either, for M1's own reason: a button would push the
 // row's numbers off the end of it.
+// A unit that cannot reset its master's USB at all (ui/runner.py's
+// _check_usb_reset(): no writable USB node, and no `sudo -n usbreset`) can
+// never cure a degraded bus by itself - so it is said in amber before the
+// show, not found out in the first failed recovery (review L2). Nothing for
+// a unit that has not said yet (null: no worker has had the port) or an
+// agent too old to say.
+function usbResetMark(u) {
+  if (!u || !u.online || u.usb_reset_ok !== false) return "";
+  return `<span class="vf re" title="This unit cannot reset its garment `
+    + `master's USB - neither the kernel's USB node nor “sudo -n usbreset” `
+    + `is available to it - so a degraded bus here needs a reboot of the `
+    + `Radxa or a re-plug of the master's USB by hand.">`
+    + `no usb reset on this unit</span>`;
+}
 function stallMark(u, opts) {
   const s = SHOWBOARD.busStall(u, showMidRun());
   if (!s) return "";
@@ -5011,9 +5030,10 @@ function stallMark(u, opts) {
     + `${esc(short ? s.short : s.text)}</span>`;
   if (short || showMidRun() || !u.online) return mark;
   return mark + ` <button class="small" data-recover-bus="${esc(u.name)}" `
-    + `title="Pad the port and, if that is not it, close and reopen it - `
-    + `what a restart of the unit does to the bus, without the restart. `
-    + `The unit refuses this while a show is running.">Recover bus</button>`;
+    + `title="Reset the master's USB and check that it answers again - `
+    + `what a reboot of the Radxa does to the bus, in a few seconds. A `
+    + `healthy unit answers “bus was already clear”. The unit refuses this `
+    + `while a show is running.">Recover bus</button>`;
 }
 // Recover each named unit's bus, in parallel, each answer on its own line.
 // `waitMs` caps the whole thing: the tile's own button waits for the unit's
@@ -5021,13 +5041,17 @@ function stallMark(u, opts) {
 // ② Show preset waits PRESET_RECOVER_WAIT_MS and then goes regardless - a
 // unit still busy recovering takes the preset once it is done, and one that
 // did not answer in time is named in the toast like one that refused.
-const PRESET_RECOVER_WAIT_MS = 3000;
+// Six seconds, not three (review L1): a recovery is a USB reset plus a 3 s
+// proof, about 4.5 s, and the preset is not time-critical - at three every
+// degraded unit read "no answer" even when the reset had worked.
+const PRESET_RECOVER_WAIT_MS = 6000;
 async function recoverBuses(names, waitMs) {
   if (!names.length || commandInFlight) return null;
   commandInFlight = true; document.body.classList.add("busy");
   try {
-    toast(names.length === 1 ? `${names[0]}: recovering the bus…`
-          : `Recovering the bus on ${names.length} units…`);
+    const upTo = waitMs ? ` (up to ${Math.round(waitMs / 1000)} s)` : "";
+    toast(names.length === 1 ? `${names[0]}: recovering the bus…${upTo}`
+          : `Recovering the bus on ${names.length} units…${upTo}`);
     const ask = async name => {
       const url = `/api/units/${encodeURIComponent(name)}/bus/recover`;
       const abort = waitMs ? new AbortController() : null;
@@ -5067,16 +5091,18 @@ function degradedUnits() {
     .filter(u => u.online && (SHOWBOARD.busStall(u, mid) || {}).degraded)
     .map(u => u.name);
 }
-// One line for all of them: the names, then what is wrong once and the one
-// thing that fixes it, in the order the operator has to do it (restart
-// first, THEN Upload - an Upload into a degraded unit works and buys
-// nothing). Said once rather than per unit, so three degraded garments do
-// not wrap the panel in three copies of the same sentence (L4).
+// One line for all of them: the names, then what is wrong once and what
+// fixes it, in the order the operator has to do it (Recover bus - or a
+// reboot of the Radxa - first, THEN Upload: an Upload into a degraded unit
+// works and buys nothing). Never "restart": restarting the unit's UI does
+// not cure a degraded master (radxa-07, 2026-09-28). Said once rather than
+// per unit, so three degraded garments do not wrap the panel in three
+// copies of the same sentence (L4).
 function degradedNote() {
   const who = degradedUnits();
   if (!who.length) return "";
-  return `${who.join(", ")}: bus degraded — restart `
-    + (who.length === 1 ? "the unit" : "these units") + ", then Upload";
+  return `${who.join(", ")}: bus degraded — press Recover bus (or reboot `
+    + (who.length === 1 ? "the Radxa" : "these Radxas") + "), then Upload";
 }
 // Taking the pictures back out of the slots after the show (ui/remote.py's
 // clear()). Amber while it runs - the operator is standing over the garment
@@ -5131,7 +5157,7 @@ function renderTiles() {
       <div class="row"><span>Boards (answering / expected)</span><b>${u.live} / ${expected || u.boards || "?"}${boardListMark(u)}</b></div>
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
-      <div class="row"><span>Fired late by</span><b>${esc(lateText(u))}${verifyMark(u)}${stallMark(u)}</b></div>
+      <div class="row"><span>Fired late by</span><b>${esc(lateText(u))}${verifyMark(u)}${stallMark(u)}${usbResetMark(u)}</b></div>
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version")
             + (unitHoldsRevision(u.name) === false ? " (older timeline)" : "") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
