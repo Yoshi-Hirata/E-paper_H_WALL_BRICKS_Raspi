@@ -228,7 +228,13 @@ def test_recover_bus_sits_on_the_mark_and_runs_before_the_preset_only():
     # already looking, and it carries the unit's name for the delegated
     # click handler (2026-09-28).
     mark = _function_body("stallMark")
-    assert "data-recover-bus" in mark and "esc(u.name)" in mark
+    assert "recoverButton(u)" in mark
+    button = _function_body("recoverButton")
+    assert "data-recover-bus" in button and "esc(u.name)" in button
+    # ...and the button is there on a HEALTHY tile too, for the pre-show
+    # "bus was already clear" check (review M3) - never mid-run.
+    assert "showMidRun()" in button and "!u.online" in button
+    assert "${stallMark(u) || recoverButton(u)}" in PAGE
     # Not mid-run and not for a unit that is not answering: the unit would
     # refuse the first and cannot hear the second. Not on the NOW -> NEXT
     # row either (`short`), for M1's own reason - a button in that one grid
@@ -1875,6 +1881,10 @@ _PAGE_PROBE = """
         function (t) { return t.textContent.indexOf("no usb reset on this unit") >= 0; });
       out.usbMarkTiles = [].map.call(document.querySelectorAll("#tiles .tile"),
         function (t) { return t.textContent.slice(0, 40); });
+      // 17. Recover bus is on every ONLINE tile while nothing runs - healthy
+      //     ones included, for the pre-show check (review M3).
+      out.recoverOnTiles = [].map.call(document.querySelectorAll("#tiles .tile"),
+        function (t) { return !!t.querySelector("[data-recover-bus]"); });
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -2340,6 +2350,18 @@ def test_a_unit_that_cannot_reset_usb_is_marked_before_the_show(page):
               if on]
     assert len(marked) == 1 and "radxa-05" in marked[0], (
         page["usbMarkTiles"], page["usbMark"])
+
+
+def test_recover_bus_can_be_pressed_on_a_healthy_unit(page):
+    """Review M3: the pre-show check presses Recover bus on each HEALTHY
+    unit and wants "bus was already clear" - so the button cannot live only
+    beside a stall mark. On every online tile; not on the offline one."""
+    tiles = list(zip(page["usbMarkTiles"], page["recoverOnTiles"]))
+    has = {name: on for text, on in tiles
+           for name in ("radxa-01", "radxa-02", "radxa-03", "radxa-04",
+                        "radxa-05") if name in text}
+    assert has == {"radxa-01": True, "radxa-02": True, "radxa-03": False,
+                   "radxa-04": True, "radxa-05": True}, tiles
 
 
 def test_show_preset_recovers_before_it_sends_anything(page):

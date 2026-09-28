@@ -5022,6 +5022,20 @@ function usbResetMark(u) {
     + `Radxa or a re-plug of the master's USB by hand.">`
     + `no usb reset on this unit</span>`;
 }
+// The Recover bus button itself. On EVERY online tile while nothing runs -
+// not only beside a stall mark - because the pre-show check needs it on a
+// healthy unit too: pressed there it must answer "bus was already clear",
+// which is what shows the unit's verdicts can be trusted (review M3; the
+// master on the USB cable has to be bus address 1). Never mid-run: the unit
+// refuses it and the words on a tile must not change under the operator.
+function recoverButton(u) {
+  if (!u || !u.online || showMidRun()) return "";
+  return ` <button class="small" data-recover-bus="${esc(u.name)}" `
+    + `title="Reset the master's USB and check that it answers again - `
+    + `what a reboot of the Radxa does to the bus, in a few seconds. A `
+    + `healthy unit answers “bus was already clear”. The unit refuses this `
+    + `while a show is running.">Recover bus</button>`;
+}
 function stallMark(u, opts) {
   const s = SHOWBOARD.busStall(u, showMidRun());
   if (!s) return "";
@@ -5029,11 +5043,7 @@ function stallMark(u, opts) {
   const mark = `<span class="vf ${s.degraded ? "no" : "re"}" title="${esc(s.title)}">`
     + `${esc(short ? s.short : s.text)}</span>`;
   if (short || showMidRun() || !u.online) return mark;
-  return mark + ` <button class="small" data-recover-bus="${esc(u.name)}" `
-    + `title="Reset the master's USB and check that it answers again - `
-    + `what a reboot of the Radxa does to the bus, in a few seconds. A `
-    + `healthy unit answers “bus was already clear”. The unit refuses this `
-    + `while a show is running.">Recover bus</button>`;
+  return mark + recoverButton(u);
 }
 // Recover each named unit's bus, in parallel, each answer on its own line.
 // `waitMs` caps the whole thing: the tile's own button waits for the unit's
@@ -5157,7 +5167,7 @@ function renderTiles() {
       <div class="row"><span>Boards (answering / expected)</span><b>${u.live} / ${expected || u.boards || "?"}${boardListMark(u)}</b></div>
       <div class="row"><span>Clock accuracy · round trip</span><b>±${u.sync_ms ?? "?"} ms · ${u.rtt_ms ?? "?"} ms</b></div>
       <div class="row"><span>Loaded</span><b>${u.cue ? `${esc(u.label || u.cue)} — ${u.saved}/${u.boards}` + (u.prepare_s ? ` (${u.prepare_s.toFixed(1)} s)` : "") : "—"}</b></div>
-      <div class="row"><span>Fired late by</span><b>${esc(lateText(u))}${verifyMark(u)}${stallMark(u)}${usbResetMark(u)}</b></div>
+      <div class="row"><span>Fired late by</span><b>${esc(lateText(u))}${verifyMark(u)}${stallMark(u) || recoverButton(u)}${usbResetMark(u)}</b></div>
       <div class="row"><span>Show</span><b>${u.show ? `${u.show.demo ? `demo: ${esc(u.show.demo_name || "")}`
           : fleet.shows[u.name] ? (fleet.shows[u.name].id === u.show.id ? "✓" : "✗ old version")
             + (unitHoldsRevision(u.name) === false ? " (older timeline)" : "") : ""} ${esc(u.show.state)}${u.show.synced === false && u.show.state === "running" ? " (unsynced)" : ""} · ${esc(u.show.applied || "—")} / ${esc(u.show.cues)}` : "—"}</b></div>
