@@ -3451,3 +3451,87 @@ def test_after_the_show_a_degraded_bus_is_recovered_before_the_owed_sweep(
     assert len(bus.resets) == 1
     assert len(shows(bus)) == 2 and session.status()["saved"] == [1, 2]
 
+
+# ---- review of 9a8c045: M1 (who is asked) and L2 (one lost ACK) ----
+
+class _SilentAt(DegradedMaster):
+    """A healthy bus on which some addresses never answer: board 1 absent,
+    or the USB board at another DIP address (review_T10/t_absent.py b1).
+    `lose` drops that many answers of the next unicast STOPs to board 1 -
+    a frame lost on a healthy bus."""
+
+    def __init__(self, silent=(), **kwargs):
+        super().__init__(**kwargs)
+        self.degraded = False
+        self.silent = set(silent)
+        self.lose = 0
+
+    def request(self, frame, retries=3, timeout=None):
+        lost = (frame.dest == 1 and frame.cmd == STOP and self.lose > 0)
+        if frame.dest in self.silent or lost:
+            if lost:
+                self.lose -= 1
+            self.requested.append(frame)
+            self.requested_at.append(time.monotonic())
+            return None
+        return super().request(frame, retries=retries, timeout=timeout)
+
+
+def test_a_garment_without_board_1_is_not_reset_before_its_cues(monkeypatch):
+    """t_absent b1: boards 2 and 3 live, address 1 never answers. Asking
+    address 1 read the healthy bus as "master silent" and reset its USB
+    before every checked cue. The question goes to the lowest live board."""
+    bus = _SilentAt(silent={1})
+    monkeypatch.setattr("ui.runner.find_port", bus.find_port)
+    runner = degraded_runner(bus, boards=[1, 2, 3], precheck=3.6,
+                             remote_guard_hold=HOLD)
+    session = RemoteSession(runner)
+    for cue, colors in (("c1", (2, 3)), ("c2", (4, 5))):
+        session.prepare(cue, {2: array(colors[0]), 3: array(colors[1])},
+                        refresh_s=0.2)
+        assert wait_until(lambda: session.phase == READY
+                          and session.cue_id == cue, timeout=15.0)
+        session.fire(cue, time.monotonic() + 4.0)
+        assert wait_until(lambda: session.phase == FIRED
+                          and session.cue_id == cue, timeout=15.0)
+    runner.stop()
+    said = runner.recent(100)
+    assert bus.resets == []
+    checks = [l for l in said if "precheck" in l]
+    assert len(checks) == 2, said
+    assert all("bus ok" in l and "board 2 answers" in l for l in checks)
+    assert not any("silent" in l for l in said)
+
+
+def test_a_listed_board_1_that_is_silent_is_not_no_boards_answering():
+    """M1, the sweep's half: only "not one board answered" is the dead
+    master that gets a USB reset (_setup_usb_reset())."""
+    runner = make_runner(FakeBus(), boards=[1, 2, 3])
+    runner.live = [2, 3]
+    assert runner._sweep_found_nothing() is False
+    assert runner._health_board() == 2
+    runner.live = []
+    assert runner._sweep_found_nothing() is True
+    assert runner._health_board() == 1           # nothing known: address 1
+
+
+def test_one_lost_ack_behind_a_fast_stop_is_asked_again_not_reset(
+        monkeypatch):
+    """L2: one missed ACK behind a STOP under 50 ms is a lost frame on a
+    healthy bus - asked once more; the USB reset only follows two misses."""
+    bus = _SilentAt()
+    monkeypatch.setattr("ui.runner.find_port", bus.find_port)
+    runner = degraded_runner(bus, precheck=20.0, remote_guard_hold=HOLD)
+    bus.lose = 1
+    runner._precheck(bus, 2, "q08", time.monotonic() + HOLD + 3.5)
+    assert bus.resets == [] and runner.precheck["by"] is None
+    assert any("precheck q08: bus ok" in l
+               and "master answers on the second ask" in l
+               for l in runner.recent(10)), runner.recent(10)
+    bus.lose = 2
+    runner._precheck(bus, 2, "q09", time.monotonic() + HOLD + 3.5)
+    said = [l for l in runner.recent(10) if "precheck q09" in l]
+    assert said and "master missed an ACK twice" in said[0], said
+    assert "→ usb reset → ok (master answers)" in said[0]
+    assert len(bus.resets) == 1
+

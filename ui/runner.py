@@ -657,6 +657,7 @@ class DemoRunner:
         self._recovering = False           # never re-entered
         self._stop_failed = None           # the last timed STOP's raise
         self._sweep_pending: "list[int]" = []
+        self._asked_board = USB_BOARD      # the health question's last board
         self._reset_setup_resets()
         # A reopen invalidates what the boards were told: the caches go,
         # and the full sweep is owed to _run_remote()'s own setup, where
@@ -1300,13 +1301,9 @@ class DemoRunner:
                     if not self._sweep_boards(bus, groups):
                         return False
                     self._setup_owed = False    # this is the sweep it owed
-                    if self._sweep_found_nothing() and not self.live:
+                    if self._sweep_found_nothing():
                         self.emit("no boards answering → usb reset → still "
                                   "no boards")
-                    elif self._sweep_found_nothing():
-                        self.emit(f"no boards answering → usb reset → the USB "
-                                  f"board still silent ({len(self.live)}/"
-                                  f"{self.expected})")
                     else:
                         self.emit(f"no boards answering → usb reset → panels "
                                   f"online: {len(self.live)}/{self.expected}")
@@ -1375,12 +1372,13 @@ class DemoRunner:
         return True
 
     def _sweep_found_nothing(self) -> bool:
-        """The sweep's "no boards answering": nobody at all, or the board
-        on the USB cable itself silent - through which every other board is
-        reached, so either way it is the master that is not answering."""
-        if not self.live:
-            return True
-        return USB_BOARD in self.boards and USB_BOARD not in self.live
+        """The sweep's "no boards answering": not one board answered. Only
+        that (review of 9a8c045, M1): "board 1 listed but silent" is also a
+        garment whose board 1 is absent or at another DIP address, and
+        reading it as a dead master reset a healthy unit's USB three times
+        per worker. A degraded master relays nothing, so it empties the
+        whole sweep anyway."""
+        return not self.live
 
     def _sweep_verdict(self, said_online: bool = False) -> bool:
         if not self.live:
@@ -1412,9 +1410,8 @@ class DemoRunner:
         Returns None when no reset was begun - and then the old behaviour
         follows exactly as before. Begun only:
         * with --auto-recover (the default) and a reset means this unit has
-          (`usb_reset_ok`); a unit started --no-auto-recover is one whose
-          master is not known to be address 1, where "the USB board silent"
-          means nothing;
+          (`usb_reset_ok`) - --no-auto-recover turns every automatic cure
+          off, this one too;
         * at most SETUP_RESETS_MAX times per worker, recover_backoff apart;
         * not inside the last picture's repaint (`_guard_floor` - boards
           repainting are deaf, which is not this state);
@@ -2353,31 +2350,51 @@ class DemoRunner:
 
     def _master_answers(self, bus, groups: int,
                         tries: int = MASTER_ASK_TRIES) -> bool:
-        """Does the master on the USB cable ACK a unicast STOP?
+        """Does the bus answer: does the board _health_board() names ACK a
+        unicast STOP?
 
         The one question a degraded master fails whatever else is done: it
         relays nothing and answers nothing (radxa-07: "no boards answering"
         for 100 s). It is exactly the probe sweep's own first question
         (_probe(): stop(board), one send, the transport's ACK_TIMEOUT_S read
-        window), asked of the USB board alone, never through the relay. NOT
-        0x02: this firmware never answers a 0x02 sent over the bus, healthy
-        or not (radxa-07, 2026-09-28 12:40 - see RECOVERED_MS).
+        window). NOT 0x02: this firmware never answers a 0x02 sent over the
+        bus, healthy or not (radxa-07, 2026-09-28 12:40 - see RECOVERED_MS).
 
-        Any answer from address 1 is the master alive - an ACK, and a BUSY
+        Any answer from that board is the bus alive - an ACK, and a BUSY
         too (it is there, merely working). A STOP to an idle board changes
         nothing on the glass; callers keep this out of a picture all the
         same (a board repainting is deaf, and a STOP inside a sweep could
-        cancel a picture whose delay has not run out).
+        cancel a picture whose delay has not run out). Who was asked is left
+        in `_asked_board`, for the words (_who_answers()).
         """
-        frame = stop(USB_BOARD, groups)
+        board = self._health_board()
+        self._asked_board = board
+        frame = stop(board, groups)
         for _ in range(max(1, tries)):
             try:
                 ack = bus.request(frame, retries=1, timeout=MASTER_ASK_S)
             except Exception:           # noqa: BLE001 - silence, as far as we know
                 return False
-            if ack is not None and ack.src == USB_BOARD:
+            if ack is not None and ack.src == board:
                 return True
         return False
+
+    def _health_board(self) -> int:
+        """Which board the health question goes to: the LOWEST board that
+        answered the last sweep (review of 9a8c045, M1 - on a garment whose
+        board 1 is absent, or whose USB board sits at another DIP address,
+        asking address 1 read a healthy bus as "master silent" and reset its
+        USB before every checked cue). A relayed unicast STOP is what the
+        sweep itself sends, and a degraded master relays nothing, so silence
+        still means degraded. Nothing live yet (or not known): address 1."""
+        live = [b for b in self.live if isinstance(b, int)]
+        return min(live) if live else USB_BOARD
+
+    def _who_answers(self) -> str:
+        """"master" when the question went to the USB board, "board N"
+        otherwise - so the log says who it was that answered."""
+        board = getattr(self, "_asked_board", USB_BOARD)
+        return "master" if board == USB_BOARD else f"board {board}"
 
     def _usb_reset_reopen(self, bus, give_up_at: "float | None" = None,
                           reopen_by: "float | None" = None
@@ -2545,21 +2562,22 @@ class DemoRunner:
         Returns (proven, the gapped STOP's ms or None, what it found).
         """
         if not self._master_answers(bus, groups):
-            return False, None, "master silent"
+            return False, None, f"{self._who_answers()} silent"
+        who = f"{self._who_answers()} answers"
         cut = self._quiet_gap(self.proof_gap)
         if cut == "stopped":
             return False, None, "stopped"
         if cut:
-            return True, None, f"master answers, {cut}"
+            return True, None, f"{who}, {cut}"
         after = self._timed_stop(bus, groups)
         if self._stop_failed is not None:
-            return False, after, (f"master answers, but the stop after "
+            return False, after, (f"{who}, but the stop after "
                                   f"{self.proof_gap:g} s: write failed: "
                                   f"{self._stop_failed}")
         if after >= RECOVERED_MS:
-            return False, after, (f"master answers, but a stop after "
+            return False, after, (f"{who}, but a stop after "
                                   f"{self.proof_gap:g} s took {after:.0f} ms")
-        return True, after, "master answers"
+        return True, after, who
 
     def _timed_stop(self, bus, groups: int,
                     record_from_ms: float = STALL_LOG_MS) -> float:
@@ -2791,7 +2809,7 @@ class DemoRunner:
             if (self._stop_failed is None and before < STALL_RECOVER_MS
                     and self._master_answers(bus, groups)):
                 return self._recovery_done(None, before, before, True,
-                                           "master answers")
+                                           f"{self._who_answers()} answers")
         done, how = self._usb_reset_reopen(bus)
         if not done:
             return self._recovery_done(None, before, None, False, how)
@@ -2944,13 +2962,27 @@ class DemoRunner:
         failed = self._stop_failed
         stalled = failed is not None or before >= STALL_RECOVER_MS
         asked = answers = False
+        second = ""                     # what a second question said
         if not stalled and self._frame_fits(at, MASTER_ASK_COST_S):
             asked = True
             answers = self._master_answers(bus, groups, tries=1)
+            if not answers and before < STALL_LOG_MS:
+                # One missed ACK behind a STOP this fast is a lost frame on a
+                # healthy bus, not the degraded state (whose writes block 61
+                # ms and more): asked once more if that fits, and reset only
+                # on two misses (review of 9a8c045, L2).
+                if self._frame_fits(at, MASTER_ASK_COST_S):
+                    answers = self._master_answers(bus, groups, tries=1)
+                    second = ("on the second ask" if answers
+                              else "twice")
+                else:
+                    second = "once, no time to ask again"
         healthy = not stalled and (answers or not asked)
         steps = []
         cured = False
-        if not healthy:
+        if not healthy and second == "once, no time to ask again":
+            steps.append("not reset")
+        elif not healthy:
             if time.monotonic() + USB_RESET_BUDGET_S > deadline:
                 steps.append("no time for a usb reset")
             else:
@@ -2971,9 +3003,9 @@ class DemoRunner:
                         steps.append(f"not proven ({why})")
                     elif self._master_answers(bus, groups, tries=1):
                         cured = True
-                        steps.append("ok (master answers)")
+                        steps.append(f"ok ({self._who_answers()} answers)")
                     else:
-                        steps.append("master still silent")
+                        steps.append(f"{self._who_answers()} still silent")
         self.precheck = {"cue": cue_id, "at": time.time(),
                          "before_ms": round(before, 1),
                          "by": "usb_reset" if cured else None,
@@ -2981,13 +3013,18 @@ class DemoRunner:
                          # fit before a trigger (see PRECHECK_S).
                          "after_ms": None,
                          "master_answers": answers or cured}
+        who = self._who_answers()
         if healthy:
-            said = ", master answers" if asked else ""
+            said = f", {who} answers" if asked else ""
+            if second:
+                said += f" {second}"
             self.emit(f"precheck {cue_id}: bus ok ({before:.0f} ms{said})")
             return
         what = (f"write failed: {failed}" if failed is not None
                 else f"stalled {before:.0f} ms" if stalled
-                else f"master silent ({before:.0f} ms)")
+                else f"{who} missed an ACK {second} ({before:.0f} ms)"
+                if second
+                else f"{who} silent ({before:.0f} ms)")
         chain = "".join(f" → {step}" for step in steps)
         self.emit(f"precheck {cue_id}: {what}{chain}")
 
@@ -3199,7 +3236,7 @@ class DemoRunner:
             return False
         what = (f"write failed: {failed}" if failed is not None
                 else f"stalled {before:.0f} ms" if stalled
-                else f"master silent ({before:.0f} ms)")
+                else f"{self._who_answers()} silent ({before:.0f} ms)")
         now = time.monotonic()
         if (not self.auto_recover
                 or self._recover_tries >= self.recover_attempts_max):

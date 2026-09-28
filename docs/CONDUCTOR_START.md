@@ -294,8 +294,9 @@ the show` と出る ― **本番前にこの文が出ていないことを確か
    `owned` を返さない古い機体ソフトのタイルにも出ない)。
    トーストは **`radxa-01: bus was already clear`** でなければならない。
    **健全な衣装なのに `bus recovered…` や `bus recovery failed…` と出たら**、
-   その機体は USB ケーブルの先の基板がアドレス 1 でないなどで、機体の判定が
-   当てにならない ―― **その機体は `--precheck 0 --no-auto-recover` で
+   その機体の判定は当てにならない(機体は直前の掃引で答えた一番小さい
+   アドレスの基板に問うので、1 番が無い衣装でもふつうは `already clear` と
+   出る)―― **その機体は `--precheck 0 --no-auto-recover` で
    起動する**(直前点検と自動復旧を止める。SPECIFICATION §4.5 の「前提」)。
    タイルに琥珀色で **`no usb reset on this unit`** と出ている機体は、劣化しても
    自分では直せない ―― そうなったら Radxa の再起動か USB の挿し直ししかない
