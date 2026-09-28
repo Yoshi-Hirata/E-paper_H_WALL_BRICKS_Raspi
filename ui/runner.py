@@ -51,8 +51,9 @@ FRAME_S = 0.01             # conductor/sequence.py's FRAME_S: one table frame
 # re-upload that took every sweep off the timeline does not leave the
 # previous upload's tables in the boards.
 NO_TABLE = struct.pack(">64H", *([NO_DELAY] * 64))
-from epaper.transport import Bus, find_port
+from epaper.transport import USBRESET_TIMEOUT_S, Bus, find_port
 from epaper.transport import usb_reset as usb_reset_default
+from epaper.transport import usb_reset_available as usb_reset_check_default
 
 from .config import LOG_HISTORY
 from .patterns import DEFAULT_PALETTE, Pattern
@@ -258,22 +259,28 @@ OPEN_RETRY_S = 2.0
 # 50 ms, not 100: the node was back 0.44 s after the reset on the unit, and a
 # 100 ms poll noticed it at 0.5 - time the fire-time re-send cannot spare.
 RETRY_POLL_S = 0.05
-# The fire-time re-send (--resend-on-stall; ON by default since 2026-09-28,
-# --no-resend-on-stall switches it off). When a CUE's own show frame blocks
-# at least this long, the frame was not executed - every stalled frame on
-# radxa-07 was not - so the USB device is reset, the port reopened and the
-# SAME frame sent once more. Never twice. It is given FIRE_RESEND_BUDGET_S
-# from the cue's own instant; a port not back by then is left to the idle
-# recovery, and the cue is reported as not re-sent. What it costs, measured
-# on the fake with the unit's own timings (the show write blocking 0.36 s,
-# the reset 0.3 s, the node back 0.44 s after it, an open's 0.3 s settle):
-# the picture goes 1.45 s late - and 1.5-1.6 s when udev refuses the first
-# open or two with EACCES, which is what radxa-07 did in its Run 1. So the
-# budget is 2.0 s, not the 1.5 s first aimed at: at 1.5 the re-send would be
-# given up in exactly the case the unit showed. Either way it is against a
-# picture that would never have gone at all.
+# The fire-time re-send (--resend-on-stall; OFF by default - PM, after the
+# review of 349dcdd). A CUE's own show frame blocking at least this long is
+# one of TWO states, and they need opposite handling:
+#
+#  * DEGRADED (radxa-07, 2026-09-28 Run 2): the frame is accepted and never
+#    executed, and the master answers nothing - the cure is a USB reset and
+#    the same frame once more;
+#  * SLOW but working (LOOK23, 2026-09-28 17:29): every picture appeared,
+#    each ~0.36 s late - a re-send there paints the slot twice.
+#
+# So the stall alone decides nothing: the master is asked one 0x02 first,
+# and only silence gets the reset and the re-send (_resend_on_stall()). Off
+# by default because the double paint is the worse outcome on stage and the
+# second signal has not been tried on a unit yet.
+#
+# The budget, measured on the fake with the unit's own timings (the show
+# write 0.36 s, the 0x02 to a silent master its write plus the whole 0.3 s
+# read window, the reset 0.3 s, the node back 0.44 s, an open's 0.3 s
+# settle): the re-sent picture goes 1.80 s late, 1.88 / 1.92 s when udev
+# refuses the first open or two with EACCES as it did in Run 1.
 RESEND_STALL_MS = STALL_RECOVER_MS
-FIRE_RESEND_BUDGET_S = 2.0
+FIRE_RESEND_BUDGET_S = 2.5
 # ---- the pre-cue check: the next cue on time ----
 # The idle recovery is for the stretch after the last cue, where seconds
 # cost nothing. Before a cue it runs on a clock that fits inside the gap
@@ -299,10 +306,12 @@ FIRE_RESEND_BUDGET_S = 2.0
 # The budget, every write taken at a degraded 0.4 s, from T-8.5: the
 # measuring STOP ends by T-8.1, the 0x02 (one try, 0.4 + a 0.3 read) by
 # T-7.4, and the USB reset step - the reset 0.3, the node back ~0.45, the
-# open 0.3, and the 0x02 that proves it 0.7 - needs USB_RESET_BUDGET_S =
-# 1.8 s: done by T-5.6, before T-5.0. With the 3 s proof gap it would not
-# fit, so the check proves by the master's answer alone ("proof-lite"); the
-# idle recovery proves with both.
+# open 0.3, the STOP straight after it (review M4) 0.4, and the 0x02 that
+# proves it 0.7 - needs USB_RESET_BUDGET_S = 2.2 s: done by T-5.2, before
+# T-5.0. The reset itself is bounded by T-5.0 whatever sudo does (review
+# M2). With the 3 s proof gap it would not fit, so the check proves by the
+# master's answer alone ("proof-lite"); the idle recovery proves with both.
+# A reset step fits from a lead of 5.0 + 0.4 + 0.7 + 2.2 = 8.3 s.
 #
 # WHICH CUES GET ONE, in practice: the previous cue's guard floor has to be
 # past at T-8.5, and at the unit's --guard-delay 30 that floor is 30-38 s
@@ -314,7 +323,7 @@ PRECHECK_S = 8.5
 # THIS frame still go before the hold?
 DEGRADED_WRITE_S = 0.4
 MASTER_ASK_COST_S = DEGRADED_WRITE_S + MASTER_ASK_S
-USB_RESET_BUDGET_S = 1.8
+USB_RESET_BUDGET_S = 2.2
 # How long the probe sweep a reset or a reopen owes waits after it before it
 # may start at all (re-review of e139a33). A recovery is what the operator
 # presses right before ② Show preset, and the preset follows within a
@@ -425,7 +434,7 @@ class DemoRunner:
                  verify_after: float = VERIFY_AFTER_S,
                  verify_read: float = VERIFY_READ_S,
                  verify_witness: str = WITNESS_USB,
-                 resend_on_stall: bool = True,
+                 resend_on_stall: bool = False,
                  precheck: float = PRECHECK_S,
                  port_watch: bool = True,
                  auto_recover: bool = True,
@@ -437,6 +446,7 @@ class DemoRunner:
                  owed_settle: float = OWED_SETTLE_S,
                  proof_gap: float = PROOF_GAP_S,
                  usb_reset=None,
+                 usb_reset_check=None,
                  link_poll: float = LINK_POLL_S,
                  link_guard: float = LINK_GUARD_S,
                  remote_guard: float = REMOTE_GUARD_S,
@@ -496,10 +506,10 @@ class DemoRunner:
         # (see WITNESS_USB).
         self.verify_witness = (WITNESS_ANY if verify_witness == WITNESS_ANY
                                else WITNESS_USB)
-        # The fire-time re-send after a USB reset (RESEND_STALL_MS), ON by
-        # default since the radxa-07 evidence (owner's decision, pending a
-        # real-unit test); ui/main.py's --no-resend-on-stall switches it off,
-        # and then a stalled cue is timed, logged and counted, not re-sent.
+        # The fire-time re-send after a USB reset (RESEND_STALL_MS). OFF by
+        # default (PM, after the review of 349dcdd); ui/main.py's
+        # --resend-on-stall turns it on. Off, a stalled cue is timed, logged
+        # and counted, and not re-sent.
         self.resend_on_stall = bool(resend_on_stall)
         # The three kill switches (ui/main.py's --precheck SECONDS,
         # --no-port-watch, --no-auto-recover), each reported in /status.
@@ -521,6 +531,16 @@ class DemoRunner:
         # The one cure (transport.usb_reset); injectable, so the tests never
         # reach a real USB device - they run on the Radxas too.
         self._usb_reset = usb_reset or usb_reset_default
+        # Whether a reset is possible on this unit AT ALL (review L2):
+        # asked once, when a worker first has the port, and reported in
+        # /status as usb_reset_ok - the tile marks a unit where it is not.
+        # None until asked.
+        self._usb_reset_check = usb_reset_check or usb_reset_check_default
+        self.usb_reset_ok: "bool | None" = None
+        self.usb_reset_why: "str | None" = None
+        # Set when a port could not be reopened after an abandoned reset:
+        # the watcher keeps trying on its own poll (_port_watch()).
+        self._needs_reopen = False
         self.link_poll = link_poll
         self.link_guard = link_guard
         self.remote_guard = remote_guard
@@ -2207,21 +2227,30 @@ class DemoRunner:
                 return True
         return False
 
-    def _usb_reset_reopen(self, bus, give_up_at: "float | None" = None
+    def _usb_reset_reopen(self, bus, give_up_at: "float | None" = None,
+                          reopen_by: "float | None" = None
                           ) -> "tuple[bool, str]":
         """The cure: close the port, reset the master's USB device, wait for
         its node to come back (a new node, possibly under a new name) and
         open it. Returns (reopened, what happened) - "ioctl" / "sudo
         usbreset", or why not.
 
-        No frame goes out here: the reset is on the USB side and the open's
-        own zero padding is not a frame. The caller proves the result and
-        decides whether a frame may follow. A reset owes the probe sweep
-        exactly as a reopen does (OWED_SETTLE_S, _owed_setup_clear()).
+        BOUNDED by `give_up_at` (review of 349dcdd, M2): the reset itself is
+        given only what is left of it (transport.usb_reset(timeout=...)), so
+        a sudo that hangs cannot hold a cue up, and neither can the wait for
+        the node or the open's retries.
 
-        When the reset itself cannot be done (not Linux, no device behind
-        the port, no usbreset) the port is opened again as it was, so the
-        bus is no worse off than before this was tried.
+        The port is NEVER left closed. A reset that could not be done, did
+        not finish, or whose node did not come back in time is followed by
+        one more attempt to open the port as it is, bounded by `reopen_by`
+        (the trigger, before a cue - a port opened late is still the only
+        way the cue goes out at all) - and if even that fails the port is
+        handed to the watcher explicitly (`_needs_reopen`), which keeps
+        trying on its own poll.
+
+        No frame goes out here: the reset is on the USB side and the open's
+        own zero padding is not a frame. A reset owes the probe sweep
+        exactly as a reopen does (OWED_SETTLE_S, _owed_setup_clear()).
         """
         port = getattr(bus, "port", None) or self.port or find_port()
         old = self._link_token(port) if port else None
@@ -2229,13 +2258,13 @@ class DemoRunner:
             bus.close()
         except Exception:               # noqa: BLE001 - closing is best effort
             pass
-        done, how = self._usb_reset(port)
+        timeout = USBRESET_TIMEOUT_S
+        if give_up_at is not None:
+            timeout = min(timeout, max(0.1, give_up_at - time.monotonic()))
+        done, how = self._usb_reset(port, timeout=timeout)
         if not done:
-            try:
-                self._open_retrying(bus, port, give_up_at)
-            except Exception as exc:    # noqa: BLE001 - said, never raised
-                return False, f"usb reset: {how}; and the port would not reopen ({exc})"
-            return False, f"usb reset: {how}"
+            return False, self._reopen_after_failure(bus, port, reopen_by,
+                                                     f"usb reset: {how}")
         # The node goes and comes back - 0.44 s on the unit. Wait for a NEW
         # one (the token changes with every enumeration), under whatever
         # name it takes; if none is seen in time, try the name we have.
@@ -2250,19 +2279,60 @@ class DemoRunner:
                 found = candidate
                 break
             if not self._sleep(RETRY_POLL_S):
-                return False, "stopped"
+                break
         found = found or self.port or find_port() or port
+        # Owed from here on, whether or not the open below works: the
+        # boards' view of this port is gone either way.
+        self._setup_owed = True
+        self._owed_at = time.monotonic()
         try:
             opened = self._open_retrying(bus, found, give_up_at)
         except Exception as exc:        # noqa: BLE001 - said, never raised
-            return False, f"reset by {how}, but the port would not open ({exc})"
-        self._setup_owed = True
-        self._owed_at = time.monotonic()
+            return False, self._reopen_after_failure(
+                bus, found, reopen_by,
+                f"reset by {how}, but the port would not open ({exc})")
         if opened and opened != port:
             self.emit(f"port {opened}")
         return True, how
 
-    def _prove_recovered(self, bus, groups: int) -> "tuple[bool, float | None, str]":
+    def _reopen_after_failure(self, bus, port: "str | None",
+                              reopen_by: "float | None", why: str) -> str:
+        """After a reset that was abandoned: open the port again as it is,
+        once more, bounded by `reopen_by` - never leave it closed. If even
+        that fails the watcher is told (`_needs_reopen`) and keeps trying on
+        its own poll. Returns `why`, with what became of the port."""
+        port = port or self.port or find_port()
+        if port:
+            try:
+                self._open_retrying(bus, port, reopen_by)
+                self._needs_reopen = False
+                return why
+            except Exception:           # noqa: BLE001 - handed on, below
+                pass
+        self._needs_reopen = True
+        return f"{why}; the port is left to the watcher"
+
+    def _quiet_gap(self, seconds: float) -> "str | None":
+        """The proof's silence, cut short the moment anything wants the bus:
+        a cue armed, or a prepare / burn / clear queued (review L1 - a START
+        right after "Recover bus" must never be late because of a proof).
+        Returns None when the full gap was waited, else why it ended."""
+        end = time.monotonic() + seconds
+        session = self.remote
+        while True:
+            if session is not None:
+                if session.due() is not None:
+                    return "proof cut short by a cue"
+                if session.pending_job():
+                    return "proof cut short by a job"
+            left = end - time.monotonic()
+            if left <= 0:
+                return None
+            if not self._sleep(min(left, RETRY_POLL_S)):
+                return "stopped"
+
+    def _prove_recovered(self, bus, groups: int
+                         ) -> "tuple[bool, float | None, str]":
         """PROOF that the bus is back - both, never just a timing:
 
           1  the master answers a unicast 0x02 (a degraded one answers
@@ -2273,12 +2343,23 @@ class DemoRunner:
              "recovered by padding (512 -> 61 ms)" of 2026-09-28 - while one
              after a real pause blocked 272-358 ms.
 
+        Both assume the board on the USB cable is bus address 1
+        (ADDR_BUS_MASTER, SPECIFICATION 4.5): a master at another address
+        never answers the 0x02 and reads as silent.
+
+        If a cue or a job comes up during the gap (_quiet_gap()), the proof
+        ends there with the verdict so far - the master answered - rather
+        than make the cue wait: "master answers, proof cut short by a cue".
+
         Returns (proven, the gapped STOP's ms or None, what it found).
         """
         if not self._master_answers(bus, groups):
             return False, None, "master silent"
-        if not self._sleep(self.proof_gap):
+        cut = self._quiet_gap(self.proof_gap)
+        if cut == "stopped":
             return False, None, "stopped"
+        if cut:
+            return True, None, f"master answers, {cut}"
         after = self._timed_stop(bus, groups)
         if after >= RECOVERED_MS:
             return False, after, (f"master answers, but a stop after "
@@ -2493,6 +2574,7 @@ class DemoRunner:
             done, how = self._usb_reset_reopen(bus)
             if not done:
                 return self._recovery_done(None, before, None, False, how)
+            self._stop_after_reset(bus, groups)
             proven, after, found = self._prove_recovered(bus, groups)
             if proven:
                 return self._recovery_done("usb_reset", before, after, True,
@@ -2501,55 +2583,87 @@ class DemoRunner:
         finally:
             self._recovering = False
 
+    def _stop_after_reset(self, bus, groups: int,
+                          at: "float | None" = None) -> None:
+        """One broadcast STOP straight after a reset-reopen (review M4): if
+        a USB reset ever restarts the master's factory autoplay, this
+        silences it before the next cue does anything. Asked
+        _frame_refusal() like every frame - not inside a picture, not in
+        the hold before a trigger - and never on the fire path, where the
+        show frame is what goes first and nothing follows it."""
+        if self._frame_refusal(at, DEGRADED_WRITE_S) is None:
+            self._timed_stop(bus, groups, record_from_ms=STALL_RECOVER_MS)
+
     def _resend_on_stall(self, bus, groups: int, frame, cue_id: str,
-                         took_ms: float, at: float) -> None:
-        """The fire-time re-send (--resend-on-stall, ON by default).
+                         took_ms: float, at: float) -> "float | None":
+        """The fire-time re-send (--resend-on-stall; OFF by default).
 
-        A cue whose own show frame BLOCKED at least RESEND_STALL_MS was not
-        executed - on radxa-07 no stalled frame ever was (a preset that
-        blocked 272 ms changed no panel). So the master's USB device is
-        reset, the port reopened, and the SAME frame sent once more -
-        exactly once, never a second time, and only if the port is back
-        within FIRE_RESEND_BUDGET_S of the cue's instant. A reset that
-        cannot be done, or a port not back in time, is reported and the
-        cue is left as it is; the idle recovery has the unit afterwards.
+        Returns when the frame was re-sent, or None when it was not - and
+        then the ORIGINAL frame stays the cue's: its send time, its late_ms
+        and its guard floor (review of 349dcdd, M2). A re-send becomes the
+        frame the picture starts from, so the caller takes those from it.
 
-        The re-sent frame is the one the picture starts from, so the caller
-        takes the guard floor and the heartbeat from after it.
+        A stall alone is NOT enough, because there are two states behind a
+        blocked show frame (review H1):
 
-        What it costs if the reading were ever wrong: a stalled frame that
-        WAS executed would repaint the same slot twice. On the evidence it
-        never is; --no-resend-on-stall is there if a unit ever shows it.
+          * DEGRADED (radxa-07, 2026-09-28 Run 2): the frame is accepted and
+            never executed, and the master answers nothing - a 272 ms
+            preset changed no panel;
+          * SLOW but working (LOOK23, 2026-09-28 17:29): every picture
+            appeared, each about 0.36 s late, and the master answers.
+
+        Re-sending in the second repaints the slot twice. So after a show
+        frame that blocked at least RESEND_STALL_MS the master is asked ONE
+        unicast 0x02 (one try, MASTER_ASK_S): an answer means the frame is
+        being executed late - "cue q05 stalled 251 ms, master answers - not
+        re-sent" and nothing else; only SILENCE gets the USB reset, the
+        reopen and the same frame once more, never twice, within
+        FIRE_RESEND_BUDGET_S of the cue's instant (the reset itself is given
+        only what is left of it).
+
+        Off by default (PM, after that review): the double paint it risks
+        where the reading is wrong is worse on stage than a cue that is
+        late, and the second signal is not yet tried on a unit.
         """
         if not self.resend_on_stall or took_ms < RESEND_STALL_MS:
-            return
+            return None
         give_up = at + FIRE_RESEND_BUDGET_S
+        if self._master_answers(bus, groups, tries=1):
+            self.emit(f"cue {cue_id} stalled {took_ms:.0f} ms, master answers "
+                      f"- not re-sent")
+            return None
         previous = self.resend or {}
         record = {"cue": cue_id, "at": time.time(),
                   "before_ms": round(took_ms, 1), "after_ms": None,
                   "late_s": None, "by": None,
                   "count": int(previous.get("count", 0)) + 1}
         self.resend = record
-        done, how = self._usb_reset_reopen(bus, give_up_at=give_up)
+        # A port opened late is still the only way anything goes out on it:
+        # the reopen after a failed reset may run past the budget, just not
+        # past the next thing the unit has to do (FIRE_SPIN_S is ms).
+        done, how = self._usb_reset_reopen(bus, give_up_at=give_up,
+                                           reopen_by=give_up + OPEN_RETRY_S)
         if not done:
             self.emit(f"cue {cue_id} re-send failed ({how})")
-            return
+            return None
         if time.monotonic() > give_up:
             late = time.monotonic() - at
             self.emit(f"cue {cue_id} re-send failed (the port was back "
                       f"{late:.1f} s late, past the {FIRE_RESEND_BUDGET_S:g} s "
                       f"budget)")
-            return
+            return None
         try:
             after = self._send_timed(bus, frame, "show re-send")
         except Exception as exc:        # noqa: BLE001 - said, never raised
             self.emit(f"cue {cue_id} re-send failed (write: {exc})")
-            return
-        late = time.monotonic() - at
+            return None
+        sent = time.monotonic()
+        late = sent - at
         record.update(after_ms=round(after, 1), late_s=round(late, 2),
                       by="usb_reset")
         self.emit(f"cue {cue_id} re-sent after usb reset (stall "
                   f"{took_ms:.0f} ms → {after:.0f} ms, {late:.1f} s late)")
+        return sent
 
     def _precheck(self, bus, groups: int, cue_id: str, at: float) -> None:
         """PRECHECK_S before a cue: is the port going to take the frame?
@@ -2606,11 +2720,17 @@ class DemoRunner:
                 steps.append("no time for a usb reset")
             else:
                 steps.append("usb reset")
-                done, how = self._usb_reset_reopen(bus,
-                                                   give_up_at=at - FIRE_SPIN_S)
+                # The reset, its node and its open are all done by the
+                # hold (review M2 - a sudo that hung 4.5 s once reopened
+                # the port at T-3.11). Only the fallback reopen after an
+                # abandoned reset may run on towards the trigger: an open
+                # port is the one thing the cue cannot go out without.
+                done, how = self._usb_reset_reopen(
+                    bus, give_up_at=deadline, reopen_by=at - FIRE_SPIN_S)
                 if not done:
                     steps.append(f"failed ({how})")
                 else:
+                    self._stop_after_reset(bus, groups, at)
                     why = self._frame_refusal(at, MASTER_ASK_COST_S)
                     if why:
                         steps.append(f"not proven ({why})")
@@ -2665,7 +2785,15 @@ class DemoRunner:
         port under it has been replaced. Rate-limited to PORT_POLL_S: this
         is called from every 50 ms tick of the worker's waits.
         """
-        if not self.port_watch or self.port_poll <= 0 or self._probing:
+        if self._probing:
+            return False
+        if self._needs_reopen:
+            # Handed over by an abandoned reset (_reopen_after_failure()):
+            # the port is CLOSED, so nothing else will notice until a write
+            # fails. Kept up whatever --no-port-watch says - an open port is
+            # the one thing a cue cannot go out without.
+            return self._reopen_handed_over(bus, groups, at)
+        if not self.port_watch or self.port_poll <= 0:
             return False
         now = time.monotonic()
         if now < self._next_port_poll:
@@ -2727,6 +2855,40 @@ class DemoRunner:
             state = f"reopened, not measured ({why})"
         self.emit(f"port lost → {found} back in {back:.1f} s, {state}")
         self._next_port_poll = time.monotonic() + self.port_poll
+        return True
+
+    def _check_usb_reset(self, port: str) -> None:
+        """Whether the one cure is available on this unit (review L2),
+        asked once per runner: the ioctl's node writable, or `sudo -n` and
+        usbreset there. Said in the log when it is NOT, since a recovery on
+        such a unit can only ever report "failed"."""
+        try:
+            ok, why = self._usb_reset_check(port)
+        except Exception as exc:        # noqa: BLE001 - unknown is "no"
+            ok, why = False, str(exc)
+        self.usb_reset_ok, self.usb_reset_why = bool(ok), why
+        if not ok:
+            self.emit(f"no usb reset on this unit ({why})")
+
+    def _reopen_handed_over(self, bus, groups: int,
+                            at: "float | None" = None) -> bool:
+        """Open a port an abandoned reset left closed (`_needs_reopen`),
+        once a node is there - every PORT_POLL_S, each frame after the open
+        asked _frame_refusal() as always. True once it is open again."""
+        now = time.monotonic()
+        if now < self._next_port_poll:
+            return False
+        self._next_port_poll = now + max(self.port_poll, RETRY_POLL_S)
+        port = self.port or find_port() or getattr(bus, "port", None)
+        if not port or self._link_token(port) is None:
+            return False
+        try:
+            sent, why = self._fast_reopen(bus, groups, port=port, at=at)
+        except Exception:               # noqa: BLE001 - next poll tries again
+            return False
+        self._needs_reopen = False
+        self.emit(f"port {port} reopened after the reset"
+                  + (f" ({why})" if why and sent == 0 else ""))
         return True
 
     def _owed_setup_clear(self, session) -> bool:
@@ -2960,8 +3122,15 @@ class DemoRunner:
                     time.sleep(0.0005)
             frame = show_single(0xFF, slot, groups, dev_type=dev_type)
             took_ms = self._send_timed(bus, frame, f"show slot {slot}")
-            self._resend_on_stall(bus, groups, frame, cue_id, took_ms, at)
-            sent_at = self._last_show_at = time.monotonic()
+            # Taken HERE, before any re-send is tried: if it is abandoned
+            # the cue's send time, its late_ms and its guard floor are this
+            # frame's (review of 349dcdd, M2 - a hung reset once reported
+            # the cue +5251 ms). A re-send that went is the frame the
+            # picture starts from, and takes its place.
+            sent_at = time.monotonic()
+            resent = self._resend_on_stall(bus, groups, frame, cue_id,
+                                           took_ms, at)
+            sent_at = self._last_show_at = resent or sent_at
             if self._probing:
                 # Fired from inside a probe sweep (_fire_before_probing()):
                 # an OWED sweep stands down at its next step (_setup()).
@@ -3032,7 +3201,10 @@ class DemoRunner:
                 with self._open_bus(port) as bus:
                     self.emit(f"port {port}")
                     needs_setup = True
+                    self._needs_reopen = False      # a fresh open is open
                     groups = self._take_groups()
+                    if self.usb_reset_ok is None:
+                        self._check_usb_reset(port)
                     while not self._stop.is_set():
                         # `groups` is taken again ONLY where the list is
                         # replaced (below), never per pass: an exploring

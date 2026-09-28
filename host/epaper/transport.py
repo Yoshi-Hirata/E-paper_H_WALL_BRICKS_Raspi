@@ -107,7 +107,18 @@ def _usb_device(port: str) -> "dict | None":
     return None
 
 
-def usb_reset(port: str) -> "tuple[bool, str]":
+def usbreset_argv(tool: str, dev: dict) -> "list[str]":
+    """The `sudo -n usbreset BBB/DDD` command for one device.
+
+    BUS/DEVNUM, never VID:PID: VID:PID names every master of that type on
+    the machine and usbreset takes the first it finds, while BBB/DDD is
+    exactly the device behind the port this unit is driving - the one
+    _usb_device() found through sysfs (review of 349dcdd, M1)."""
+    return ["sudo", "-n", tool, f"{dev['busnum']:03d}/{dev['devnum']:03d}"]
+
+
+def usb_reset(port: str, timeout: float = USBRESET_TIMEOUT_S
+              ) -> "tuple[bool, str]":
     """Reset the USB device behind the serial `port`, as a re-plug would.
 
     Returns (done, how): how it was done ("ioctl" / "sudo usbreset"), or why
@@ -116,12 +127,16 @@ def usb_reset(port: str) -> "tuple[bool, str]":
       a  the USBDEVFS_RESET ioctl on /dev/bus/usb/BBB/DDD, if this process
          may write that node - on the Radxas it is root:root crw-rw-r--, so
          normally it may not;
-      b  `sudo -n usbreset VID:PID` (the service user has NOPASSWD sudo and
-         /usr/bin/usbreset exists), bounded at USBRESET_TIMEOUT_S.
+      b  `sudo -n usbreset BBB/DDD` (usbreset_argv(); the service user has
+         NOPASSWD sudo and /usr/bin/usbreset exists), killed after
+         `timeout` seconds - the caller passes what is left of its own
+         budget, so a sudo that hangs cannot hold a cue up (review M2).
 
-    The port should be CLOSED first: the node goes away with the reset and
-    comes back - possibly under another name - about 0.3-0.45 s later.
-    Anything but Linux answers "unsupported" and touches nothing.
+    The ioctl itself is not bounded here: it is a kernel call that returns
+    when the reset is done (0.3 s on radxa-07). The port should be CLOSED
+    first: the node goes away with the reset and comes back - possibly
+    under another name - about 0.3-0.45 s later. Anything but Linux answers
+    "unsupported" and touches nothing.
     """
     if not sys.platform.startswith("linux"):
         return False, f"unsupported on {sys.platform}"
@@ -148,11 +163,14 @@ def usb_reset(port: str) -> "tuple[bool, str]":
     if tool is None:
         tried.append("usbreset: not installed")
         return False, "; ".join(tried)
-    ident = f"{dev['vid']:04x}:{dev['pid']:04x}"
+    timeout = max(0.1, min(USBRESET_TIMEOUT_S, float(timeout)))
     try:
-        done = subprocess.run(["sudo", "-n", tool, ident], capture_output=True,
-                              text=True, timeout=USBRESET_TIMEOUT_S)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        done = subprocess.run(usbreset_argv(tool, dev), capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        tried.append(f"sudo usbreset: no answer in {timeout:.1f} s")
+        return False, "; ".join(tried)
+    except OSError as exc:
         tried.append(f"sudo usbreset: {exc}")
         return False, "; ".join(tried)
     if done.returncode == 0:
@@ -161,6 +179,36 @@ def usb_reset(port: str) -> "tuple[bool, str]":
     tried.append(f"sudo usbreset exited {done.returncode}"
                  + (f": {said[-1]}" if said else ""))
     return False, "; ".join(tried)
+
+
+def usb_reset_available(port: str) -> "tuple[bool, str]":
+    """Could usb_reset() work on this unit at all? (True/False, why)
+
+    Asked once when the worker first has the port, for /status's
+    `usb_reset_ok` and the tile's amber "no usb reset on this unit" (review
+    L2): a unit whose recovery can never cure anything should say so before
+    the show, not in its first failed recovery. Nothing is reset here - the
+    node's write access is looked at, and `sudo -n true` is run (2 s bound)
+    only when usbreset is installed.
+    """
+    if not sys.platform.startswith("linux"):
+        return False, f"unsupported on {sys.platform}"
+    dev = _usb_device(port) if port else None
+    if dev is None:
+        return False, f"no USB device behind {port}"
+    node = f"/dev/bus/usb/{dev['busnum']:03d}/{dev['devnum']:03d}"
+    if os.access(node, os.W_OK):
+        return True, "ioctl"
+    if shutil.which("usbreset") is None:
+        return False, f"{node} not writable and usbreset not installed"
+    try:
+        sudo = subprocess.run(["sudo", "-n", "true"], capture_output=True,
+                              timeout=2.0)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"sudo -n: {exc}"
+    if sudo.returncode != 0:
+        return False, "sudo -n asks for a password"
+    return True, "sudo usbreset"
 
 
 class Bus:

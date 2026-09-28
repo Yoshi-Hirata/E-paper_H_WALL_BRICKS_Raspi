@@ -2070,7 +2070,7 @@ def test_the_endpoint_answers_what_the_reset_took(monkeypatch):
     assert answer["after_ms"] < 100 and len(bus.resets) == 1
     recovery = status["bus_recovery"]
     assert recovery["by"] == "usb_reset" and recovery["ago_s"] is not None
-    assert status["resend_on_stall"] is True      # on by default now
+    assert status["resend_on_stall"] is False     # off by default
 
 
 def test_the_endpoint_refuses_while_a_show_is_running():
@@ -2119,6 +2119,7 @@ def fire_on_a_degraded_master(monkeypatch, lead=0.5, **kwargs):
                      "reset_cures", "back_as", "eacces")}
     bus = degraded(monkeypatch, **fake)
     bus.degraded = False
+    kwargs.setdefault("resend_on_stall", True)      # it is off by default
     runner = degraded_runner(bus, guard_delay=0.05, **kwargs)
     session = RemoteSession(runner)
     session.arm("c1", 6)
@@ -2133,20 +2134,29 @@ def fire_on_a_degraded_master(monkeypatch, lead=0.5, **kwargs):
     return bus, runner, session, at
 
 
-def test_the_re_send_is_on_by_default():
-    assert make_runner(FakeBus()).resend_on_stall is True
+def test_the_re_send_is_off_by_default():
+    """PM, after the review of 349dcdd: a stalled show frame is one of two
+    states, and a re-send in the slow-but-working one paints twice."""
+    assert make_runner(FakeBus()).resend_on_stall is False
     assert DemoRunner(open_bus=lambda port: FakeBus(), port="/dev/fake",
-                      boards=[1], echo_log=False).resend_on_stall is True
+                      boards=[1], echo_log=False).resend_on_stall is False
 
 
 def test_a_stalled_cue_is_reset_and_re_sent_exactly_once(monkeypatch):
-    """With the unit's own timings: the picture goes about 1.45 s late -
+    """With the unit's own timings: the picture goes about 2.1 s late -
     inside FIRE_RESEND_BUDGET_S - instead of never."""
     from ui.runner import FIRE_RESEND_BUDGET_S
 
     bus, runner, session, at = fire_on_a_degraded_master(monkeypatch,
                                                          **UNIT_TIMINGS)
     assert len(shows(bus)) == 2                   # the first, and ONE more
+    # The master was asked first, and was silent - that is what made it a
+    # re-send and not a slow frame (review H1).
+    assert any(f.cmd == 0x02 and f.dest == 1 for f in bus.requested)
+    # On the fire path the show frame is what follows the reset, and
+    # nothing goes between (review M4 is for the idle and pre-cue paths).
+    first, second = [i for i, f in enumerate(bus.sent) if f.cmd == SHOW][:2]
+    assert bus.sent[first + 1:second] == []
     assert len(bus.resets) == 1
     record = runner.resend
     assert record["by"] == "usb_reset" and record["before_ms"] >= 200
@@ -2204,10 +2214,174 @@ def test_a_port_back_too_late_is_not_re_sent(monkeypatch):
     """The node not back within FIRE_RESEND_BUDGET_S: the cue is reported as
     not re-sent, and there is never a second try at it."""
     bus, runner, session, at = fire_on_a_degraded_master(monkeypatch,
-                                                         reenum_s=2.5)
+                                                         reenum_s=3.0)
     assert len(shows(bus)) == 1 and len(bus.resets) == 1
     said = [l for l in runner.recent(40) if "re-send failed" in l]
     assert said and "would not open" in said[0], said
+
+
+class OneSlowShow(DegradedMaster):
+    """A HEALTHY master whose next show frame blocks once - a board busy
+    for a moment, or the LOOK23 17:29 state where every picture appeared,
+    each about 0.36 s late. It answers 0x02 throughout."""
+
+    def __init__(self, block_s=0.25, **kwargs):
+        super().__init__(**kwargs)
+        self.degraded = False
+        self.next_show_block = 0.0
+        self.block_s_once = block_s
+
+    def send(self, frame):
+        if frame.cmd == SHOW and self.next_show_block:
+            wait, self.next_show_block = self.next_show_block, 0.0
+            time.sleep(wait)
+        super().send(frame)
+
+
+def test_a_stall_on_a_master_that_answers_is_not_re_sent(monkeypatch):
+    """Review of 349dcdd, H1 - the reviewer's t_fire case A: a healthy master
+    and ONE show write that blocked 251 ms. With the re-send on, it still
+    must not reset anything or send the frame twice: the master answers,
+    so the frame is being executed late, not lost."""
+    bus = OneSlowShow(**UNIT_TIMINGS)
+    monkeypatch.setattr("ui.runner.find_port", bus.find_port)
+    runner = degraded_runner(bus, guard_delay=0.05, resend_on_stall=True)
+    session = RemoteSession(runner)
+    session.arm("c1", 6)
+    assert wait_until(lambda: any("panels online" in l
+                                  for l in runner.recent(20)), timeout=10.0)
+    bus.next_show_block = 0.251
+    session.fire("c1", time.monotonic() + 0.3)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
+    runner.stop()
+    assert len(shows(bus)) == 1 and bus.resets == [] and runner.resend is None
+    assert any("cue c1 stalled" in l and "master answers - not re-sent" in l
+               for l in runner.recent(40))
+
+
+def test_a_reset_that_hangs_at_fire_time_keeps_the_original_frame(monkeypatch):
+    """Review M2 - t_fire case C: the reset hung 5 s, held the worker 5.25 s
+    and reported the cue +5251 ms. Now the reset is given only what is left
+    of FIRE_RESEND_BUDGET_S, the cue keeps its ORIGINAL frame's time, and
+    the port is open again afterwards."""
+    from ui.runner import FIRE_RESEND_BUDGET_S, OPEN_RETRY_S
+
+    bus, runner, session, at = fire_on_a_degraded_master(
+        monkeypatch, reset_s=5.0, reenum_s=0.44, open_s=0.3)
+    assert len(shows(bus)) == 1 and bus.resets == []
+    late_ms = session.status()["late_ms"]
+    assert late_ms is not None and late_ms < 600, late_ms   # the first frame
+    assert runner._last_show_at < at + 0.6                  # ...and its floor
+    assert bus.reopened, "the port was left closed"
+    assert runner._needs_reopen is False
+    said = [l for l in runner.recent(40) if "re-send failed" in l]
+    assert said and "no answer in" in said[0], said
+
+
+def test_a_reset_that_hangs_before_a_cue_ends_by_the_hold(monkeypatch):
+    """Review M2 - t_fire case B: a sudo that hung 4.5 s reopened the port at
+    T-3.11. The reset is now given only until T - REMOTE_GUARD_HOLD_S, no
+    frame goes into the hold, and the cue is on time."""
+    bus, runner, session, at = armed(monkeypatch, reset_s=4.5)
+    reopened_at = []
+    reopen = bus.reopen
+
+    def stamped(port=None):
+        result = reopen(port)
+        reopened_at.append(time.monotonic())
+        return result
+    bus.reopen = stamped
+    assert wait_until(lambda: session.phase == FIRED, timeout=15.0)
+    runner.stop()
+    assert bus.resets == []                      # it never got to reset
+    assert reopened_at and reopened_at[0] < at   # the port is open for the cue
+    assert in_the_hold(bus, at) == []            # and not a frame in the hold
+    # The master is still degraded - nothing was reset - so the cue's own
+    # write blocks its ~0.36 s, and late_ms is taken after that write. That
+    # block is all there is: the check itself put nothing in the way.
+    late_ms = session.status()["late_ms"]
+    assert late_ms is not None and late_ms < 359 + 150, late_ms
+    assert any("usb reset → failed" in l and "no answer in" in l
+               for l in runner.recent(30))
+
+
+def test_a_port_an_abandoned_reset_could_not_reopen_goes_to_the_watcher(
+        monkeypatch):
+    """Review M2: never left closed. The node is back only after every
+    window has passed, so the watcher is told, and opens it when it is."""
+    bus = degraded(monkeypatch, reenum_s=0.8)
+    runner = degraded_runner(bus, port_poll=0.02)
+    runner.remote = RemoteSession(runner)
+    now = time.monotonic()
+    done, why = runner._usb_reset_reopen(bus, give_up_at=now + 0.2,
+                                         reopen_by=now + 0.3)
+    assert done is False and "left to the watcher" in why, why
+    assert runner._needs_reopen is True and bus.reopened == []
+    assert wait_until(lambda: runner._port_watch(bus, 2), timeout=3.0)
+    assert runner._needs_reopen is False and bus.reopened == ["/dev/ttyACM0"]
+    assert any("reopened after the reset" in l for l in runner.recent(20))
+
+
+def test_a_stop_follows_every_reset_on_the_idle_path(monkeypatch):
+    """Review M4: if a USB reset ever restarts the master's factory
+    autoplay, a STOP straight after the reopen silences it - the measuring
+    STOP, that one, and the proof's gapped STOP."""
+    bus = degraded(monkeypatch)
+    runner = degraded_runner(bus)
+    time.sleep(0.25)
+    assert runner._recover_bus(bus, 2)["by"] == "usb_reset"
+    stops = [f for f in bus.sent if f.cmd == STOP and f.dest == 0xFF]
+    assert len(stops) == 3, len(stops)
+
+
+def test_a_stop_follows_a_reset_before_a_cue_too(monkeypatch):
+    bus = degraded(monkeypatch)
+    runner = degraded_runner(bus, precheck=20.0, remote_guard_hold=HOLD)
+    time.sleep(0.25)
+    runner._precheck(bus, 2, "q03", time.monotonic() + 4.0)
+    assert runner.precheck["by"] == "usb_reset"
+    stops = [f for f in bus.sent if f.cmd == STOP and f.dest == 0xFF]
+    assert len(stops) == 2, len(stops)           # the measuring one, and M4's
+
+
+def test_the_proof_is_cut_short_by_a_cue_so_start_is_never_late(monkeypatch):
+    """Review L1: START right after Recover bus. The proof's 3 s of silence
+    ends the moment a cue is armed, with the verdict so far."""
+    import types
+
+    bus = degraded(monkeypatch)
+    runner = degraded_runner(bus, proof_gap=3.0)
+    armed_cue = [None]
+    runner.remote = types.SimpleNamespace(due=lambda: armed_cue[0],
+                                          pending_job=lambda: False)
+    time.sleep(0.25)
+    timer = threading.Timer(0.8, lambda: armed_cue.__setitem__(
+        0, ("c1", time.monotonic() + 10.0, 1, 3)))
+    timer.start()
+    began = time.monotonic()
+    result = runner._recover_bus(bus, 2)
+    took = time.monotonic() - began
+    timer.cancel()
+    assert result["recovered"] is True and result["by"] == "usb_reset"
+    assert took < 2.5, took                      # not the full 3 s gap
+    assert any("master answers, proof cut short by a cue" in l
+               for l in runner.recent(20))
+
+
+def test_the_status_says_whether_a_usb_reset_is_possible(monkeypatch):
+    """Review L2: asked once, when the worker first has the port."""
+    bus = degraded(monkeypatch, reset_ok=False)
+    bus.degraded = False
+    runner = degraded_runner(bus, usb_reset_check=bus.reset_available)
+    session = RemoteSession(runner)
+    assert session.status()["usb_reset_ok"] is None        # not asked yet
+    session.arm("c1", 1)
+    assert wait_until(lambda: runner.usb_reset_ok is not None, timeout=5.0)
+    status = session.status()
+    runner.stop()
+    assert status["usb_reset_ok"] is False
+    assert any("no usb reset on this unit (no usbreset here)" in l
+               for l in runner.recent(20))
 
 
 # ---- the pre-cue check: a USB reset before the cue, on its own clock ----

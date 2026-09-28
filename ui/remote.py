@@ -1075,6 +1075,12 @@ class RemoteSession:
                 "precheck_s": runner.precheck_s,
                 "port_watch": bool(runner.port_watch),
                 "auto_recover": bool(runner.auto_recover),
+                # Whether the one cure - a USB reset of the master - can be
+                # done on this unit at all (ioctl node writable, or sudo -n
+                # and usbreset there), asked once when a worker first had
+                # the port; null until then. The tile marks a unit where it
+                # is false: every recovery there can only fail.
+                "usb_reset_ok": runner.usb_reset_ok,
                 "burn": burn,
                 # Taking the pictures back out of slots 1-18 after the
                 # show (see the module docstring): {"state", "done",

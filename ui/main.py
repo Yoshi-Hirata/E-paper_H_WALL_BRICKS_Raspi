@@ -314,21 +314,24 @@ def main() -> int:
                          "boards in use; off by default")
     ap.add_argument("--no-verify-fire", action="store_true",
                     help="(kept for older service files) the default")
-    # The fire-time re-send (ui/runner.py's RESEND_STALL_MS). ON by default
-    # since the radxa-07 evidence of 2026-09-28 (owner's decision, pending a
-    # real-unit test): no stalled frame there was ever executed, and a USB
-    # reset brings the master back in 0.3 s. --no-resend-on-stall is the
-    # kill switch.
+    # The fire-time re-send (ui/runner.py's RESEND_STALL_MS). OFF by default
+    # (PM, after the review of 349dcdd): a stalled show frame is one of two
+    # states - DEGRADED (accepted, never executed, master silent: radxa-07)
+    # or SLOW (every picture appears ~0.36 s late, master answers: LOOK23) -
+    # and a re-send in the second paints the slot twice. When turned on it
+    # asks the master a 0x02 first and re-sends only when it is silent.
     ap.add_argument("--resend-on-stall", action="store_true",
-                    help="(the default; kept for service files that name it)")
+                    help="re-send a cue whose own broadcast blocked 200 ms "
+                         "or more - but only if the master then does not "
+                         "answer a 0x02 (the 2026-09-28 state where it "
+                         "accepted frames and executed none): its USB "
+                         "device is reset and the same frame sent once "
+                         "more, about 1.8 s late. A master that answers is "
+                         "executing late and is left alone. Off by default: "
+                         "a wrong reading paints the slot twice")
     ap.add_argument("--no-resend-on-stall", action="store_true",
-                    help="do NOT re-send a cue whose own broadcast blocked "
-                         "200 ms or more. By default such a cue gets the "
-                         "master's USB device reset and the same frame sent "
-                         "once more, about 1.4 s late - the 2026-09-28 "
-                         "state where the master accepted frames and "
-                         "executed none. RISK if a stalled frame were ever "
-                         "executed after all: the same slot painted twice")
+                    help="(the default; accepted for service files that "
+                         "name it)")
     # Kill switches for the bus recovery (ui/runner.py, docs/SPECIFICATION.md
     # 4.5). All on by default; each one is reported in /status, so the PC
     # can see what a unit is actually running.
@@ -341,7 +344,7 @@ def main() -> int:
                          f"off). Never inside the 5 s before a trigger, "
                          f"never inside the last picture - so only a cue "
                          f"about 40 s or more after the one before it is "
-                         f"checked. Below 7.9 the USB reset no longer fits "
+                         f"checked. Below 8.3 the USB reset no longer fits "
                          f"before a trigger and the check only diagnoses")
     ap.add_argument("--no-port-watch", action="store_true",
                     help="do not watch the USB device node every 0.2 s; a "
@@ -422,7 +425,9 @@ def main() -> int:
                         verify_fire=args.verify_fire and not args.no_verify_fire,
                         verify_after=args.verify_after,
                         verify_witness=args.verify_witness,
-                        resend_on_stall=not args.no_resend_on_stall,
+                        # --no-resend-on-stall is the default spelled out,
+                        # a no-op: only --resend-on-stall turns it on.
+                        resend_on_stall=args.resend_on_stall,
                         precheck=args.precheck,
                         port_watch=not args.no_port_watch,
                         auto_recover=not args.no_auto_recover)

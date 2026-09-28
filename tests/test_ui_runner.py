@@ -225,7 +225,12 @@ class DegradedMaster(FakeBus):
     def request(self, frame, retries=3, timeout=None):
         self._write()
         if self.degraded:
-            self.requested.append(frame)        # accepted, never answered
+            # Accepted, never answered - and a silence is only known once
+            # the whole read window has passed, every try of it
+            # (transport.Bus.request), so the caller pays for that too.
+            self.requested.append(frame)
+            window = 0.5 if timeout is None else timeout
+            time.sleep(window * max(1, retries))
             return None
         return super().request(frame, retries=retries, timeout=timeout)
 
@@ -258,9 +263,14 @@ class DegradedMaster(FakeBus):
         return self.port if self.token(self.port) is not None else None
 
     # ---- the USB layer ----
-    def usb_reset(self, port):
+    def usb_reset(self, port, timeout=None):
         if not self.reset_ok:
             return False, "unsupported on this test unit"
+        if timeout is not None and self.reset_s > timeout:
+            # A sudo that hangs, killed at the caller's timeout: nothing
+            # was reset, as far as anyone can tell.
+            time.sleep(timeout)
+            return False, f"sudo usbreset: no answer in {timeout:.1f} s"
         time.sleep(self.reset_s)
         self.resets.append(port)
         self.gen += 1
@@ -272,6 +282,9 @@ class DegradedMaster(FakeBus):
             self.degraded = False
             self.slow_after_pause = self.half_cure
         return True, "ioctl"
+
+    def reset_available(self, port):
+        return (True, "ioctl") if self.reset_ok else (False, "no usbreset here")
 
 
 def wait_until(predicate, timeout=5.0):
@@ -315,7 +328,11 @@ def make_runner(bus, **kwargs):
     # Never the real transport.usb_reset in a test: the suite runs on the
     # Radxas too, and a real master may be plugged in. Tests of the reset
     # supply a fake one (DegradedMaster.usb_reset).
-    kwargs.setdefault("usb_reset", lambda port: (False, "not in the tests"))
+    kwargs.setdefault("usb_reset",
+                      lambda port, timeout=None: (False, "not in the tests"))
+    # ...nor the real availability check (it would run `sudo -n true`).
+    kwargs.setdefault("usb_reset_check",
+                      lambda port: (True, "not checked in the tests"))
     return DemoRunner(open_bus=lambda port: bus, **kwargs)
 
 
