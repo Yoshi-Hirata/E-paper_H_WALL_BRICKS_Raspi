@@ -378,6 +378,16 @@ Units タブのタイルにも、その機体の USB の基板(マスタ)が小�
    「THE SHOW」カードが **Pictures written on n / n units** になるまで待つ(**36 基板 × 10 キューで
    約 112 秒、18 キューなら約 195 秒 = 3 分半**。各機体タイルの **Pictures** 行に `writing n / N` の
    進み具合が出る)→ **② Show preset**(開始前の絵を出す)→ **③ START**
+   - **③ START のカウントダウン**(2026-09-29): ③ の隣の **`Countdown before START [11] s`**。
+     ③ START を押すと大きな時計・NOW → NEXT ボード・ステージモニターが
+     **`START in 11 s` / `-0:11` … `-0:01`** と数え(10 秒で琥珀、3 秒で赤)、**0:00 で
+     ショーと曲が始まる**。**既定 11 秒**、3〜60 秒(小数可)。**ショーと一緒に保存**
+     (`show.json` の `start_countdown_s`。リロードしても、別の PC でも同じ。undo 可、
+     ショーの書き出し / 読み込みにも入る)。**変えても Upload は不要**(ショーの id に
+     入らない)。途中位置からの START(`START FROM 1:00`)も同じ秒数前から走り出し、
+     ボードに `START in n s` と出る
+   - その右の **`NEXT / MOVE take effect in [3] s`** は NEXT・シーク(MOVE)・Back to 0:00・
+     GO 用で、**③ START には使わない**(従来どおりこのブラウザのメモリだけ、リロードで 3 に戻る)
    - **③ START の前に「Clear pictures after the show」(③ の隣)を入れるかどうか決める**
      (§6c)。入れておくと、ショーが終わった時点で本番の絵をスロットから消すので、
      **衣装の Radxa を抜いたあとの自動巡回で本番の絵が出ない**

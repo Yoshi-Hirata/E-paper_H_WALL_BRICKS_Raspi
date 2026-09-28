@@ -368,6 +368,31 @@ REMOTE のブロードキャスト書き込み(表示 0x1D、ガード・定期�
 Conductor は `conductor/fleet.py` がそのまま通し、タイルは
 `re-sent` と同じ琥珀色で `bus stalled 303 ms` と出す。
 
+### 4.2a ③ START のカウントダウン(2026-09-29)
+
+依頼者:「コンダクターのTHE SHOWについて、ショー開始までのカウントダウン時間を
+設定できるように。… 任意に設定するのが難しい場合、-11秒スタートとなるようにして。」
+
+- **設定**: `show.json` の `start_countdown_s`(秒、3〜60、小数は 0.1 秒単位。
+  **キーが無ければ 11**、11 に戻すとキーを消す)。Conductor の ③ START の隣の
+  `Countdown before START [11] s`。`POST /api/show/start_countdown {"s": 秒}`、
+  `/api/state` の `show.start_countdown_s`。undo / redo、ショーの書き出し・読み込み
+  (書き出しには常に入る。キーの無いファイルやデザイナーのバンドルは今の値を変えない)
+- **機体には届かない**: ユニットのショーファイルにも `revision()` にも入らない
+  (`_REVISION_IGNORES`)ので、変えても id は変わらず Upload を求めない
+- **効き方**: ③ START だけの `lead_s`(`fleet.start_show(lead_s, at)` の t0 =
+  clock + lead − at)。`lead_s` を送らない START もこの値。NEXT / MOVE / Back to 0:00 /
+  GO は従来の `NEXT / MOVE take effect in [3] s`(0.5〜60、ブラウザのメモリだけ)
+- **表示**: 位置が負の間、大きな時計は `START in 11 s` の下に `-0:11` … `-0:01`、
+  NOW → NEXT ボード(ステージモニターも同じ)は見出しが `START in n s`、大きな数字が
+  `-0:nn`、注記 `The show starts at 0:00.`。秒は切り上げ、色は 10 秒で琥珀・3 秒で赤。
+  途中位置からの START は位置が負にならないので、ボードの注記に `START in n s`
+- **音**: SHOWMUSIC は変更なし ― 負の位置では鳴らさず、0:00 で鳴り始める
+- **機体側**(変更なし): t0 が 3 秒先でも 11 秒先でも同じ扱い。最初のキュー
+  (0:00 のプリセットのトリガ、送出は 0:00 の 1 描画前)は t0 の 11 秒前に arm され、
+  間に合うときはキュー前の PRECHECK(9 秒前、ブロードキャスト STOP + 1 台への問い合わせ)
+  がカウントダウン中に走る ― そのための仕組み
+
 ### 4.3 ショー後のスロット消去(0x14、2026-09-27)
 
 ショーのあと、依頼者が STOP を押してから衣装の Radxa を抜いた。基板はまだ
