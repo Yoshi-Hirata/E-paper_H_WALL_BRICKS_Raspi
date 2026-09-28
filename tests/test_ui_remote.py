@@ -1874,7 +1874,7 @@ def test_a_usb_reset_brings_the_master_back_and_is_proven(monkeypatch):
     assert bus.reopened == ["/dev/ttyACM0"]
     assert runner._setup_owed is True             # a reset owes the sweep
     said = [l for l in runner.recent(20) if "bus recovered by usb reset" in l]
-    assert said and "master answers" in said[0] and "→" in said[0], said
+    assert said and "board 1 answers" in said[0] and "→" in said[0], said
     assert runner.bus_recovery["by"] == "usb_reset"
 
 
@@ -1887,7 +1887,7 @@ def test_the_false_recovery_of_2026_09_28_cannot_happen_again(monkeypatch):
     time.sleep(0.25)
     result = runner._recover_bus(bus, 2)
     assert result["recovered"] is False and result["by"] is None
-    assert any("bus recovery failed" in l and "master silent" in l
+    assert any("bus recovery failed" in l and "board 1 silent" in l
                for l in runner.recent(20))
     assert runner.bus_stall and runner.bus_stall["ms"] >= 300
 
@@ -1901,7 +1901,7 @@ def test_a_master_that_answers_but_blocks_after_a_pause_is_not_recovered(
     time.sleep(0.25)
     result = runner._recover_bus(bus, 2)
     assert result["recovered"] is False
-    assert any("master answers, but a stop after 0.3 s took" in l
+    assert any("board 1 answers, but a stop after 0.3 s took" in l
                for l in runner.recent(20))
 
 
@@ -1937,7 +1937,7 @@ def test_a_healthy_master_is_already_clear(monkeypatch):
     result = runner._recover_bus(bus, 2)
     assert result["recovered"] is True and result["by"] is None
     assert bus.resets == []
-    assert any("bus is clear, nothing to recover" in l and "master answers" in l
+    assert any("bus is clear, nothing to recover" in l and "board 1 answers" in l
                for l in runner.recent(20))
 
 
@@ -2402,7 +2402,7 @@ def test_the_proof_is_cut_short_by_a_cue_so_start_is_never_late(monkeypatch):
     timer.cancel()
     assert result["recovered"] is True and result["by"] == "usb_reset"
     assert took < 2.5, took                      # not the full 3 s gap
-    assert any("master answers, proof cut short by a cue" in l
+    assert any("board 1 answers, proof cut short by a cue" in l
                for l in runner.recent(20))
 
 
@@ -2584,7 +2584,7 @@ def test_the_precheck_before_a_healthy_cue_asks_the_master(monkeypatch):
     runner.stop()
     assert runner.precheck["cue"] == "c1" and runner.precheck["by"] is None
     assert runner.precheck["master_answers"] is True
-    assert any("precheck c1: bus ok" in l and "master answers" in l
+    assert any("precheck c1: bus ok" in l and "board 1 answers" in l
                for l in runner.recent(30))
     assert bus.resets == [] and in_the_hold(bus, at) == []
     assert runner.remote_guard_sent == 0
@@ -2597,7 +2597,7 @@ def test_a_degraded_master_before_a_cue_is_reset_and_the_cue_is_on_time(
     runner.stop()
     assert runner.precheck["by"] == "usb_reset" and len(bus.resets) == 1
     assert any("precheck c1: stalled" in l
-               and "→ usb reset → ok (master answers)" in l
+               and "→ usb reset → ok (board 1 answers)" in l
                for l in runner.recent(30))
     late_ms = session.status()["late_ms"]
     assert late_ms is not None and late_ms < 250, late_ms
@@ -2612,7 +2612,7 @@ def test_a_silent_master_is_caught_even_when_the_stop_reads_fast(monkeypatch):
     assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
     runner.stop()
     assert runner.precheck["by"] == "usb_reset"
-    assert any("precheck c1: master silent" in l and "usb reset" in l
+    assert any("precheck c1: board 1 silent" in l and "usb reset" in l
                for l in runner.recent(30))
 
 
@@ -2622,7 +2622,7 @@ def test_a_precheck_reset_that_does_not_take_is_said_and_the_cue_fires(
     assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
     runner.stop()
     assert runner.precheck["by"] is None
-    assert any("→ usb reset → master still silent" in l
+    assert any("→ usb reset → no answer (board 1 silent)" in l
                for l in runner.recent(30))
     assert in_the_hold(bus, at) == []
     assert len(shows(bus)) >= 1                   # the picture still goes
@@ -3339,7 +3339,7 @@ def test_a_healthy_master_passes_the_precheck_with_two_frames(monkeypatch):
         ("send", "0x17", 0xFF), ("ask", "0x17", 1)], before
     assert bus.resets == [] and runner.precheck["by"] is None
     assert not any(f.cmd == 0x02 for f in bus.requested)
-    assert any("precheck c1: bus ok" in l and "master answers" in l
+    assert any("precheck c1: bus ok" in l and "board 1 answers" in l
                for l in runner.recent(30))
     assert len(shows(bus)) >= 1
 
@@ -3509,29 +3509,124 @@ def test_a_listed_board_1_that_is_silent_is_not_no_boards_answering():
     runner = make_runner(FakeBus(), boards=[1, 2, 3])
     runner.live = [2, 3]
     assert runner._sweep_found_nothing() is False
-    assert runner._health_board() == 2
+    assert runner._health_candidates() == [2, 3]
     runner.live = []
     assert runner._sweep_found_nothing() is True
-    assert runner._health_board() == 1           # nothing known: address 1
+    assert runner._health_candidates() == [1]    # nothing known: address 1
+
+
+def test_the_health_candidates_are_sticky_then_lowest_then_highest():
+    """Gate on f9efd43, MED-2: the board that last answered first, then the
+    lowest live board, then the highest (the other harness segment) -
+    distinct, and one live board is simply that board."""
+    runner = make_runner(FakeBus(), boards=list(range(1, 23)))
+    runner.live = list(range(1, 23))
+    assert runner._health_candidates() == [1, 22]
+    runner._health_sticky = 12
+    assert runner._health_candidates() == [12, 1, 22]
+    runner._health_sticky = 1
+    assert runner._health_candidates() == [1, 22]
+    runner.live = [5]
+    assert runner._health_candidates() == [1, 5]
+    runner._health_sticky = None
+    assert runner._health_candidates() == [5]
+    runner._health_sticky = 30                   # not on this list: ignored
+    runner.live = []
+    assert runner._health_candidates() == [1]
 
 
 def test_one_lost_ack_behind_a_fast_stop_is_asked_again_not_reset(
         monkeypatch):
     """L2: one missed ACK behind a STOP under 50 ms is a lost frame on a
-    healthy bus - asked once more; the USB reset only follows two misses."""
+    healthy bus - asked once more; the USB reset only follows two misses.
+    (One live board: the second ask goes to that same board.)"""
     bus = _SilentAt()
     monkeypatch.setattr("ui.runner.find_port", bus.find_port)
     runner = degraded_runner(bus, precheck=20.0, remote_guard_hold=HOLD)
     bus.lose = 1
     runner._precheck(bus, 2, "q08", time.monotonic() + HOLD + 3.5)
     assert bus.resets == [] and runner.precheck["by"] is None
-    assert any("precheck q08: bus ok" in l
-               and "master answers on the second ask" in l
+    assert any("precheck q08: board 1 answers → bus ok" in l
                for l in runner.recent(10)), runner.recent(10)
     bus.lose = 2
     runner._precheck(bus, 2, "q09", time.monotonic() + HOLD + 3.5)
     said = [l for l in runner.recent(10) if "precheck q09" in l]
-    assert said and "master missed an ACK twice" in said[0], said
-    assert "→ usb reset → ok (master answers)" in said[0]
+    assert said and "precheck q09: board 1 silent" in said[0], said
+    assert "→ usb reset → ok (board 1 answers)" in said[0]
     assert len(bus.resets) == 1
+
+
+def test_a_degraded_master_with_a_fast_stop_is_reset_before_the_hold(
+        monkeypatch):
+    """Gate on f9efd43, MED-1 (review_T11/t_degfast.py): a master that
+    degrades mid-show but whose precheck STOP reads under 50 ms (every write
+    blocks 30 ms). Two full asks left "no time for a usb reset" and the cue
+    went into a degraded bus. Now: the second ask is short, and asked only
+    if the reset still fits behind it - with the REAL PRECHECK_S and hold
+    the reset is in and proven before T-5.0, and the cue is on time."""
+    from ui.runner import PRECHECK_S, REMOTE_GUARD_HOLD_S
+
+    bus = degraded(monkeypatch, quick_s=0.03, slow_s=0.03, reset_s=0.3,
+                   reenum_s=0.44, open_s=0.3)
+    bus.degraded = False
+    runner = degraded_runner(bus, boards=[1, 2, 3], precheck=PRECHECK_S,
+                             remote_guard_hold=REMOTE_GUARD_HOLD_S)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2), 3: array(3)},
+                    refresh_s=0.2)
+    assert wait_until(lambda: session.phase == READY, timeout=15.0)
+    at = time.monotonic() + PRECHECK_S + 1.0
+    bus.degraded = True
+    reset_at = []
+    real_reset = bus.usb_reset
+
+    def timed_reset(port, timeout=None):
+        reset_at.append(time.monotonic() - at)
+        return real_reset(port, timeout=timeout)
+
+    runner._usb_reset = timed_reset
+    session.fire("c1", at)
+    assert wait_until(lambda: session.phase == FIRED, timeout=20.0)
+    runner.stop()
+    said = [l for l in runner.recent(40) if "precheck c1" in l]
+    assert said and "→ usb reset → ok (board" in said[0], said
+    assert len(bus.resets) == 1 and bus.degraded is False
+    assert reset_at and reset_at[0] <= -7.4 + 0.05, reset_at   # begun by T-7.4
+    assert runner.precheck["by"] == "usb_reset"
+    late_ms = session.status()["late_ms"]
+    assert late_ms is not None and late_ms < 250, late_ms
+
+
+def test_a_board_that_drops_mid_show_costs_no_reset(monkeypatch):
+    """Gate on f9efd43, MED-2 (review_T11/t_drop.py): the lowest live board
+    is unplugged mid-show (LOOK28's front-body 485 cable: boards 1-11 dead,
+    the master healthy among 12-22). Nothing takes it off `live`, so every
+    precheck asked the dead board twice and reset. Now the next candidate
+    answers, the bus is ok, and that board is asked first from then on."""
+    bus = _SilentAt()
+    monkeypatch.setattr("ui.runner.find_port", bus.find_port)
+    runner = degraded_runner(bus, boards=[1, 2, 3], precheck=3.6,
+                             remote_guard_hold=HOLD)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2), 3: array(3)},
+                    refresh_s=0.2)
+    assert wait_until(lambda: session.phase == READY, timeout=15.0)
+    bus.silent = {1}                             # unplugged, mid-show
+    session.fire("c1", time.monotonic() + 4.0)
+    assert wait_until(lambda: session.phase == FIRED, timeout=15.0)
+    mark = len(bus.requested)
+    session.arm("c2", 19)
+    session.fire("c2", time.monotonic() + 4.0)
+    assert wait_until(lambda: session.phase == FIRED
+                      and session.cue_id == "c2", timeout=15.0)
+    runner.stop()
+    said = [l for l in runner.recent(60) if "precheck" in l]
+    assert bus.resets == []
+    assert "precheck c1: board 1 silent, board 3 answers → bus ok" in said[0]
+    assert "precheck c2: bus ok" in said[1] and "board 3 answers" in said[1]
+    # The sticky board is asked first: board 1 is not asked again.
+    asked = [f.dest for f in bus.requested[mark:] if f.cmd == STOP]
+    assert asked and asked[0] == 3 and 1 not in asked, asked
+    # ...and the idle question goes the same way.
+    assert runner._health_candidates()[0] == 3
 

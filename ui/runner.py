@@ -259,6 +259,16 @@ PROOF_GAP_S = 3.0
 # degraded state ate gets its second chance before the verdict is "silent".
 MASTER_ASK_S = ACK_TIMEOUT_S
 MASTER_ASK_TRIES = 2
+# Who is asked (_health_candidates()): the board that last answered, the
+# lowest live board, the highest - at most this many, each once.
+HEALTH_CANDIDATES_MAX = 3
+# The pre-cue check's SECOND ask, after one miss behind a STOP under
+# STALL_LOG_MS: a short read window (a board that answers does so in ms),
+# and what it may cost at most - its write, behind a STOP that took under
+# 50 ms, allowed twice that, plus the window. It is only asked if the USB
+# reset step still fits behind it; otherwise the one miss gets the reset.
+HEALTH_SECOND_ASK_S = 0.2
+HEALTH_SECOND_ASK_COST_S = 2 * 0.05 + HEALTH_SECOND_ASK_S
 # After a USB reset the node goes away and comes back, possibly under a new
 # name - 0.44 s on the unit. It is waited for this long, polled every
 # RETRY_POLL_S; and an open that answers EACCES (udev has not set the
@@ -657,7 +667,8 @@ class DemoRunner:
         self._recovering = False           # never re-entered
         self._stop_failed = None           # the last timed STOP's raise
         self._sweep_pending: "list[int]" = []
-        self._asked_board = USB_BOARD      # the health question's last board
+        self._health_sticky: "int | None" = None   # last board to answer
+        self._health_trail: "list[tuple[int, bool]]" = []
         self._reset_setup_resets()
         # A reopen invalidates what the boards were told: the caches go,
         # and the full sweep is owed to _run_remote()'s own setup, where
@@ -1393,7 +1404,10 @@ class DemoRunner:
         return True
 
     def _reset_setup_resets(self) -> None:
-        """A new worker gets SETUP_RESETS_MAX setup-path resets again."""
+        """A new worker gets SETUP_RESETS_MAX setup-path resets again, and
+        starts its health questions from the sweep's list (no sticky board
+        carried over from another worker)."""
+        self._health_sticky = None
         self._setup_resets = 0
         self._setup_reset_next = 0.0
         self._setup_resets_said = False
@@ -2350,51 +2364,92 @@ class DemoRunner:
 
     def _master_answers(self, bus, groups: int,
                         tries: int = MASTER_ASK_TRIES) -> bool:
-        """Does the bus answer: does the board _health_board() names ACK a
-        unicast STOP?
+        """Does the bus answer? The idle form of the health question: each
+        try goes to the NEXT distinct candidate (_health_candidates(), up to
+        HEALTH_CANDIDATES_MAX boards, MASTER_ASK_S each) and never to the
+        same board twice - a board that dropped off mid-show is one silence,
+        not the verdict (gate on f9efd43, MED-2). With one candidate only it
+        is asked `tries` times, as before. True at the first answer.
 
-        The one question a degraded master fails whatever else is done: it
-        relays nothing and answers nothing (radxa-07: "no boards answering"
-        for 100 s). It is exactly the probe sweep's own first question
-        (_probe(): stop(board), one send, the transport's ACK_TIMEOUT_S read
-        window). NOT 0x02: this firmware never answers a 0x02 sent over the
-        bus, healthy or not (radxa-07, 2026-09-28 12:40 - see RECOVERED_MS).
-
-        Any answer from that board is the bus alive - an ACK, and a BUSY
-        too (it is there, merely working). A STOP to an idle board changes
-        nothing on the glass; callers keep this out of a picture all the
-        same (a board repainting is deaf, and a STOP inside a sweep could
-        cancel a picture whose delay has not run out). Who was asked is left
-        in `_asked_board`, for the words (_who_answers()).
+        The question is a unicast STOP and its ACK: exactly the probe
+        sweep's own first question (_probe(): stop(board), one send). NOT
+        0x02: this firmware never answers a 0x02 sent over the bus, healthy
+        or not (radxa-07, 2026-09-28 12:40 - see RECOVERED_MS). A degraded
+        master relays nothing and answers nothing, so silence from every
+        candidate is the degraded state; any one answering is the bus alive.
+        A STOP to an idle board changes nothing on the glass; callers keep
+        this out of a picture all the same.
         """
-        board = self._health_board()
-        self._asked_board = board
-        frame = stop(board, groups)
-        for _ in range(max(1, tries)):
-            try:
-                ack = bus.request(frame, retries=1, timeout=MASTER_ASK_S)
-            except Exception:           # noqa: BLE001 - silence, as far as we know
-                return False
-            if ack is not None and ack.src == board:
+        self._health_trail = []
+        candidates = self._health_candidates()
+        if len(candidates) == 1:
+            candidates = candidates * max(1, tries)
+        for board in candidates[:max(HEALTH_CANDIDATES_MAX, tries)]:
+            if self._ask_board(bus, groups, board, MASTER_ASK_S):
                 return True
         return False
 
-    def _health_board(self) -> int:
-        """Which board the health question goes to: the LOWEST board that
-        answered the last sweep (review of 9a8c045, M1 - on a garment whose
-        board 1 is absent, or whose USB board sits at another DIP address,
-        asking address 1 read a healthy bus as "master silent" and reset its
-        USB before every checked cue). A relayed unicast STOP is what the
-        sweep itself sends, and a degraded master relays nothing, so silence
-        still means degraded. Nothing live yet (or not known): address 1."""
-        live = [b for b in self.live if isinstance(b, int)]
-        return min(live) if live else USB_BOARD
+    def _ask_board(self, bus, groups: int, board: int, window: float) -> bool:
+        """One unicast STOP to `board`, `window` seconds for its answer (an
+        ACK, or a BUSY: it is there, merely working). The answer or the
+        silence goes on `_health_trail` for the words (_health_words()), and
+        a board that answers becomes the one asked first next time
+        (`_health_sticky`)."""
+        try:
+            ack = bus.request(stop(board, groups), retries=1, timeout=window)
+        except Exception:               # noqa: BLE001 - silence, as far as we know
+            ack = None
+        answered = ack is not None and ack.src == board
+        self._health_trail.append((board, answered))
+        if answered:
+            self._health_sticky = board
+        return answered
 
-    def _who_answers(self) -> str:
-        """"master" when the question went to the USB board, "board N"
-        otherwise - so the log says who it was that answered."""
-        board = getattr(self, "_asked_board", USB_BOARD)
-        return "master" if board == USB_BOARD else f"board {board}"
+    def _health_candidates(self) -> "list[int]":
+        """Who the health question goes to, in order, distinct (gate on
+        f9efd43, the reviewer's design):
+
+          1  the board that LAST answered one (`_health_sticky`, this
+             worker's own memory) - on LOOK28 with the front body's 485
+             cable out, boards 1-11 were dead and the healthy master was
+             among 12-22, and nothing takes a board off `live` mid-show;
+          2  the lowest live board (review of 9a8c045, M1 - address 1 is not
+             always there, and not always the USB board);
+          3  the highest live board - likely the other harness segment.
+
+        Nothing live and nothing remembered: address 1. A relayed unicast
+        STOP is what the sweep itself sends, and a degraded master relays
+        nothing, so silence from all of them still means degraded."""
+        live = sorted(b for b in self.live if isinstance(b, int))
+        order = []
+        sticky = self._health_sticky
+        if sticky is not None and sticky in self.boards:
+            order.append(sticky)
+        if live:
+            order += [live[0], live[-1]]
+        elif not order:
+            order.append(USB_BOARD)
+        return list(dict.fromkeys(order))
+
+    def _health_words(self) -> str:
+        """What the last health question found, board by board: "board 2
+        answers", "board 1 silent, board 12 answers", "board 1 silent", or -
+        several silent - "no board answers (board 1, 12 silent)". The
+        master's own address is not known (on LOOK28 it is not board 1), so
+        only the generic sentence speaks of no board at all."""
+        trail = getattr(self, "_health_trail", [])
+        if not trail:
+            return "not asked"
+        boards = list(dict.fromkeys(b for b, _ in trail))
+        answered = [b for b, ok in trail if ok]
+        if answered:
+            silent = [b for b in boards if b != answered[0]]
+            said = "".join(f"board {b} silent, " for b in silent)
+            return f"{said}board {answered[0]} answers"
+        if len(boards) == 1:
+            return f"board {boards[0]} silent"
+        return ("no board answers (board "
+                + ", ".join(str(b) for b in boards) + " silent)")
 
     def _usb_reset_reopen(self, bus, give_up_at: "float | None" = None,
                           reopen_by: "float | None" = None
@@ -2562,8 +2617,8 @@ class DemoRunner:
         Returns (proven, the gapped STOP's ms or None, what it found).
         """
         if not self._master_answers(bus, groups):
-            return False, None, f"{self._who_answers()} silent"
-        who = f"{self._who_answers()} answers"
+            return False, None, self._health_words()
+        who = self._health_words()
         cut = self._quiet_gap(self.proof_gap)
         if cut == "stopped":
             return False, None, "stopped"
@@ -2809,7 +2864,7 @@ class DemoRunner:
             if (self._stop_failed is None and before < STALL_RECOVER_MS
                     and self._master_answers(bus, groups)):
                 return self._recovery_done(None, before, before, True,
-                                           f"{self._who_answers()} answers")
+                                           self._health_words())
         done, how = self._usb_reset_reopen(bus)
         if not done:
             return self._recovery_done(None, before, None, False, how)
@@ -2918,7 +2973,10 @@ class DemoRunner:
     def _precheck(self, bus, groups: int, cue_id: str, at: float) -> None:
         """PRECHECK_S before a cue: is the port going to take the frame?
 
-        A timed broadcast STOP and a unicast STOP the master ACKs. On a
+        A timed broadcast STOP and a unicast STOP to the first health
+        candidate (_health_candidates()), which ACKs; after one miss behind
+        a STOP under STALL_LOG_MS, the next candidate with a short window if
+        the reset step still fits behind it, else the reset. On a
         healthy unit that is two frames of a few milliseconds and the whole
         check. Either one bad - the STOP blocked STALL_RECOVER_MS or more,
         or the master silent - and the master's USB device is reset there
@@ -2962,27 +3020,34 @@ class DemoRunner:
         failed = self._stop_failed
         stalled = failed is not None or before >= STALL_RECOVER_MS
         asked = answers = False
-        second = ""                     # what a second question said
+        no_second = False
+        self._health_trail = []
         if not stalled and self._frame_fits(at, MASTER_ASK_COST_S):
             asked = True
-            answers = self._master_answers(bus, groups, tries=1)
+            candidates = self._health_candidates()
+            answers = self._ask_board(bus, groups, candidates[0], MASTER_ASK_S)
             if not answers and before < STALL_LOG_MS:
-                # One missed ACK behind a STOP this fast is a lost frame on a
-                # healthy bus, not the degraded state (whose writes block 61
-                # ms and more): asked once more if that fits, and reset only
-                # on two misses (review of 9a8c045, L2).
-                if self._frame_fits(at, MASTER_ASK_COST_S):
-                    answers = self._master_answers(bus, groups, tries=1)
-                    second = ("on the second ask" if answers
-                              else "twice")
+                # One miss behind a STOP this fast may be a board that
+                # dropped off mid-show, or a lost frame: the NEXT candidate
+                # is asked, with a short window - but only if the reset
+                # step still fits behind it (gate on f9efd43, MED-1: a
+                # degraded master whose STOP read under 50 ms got two full
+                # asks and then "no time for a usb reset"). If it does not
+                # fit, the one miss gets the reset: a needless reset was
+                # harmless on radxa-07, a missed cure is a lost cue.
+                if (time.monotonic() + HEALTH_SECOND_ASK_COST_S
+                        + USB_RESET_BUDGET_S <= deadline):
+                    board = (candidates[1] if len(candidates) > 1
+                             else candidates[0])
+                    answers = self._ask_board(bus, groups, board,
+                                              HEALTH_SECOND_ASK_S)
                 else:
-                    second = "once, no time to ask again"
+                    no_second = True
         healthy = not stalled and (answers or not asked)
+        found = self._health_words()
         steps = []
         cured = False
-        if not healthy and second == "once, no time to ask again":
-            steps.append("not reset")
-        elif not healthy:
+        if not healthy:
             if time.monotonic() + USB_RESET_BUDGET_S > deadline:
                 steps.append("no time for a usb reset")
             else:
@@ -3001,11 +3066,15 @@ class DemoRunner:
                     why = self._frame_refusal(at, MASTER_ASK_COST_S)
                     if why:
                         steps.append(f"not proven ({why})")
-                    elif self._master_answers(bus, groups, tries=1):
-                        cured = True
-                        steps.append(f"ok ({self._who_answers()} answers)")
                     else:
-                        steps.append(f"{self._who_answers()} still silent")
+                        self._health_trail = []
+                        board = self._health_candidates()[0]
+                        if self._ask_board(bus, groups, board, MASTER_ASK_S):
+                            cured = True
+                            steps.append(f"ok ({self._health_words()})")
+                        else:
+                            steps.append(
+                                f"no answer ({self._health_words()})")
         self.precheck = {"cue": cue_id, "at": time.time(),
                          "before_ms": round(before, 1),
                          "by": "usb_reset" if cured else None,
@@ -3013,18 +3082,19 @@ class DemoRunner:
                          # fit before a trigger (see PRECHECK_S).
                          "after_ms": None,
                          "master_answers": answers or cured}
-        who = self._who_answers()
+        if healthy and len(self._health_trail) > 1:
+            self.emit(f"precheck {cue_id}: {found} → bus ok "
+                      f"({before:.0f} ms)")
+            return
         if healthy:
-            said = f", {who} answers" if asked else ""
-            if second:
-                said += f" {second}"
+            said = f", {found}" if asked else ""
             self.emit(f"precheck {cue_id}: bus ok ({before:.0f} ms{said})")
             return
+        if no_second:
+            found += ", no time to ask another"
         what = (f"write failed: {failed}" if failed is not None
                 else f"stalled {before:.0f} ms" if stalled
-                else f"{who} missed an ACK {second} ({before:.0f} ms)"
-                if second
-                else f"{who} silent ({before:.0f} ms)")
+                else f"{found} ({before:.0f} ms)")
         chain = "".join(f" → {step}" for step in steps)
         self.emit(f"precheck {cue_id}: {what}{chain}")
 
@@ -3236,7 +3306,7 @@ class DemoRunner:
             return False
         what = (f"write failed: {failed}" if failed is not None
                 else f"stalled {before:.0f} ms" if stalled
-                else f"{self._who_answers()} silent ({before:.0f} ms)")
+                else f"{self._health_words()} ({before:.0f} ms)")
         now = time.monotonic()
         if (not self.auto_recover
                 or self._recover_tries >= self.recover_attempts_max):
