@@ -922,7 +922,7 @@
   }
   function rulerTicks(D) {
     // The existing tiers, but never finer than D/200 (adversarial review
-    // round 2 - F2): duration is clamped to 99:59 everywhere this page
+    // round 2 - F2): duration is kept to 15:00 everywhere this page
     // writes it now, but state.show.duration ultimately comes straight from
     // SIM.buildState(project) with no clamp of its own - a defensive floor
     // here means a pathological D (reached some other way) draws at most
@@ -1026,7 +1026,7 @@
         <div class="card" id="tl-editor-card"><h2>EDIT CUE</h2><div id="cue-editor-body"></div></div>
       </div>` : `<div class="empty">Add the map and design CSV files on the Designs tab first.</div>`}`;
     if (items.length) {
-      // Clamped to 1 s..99:59 (adversarial review, 2026-09-25), and 0
+      // Kept to 1 s..15:00 (2026-09-28; 99:59 before), and 0
       // itself is a revert, not a clamp-up-to-1: "0" is what an accidental
       // double-backspace leaves behind, and silently turning that into a
       // 1-second show is a worse surprise than just putting back what was

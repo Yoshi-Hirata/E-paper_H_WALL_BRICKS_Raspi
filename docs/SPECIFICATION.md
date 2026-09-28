@@ -428,6 +428,41 @@ USB が抜けたあとは 0x17 を送る手段が無いので、**衣装を抜�
   それを **`unit too old for clear - power the boards off before unplugging`**
   としてその機体のタイルに出し、他の機体の消去は止めない
 
+### 4.4 ショーの長さと音源の終わり(2026-09-28)
+
+音源が 10:54 の曲(`27SS_10_25_v3.mp3`)に替わり、10:00 のショーでは短くなった
+(「シミュレーターとコンダクターのショーの長さが音源に対して短い。15分まで延長し、
+音源の終わりがわかるように。」)。
+
+- **ショーの長さ(`show.json` の `duration`)は 1 秒〜15:00(900 秒)**。
+  `conductor/timeline.py` の `MAX_DURATION_S`。Show length 欄・`POST /api/show`・
+  Load show・Load bundle はそれを超える長さを **`A show is at most 15:00`** で拒否する
+  (丸めない)。`duration` の無い `show.json` は従来どおり **600 秒**
+  (`DEFAULT_DURATION_S`)。それ以前に 15:00 より長く保存されたショーは、次の編集で
+  15:00 に下げてそう言う(amber)。15:00 を過ぎたキューは従来どおりエラー
+- **機体側に上限は無い**(`ui/showplay.py` は `duration` を読むだけ)。機体の再配布は不要
+- **音源の長さはブラウザの `<audio>` が読む**(サーバーは MP3 を解析しない)。読めるまでは
+  「不明」で、下の表示も Fit to music も出ない
+- **Timeline(Conductor・シミュレーター共通)**:
+  - 音源がショーの中で終わるとき: 音源の終わりに amber の破線と **`music ends 10:54`**、
+    その後ろのショーは斜線で **`silence`**
+  - 音源がショーより長いとき: Show length の横に amber で
+    **`music continues 0:54 past the end of the show`**(線は引かない)
+  - **Fit to music**(Show length の横): 音源の長さを**秒単位に切り上げて** Show length に
+    する(10:54.25 → 10:55)。上限 15:00(超える音源はそう言って 15:00)。
+    **押したときだけ**変わり、自動では変わらない
+  - シミュレーターは自分の表記(mm.ss)で同じことを言う: `music ends 10.54`、
+    `A show is at most 15.00 - kept …`
+- **THE SHOW(Conductor)**: 大時計の下に `music ends 10:54`(音源の方が長ければ
+  amber で `music continues … past the end of the show` も)。再生中も変わらない
+- **時計はショーが主**:
+  - 音源の方が長い → END で音は止まる(フェードなし)。THE SHOW は `plan()` が
+    END で `stop`、Timeline のプレビューは END で `pause`
+  - 音源の方が短い → 音源が終わっても時計は END まで進む。THE SHOW はフリートの時計の
+    まま(音は "track ended")、Timeline のプレビューは音源の終わりから**壁時計で**
+    END まで無音で進む(以前は音源の終わりで止まっていた)。音源の後ろから再生・
+    シークしても同じで、音源の中へ戻すと音も戻る
+
 ## 5. 実機検証で確認した制約(メーカー仕様との差異)
 
 | # | 事象 | 対応 |
