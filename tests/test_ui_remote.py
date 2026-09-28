@@ -3460,11 +3460,14 @@ class _SilentAt(DegradedMaster):
     `lose` drops that many answers of the next unicast STOPs to board 1 -
     a frame lost on a healthy bus."""
 
-    def __init__(self, silent=(), **kwargs):
+    def __init__(self, silent=(), wait=False, **kwargs):
         super().__init__(**kwargs)
         self.degraded = False
         self.silent = set(silent)
         self.lose = 0
+        # `wait`: a silence costs what it costs on the unit - the whole read
+        # window, plus the transport's 0.05 s poll overshoot.
+        self.wait = wait
 
     def request(self, frame, retries=3, timeout=None):
         lost = (frame.dest == 1 and frame.cmd == STOP and self.lose > 0)
@@ -3473,6 +3476,9 @@ class _SilentAt(DegradedMaster):
                 self.lose -= 1
             self.requested.append(frame)
             self.requested_at.append(time.monotonic())
+            if self.wait:
+                time.sleep(((0.5 if timeout is None else timeout) + 0.05)
+                           * max(1, retries))
             return None
         return super().request(frame, retries=retries, timeout=timeout)
 
@@ -3526,8 +3532,8 @@ def test_the_health_candidates_are_sticky_then_lowest_then_highest():
     assert runner._health_candidates() == [12, 1, 22]
     runner._health_sticky = 1
     assert runner._health_candidates() == [1, 22]
-    runner.live = [5]
-    assert runner._health_candidates() == [1, 5]
+    runner.live = [5]                            # 1 is no longer live:
+    assert runner._health_candidates() == [5]    # not preferred (LOW-2)
     runner._health_sticky = None
     assert runner._health_candidates() == [5]
     runner._health_sticky = 30                   # not on this list: ignored
@@ -3629,4 +3635,103 @@ def test_a_board_that_drops_mid_show_costs_no_reset(monkeypatch):
     assert asked and asked[0] == 3 and 1 not in asked, asked
     # ...and the idle question goes the same way.
     assert runner._health_candidates()[0] == 3
+
+
+# ---- final gate on 05cc86a: the limits (review_T12/t_limits.py) ----
+
+class _AtTheLimits(DegradedMaster):
+    """t_limits' degraded master, with the transport's own costs: the
+    precheck's broadcast STOP reads 45 ms (under STALL_LOG_MS), every unicast
+    write blocks 61 ms, and every silence overshoots its read window by
+    0.05 s (transport.Bus.recv() polls with a 0.05 s timeout)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(reset_s=0.0, reenum_s=0.05, open_s=0.0, **kwargs)
+        self.degraded = True
+
+    def send(self, frame):
+        if self.degraded:
+            time.sleep(0.045)
+        FakeBus.send(self, frame)
+
+    def request(self, frame, retries=3, timeout=None):
+        if not self.degraded:
+            return FakeBus.request(self, frame, retries=retries,
+                                   timeout=timeout)
+        time.sleep(0.061)
+        self.requested.append(frame)
+        self.requested_at.append(time.monotonic())
+        time.sleep(((0.5 if timeout is None else timeout) + 0.05)
+                   * max(1, retries))
+        return None
+
+
+def _precheck_at(monkeypatch, bus, lead, cue):
+    from ui.runner import REMOTE_GUARD_HOLD_S
+
+    monkeypatch.setattr("ui.runner.find_port", bus.find_port)
+    runner = degraded_runner(bus, boards=[1, 2, 3], precheck=lead,
+                             remote_guard_hold=REMOTE_GUARD_HOLD_S)
+    runner.live = [1, 2, 3]
+    runner._precheck(bus, 3, cue, time.monotonic() + lead)
+    return runner, [l for l in runner.recent(20) if f"precheck {cue}" in l]
+
+
+@pytest.mark.parametrize("lead", [8.355, 8.36, 8.365, 8.37])
+def test_a_second_ask_that_just_fits_never_costs_the_reset(monkeypatch, lead):
+    """LOW-1: HEALTH_SECOND_ASK_COST_S (0.3) had no room for the read
+    overshoot, so at leads around 8.36 s the second ask just fit, overshot,
+    and then "no time for a usb reset" - the degraded master went into the
+    cue. At 0.35 the second ask is only taken with room for its overshoot
+    too, and either way the reset follows."""
+    bus = _AtTheLimits()
+    runner, said = _precheck_at(monkeypatch, bus, lead, "q03")
+    assert said and "→ usb reset → ok" in said[0], said
+    assert "no time for a usb reset" not in said[0]
+    assert len(bus.resets) == 1 and runner.precheck["by"] == "usb_reset"
+
+
+def test_the_second_ask_costs_no_more_than_it_is_allowed(monkeypatch):
+    """What HEALTH_SECOND_ASK_COST_S promises, measured on the same bus: a
+    61 ms write, the 0.2 s window and its 0.05 s overshoot."""
+    from ui.runner import (HEALTH_SECOND_ASK_COST_S, HEALTH_SECOND_ASK_S,
+                           READ_OVERSHOOT_S, STALL_LOG_MS)
+
+    assert HEALTH_SECOND_ASK_COST_S == pytest.approx(
+        2 * STALL_LOG_MS / 1000 + HEALTH_SECOND_ASK_S + READ_OVERSHOOT_S)
+    assert HEALTH_SECOND_ASK_COST_S == pytest.approx(0.35)
+    bus = _AtTheLimits()
+    monkeypatch.setattr("ui.runner.find_port", bus.find_port)
+    runner = degraded_runner(bus)
+    runner._health_trail = []
+    began = time.monotonic()
+    assert runner._ask_board(bus, 3, 2, HEALTH_SECOND_ASK_S) is False
+    assert time.monotonic() - began <= HEALTH_SECOND_ASK_COST_S
+
+
+def test_the_cure_check_asks_a_board_that_was_not_silent(monkeypatch):
+    """LOW-2: a late precheck (no room for a second ask) on a healthy bus
+    whose lowest board has dropped: the one miss gets the reset, and the
+    check after it used to ask that same dead board - "no answer". It asks
+    the first candidate not already silent in this check."""
+    bus = _SilentAt(silent={1}, wait=True)
+    runner, said = _precheck_at(monkeypatch, bus, 8.2, "q04")
+    assert said, runner.recent(20)
+    assert "board 1 silent, no time to ask another" in said[0], said
+    assert "→ usb reset → ok (board 3 answers)" in said[0], said
+    assert runner.precheck["by"] == "usb_reset"
+
+
+def test_a_precheck_begun_too_late_to_ask_does_not_say_bus_ok():
+    """LOW-4: the STOP alone is not "bus ok" - it reads fast right behind a
+    write on a degraded master."""
+    bus = RecoveringBus("padding", deaf_boards=False)
+    bus.stalled = False
+    runner = recovery_runner(bus, precheck=20.0, remote_guard_hold=HOLD)
+    runner._precheck(bus, 2, "q03", time.monotonic() + HOLD + 0.45)
+    said = [l for l in runner.recent(10) if "precheck q03" in l]
+    assert said == [said[0]] and "bus ok" not in said[0], said
+    assert said[0].endswith("precheck q03: stop 0 ms, no time to ask a "
+                            "board"), said
+    assert not any(f.cmd == STOP and f.dest != 0xFF for f in bus.requested)
 

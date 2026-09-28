@@ -265,10 +265,16 @@ HEALTH_CANDIDATES_MAX = 3
 # The pre-cue check's SECOND ask, after one miss behind a STOP under
 # STALL_LOG_MS: a short read window (a board that answers does so in ms),
 # and what it may cost at most - its write, behind a STOP that took under
-# 50 ms, allowed twice that, plus the window. It is only asked if the USB
-# reset step still fits behind it; otherwise the one miss gets the reset.
+# STALL_LOG_MS, allowed twice that; the window; and the transport's read
+# overshoot (transport.Bus.recv() polls ser.read() with a 0.05 s timeout,
+# so a silence is known up to READ_OVERSHOOT_S after the window closes).
+# It is only asked if the USB reset step still fits behind it; otherwise
+# the one miss gets the reset. 0.35 s (final gate on 05cc86a, LOW-1: at
+# 0.3 a second ask that just fit could leave the reset without time).
+READ_OVERSHOOT_S = 0.05
 HEALTH_SECOND_ASK_S = 0.2
-HEALTH_SECOND_ASK_COST_S = 2 * 0.05 + HEALTH_SECOND_ASK_S
+HEALTH_SECOND_ASK_COST_S = (2 * STALL_LOG_MS / 1000.0 + HEALTH_SECOND_ASK_S
+                            + READ_OVERSHOOT_S)
 # After a USB reset the node goes away and comes back, possibly under a new
 # name - 0.44 s on the unit. It is waited for this long, polled every
 # RETRY_POLL_S; and an open that answers EACCES (udev has not set the
@@ -327,18 +333,31 @@ FIRE_RESEND_BUDGET_S = 2.5
 #   the heartbeat and the guard STOP use. So in a burst of cues closer
 #   together than that floor the check is skipped, which is intended.
 #
-# The budget, from T-8.5. A measuring STOP that stalled (>= 0.2 s, 0.4 at
-# worst) is not followed by the question - it goes straight to the USB reset
-# step: the reset 0.3, the node back ~0.45, the open 0.3, the STOP straight
-# after it (review M4) 0.4, and the unicast STOP that proves it (0.4 + the
-# 0.5 s read of ACK_TIMEOUT_S) 0.9 - USB_RESET_BUDGET_S = 2.4 s, done by
-# T-5.7. A STOP under 0.2 s is followed by the question (0.9 at worst, 0.56
-# on a degraded master right behind a write): the reset step then ends by
-# T-8.5 + 0.2 + 0.9 + 2.4 = T-5.0 at every limit. Each step is asked again
-# against the clock before it is begun, and the reset itself is bounded by
-# T-5.0 whatever sudo does (review M2). With the 3 s proof gap it would not
-# fit, so the check proves by the master's ACK alone ("proof-lite"); the
-# idle recovery proves with both.
+# The budget, stated at its worst (final gate on 05cc86a, LOW-3). The check
+# begins at T-8.5 plus the wait's tick lag (<= 50 ms): T-8.45. Every ask's
+# read overshoots its window by up to READ_OVERSHOOT_S (transport.Bus.recv()
+# polls with a 0.05 s timeout). The USB reset step - the reset 0.3, the
+# node back ~0.45, the open 0.3, the STOP straight after it (review M4) 0.4,
+# and the question that proves it (0.4 + 0.5 + 0.05) - is
+# USB_RESET_BUDGET_S = 2.4 s, and it is begun only if it ends by T-5.0.
+#
+#  * STOP stalled (>= 0.2 s, 0.4 at worst): no question, straight to the
+#    reset - begun by T-8.05, done by T-5.65.
+#  * STOP under 0.2 s but not under 50 ms: one question, 0.4 + 0.5 + 0.05 =
+#    0.95 at worst, ending by T-7.30 - and then the reset does NOT fit at
+#    every limit at once (T-4.90): "no time for a usb reset". On the
+#    degraded master the unit showed (61 ms writes behind a write) the
+#    question ends by T-7.78 and the reset by T-5.38.
+#  * STOP under 50 ms: question 1, its write behind a fast STOP allowed 0.1,
+#    0.65 at worst, ends by T-7.75. Question 2 (HEALTH_SECOND_ASK_COST_S
+#    0.35) only if the reset still fits behind it - so the reset is begun by
+#    T-7.40 and done by T-5.0 at every limit; if question 2 does not fit,
+#    the one miss gets the reset at once (done by T-5.35).
+#
+# Each step is asked again against the clock before it is begun, and the
+# reset itself is bounded by T-5.0 whatever sudo does (review M2). With the
+# 3 s proof gap it would not fit, so the check proves by one board's ACK
+# alone ("proof-lite"); the idle recovery proves with both.
 #
 # WHICH CUES GET ONE, in practice: the previous cue's guard floor has to be
 # past at T-8.5, and at the unit's --guard-delay 30 that floor is 30-38 s
@@ -2412,7 +2431,8 @@ class DemoRunner:
           1  the board that LAST answered one (`_health_sticky`, this
              worker's own memory) - on LOOK28 with the front body's 485
              cable out, boards 1-11 were dead and the healthy master was
-             among 12-22, and nothing takes a board off `live` mid-show;
+             among 12-22, and nothing takes a board off `live` mid-show -
+             while it is itself still live;
           2  the lowest live board (review of 9a8c045, M1 - address 1 is not
              always there, and not always the USB board);
           3  the highest live board - likely the other harness segment.
@@ -2423,7 +2443,9 @@ class DemoRunner:
         live = sorted(b for b in self.live if isinstance(b, int))
         order = []
         sticky = self._health_sticky
-        if sticky is not None and sticky in self.boards:
+        if sticky is not None and sticky in live:
+            # Preferred only while it is still live (final gate on 05cc86a,
+            # LOW-2): a sweep that has since lost it has the last word.
             order.append(sticky)
         if live:
             order += [live[0], live[-1]]
@@ -2826,10 +2848,15 @@ class DemoRunner:
         unit neither brought a degraded master back (2026-09-28), and the
         padding's "recovered" was the false reading PROOF_GAP_S prevents.
 
-        Bounded: a degraded STOP 0.4 s, the reset 0.3, the node back ~0.45
-        (USB_NODE_WAIT_S at most), the open 0.3 (+ OPEN_RETRY_S at most
-        while udev catches up), the unicast STOP up to 1.8, the gap 3.0 and one
-        STOP - about 6 s typical, 9 s at every limit; the agent waits 15.
+        Bounded. Typically about 6 s (4.45 s measured with the unit's
+        timings): a degraded STOP 0.4, the questions, the reset 0.3, the node
+        back ~0.45, the open 0.3, the proof's question, the gap 3.0 and one
+        STOP. With every limit hit at once about 20 s: the STOP 0.4, three
+        candidates asked (0.4 + a 0.5 read + 0.05 overshoot each) 2.85, the
+        reset at USBRESET_TIMEOUT_S 5.0, the node at USB_NODE_WAIT_S 3.0,
+        the open at OPEN_RETRY_S 2.0 + 0.3, the STOP after it 0.4, the proof's
+        three questions 2.85, the gap 3.0 and its STOP 0.4 = 20.2 s. The
+        agent waits RECOVER_WAIT_S 22 s, the Conductor 25.
         Every entry is gated on the last picture's floor and a minute with
         no cue (recover_refusal(), _recover_quiet()), and nothing here
         paints; the probe sweep it owes waits for OWED_SETTLE_S and that
@@ -3067,8 +3094,15 @@ class DemoRunner:
                     if why:
                         steps.append(f"not proven ({why})")
                     else:
+                        # The first candidate NOT already silent in this
+                        # check (final gate on 05cc86a, LOW-2): a board that
+                        # just failed to answer is the worst witness of the
+                        # cure. All of them silent: the first one.
+                        silent = {b for b, ok in self._health_trail if not ok}
+                        candidates = self._health_candidates()
+                        board = next((b for b in candidates
+                                      if b not in silent), candidates[0])
                         self._health_trail = []
-                        board = self._health_candidates()[0]
                         if self._ask_board(bus, groups, board, MASTER_ASK_S):
                             cured = True
                             steps.append(f"ok ({self._health_words()})")
@@ -3085,6 +3119,13 @@ class DemoRunner:
         if healthy and len(self._health_trail) > 1:
             self.emit(f"precheck {cue_id}: {found} → bus ok "
                       f"({before:.0f} ms)")
+            return
+        if healthy and not asked:
+            # Begun too late for a question: the STOP alone is not "bus ok"
+            # (final gate on 05cc86a, LOW-4) - it could read fast right
+            # behind a write on a degraded master.
+            self.emit(f"precheck {cue_id}: stop {before:.0f} ms, no time "
+                      f"to ask a board")
             return
         if healthy:
             said = f", {found}" if asked else ""
