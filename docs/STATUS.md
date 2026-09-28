@@ -68,6 +68,22 @@
 - 復旧は記録済みの stall を信じず**必ず自分で測る** ―― 健全な機体は
   `bus was already clear` と答える
 
+**第 3 回レビュー(795cbe5)で直したもの**:
+
+- **HIGH**(795cbe5 で自分が入れた退行): アイドル中のポート監視はトリガを持たない
+  (`at=None`)ので、再オープン後の 0x17 と 0x1B が**確認なしで**、最後のキューの
+  描画中に出ていた(t_idle_floor.py: +1.5 秒、床は +10 秒)。LOOK28 の場面
+  そのもの。いまは**どのフレームも必ず**直前の絵の床と武装中のキューを確かめる
+  (`_frame_refusal()`)。床の中の消失は**ポートだけ**、床のあとはフレームと測定
+- `_setup_yields` はアイドル経路の `_setup()` 直前の 1 か所でだけ立て、
+  ワーカーごとに下ろす(次のワーカーの起動時の掃引が止まることは無い)
+- 直前点検を始めない境界を 5.4 秒に(保留 5 秒 + 劣化した書き込み 1 回 0.4 秒)
+- ログが送らなかった理由を名指しする: `port only (the last picture is still
+  repainting)` / `(a cue is too near)` / `(write failed: …)`
+- この PC で scratchpad の venv が壊れた(`serial.tools` が空の名前空間になる)
+  ため、テストは `pythoncore-3.14-64\python.exe` を PowerShell から使う。venv には
+  何も入れ直していない
+
 ログは `bus recovered by padding (359 → 2 ms)` /
 `precheck q03: stalled 359 ms → padding → ok (2 ms)` /
 `port lost → /dev/ttyACM1 back in 0.6 s, bus ok (2 ms)`。

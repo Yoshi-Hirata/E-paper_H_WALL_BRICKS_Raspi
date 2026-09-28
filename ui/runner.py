@@ -267,8 +267,9 @@ RESEND_STALL_MS = STALL_RECOVER_MS
 # (review of be1c0b5, F1/F3):
 #
 # * NOTHING in the last REMOTE_GUARD_HOLD_S before a trigger but the trigger
-#   itself. So the check is not even begun with less than that plus
-#   PRECHECK_MARGIN_S left (5.2 s), and every step of it has to hand its
+#   itself. So the check is not even begun with less than that plus one
+#   degraded write, DEGRADED_WRITE_S, left (5.4 s - its own measuring STOP
+#   may block that long), and every step of it has to hand its
 #   last frame to the port before T - REMOTE_GUARD_HOLD_S - a step that
 #   would not is not begun (PAD_BUDGET_S, FAST_REOPEN_BUDGET_S). A cue armed
 #   with less lead than that - a short-lead manual fire, a unit that has
@@ -296,7 +297,6 @@ RESEND_STALL_MS = STALL_RECOVER_MS
 # radxa-07's 2026-09-28 failures came 10-30 s after the LAST cue; that is
 # the idle recovery's territory (_maybe_recover()), not this.
 PRECHECK_S = 8.5
-PRECHECK_MARGIN_S = 0.2
 # What each step of the check may cost, from its start to the moment its
 # LAST frame is handed to the port - the same "at the moment it is sent"
 # reading the heartbeat's own REMOTE_GUARD_HOLD_S rule uses. Worst case, not
@@ -2187,7 +2187,8 @@ class DemoRunner:
         return took_ms
 
     def _fast_reopen(self, bus, groups: int, port: "str | None" = None,
-                     frames: bool = True, at: "float | None" = None) -> int:
+                     frames: bool = True, at: "float | None" = None
+                     ) -> "tuple[int, str | None]":
         """Close the port and open it again, and NOTHING else. Seconds
         matter here: this runs before a cue and after a re-enumeration.
 
@@ -2215,14 +2216,19 @@ class DemoRunner:
         follows needs no frame before it, and what was skipped is owed with
         the sweep.
 
-        `at` (the port watcher's trigger): the frames are decided one by one
-        AFTER the port is open - never before it, since the open itself
-        costs 0.3 s and a decision taken at T-5.5 would be stale by T-5.2
-        (re-review of e139a33). Each one goes only if _frame_fits() says it
-        can be handed over before `at - REMOTE_GUARD_HOLD_S` and is not
-        inside the last picture; the first that cannot ends the frames.
+        The frames are decided one by one AFTER the port is open - never
+        before it, since the open itself costs 0.3 s and a decision taken at
+        T-5.5 would be stale by T-5.2 (re-review of e139a33). EVERY frame is
+        checked, whether or not the caller named a trigger: `at` is the
+        port watcher's cue when it has one, and otherwise _frame_refusal()
+        looks at the last picture's floor and the cue the session has armed
+        itself (round-3 review: with `at=None` the idle watcher's frames went
+        out unchecked, inside the last picture - the LOOK28 case exactly).
+        The first frame that cannot go ends the frames.
 
-        Returns how many frames it sent (0, 1 or 2).
+        Returns (frames sent - 0, 1 or 2 -, why the rest did not go or None):
+        "the last picture is still repainting", "a cue is too near", or
+        "write failed: <error>" - never swallowed; the caller says it once.
         """
         if port is None:
             port = self.port or find_port() or getattr(bus, "port", None)
@@ -2236,38 +2242,48 @@ class DemoRunner:
         self._setup_owed = True
         self._owed_at = time.monotonic()
         if not frames:
-            return 0
+            return 0, "no frames asked for"
         sent = 0
         try:
-            if at is not None and not self._frame_fits(at, DEGRADED_WRITE_S):
-                return sent
+            why = self._frame_refusal(at, DEGRADED_WRITE_S)
+            if why:
+                return sent, why
             bus.send(stop(0xFF, groups))
             self._sent_broadcast_stop()
             sent += 1
-            if at is not None and not self._frame_fits(
-                    at, DEGRADED_WRITE_S + FAST_REOPEN_READ_S):
-                return sent
+            why = self._frame_refusal(at, DEGRADED_WRITE_S + FAST_REOPEN_READ_S)
+            if why:
+                return sent, why
             bus.request(slot_config(USB_BOARD, self.slot, group_count=groups,
                                     dev_type=self._active_dev_type()),
                         retries=1, timeout=FAST_REOPEN_READ_S)
             sent += 1
-        except Exception:           # noqa: BLE001 - the timed STOP is the verdict
-            pass
-        return sent
+        except Exception as exc:    # noqa: BLE001 - reported, never raised
+            return sent, f"write failed: {exc or exc.__class__.__name__}"
+        return sent, None
 
-    def _frame_fits(self, at: "float | None", cost: float) -> bool:
-        """May one more frame, costing up to `cost`, go out now?
+    def _frame_refusal(self, at: "float | None", cost: float) -> "str | None":
+        """Why one more frame, costing up to `cost`, may NOT go out now -
+        or None when it may.
 
         The per-frame form of the pre-cue check's rule: not inside the last
-        picture, and handed over before `at - REMOTE_GUARD_HOLD_S` - `at`
-        being the trigger given, or the cue the session has armed.
+        picture (`_guard_floor`), and handed over before
+        `at - REMOTE_GUARD_HOLD_S` - `at` being the trigger given, or else
+        the cue the session has armed. With neither, only the floor counts.
         """
-        if not self._wire_clear(at):
-            return False
+        now = time.monotonic()
+        if self._guard_floor is not None and now < self._guard_floor:
+            return "the last picture is still repainting"
         if at is None and self.remote is not None:
             due = self.remote.due()
             at = due[1] if due is not None else None
-        return at is None or time.monotonic() + cost <= at - self.remote_guard_hold
+        if at is not None and now + cost > at - self.remote_guard_hold:
+            return "a cue is too near"
+        return None
+
+    def _frame_fits(self, at: "float | None", cost: float) -> bool:
+        """_frame_refusal() as a yes/no."""
+        return self._frame_refusal(at, cost) is None
 
     def _recovery_done(self, by: "str | None", before_ms: float,
                        after_ms: float, recovered: bool) -> dict:
@@ -2349,10 +2365,15 @@ class DemoRunner:
                 if after < RECOVERED_MS:
                     return self._recovery_done("padding", before, after, True)
             try:
-                self._fast_reopen(bus, groups)
+                _, why = self._fast_reopen(bus, groups)
             except Exception as exc:    # noqa: BLE001 - said, never raised
                 self.emit(f"bus recovery: the port would not reopen ({exc})")
                 return self._recovery_done(None, before, before, False)
+            if why:
+                # Every entry to a recovery is gated on the floor and a
+                # minute of quiet, so this is a failed write in practice -
+                # said once, not swallowed.
+                self.emit(f"bus recovery: after the reopen, {why}")
             after = self._timed_stop(bus, groups)
             if after < RECOVERED_MS:
                 return self._recovery_done("reopen", before, after, True)
@@ -2411,10 +2432,12 @@ class DemoRunner:
         whether this is the moment, and runs at most once per cue:
 
         * not before PRECHECK_S ahead of `at`, and not BEGUN with less
-          than REMOTE_GUARD_HOLD_S + PRECHECK_MARGIN_S left - nothing but
-          the trigger goes on the wire in the last REMOTE_GUARD_HOLD_S,
-          the same rule the heartbeat keeps. A cue armed too close for
-          that gets no check, and nothing is said about it;
+          than REMOTE_GUARD_HOLD_S + DEGRADED_WRITE_S left (5.4 s) - the
+          measuring STOP is itself one write that may block 0.4 s, and
+          nothing but the trigger goes on the wire in the last
+          REMOTE_GUARD_HOLD_S, the same rule the heartbeat keeps (round-3
+          review: begun at T-5.25 it could block on to T-4.84). A cue armed
+          too close for that gets no check, and nothing is said about it;
         * not before `_guard_floor`: the previous cue's picture (refresh
           + span) is certainly finished, so the STOP neither measures a
           board busy repainting nor lands inside a sweep.
@@ -2431,7 +2454,7 @@ class DemoRunner:
         remaining = at - now
         if remaining > self.precheck_s:
             return                              # not yet
-        if remaining < self.remote_guard_hold + PRECHECK_MARGIN_S:
+        if remaining < self.remote_guard_hold + DEGRADED_WRITE_S:
             return                              # too late to begin: skip
         if self._guard_floor is not None and now < self._guard_floor:
             return                              # the last picture is drawing
@@ -2458,13 +2481,23 @@ class DemoRunner:
                     else:
                         steps.append("reopen")
                         try:
-                            self._fast_reopen(bus, groups)
+                            _, why = self._fast_reopen(bus, groups, at=at)
                         except Exception as exc:    # noqa: BLE001 - said, not raised
                             self.emit(f"precheck {cue_id}: the port would "
                                       f"not reopen ({exc})")
                         else:
-                            after = self._timed_stop(
-                                bus, groups, record_from_ms=STALL_RECOVER_MS)
+                            # The step's budget says its frames fit; each
+                            # one is asked again all the same, and so is the
+                            # STOP that checks the result.
+                            why = why or self._frame_refusal(at,
+                                                             DEGRADED_WRITE_S)
+                            if why:
+                                self.emit(f"precheck {cue_id}: after the "
+                                          f"reopen, {why}")
+                            else:
+                                after = self._timed_stop(
+                                    bus, groups,
+                                    record_from_ms=STALL_RECOVER_MS)
         # `by` names the CURE, so only a step that is one and only when
         # the port really did come back: "no time before the cue" is a
         # reason there is no cure, not one.
@@ -2485,22 +2518,6 @@ class DemoRunner:
 
     # ---- a USB re-enumeration, noticed at once ----
 
-    def _wire_clear(self, at: "float | None" = None) -> bool:
-        """May a frame other than a trigger go out NOW?
-
-        Not inside the last cue's picture (`_guard_floor`: refresh + span,
-        the same floor the heartbeat and the guard STOP keep), and not in
-        the last REMOTE_GUARD_HOLD_S before the trigger at `at` - or before
-        whatever cue the session has armed, when `at` is not given.
-        """
-        now = time.monotonic()
-        if self._guard_floor is not None and now < self._guard_floor:
-            return False
-        if at is None and self.remote is not None:
-            due = self.remote.due()
-            at = due[1] if due is not None else None
-        return at is None or at - now >= self.remote_guard_hold
-
     def _port_watch(self, bus, groups: int, at: "float | None" = None,
                     wanted=None) -> bool:
         """Poll the device node; if it has gone, wait for it and reopen.
@@ -2515,8 +2532,11 @@ class DemoRunner:
         runs past the trigger's last FIRE_SPIN_S, re-polls every
         PORT_RETRY_S, and gives up at once on a cancel or a STOP - noticed
         within PORT_RETRY_S. Once the node is back the port is reopened,
-        but frames only go with it where _wire_clear() allows; otherwise it
-        is the port alone and the trigger goes out on it untouched.
+        but each frame only goes with it where _frame_refusal() allows -
+        from the idle loop just as much as before a cue, since the last
+        picture's floor holds either way; otherwise it is the port alone,
+        and the log says why (`port only (the last picture is still
+        repainting)` / `(a cue is too near)` / `(write failed: ...)`).
 
         Never while _setup() is probing: that sweep's own writes find a
         lost port, and the reopen ladder around it is the one that owns
@@ -2567,19 +2587,25 @@ class DemoRunner:
         # - the open itself takes 0.3 s, and a verdict taken before it can be
         # inside the hold by the time it acts (re-review of e139a33).
         try:
-            sent = self._fast_reopen(bus, groups, port=found, at=at)
+            sent, why = self._fast_reopen(bus, groups, port=found, at=at)
         except Exception as exc:        # noqa: BLE001 - said, never raised
             self.emit(f"port lost → {found} back in {back:.1f} s, "
                       f"but it would not open ({exc})")
             return False
-        if sent == 2 and self._frame_fits(at, DEGRADED_WRITE_S):
-            after = self._timed_stop(bus, groups)
-            state = (f"bus ok ({after:.0f} ms)" if after < RECOVERED_MS
-                     else f"bus still stalled ({after:.0f} ms)")
+        if why is None:
+            # Both frames went; the checking STOP is one more frame, asked
+            # the same question.
+            why = self._frame_refusal(at, DEGRADED_WRITE_S)
+            if why is None:
+                after = self._timed_stop(bus, groups)
+                state = (f"bus ok ({after:.0f} ms)" if after < RECOVERED_MS
+                         else f"bus still stalled ({after:.0f} ms)")
+            else:
+                state = f"reopened, not measured ({why})"
         elif sent == 0:
-            state = "port only (a picture or a cue is too near for a frame)"
+            state = f"port only ({why})"
         else:
-            state = "reopened, not measured (a cue is too near)"
+            state = f"reopened, not measured ({why})"
         self.emit(f"port lost → {found} back in {back:.1f} s, {state}")
         self._next_port_poll = time.monotonic() + self.port_poll
         return True
@@ -2870,6 +2896,9 @@ class DemoRunner:
         self._recover_next = 0.0
         self._recover_said_enough = False
         self._setup_owed = False
+        # Never carried over from a previous worker: a worker stopped with it
+        # set would otherwise let THIS worker's start-up sweep stand down.
+        self._setup_yields = False
         while not self._stop.is_set():
             port = self.port or find_port()
             if not port:
@@ -2886,20 +2915,6 @@ class DemoRunner:
                     needs_setup = True
                     groups = self._take_groups()
                     while not self._stop.is_set():
-                        if (self._setup_owed
-                                and self._owed_setup_clear(session)):
-                            # A fast reopen (a recovery, the pre-cue check,
-                            # a re-enumeration) left the probe sweep owed.
-                            # It runs HERE and only when nothing it sends
-                            # can land in a picture or near a trigger -
-                            # otherwise it stays owed and the loop goes on
-                            # without it: the reopened port already carries
-                            # triggers, which need nothing probed. And it
-                            # is the kind that stands down for a cue that
-                            # fires inside it (_setup()).
-                            self._setup_owed = False
-                            self._setup_yields = True
-                            needs_setup = True
                         # `groups` is taken again ONLY where the list is
                         # replaced (below), never per pass: an exploring
                         # setup trims the list as it goes, and following
@@ -3107,6 +3122,28 @@ class DemoRunner:
                             # garment sitting on the wrong picture.
                             if self._fire_at(bus, groups, session, *late):
                                 guard_due = self._guard_after_fire(session)
+                        if self._setup_owed:
+                            # A fast reopen (a recovery, the pre-cue check,
+                            # a re-enumeration) left the probe sweep owed.
+                            if needs_setup:
+                                # The sweep about to run covers it - and it
+                                # is a start-up one, which never yields.
+                                self._setup_owed = False
+                            elif self._owed_setup_clear(session):
+                                # It runs HERE and only when nothing it sends
+                                # can land in a picture or near a trigger;
+                                # otherwise it stays owed and the loop goes
+                                # on without it - the reopened port already
+                                # carries triggers, which need nothing
+                                # probed. Set immediately before this one
+                                # _setup() call and nowhere else (round-3
+                                # review): decided at the top of the loop, a
+                                # /bus/recover taken on the same pass left it
+                                # standing for a sweep that had skipped the
+                                # 20 s settle. _setup() clears it again.
+                                self._setup_owed = False
+                                self._setup_yields = True
+                                needs_setup = True
                         if needs_setup:
                             # The one broadcast 0x17 for this port session
                             # (docs/MERIS_REPLY_3SLOT.pdf: one is enough
