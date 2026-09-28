@@ -419,14 +419,11 @@ def test_the_remote_guard_stands_aside_for_a_cue_and_its_repaint():
     trigger about to go out (REMOTE_GUARD_HOLD_S of clearance), and
     landing inside the repaint that trigger starts (_guard_for()).
 
-    `precheck=0`: the pre-cue health check is the ONE broadcast that is
-    allowed in the run-up, and it has a test of its own
-    (test_the_precheck_before_a_healthy_cue_is_one_frame_and_no_words).
-    Switched off here so this one goes on saying exactly what it was
-    written to say about the HEARTBEAT.
+    With the pre-cue check left ON: it is never begun inside the hold
+    either (review F3), so nothing at all goes out in the run-up here.
     """
     bus = StampedBus()
-    runner = make_runner(bus, guard_delay=0.4, remote_guard=0.05, precheck=0)
+    runner = make_runner(bus, guard_delay=0.4, remote_guard=0.05)
     session = RemoteSession(runner)
     session.arm("c1", 1)
     assert wait_until(lambda: runner.remote_guard_sent >= 1, timeout=5.0)
@@ -2110,38 +2107,62 @@ def test_a_cue_that_went_out_cleanly_is_never_re_sent():
 
 
 # ---- the fast paths: a loss recovers in ~1 s and the next cue is on time ----
+# Reworked after the review of be1c0b5 (F1/F3/F5/F6): the pre-cue check never
+# sends inside REMOTE_GUARD_HOLD_S before a trigger nor inside the last
+# picture (`_guard_floor`), and the probe sweep a fast reopen leaves owed never
+# runs into a picture or near a cue.
+
+HOLD = 0.3          # a compressed REMOTE_GUARD_HOLD_S for these tests
+
+
+def armed(cure="padding", seconds=0.0, lead=4.0, **kwargs):
+    """A unit whose setup is done on a healthy bus, THEN the bus goes bad
+    and a cue is fired `lead` seconds out - the reviewer's own pattern
+    (review_T4/t_late.py), so the setup's probes are not what is measured."""
+    bus = RecoveringBus(cure, seconds=max(seconds, 0.001))
+    bus.stalled = False
+    kwargs.setdefault("remote_guard_hold", HOLD)
+    kwargs.setdefault("pad_settle", 0.05)
+    kwargs.setdefault("precheck", 3.6)
+    runner = recovery_runner(bus, **kwargs)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2)})
+    assert wait_until(lambda: session.phase == READY, timeout=10.0)
+    bus.stalled = seconds > 0
+    at = time.monotonic() + lead
+    session.fire("c1", at)
+    return bus, runner, session, at
+
+
+def in_the_hold(bus, at, hold=HOLD):
+    """Every frame other than the trigger itself that was handed to the
+    port inside the last `hold` seconds before `at`."""
+    out = []
+    for frame, stamp in zip(bus.sent, bus.sent_at):
+        if at - hold < stamp < at and frame.cmd != SHOW:
+            out.append((round(stamp - at, 3), hex(frame.cmd)))
+    return out
+
 
 def test_the_precheck_before_a_healthy_cue_is_one_frame_and_no_words():
-    """The one broadcast that IS allowed in the run-up to a trigger, where
-    the heartbeat stands aside (REMOTE_GUARD_HOLD_S): a heartbeat there
-    buys nothing, and this buys the one thing the cue needs."""
-    bus = RecoveringBus("padding")
-    bus.stalled = False
-    runner = recovery_runner(bus, precheck=1.0)
-    session = RemoteSession(runner)
-    session.arm("c1", 6)
-    armed_at = time.monotonic()
-    session.fire("c1", armed_at + 2.0)
-    assert wait_until(lambda: session.phase == FIRED, timeout=8.0)
+    """The one broadcast that IS allowed before a trigger besides the guard
+    STOPs - and only BEFORE the hold, never in it."""
+    bus, runner, session, at = armed(seconds=0.0)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
     runner.stop()
     assert runner.precheck["cue"] == "c1" and runner.precheck["by"] is None
     assert runner.precheck["before_ms"] < 200
     assert any("precheck c1: bus ok" in line for line in runner.recent(30))
     assert bus.padded == [] and bus.reopened == []
     assert session.status()["precheck"]["cue"] == "c1"
-    # ...and it is ONE frame: the heartbeat still stood aside.
-    assert runner.remote_guard_sent == 0
+    assert runner.remote_guard_sent == 0         # one frame, no heartbeat
+    assert in_the_hold(bus, at) == []
 
 
 def test_a_stalled_precheck_is_put_right_and_the_cue_still_fires_on_time():
     """The owner's target: a communication loss recovers inside 1-1.5 s and
-    the NEXT cue is on time."""
-    bus = RecoveringBus("padding", seconds=0.25)
-    runner = recovery_runner(bus, precheck=1.2, pad_settle=0.05)
-    session = RemoteSession(runner)
-    at = time.monotonic() + 2.5
-    session.arm("c1", 6)
-    session.fire("c1", at)
+    the NEXT cue is on time - with nothing but the trigger in the hold."""
+    bus, runner, session, at = armed("padding", seconds=0.25)
     assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
     runner.stop()
     assert runner.precheck["by"] == "padding"
@@ -2149,17 +2170,13 @@ def test_a_stalled_precheck_is_put_right_and_the_cue_still_fires_on_time():
     assert runner.precheck["after_ms"] < 200
     assert any("→ padding → ok" in line and "precheck c1" in line
                for line in runner.recent(30))
-    # ...and the trigger still went out at its own instant.
     late_ms = session.status()["late_ms"]
     assert late_ms is not None and late_ms < 250, late_ms
+    assert in_the_hold(bus, at) == []
 
 
 def test_a_precheck_only_a_reopen_fixes_still_lets_the_cue_fire_on_time():
-    bus = RecoveringBus("reopen", seconds=0.25)
-    runner = recovery_runner(bus, precheck=1.5, pad_settle=0.05)
-    session = RemoteSession(runner)
-    session.arm("c1", 6)
-    session.fire("c1", time.monotonic() + 2.5)
+    bus, runner, session, at = armed("reopen", seconds=0.25)
     assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
     runner.stop()
     assert runner.precheck["by"] == "reopen" and bus.reopened
@@ -2167,108 +2184,221 @@ def test_a_precheck_only_a_reopen_fixes_still_lets_the_cue_fire_on_time():
                for line in runner.recent(30))
     late_ms = session.status()["late_ms"]
     assert late_ms is not None and late_ms < 250, late_ms
+    assert in_the_hold(bus, at) == []
 
 
 def test_a_precheck_nothing_fixes_says_so_and_fires_anyway():
-    bus = RecoveringBus("never", seconds=0.25)
-    runner = recovery_runner(bus, precheck=1.5, pad_settle=0.05)
-    session = RemoteSession(runner)
-    session.arm("c1", 6)
-    session.fire("c1", time.monotonic() + 2.5)
+    bus, runner, session, at = armed("never", seconds=0.25)
     assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
     runner.stop()
     assert runner.precheck["by"] is None
     assert runner.precheck["after_ms"] >= 200
     assert any("→ still stalled" in line for line in runner.recent(30))
-    # The cue is never held back over the verdict: the picture still goes.
-    assert len(shows(bus)) >= 1
+    assert len(shows(bus)) >= 1                  # the picture still goes
+    assert in_the_hold(bus, at) == []
 
 
-def test_the_precheck_is_skipped_while_the_last_repaint_may_still_run():
-    """A board repainting is deaf and stops servicing USB, so a check inside
-    that window measures the repaint and reads a healthy unit as degraded -
-    and a 0x17 into it is the one frame that must not go."""
-    bus = RecoveringBus("padding", seconds=0.25)
-    runner = recovery_runner(bus, precheck=1.0)
-    runner._last_show_at = time.monotonic()       # a cue went out just now
-    runner._precheck(bus, 2, "c2")
+def test_a_cue_armed_inside_the_hold_gets_no_precheck_at_all():
+    """Review F3: a cue armed 20 ms out had its precheck STOP at T-0.02 s -
+    straight into the trigger. Not begun with less than the hold + 0.2 s
+    left, and nothing is logged about it."""
+    bus = RecoveringBus("padding")
+    bus.stalled = False
+    runner = recovery_runner(bus)                # the REAL hold, 5 s
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2)})
+    assert wait_until(lambda: session.phase == READY, timeout=10.0)
+    armed_at = time.monotonic()
+    at = armed_at + 1.0
+    session.fire("c1", at)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
+    runner.stop()
+    assert runner.precheck is None
+    assert not [line for line in runner.recent(30) if "precheck" in line]
+    # Nothing but the trigger from the moment the cue was armed (the
+    # prepare's own stops went out before that, and are not this cue's).
+    assert in_the_hold(bus, at, hold=at - armed_at) == []
+
+
+def test_the_precheck_waits_for_the_last_picture_to_finish():
+    """Review F1: the gate is the last cue's own floor - its refresh plus its
+    span - not a flat 9.5 s. Inside it the check is not begun at all, and
+    it runs once the floor has passed if the window is still open."""
+    bus = RecoveringBus("padding")
+    bus.stalled = False
+    runner = recovery_runner(bus, precheck=6.0)
+    now = time.monotonic()
+    runner._guard_floor = now + 30.0             # a picture still drawing
+    runner._precheck(bus, 2, "c2", now + 5.6)
     assert runner.precheck is None and bus.sent == []
-    # ...and once the repaint is certainly over (PRECHECK_AFTER_FIRE_S) it
-    # runs like any other.
-    runner._prechecked = None
-    runner._last_show_at = time.monotonic() - 20.0
-    runner._precheck(bus, 2, "c2")
+    runner._guard_floor = now - 1.0              # ...and now it is done
+    runner._precheck(bus, 2, "c2", time.monotonic() + 5.6)
     assert runner.precheck is not None and runner.precheck["cue"] == "c2"
-    # Once per cue, never twice.
     before = dict(runner.precheck)
-    runner._precheck(bus, 2, "c2")
-    assert runner.precheck == before
+    runner._precheck(bus, 2, "c2", time.monotonic() + 5.5)
+    assert runner.precheck == before             # once per cue
 
 
-def test_the_fast_paths_fit_in_the_window_before_a_cue():
-    """The bounds the whole design rests on, measured with the REAL settle.
-    Every write of this fake blocks 0.36 s, as radxa-07's did."""
-    from ui.runner import PAD_SETTLE_S, PRECHECK_S
+def test_a_precheck_block_below_the_threshold_is_not_put_on_the_record():
+    """Review F1(d): a 120 ms block right before a cue is not the state this
+    exists for, and it must not paint an amber mark on the tile."""
+    bus = RecoveringBus("never", seconds=0.12)
+    runner = recovery_runner(bus, precheck=6.0)
+    runner._precheck(bus, 2, "c1", time.monotonic() + 5.6)
+    assert runner.precheck["before_ms"] >= 100
+    assert runner.bus_stall is None
+
+
+def test_the_fast_paths_fit_their_budgets():
+    """The bounds the design rests on, measured with the REAL settle; every
+    write of this fake blocks 0.36 s, as radxa-07's did."""
+    from ui.runner import FAST_REOPEN_BUDGET_S, PAD_BUDGET_S, PAD_SETTLE_S
 
     padded = RecoveringBus("padding", seconds=0.36)
-    runner = recovery_runner(padded, pad_settle=PAD_SETTLE_S)
+    runner = recovery_runner(padded, pad_settle=PAD_SETTLE_S, precheck=20.0,
+                             remote_guard_hold=HOLD)
     began = time.perf_counter()
-    runner._precheck(padded, 2, "c1")
+    runner._precheck(padded, 2, "c1", time.monotonic() + 15.0)
     padding_path = time.perf_counter() - began
     assert runner.precheck["by"] == "padding"
-    # The measuring STOP (~0.36 s) + the padding + PAD_SETTLE_S + the STOP
-    # that checks it: about 0.83 s, well inside the window.
-    assert padding_path < 1.0, padding_path
+    # The measuring STOP + the padding + PAD_SETTLE_S + the STOP that checks
+    # it: about 0.83 s. The padding's own budget excludes the measuring STOP.
+    assert padding_path - 0.36 < PAD_BUDGET_S + 0.36, padding_path
 
     both = RecoveringBus("reopen", seconds=0.36)
-    runner = recovery_runner(both, pad_settle=PAD_SETTLE_S)
+    runner = recovery_runner(both, pad_settle=PAD_SETTLE_S, precheck=20.0,
+                             remote_guard_hold=HOLD)
     began = time.perf_counter()
-    runner._precheck(both, 2, "c1")
+    runner._precheck(both, 2, "c1", time.monotonic() + 15.0)
     whole_path = time.perf_counter() - began
     assert runner.precheck["by"] == "reopen"
-    # ...and with the reopen behind it, about 1.2 s - inside PRECHECK_S,
-    # which is what lets the trigger keep its own instant.
-    assert whole_path < PRECHECK_S, whole_path
+    assert whole_path < 0.36 + PAD_BUDGET_S + 0.36 + FAST_REOPEN_BUDGET_S, \
+        whole_path
 
     healthy = RecoveringBus("reopen")
     healthy.stalled = False
     runner = recovery_runner(healthy)
     began = time.perf_counter()
     runner._fast_reopen(healthy, 2)
-    reopen_alone = time.perf_counter() - began
-    assert reopen_alone < 1.2, reopen_alone
+    assert time.perf_counter() - began < 1.2
     # No probe sweep in it: only the broadcast stop and the master's config.
     assert [f.dest for f in healthy.requested] == [1]
     assert runner._setup_owed is True      # the sweep is owed, not taken
 
 
-def test_a_step_there_is_no_time_for_before_the_cue_is_not_begun():
-    """A bus nothing fixes must not make the cue late on top of everything
-    else: the last step is simply not started, and the idle recovery has it
-    afterwards."""
+def test_a_step_there_is_no_time_for_before_the_hold_is_not_begun():
+    """Every step has to hand its last frame over before T - hold. A bus
+    nothing fixes must not push a STOP into the hold on top of everything
+    else: the step is simply not begun, and the idle recovery has it."""
     from ui.runner import PAD_SETTLE_S
 
     bus = RecoveringBus("never", seconds=0.36)
-    runner = recovery_runner(bus, pad_settle=PAD_SETTLE_S)
-    # Room for the measuring STOP (0.36 s) and the padding (PAD_BUDGET_S),
-    # and none for the reopen behind it.
-    at = time.monotonic() + 1.35
-    began = time.perf_counter()
-    runner._precheck(bus, 2, "q05", deadline=at)
-    took = time.perf_counter() - began
+    runner = recovery_runner(bus, pad_settle=PAD_SETTLE_S, precheck=20.0,
+                             remote_guard_hold=HOLD)
+    # Room for the measuring STOP (0.36 s) and the padding (PAD_BUDGET_S)
+    # before the hold, and none for the reopen behind it.
+    at = time.monotonic() + HOLD + 1.4
+    runner._precheck(bus, 2, "q05", at)
     assert bus.padded == [16] and bus.reopened == []
-    assert took < 1.35, took
+    assert time.monotonic() < at - HOLD + 0.4    # nothing ran on into the hold
     assert runner.precheck["by"] is None
     assert any("no time to reopen" in line for line in runner.recent(20))
 
     # ...and with no room even for the padding, the check is the one frame
     # it began with and nothing else.
     bare = RecoveringBus("never", seconds=0.36)
-    runner = recovery_runner(bare, pad_settle=PAD_SETTLE_S)
-    runner._precheck(bare, 2, "q06", deadline=time.monotonic() + 0.2)
+    runner = recovery_runner(bare, pad_settle=PAD_SETTLE_S, precheck=20.0,
+                             remote_guard_hold=HOLD)
+    runner._precheck(bare, 2, "q06", time.monotonic() + HOLD + 0.6)
     assert bare.padded == [] and bare.reopened == []
     assert any("no time before the cue" in line for line in runner.recent(20))
 
+
+def test_precheck_zero_switches_the_check_off():
+    bus = RecoveringBus("padding", seconds=0.25)
+    runner = recovery_runner(bus, precheck=0)
+    runner._precheck(bus, 2, "c1", time.monotonic() + 5.6)
+    assert runner.precheck is None and bus.sent == []
+    assert runner.precheck_s == 0
+
+
+# ---- the probe sweep a fast reopen owes (review F5) ----
+
+def test_a_re_enumeration_before_a_cue_puts_nothing_into_its_picture(monkeypatch):
+    """The reviewer's scenario (review_T4/t_owed.py): the port re-enumerates
+    at T-1.7 s while the cue is armed. The watcher reopens it - the port
+    ONLY, since a frame there would be inside the hold - the cue fires on
+    time, and the probe sweep that is now owed does NOT follow straight on
+    behind the show frame: not one 0x17 or 0x1B between the trigger and
+    that cue's guard floor. It runs after it."""
+    bus = RecoveringBus("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+    names = ["/dev/ttyACM0"]
+    monkeypatch.setattr("ui.runner.find_port", lambda: names[-1])
+    stamps = []
+    send, request = bus.send, bus.request
+
+    def stamped_send(frame):
+        send(frame)
+        stamps.append((time.monotonic(), frame.cmd))
+
+    def stamped_request(frame, retries=3, timeout=None):
+        stamps.append((time.monotonic(), frame.cmd))
+        return request(frame, retries=retries, timeout=timeout)
+    bus.send, bus.request = stamped_send, stamped_request
+
+    runner = recovery_runner(bus, port=None, link_token=bus.token,
+                             port_poll=0.02, port_back_wait=1.0)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2)}, span_s=0.5,
+                    refresh_s=0.8)
+    assert wait_until(lambda: session.phase == READY, timeout=10.0)
+    at = time.monotonic() + 2.0
+    session.fire("c1", at)
+    time.sleep(0.3)
+    names.append("/dev/ttyACM1")
+    bus.unplug(back_as="/dev/ttyACM1")
+    assert wait_until(lambda: session.phase == FIRED, timeout=5.0)
+    fired = session.fired_at
+    floor = runner._guard_floor
+    assert floor is not None and floor > fired + 1.0
+    # The owed sweep, after the floor: per-board probes of both boards.
+    assert wait_until(lambda: any(t > floor and cmd == CFG
+                                  for t, cmd in stamps), timeout=5.0)
+    runner.stop()
+    assert bus.reopened == ["/dev/ttyACM1"]
+    assert abs(session.status()["late_ms"]) < 100
+    between = [(round(t - fired, 3), hex(cmd)) for t, cmd in stamps
+               if fired < t < floor - 0.02 and cmd in (STOP, CFG)]
+    assert between == [], between
+    # ...and nothing but the trigger in the hold before it either: the
+    # reopen at T-1.7 s was the port alone.
+    assert [cmd for t, cmd in stamps
+            if at - 5.0 < t < at and cmd != SHOW and t > at - 1.8] == []
+    assert any("port only" in line for line in runner.recent(40))
+
+
+def test_the_owed_sweep_waits_for_the_run_to_end_or_a_minute_of_quiet():
+    bus = RecoveringBus("padding")
+    bus.stalled = False
+    runner = recovery_runner(bus, recover_quiet=60.0)
+    session = RemoteSession(runner)
+    now = time.monotonic()
+    runner._guard_floor = now + 5.0
+    assert runner._owed_setup_clear(session) is False     # picture drawing
+    runner._guard_floor = now - 1.0
+    session.playing = lambda: True
+    assert runner._owed_setup_clear(session) is False     # a run in flight
+    session.playing = lambda: False
+    session.arm("c1", 1)
+    session.fire("c1", time.monotonic() + 30.0)
+    assert runner._owed_setup_clear(session) is False     # a cue in 30 s
+    session.cancel()
+    assert runner._owed_setup_clear(session) is True
+    runner.stop()
+
+
+# ---- noticing a re-enumeration at once ----
 
 def test_a_re_enumeration_is_found_at_once_and_the_port_comes_back(monkeypatch):
     """Today the unit notices a lost port at its next WRITE - up to 20 s
@@ -2304,6 +2434,108 @@ def test_a_port_that_does_not_come_back_is_left_to_the_ordinary_ladder():
     assert runner._port_watch(bus, 2) is False
     assert bus.reopened == []
     assert any("port gone for" in line for line in runner.recent(20))
+
+
+def test_the_wait_for_the_port_never_runs_past_a_trigger(monkeypatch):
+    bus = RecoveringBus("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+    monkeypatch.setattr("ui.runner.find_port", lambda: None)
+    runner = recovery_runner(bus, port=None, link_token=bus.token,
+                             port_poll=0.01, port_back_wait=3.0)
+    bus.unplug(back_as="/dev/nothing")
+    at = time.monotonic() + 0.4
+    assert runner._port_watch(bus, 2, at=at) is False
+    assert time.monotonic() < at + 0.05          # back before the trigger
+    assert any("not waiting past it" in line for line in runner.recent(20))
+
+
+def test_the_wait_for_the_port_lets_go_of_a_cancelled_cue(monkeypatch):
+    bus = RecoveringBus("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+    monkeypatch.setattr("ui.runner.find_port", lambda: None)
+    runner = recovery_runner(bus, port=None, link_token=bus.token,
+                             port_poll=0.01, port_back_wait=3.0)
+    bus.unplug(back_as="/dev/nothing")
+    cancelled_at = time.monotonic() + 0.3
+    began = time.monotonic()
+    assert runner._port_watch(bus, 2, at=time.monotonic() + 10.0,
+                              wanted=lambda: time.monotonic() < cancelled_at) \
+        is False
+    assert time.monotonic() - began < 0.3 + 0.2   # noticed within 200 ms
+
+
+def test_the_watcher_stands_aside_for_the_probing_sweep_and_its_switch():
+    bus = RecoveringBus("reopen", port="/dev/ttyACM0")
+    bus.stalled = False
+    runner = recovery_runner(bus, port=None, link_token=bus.token,
+                             port_poll=0.01)
+    bus.unplug(back_as="/dev/ttyACM0")            # comes straight back
+    bus.gone, bus.back_as = "/dev/ttyACM0", "/dev/elsewhere"
+    runner._probing = True
+    assert runner._port_watch(bus, 2) is False and bus.reopened == []
+    runner._probing = False
+    off = recovery_runner(bus, port=None, link_token=bus.token,
+                          port_poll=0.01, port_watch=False)
+    assert off._port_watch(bus, 2) is False and bus.reopened == []
+
+
+# ---- the recovery the operator asks for respects the picture (review F6) ----
+
+def test_the_endpoint_refuses_while_the_last_picture_is_drawing():
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus)
+    session = RemoteSession(runner)
+    runner._guard_floor = time.monotonic() + 12.3
+    agent = Agent(session, port=0, host="127.0.0.1", name="radxa-07")
+    agent.start()
+    try:
+        code, answer = call(agent, "/bus/recover", {})
+    finally:
+        agent.stop()
+        runner.stop()
+    assert code == 409
+    assert answer["error"] == "a repaint is in progress - try again in 13 s"
+    assert bus.padded == [] and bus.reopened == []
+
+
+def test_a_gate_that_closes_before_the_worker_takes_the_job_still_refuses():
+    bus = RecoveringBus("padding")
+    bus.stalled = False
+    runner = recovery_runner(bus)
+    session = RemoteSession(runner)
+    session.arm("c1", 1)                          # a worker on the port
+    assert wait_until(lambda: bus.sent, timeout=5.0)
+    # The request passed its gates a moment ago; now a picture has begun.
+    runner._guard_floor = time.monotonic() + 30.0
+    job = {"done": threading.Event(), "result": None}
+    session._recover_job = job
+    session.wake()
+    assert job["done"].wait(5.0)
+    runner.stop()
+    assert job["result"]["error"].startswith("a repaint is in progress")
+    assert bus.padded == [] and bus.reopened == []
+
+
+def test_no_auto_recover_leaves_a_stalling_bus_to_the_operator():
+    bus = RecoveringBus("padding")
+    runner = recovery_runner(bus, auto_recover=False)
+    runner.remote = RemoteSession(runner)
+    runner._maybe_recover(bus, 2, 359.0)
+    runner._maybe_recover(bus, 2, 359.0)
+    assert runner.bus_recovery is None and bus.padded == []
+
+
+def test_the_status_says_which_kill_switches_are_on():
+    session, runner, bus = make_session()
+    status = session.status()
+    assert status["precheck_s"] == 6.0
+    assert status["port_watch"] is True and status["auto_recover"] is True
+    runner.stop()
+    off = make_runner(FakeBus(), precheck=0, port_watch=False,
+                      auto_recover=False)
+    status = RemoteSession(off).status()
+    assert status["precheck_s"] == 0
+    assert status["port_watch"] is False and status["auto_recover"] is False
 
 
 def test_a_re_send_that_still_stalls_is_not_tried_a_third_time():

@@ -677,26 +677,15 @@ class RemoteSession:
         null with recovered true is "there was nothing wrong", which is
         the honest answer to a button pressed on a healthy unit.
 
-        Refused (409) while anything else could want the bus: a show
-        running or holding, a cue armed within RECOVER_QUIET_S, an OTA.
-        A recovery reopens the port, and there is no way to give a cue
-        the port back in the middle of that.
+        Refused (409) while anything else could want the bus - see
+        recover_refusal(), which the worker asks AGAIN when it takes the
+        job: the gate can close in the moment between the two (a START
+        arriving, a picture beginning), and it is the later answer that
+        counts.
         """
-        if self.busy():
-            raise RemoteError("unit is busy (firmware update, scan or reboot)")
-        if self.playing():
-            raise RemoteError("a show is running - stop it first")
-        with self._lock:
-            at = self.fire_at if self.phase == ARMED else None
-        if at is not None:
-            left = at - self._clock()
-            # The runner's own quiet window, read off the runner rather
-            # than imported: this module imports nothing of ours (see
-            # ui/runner.py's import of READY), and a test that compresses
-            # the window compresses this gate with it.
-            if left < self.runner.recover_quiet:
-                raise RemoteError(f"a cue fires in {max(0.0, left):.0f} s - "
-                                  f"stop the show first")
+        refusal = self.recover_refusal()
+        if refusal:
+            raise RemoteError(refusal)
         done = threading.Event()
         job = {"done": done, "result": None}
         with self._lock:
@@ -714,7 +703,48 @@ class RemoteSession:
                 if self._recover_job is job:
                     self._recover_job = None
             raise RemoteError("the worker did not answer in time")
-        return dict(job["result"] or {})
+        result = dict(job["result"] or {})
+        if result.get("error"):
+            # The worker found a gate closed when it came to the job.
+            raise RemoteError(result["error"])
+        return result
+
+    def recover_refusal(self) -> "str | None":
+        """Why a bus recovery may not run now, or None when it may.
+
+        A recovery reopens the port and sends frames, so it stands aside
+        for everything a cue or a picture could be hurt by (review F6):
+
+        * an OTA, a scan or a reboot owning the unit;
+        * a show being played or held;
+        * a cue armed within the runner's recover_quiet (60 s);
+        * the last cue's picture still drawing - the runner's
+          `_guard_floor`, its refresh plus its span: a STOP into a sweep
+          leaves the change half-drawn, and a master busy repainting reads
+          as a stall and would be "recovered" by a reopen it never needed.
+
+        The runner's numbers are read off the runner rather than imported:
+        this module imports nothing of ours (see ui/runner.py's import of
+        READY), and a test that compresses them compresses these gates.
+        """
+        if self.busy():
+            return "unit is busy (firmware update, scan or reboot)"
+        if self.playing():
+            return "a show is running - stop it first"
+        with self._lock:
+            at = self.fire_at if self.phase == ARMED else None
+        if at is not None:
+            left = at - self._clock()
+            if left < self.runner.recover_quiet:
+                return (f"a cue fires in {max(0.0, left):.0f} s - "
+                        f"stop the show first")
+        floor = getattr(self.runner, "_guard_floor", None)
+        if floor is not None:
+            left = floor - time.monotonic()
+            if left > 0:
+                return (f"a repaint is in progress - try again in "
+                        f"{math.ceil(left)} s")
+        return None
 
     def take_recover_job(self) -> "dict | None":
         with self._lock:
@@ -1038,6 +1068,12 @@ class RemoteSession:
                 # "ago_s"}. `before_ms` of 1-2 ms with `by` null is the
                 # normal answer - the port was fine and nothing was done.
                 "precheck": _with_age(runner.precheck),
+                # The three kill switches as the unit is actually running
+                # them (ui/main.py's --precheck SECONDS, --no-port-watch,
+                # --no-auto-recover), so the PC can see which are on.
+                "precheck_s": runner.precheck_s,
+                "port_watch": bool(runner.port_watch),
+                "auto_recover": bool(runner.auto_recover),
                 "burn": burn,
                 # Taking the pictures back out of slots 1-18 after the
                 # show (see the module docstring): {"state", "done",

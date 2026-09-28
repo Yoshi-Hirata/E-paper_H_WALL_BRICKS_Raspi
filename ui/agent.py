@@ -34,11 +34,15 @@ a show.
                      "by": "padding" | "reopen" | null, "before_ms",
                      "after_ms"} - `by` null with recovered true is
                      "there was nothing wrong", which is what a healthy
-                     unit answers. Bounded at ~11 s of work, 15 s of
+                     unit answers. Bounded at ~6 s of work, 15 s of
                      waiting. Refused (409) while a show is running or
-                     holding, while a cue is armed within the minute, or
+                     holding, while a cue is armed within the minute,
+                     while the last cue's picture is still drawing ("a
+                     repaint is in progress - try again in N s"), or
                      during an OTA: it reopens the port, and there is no
                      giving a cue the port back in the middle of that.
+                     The worker asks all of it again when it takes the
+                     job, and answers the same 409 if a gate has closed
                      /status carries the last one as `bus_recovery`
 
     POST /show/load    the unit's whole show file (conductor/showfile.py);

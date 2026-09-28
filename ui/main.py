@@ -27,8 +27,8 @@ from .puller import RepoPuller
 from .rebooter import Rebooter
 from .remote import RemoteSession
 from .showplay import ShowPlayer
-from .runner import (DEFAULT_BOARDS, REMOTE_GUARD_S, VERIFY_AFTER_S,
-                     WITNESS_ANY, WITNESS_USB, DemoRunner)
+from .runner import (DEFAULT_BOARDS, PRECHECK_S, REMOTE_GUARD_S,
+                     VERIFY_AFTER_S, WITNESS_ANY, WITNESS_USB, DemoRunner)
 from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
                       usb_rebind)
 from .versions import BoardVersions
@@ -328,6 +328,26 @@ def main() -> int:
                          "repaints the same slot twice - off by default")
     ap.add_argument("--no-resend-on-stall", action="store_true",
                     help="(kept for older service files) the default")
+    # Kill switches for the bus recovery (ui/runner.py, docs/SPECIFICATION.md
+    # 4.4). All on by default; each one is reported in /status, so the PC
+    # can see what a unit is actually running.
+    ap.add_argument("--precheck", type=float, default=PRECHECK_S,
+                    metavar="SECONDS",
+                    help=f"how long before each cue the unit checks its "
+                         f"serial bus with one timed STOP and puts a stall "
+                         f"right (default {PRECHECK_S:g}; 0 switches it "
+                         f"off). Never inside the 5 s before a trigger, "
+                         f"never inside the last picture. At 6 s it can "
+                         f"only diagnose a 2026-09-28-class bus; 6.5 fits "
+                         f"the padding and 8.5 the port reopen as well")
+    ap.add_argument("--no-port-watch", action="store_true",
+                    help="do not watch the USB device node every 0.2 s; a "
+                         "re-enumeration is then found at the next write, "
+                         "as before 2026-09-28")
+    ap.add_argument("--no-auto-recover", action="store_true",
+                    help="do not recover the bus on its own after two "
+                         "stalled heartbeats; the PC's Recover bus button "
+                         "still works")
     ap.add_argument("--verify-after", type=float, default=VERIFY_AFTER_S,
                     help=f"seconds after a cue's broadcast (and after the "
                          f"witness board's own sweep start) before that "
@@ -400,7 +420,10 @@ def main() -> int:
                         verify_after=args.verify_after,
                         verify_witness=args.verify_witness,
                         resend_on_stall=(args.resend_on_stall
-                                         and not args.no_resend_on_stall))
+                                         and not args.no_resend_on_stall),
+                        precheck=args.precheck,
+                        port_watch=not args.no_port_watch,
+                        auto_recover=not args.no_auto_recover)
 
     firmware = Path(args.firmware) if args.firmware else find_firmware()
     images = [firmware] if args.firmware else find_firmware_images()
