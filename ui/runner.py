@@ -252,7 +252,7 @@ PAD_SETTLE_S = 0.45
 # radxa-07, 2026-09-28, stalled frames were never executed - the preset
 # wrote slot 1 and no panel moved - but that is one degradation on one
 # unit, not a proof about every one, so the operator turns this on
-# knowing the trade. docs/SPECIFICATION.md 4.12 has both halves.
+# knowing the trade. docs/SPECIFICATION.md 4.5.1 has both halves.
 RESEND_STALL_MS = STALL_RECOVER_MS
 # ---- the fast paths: about a second, and the next cue on time ----
 # The idle recovery above is for the stretch after the last cue, where

@@ -2668,7 +2668,7 @@ def test_no_auto_recover_leaves_a_stalling_bus_to_the_operator():
 def test_the_status_says_which_kill_switches_are_on():
     session, runner, bus = make_session()
     status = session.status()
-    assert status["precheck_s"] == 8.5       # PM: both cures fit (SPEC 4.4)
+    assert status["precheck_s"] == 8.5       # PM: both cures fit (SPEC 4.5)
     assert status["port_watch"] is True and status["auto_recover"] is True
     runner.stop()
     off = make_runner(FakeBus(), precheck=0, port_watch=False,

@@ -181,6 +181,17 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
 .cue-hold.dragging { cursor: grabbing; opacity: .8; z-index: 4; outline: 2px dashed var(--accent); }
 .tl-wrap { position: relative; }
 #playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--err); pointer-events: none; z-index: 3; }
+/* Where the music ends (2026-09-28) - index.html's same marker: an amber
+   dashed line with its words at the ruler, the show after it hatched as
+   silence. Drawn only when the music ends inside the show. */
+#music-end { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--warn); pointer-events: none; z-index: 2; }
+#music-end span { position: absolute; top: 2px; left: 4px; white-space: nowrap; font-size: 10.5px; font-weight: 600;
+  color: var(--warn); background: var(--panel); padding: 0 3px; border-radius: 2px; }
+#music-end.flip span { left: auto; right: 6px; }
+#music-silence { position: absolute; top: 22px; bottom: 0; right: 0; pointer-events: none; z-index: 1;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, var(--line) 6px 8px); }
+#music-silence span { position: absolute; bottom: 2px; left: 6px; font-size: 10.5px; color: var(--dim); }
+#music-note:empty { display: none; }
 #ph-head { position: absolute; top: -11px; left: 50%; transform: translateX(-50%); z-index: 4;
   cursor: ew-resize; pointer-events: auto; padding: 0 6px; touch-action: none; }
 #ph-head svg { display: block; }

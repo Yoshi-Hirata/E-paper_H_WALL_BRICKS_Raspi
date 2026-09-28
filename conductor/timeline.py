@@ -119,7 +119,27 @@ GAP_AFTER_REFRESH_S = 1.0
 SLOT_CAPACITY = 20
 MAX_CUES_PER_UNIT = 18
 
+# A show.json with no `duration` is a 10-minute show, as it always was.
+# The longest a show may be set to is 15:00 (2026-09-28: the show's music
+# became a 10:54 track, 「15分まで延長し」) - the Timeline's Show length
+# field, POST /api/show and Load show / Load bundle all refuse more with
+# DURATION_TOO_LONG. The units themselves have no ceiling of their own
+# (ui/showplay.py only reads the number), so this is the one place it lives;
+# conductor/web/index.html and the simulator mirror it (tests check).
 DEFAULT_DURATION_S = 600.0
+MAX_DURATION_S = 900.0
+DURATION_TOO_LONG = "A show is at most 15:00"
+
+
+def check_duration(value) -> float:
+    """A show length as the operator or a show file gave it (seconds, or
+    'm:ss'), in seconds - or ValueError saying why it cannot be one."""
+    seconds = parse_clock(value)
+    if not seconds >= 1:          # NaN too: `not nan >= 1` is True
+        raise ValueError("the show lasts at least 1 s")
+    if seconds > MAX_DURATION_S:
+        raise ValueError(DURATION_TOO_LONG)
+    return seconds
 
 _CLOCK = re.compile(r"^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)\s*$")
 

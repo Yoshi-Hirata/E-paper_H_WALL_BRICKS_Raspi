@@ -854,9 +854,7 @@ class Workspace:
     def set_timeline(self, duration, cues, refresh=None) -> None:
         """Replace the whole timeline; the page always posts all of it.
         `refresh` (seconds a repaint takes) is kept when not given."""
-        duration = timeline.parse_clock(duration)
-        if not 1 <= duration <= 6 * 3600:
-            raise ValueError("the show lasts between 1 s and 6 h")
+        duration = timeline.check_duration(duration)     # 1 s .. 15:00
         cues = timeline.clean(cues)
         changes = {"duration": duration, "cues": cues}
         if refresh is not None:
@@ -1056,10 +1054,7 @@ class Workspace:
                              f"is not supported (want {SHOW_FORMAT_VERSION})")
         changes: dict = {}
         if "duration" in payload:
-            duration = timeline.parse_clock(payload["duration"])
-            if not 1 <= duration <= 6 * 3600:
-                raise ValueError("the show lasts between 1 s and 6 h")
-            changes["duration"] = duration
+            changes["duration"] = timeline.check_duration(payload["duration"])
         # An explicit null means "I am not setting it", the same as leaving the
         # key out - set_timeline()'s own contract for `refresh`, and what a
         # hand-made show file is likeliest to mean by it (review, 2026-09-26).
@@ -2567,7 +2562,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.workspace.assign(body["item"], body.get("unit") or None)
                 return self._json({"ok": True})
             if self.path == "/api/show":
-                self.workspace.set_timeline(body.get("duration", 600),
+                self.workspace.set_timeline(body.get("duration", timeline.DEFAULT_DURATION_S),
                                             body.get("cues", []),
                                             body.get("refresh_s"))
                 return self._json({"ok": True})

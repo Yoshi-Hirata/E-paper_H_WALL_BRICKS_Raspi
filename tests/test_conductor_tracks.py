@@ -153,15 +153,22 @@ _PROBE = """
       out.afterLink = cueRow("Look22");
 
       // 7. The time fields read the designers' own mm.ss as well as m:ss,
-      //    and the show cannot be set past 99:59.
+      //    and the show cannot be set past 15:00 (refused, not clamped).
       out.clocks = CLOCK_INPUTS.map(s => [s, parseTimeField(s)]);
       out.clockHint = CLOCK_HINT;
       out.maxShow = MAX_SHOW_DURATION_S;
+      var before = state.show.duration;
       var dur = document.querySelector("#duration");
-      dur.value = "999.00";
+      dur.value = "15.01";
       dur.dispatchEvent(new Event("change", { bubbles: true }));
       await wait(500);
-      out.clamped = { duration: state.show.duration, toast: toastNow() };
+      out.refused = { before: before, duration: state.show.duration, toast: toastNow(),
+                      field: document.querySelector("#duration").value };
+      dur = document.querySelector("#duration");
+      dur.value = "15:00";
+      dur.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait(500);
+      out.fifteen = state.show.duration;
       dur = document.querySelector("#duration");
       dur.value = "8.30";
       dur.dispatchEvent(new Event("change", { bubbles: true }));
@@ -315,13 +322,16 @@ def test_a_time_field_reads_exactly_what_conductor_look_reads(tracks):
     assert "mm.ss" in look.CLOCK_HINT and "seconds" in look.CLOCK_HINT
 
 
-def test_the_show_cannot_be_set_past_99_59(tracks):
-    assert tracks["maxShow"] == 99 * 60 + 59
-    clamped = tracks["clamped"]
-    assert clamped["duration"] == 99 * 60 + 59, clamped
-    # Clamped OUT LOUD: a show length silently different from what was
-    # typed is the kind of thing nobody notices until the run-through.
-    assert "99:59" in clamped["toast"], clamped
+def test_the_show_cannot_be_set_past_15_00(tracks):
+    assert tracks["maxShow"] == 15 * 60
+    refused = tracks["refused"]
+    # Refused OUT LOUD, and the field goes back to what the show really is:
+    # a show length silently different from what was typed is the kind of
+    # thing nobody notices until the run-through.
+    assert refused["duration"] == refused["before"], refused
+    assert refused["toast"] == "A show is at most 15:00", refused
+    assert refused["field"] != "15.01", refused
+    assert tracks["fifteen"] == 900, tracks["fifteen"]
     # A plain mm.ss length still lands where it says.
     assert tracks["mmssDuration"] == 8 * 60 + 30, tracks["mmssDuration"]
 

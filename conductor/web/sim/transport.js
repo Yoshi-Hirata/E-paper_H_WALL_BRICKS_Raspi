@@ -37,6 +37,7 @@
   //   onPlayhead(t),                          cheap per-frame DOM poke (marker position, time labels)
   //   onThumbTick(t),                         throttled (~100ms) redraw of the looks row
   //   toast(msg),
+  //   onMusicLength(),                        optional: the music's length became known (or went)
   // }
   function create(cfg) {
     const player = new Audio();
@@ -44,6 +45,29 @@
     let playing = false, anchor = 0, startT = 0, playhead = 0;
     let seeking = false;               // a manual scrub is in progress - tick() must not fight it
     let lastThumbAt = 0;
+    // Past the end of the music, the show goes on in silence to its END on
+    // the wall clock (2026-09-28: a show may now be longer than its music -
+    // index.html's ui.pastMusic, the same rule). The show's clock is the
+    // master: at END the music stops with it, however much is left.
+    let pastMusic = false;
+    const MUSIC_END_SLACK_S = 0.05;
+    function musicLength() {
+      return playerUrl && Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0;
+    }
+    function runOnPastTheMusic(t) { pastMusic = true; anchor = performance.now(); startT = t; }
+    // A seek while playing: past the end of the track the wall clock runs
+    // on from there; back inside it, the music picks up again.
+    function followSeek(t) {
+      if (!playing || !playerUrl) return;
+      const len = musicLength();
+      if (len > 0 && t >= len - MUSIC_END_SLACK_S) { player.pause(); runOnPastTheMusic(t); }
+      else if (pastMusic) {
+        pastMusic = false;
+        player.currentTime = t;
+        const p = player.play();
+        if (p?.catch) p.catch(err => { playing = false; cfg.onPlayingChange(false); cfg.toast("Could not play the music: " + err.message); });
+      }
+    }
 
     function updatePlayheadDom(t) { cfg.onPlayhead(t); }
 
@@ -56,10 +80,16 @@
     function tick() {
       if (!playing) return;
       if (!cfg.isActive()) { pausePlayback(); return; }
-      if (playerUrl && player.paused) { pausePlayback(); return; }
+      // Paused by itself (autoplay policy, media keys) stops the preview;
+      // the track having ENDED does not - `ended` is read here as well as
+      // listened for, since this frame can see the pause before the event.
+      if (playerUrl && !pastMusic && player.paused) {
+        if (player.ended) runOnPastTheMusic(Math.max(playhead, player.currentTime));
+        else { pausePlayback(); return; }
+      }
       if (seeking) { requestAnimationFrame(tick); return; }
       const D = cfg.duration();
-      let t = playerUrl ? player.currentTime : (performance.now() - anchor) / 1000 + startT;
+      let t = playerUrl && !pastMusic ? player.currentTime : (performance.now() - anchor) / 1000 + startT;
       if (t >= D) { haltPlaybackAt(D); return; }
       playhead = t;
       updatePlayheadDom(t);
@@ -70,7 +100,12 @@
     function startPlayback() {
       if (playing || !cfg.isActive()) return;
       playing = true;
-      if (playerUrl) {
+      pastMusic = false;
+      const len = musicLength();
+      if (playerUrl && len > 0 && playhead >= len - MUSIC_END_SLACK_S) {
+        player.pause();                  // nothing left to hear, but the show goes on
+        runOnPastTheMusic(playhead);
+      } else if (playerUrl) {
         player.currentTime = playhead;
         const p = player.play();
         if (p?.catch) p.catch(err => { playing = false; cfg.onPlayingChange(false); cfg.toast("Could not play the music: " + err.message); });
@@ -83,11 +118,13 @@
     function pausePlayback() {
       if (!playing) return;
       playing = false;
+      pastMusic = false;
       player.pause();
       cfg.onPlayingChange(false);
     }
     function stopPlayback() {
       playing = false;
+      pastMusic = false;
       player.pause();
       if (playerUrl) player.currentTime = 0;
       playhead = 0;
@@ -110,11 +147,21 @@
       playhead = t;
       updatePlayheadDom(t);
       cfg.onThumbTick(t);
-      if (playerUrl) player.currentTime = t;
+      if (playerUrl) { player.currentTime = t; followSeek(t); }
       else if (playing) { anchor = performance.now(); startT = t; }
     }
-    player.addEventListener("ended", () => { if (playing) haltPlaybackAt(player.currentTime); });
+    // The track ended before the show: carry on in silence (it used to stop
+    // dead here, at the end of the track rather than the end of the show).
+    player.addEventListener("ended", () => {
+      if (playing && !pastMusic) runOnPastTheMusic(Math.max(playhead, player.currentTime));
+    });
     player.addEventListener("seeked", () => { seeking = false; });
+    // A media key can play() the ended element under a show running on past
+    // it - which restarts the track at 0:00. Put it straight back.
+    for (const ev of ["play", "playing"])
+      player.addEventListener(ev, () => { if (playing && pastMusic) player.pause(); });
+    for (const ev of ["loadedmetadata", "durationchange", "emptied"])
+      player.addEventListener(ev, () => { if (cfg.onMusicLength) cfg.onMusicLength(); });
 
     function setMusic(url) {
       if (url === playerUrl) return;
@@ -123,6 +170,7 @@
       if (url) player.src = url;
       else { player.removeAttribute("src"); player.load(); }
       playing = false;
+      pastMusic = false;
       cfg.onPlayingChange(false);
     }
 
@@ -165,7 +213,7 @@
       if (!phDrag) return;
       phDrag = null;
       const t = playhead;
-      if (playerUrl) player.currentTime = t;
+      if (playerUrl) { player.currentTime = t; followSeek(t); }
       else if (playing) { anchor = performance.now(); startT = t; }
       // Unconditionally (adversarial review, 2026-09-25), not only in the
       // no-music branch: the playerUrl branch was relying on the audio
@@ -181,13 +229,31 @@
       MAX_MUSIC,
       get playing() { return playing; },
       get playhead() { return playhead; },
+      get pastMusic() { return pastMusic; },
+      get musicLength() { return musicLength(); },
       setMusic, play: startPlayback, pause: pausePlayback, stop: stopPlayback, toggle: togglePlayback,
       seek: seekTo, beginDrag, dragMove, endDrag, cancelDrag,
       get seeking() { return seeking; },
     };
   }
 
+  // The music's length against the show's (index.html's musicEndInfo(), the
+  // same answers; `clock` is the page's own time format):
+  //   label   "music ends 10.54"        marker  the music ends inside the show
+  //   silence show left after the music note    the music outlasts the show
+  //   fit     Fit to music's length: rounded UP, at most `max`
+  //   tooLong the music is longer than any show can be
+  function musicEndInfo(music, show, max, clock) {
+    if (!(music > 0) || !(show > 0)) return null;
+    const whole = Math.max(1, Math.ceil(music - 0.001));
+    const over = music - show;
+    return { at: music, label: "music ends " + clock(music),
+             marker: music <= show, silence: Math.max(0, show - music),
+             note: over > 0.001 ? `music continues ${clock(Math.max(1, over))} past the end of the show` : "",
+             fit: Math.min(max, whole), tooLong: whole > max };
+  }
+
   globalThis.SIM = Object.assign(globalThis.SIM || {}, {
-    transport: { create, MAX_MUSIC },
+    transport: { create, MAX_MUSIC, musicEndInfo },
   });
 })();

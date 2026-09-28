@@ -329,7 +329,7 @@ def main() -> int:
     ap.add_argument("--no-resend-on-stall", action="store_true",
                     help="(kept for older service files) the default")
     # Kill switches for the bus recovery (ui/runner.py, docs/SPECIFICATION.md
-    # 4.4). All on by default; each one is reported in /status, so the PC
+    # 4.5). All on by default; each one is reported in /status, so the PC
     # can see what a unit is actually running.
     ap.add_argument("--precheck", type=float, default=PRECHECK_S,
                     metavar="SECONDS",
