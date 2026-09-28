@@ -20,6 +20,7 @@ DIM = (176, 186, 200)        # secondary text: labels, log, hints
 ACCENT = (120, 205, 255)     # headers
 OK = (110, 235, 140)
 ERR = (255, 105, 105)
+WARN = (255, 190, 80)        # amber: worth a look, not a fault
 BAR = (30, 33, 40)           # header/hint strips, distinct from the black
 SELECT = (0, 82, 140)        # selected menu row
 
@@ -210,6 +211,26 @@ def running_screen(pattern_label: str, elapsed: float, cycle: int,
     return image
 
 
+def usb_board_line(usb_board: dict, shared: bool = False
+                   ) -> "tuple[str, tuple]":
+    """'SERIAL 5CF26F473930  TYPE 3930' and its tint: amber for a type
+    other than the fleet's usual 324C, red when there is no serial.
+
+    `shared` (the scan found several boards - the 485 is in): the serial
+    is still only the board on the USB cable, while the target comes from
+    the scan, so it is named as that and nothing more -
+    'USB BOARD 5CF2…3930', dim (review of 59fbded, LOW-3)."""
+    serial = usb_board.get("serial")
+    family = usb_board.get("family")
+    if not serial:
+        return "SERIAL none - no USB serial", ERR
+    if shared:
+        short = serial if len(serial) <= 9 else f"{serial[:4]}…{serial[-4:]}"
+        return f"USB BOARD {short}", DIM
+    return (f"SERIAL {serial}  TYPE {family}",
+            DIM if family == "324C" else WARN)
+
+
 _UPDATE_STATUS = {
     "idle": ("READY", ACCENT),
     "flashing": ("FLASHING", OK),
@@ -224,11 +245,16 @@ def update_screen(firmware: str, size: int, addr: int, phase: str,
                   error: str | None = None,
                   locked: bool = False,
                   host: str | None = None,
-                  image_choice: str = "") -> Image.Image:
+                  image_choice: str = "",
+                  usb_board: "dict | None" = None,
+                  bus_shared: bool = False) -> Image.Image:
     """Firmware update: image, target board, transfer bar, log tail.
 
     `phase` is one of ui.updater's IDLE/FLASHING/VERIFYING/DONE/FAILED.
     `image_choice` ("2/3") says there are other builds: LEFT/RIGHT.
+    `usb_board` (transport.usb_board_info, read at the scan) puts the USB
+    board's SERIAL and TYPE on a line of its own under the bar, so the
+    operator sees which board is about to be written before KEY1.
     """
     image, draw = _blank()
     status, color = _UPDATE_STATUS.get(phase, (phase.upper(), DIM))
@@ -261,8 +287,14 @@ def update_screen(firmware: str, size: int, addr: int, phase: str,
         draw.text((WIDTH - 8 - FONT_S.getlength("see log"), 92), "see log",
                   font=FONT_S, fill=ERR)
 
-    draw.line((8, 108, WIDTH - 8, 108), fill=BAR, width=1)
-    y = 112
+    top = 108
+    if usb_board is not None:
+        text, tint = usb_board_line(usb_board, shared=bus_shared)
+        draw.text((8, 106), _ellipsize(text, FONT_S, WIDTH - 16),
+                  font=FONT_S, fill=tint)
+        top = 122
+    draw.line((8, top, WIDTH - 8, top), fill=BAR, width=1)
+    y = top + 4
     for line in log_lines[-LOG_LINES:]:
         tint = ERR if "ERROR" in line else DIM
         draw.text((8, y), _ellipsize(line, FONT_S, WIDTH - 16),
@@ -547,6 +579,64 @@ def versions_screen(rows: list[tuple[int, str]], status: str, phase: str,
         hint = "scanning - please wait"
     else:
         hint = "UP/DOWN  KEY1 rescan  KEY2 menu"
+    _hint(draw, hint)
+    return image
+
+
+_TONE = {"": FG, "warn": WARN, "err": ERR}
+
+
+def boardinfo_screen(lines: "list[tuple[str, str, str]]", reading: bool,
+                     usb_line: str = "", locked: bool = False,
+                     host: str | None = None) -> Image.Image:
+    """BOARD INFO: the board on the USB cable (ui/boardinfo.py).
+
+    `lines` is BoardInfo.lines(): (key, value, tone) - the key in the left
+    column, the value wrapped to as many lines as it needs so it reads in
+    full ("3930 (differs from most: 324C)"); a key of "" gives the value
+    the whole width. `usb_line` is the small print above the hint strip.
+    """
+    image, draw = _blank()
+    _header(draw, "BOARD INFO", status="READING" if reading else None,
+            status_color=OK, host=host)
+    top, bottom, key_w = 32, HEIGHT - 42, 62
+
+    def layout(font, line_h, gap):
+        placed, y = [], top
+        for key, value, tone in lines:
+            width = WIDTH - 16 - (key_w if key else 0)
+            wrapped = _wrap(value, font, width)
+            placed.append((y, key, wrapped, tone))
+            y += line_h * len(wrapped) + gap
+        return placed, y - gap
+
+    # The values in the 15 px face when they fit (they do on the Radxa's
+    # DejaVu with every text BoardInfo writes, at two lines apiece), the
+    # 12 px face when a longer one would push the last row off the screen.
+    font, line_h = FONT_M, 18
+    placed, end = layout(font, line_h, 6)
+    if end > bottom:
+        font, line_h = FONT_S, 15
+        placed, end = layout(font, line_h, 4)
+    for y, key, wrapped, tone in placed:
+        if key:
+            draw.text((8, y + (3 if font is FONT_M else 0)), key,
+                      font=FONT_S, fill=DIM)
+        x = 8 + key_w if key else 8
+        for line in wrapped:
+            if y + line_h > bottom + 4:
+                break
+            draw.text((x, y), line, font=font, fill=_TONE.get(tone, FG))
+            y += line_h
+    if usb_line:
+        draw.text((8, HEIGHT - 38), _ellipsize(usb_line, FONT_S, WIDTH - 16),
+                  font=FONT_S, fill=DIM)
+    if locked:
+        hint = "buttons locked"
+    elif reading:
+        hint = "reading FW - please wait"
+    else:
+        hint = "KEY1 read again  KEY2 menu"
     _hint(draw, hint)
     return image
 

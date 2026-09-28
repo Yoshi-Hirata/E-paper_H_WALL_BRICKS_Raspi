@@ -187,6 +187,26 @@ def test_the_board_list_a_unit_works_to_reaches_the_tile(fleet, units):
     assert snap()["radxa-09"]["board_ids"] == []
 
 
+def test_the_master_on_the_usb_cable_reaches_the_tile(fleet, units):
+    # The board on a unit's USB cable is the only one it can name (its USB
+    # serial); a type other than the fleet's usual 324C is marked on the
+    # tile. The whole way: runner -> session -> /status -> UnitLink.snapshot().
+    units["radxa-01"].runner._usb_board_info = lambda port: {
+        "serial": "5CF26F473930", "family": "3930", "vid_pid": "0483:5740",
+        "bcd": "0200"}
+
+    def snap():
+        return {u["name"]: u for u in fleet.snapshot()["units"]}
+
+    assert snap()["radxa-01"]["usb_board"] is None   # no worker on the port yet
+    fleet.prepare({"radxa-01": payload("c1", 3)})
+    assert wait_until(lambda: units["radxa-01"].session.phase == "ready")
+    assert wait_until(lambda: snap()["radxa-01"]["usb_board"] is not None)
+    assert snap()["radxa-01"]["usb_board"] == {"serial": "5CF26F473930",
+                                               "family": "3930"}
+    assert snap()["radxa-09"]["usb_board"] is None   # never answered
+
+
 def test_the_tile_knows_the_shows_boards_and_when_it_was_uploaded():
     # The two halves of "this unit is not in the state it should be":
     # the ids THIS show gives the unit, and how long ago it was written

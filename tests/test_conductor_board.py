@@ -698,6 +698,20 @@ CALLS = {
                                                  "before_ms": 359.0,
                                                  "after_ms": 358.0}}]],
     "recover_report_of_nothing": ["recoverReport", []],
+    # ---- which board is the unit's master (/status usb_board)
+    "usb_board_odd": ["usbBoard", _u(usb_board={"serial": "5CF26F473930",
+                                                "family": "3930"})],
+    "usb_board_usual": ["usbBoard", _u(usb_board={"serial": "48E8854C324C",
+                                                  "family": "324C"})],
+    "usb_board_other": ["usbBoard", _u(usb_board={"serial": "0123456789AB",
+                                                  "family": "other"})],
+    "usb_board_not_said": ["usbBoard", _u()],
+    "usb_board_null": ["usbBoard", _u(usb_board=None)],
+    "usb_board_no_serial": ["usbBoard", _u(usb_board={"serial": None,
+                                                      "family": None})],
+    "usb_board_offline": ["usbBoard", _u(online=False,
+                                         usb_board={"serial": "5CF26F473930",
+                                                    "family": "3930"})],
 }
 
 # The row texts, one per state the board has to be right in.
@@ -1265,6 +1279,41 @@ def test_an_agent_too_old_to_list_its_boards_is_not_guessed_at(board):
     assert "boards ?/4" in old_two["text"], old_two["text"]
 
 
+USB_BOARD_TOOLTIP = ("This board's MCU serial differs from most boards (…324C)."
+                     " Two such boards behaved differently (colours) on"
+                     " 2026-09-28. Only the board on the USB cable can be"
+                     " identified.")
+
+
+def test_a_master_of_another_type_is_marked_amber_and_says_why(board):
+    """2026-09-28: most masters' USB serials end in 324C; two ended in 3930
+    and behaved differently. The tile names the master and marks the odd
+    type - and says in the tooltip that only the USB board can be named."""
+    r = board["results"]
+    odd = r["usb_board_odd"]
+    assert odd["text"] == "master 5CF26F473930" and odd["odd"] is True, odd
+    assert odd["mark"] == "MCU ID 3930"
+    assert odd["title"] == USB_BOARD_TOOLTIP
+    usual = r["usb_board_usual"]
+    assert usual["text"] == "master 48E8854C324C" and usual["odd"] is False
+    assert usual["mark"] == ""
+    # A serial of neither known type is odd too, and named by its tail.
+    other = r["usb_board_other"]
+    assert other["odd"] is True and other["mark"] == "MCU ID 89AB", other
+    # Nothing to say: not said yet, an old agent, no serial, or offline.
+    for key in ("usb_board_not_said", "usb_board_null", "usb_board_no_serial",
+                "usb_board_offline"):
+        assert r[key] is None, (key, r[key])
+
+
+def test_the_tile_draws_the_master_line_from_the_decision_layer():
+    line = _function_body("usbBoardLine")
+    assert "SHOWBOARD.usbBoard(u)" in line and 'class="vf re"' in line
+    assert "${usbBoardLine(u)}" in _function_body("renderTiles")
+    # Existing colour tokens only - no new colour in the page for this.
+    assert re.search(r"\.tile \.mb \{ color: var\(--dim\);", PAGE)
+
+
 # ------------------------------------------------- the whole page, running
 #
 # The half above asks the pure layer questions. This one boots the real
@@ -1521,7 +1570,9 @@ class _Stand:
                         # radxa-02 is a third of a second behind this PC AND
                         # one board short - either on its own is red.
                         "units": [_unit("radxa-01", show=show, clear=clear,
-                                        bus_stall=_STALLS[stand.stall]),
+                                        bus_stall=_STALLS[stand.stall],
+                                        usb_board={"serial": "48E8854C324C",
+                                                   "family": "324C"}),
                                   _unit("radxa-02", show_lag_ms=330.0, show=show,
                                         live=2, live_ids=[17, 18], absent=[20],
                                         clear=clear,
@@ -1534,6 +1585,8 @@ class _Stand:
                                   # not said, as an older agent would not.
                                   _unit("radxa-05", show=show, clear=clear,
                                         usb_reset_ok=False,
+                                        usb_board={"serial": "5CF26F473930",
+                                                   "family": "3930"},
                                         phase=("local" if stand.local5
                                                else "ready"),
                                         owned=not stand.local5)],
@@ -1929,6 +1982,14 @@ _PAGE_PROBE = """
         function (t) { return t.textContent.indexOf("no usb reset on this unit") >= 0; });
       out.usbMarkTiles = [].map.call(document.querySelectorAll("#tiles .tile"),
         function (t) { return t.textContent.slice(0, 40); });
+      //     ...and the master's USB serial on its own small line, amber
+      //     "MCU ID 3930" only where the type is not the usual 324C.
+      out.masterLines = [].map.call(document.querySelectorAll("#tiles .tile"),
+        function (t) {
+          var m = t.querySelector(".mb"), v = m && m.querySelector(".vf.re");
+          return [t.textContent.slice(0, 40), m ? m.textContent : null,
+                  v ? v.textContent : null, v ? v.getAttribute("title") : null];
+        });
       // 17. Recover bus is on every ONLINE tile while nothing runs - healthy
       //     ones included, for the pre-show check (review M3).
       out.recoverOnTiles = [].map.call(document.querySelectorAll("#tiles .tile"),
@@ -2406,6 +2467,20 @@ def test_a_unit_that_cannot_reset_usb_is_marked_before_the_show(page):
               if on]
     assert len(marked) == 1 and "radxa-05" in marked[0], (
         page["usbMarkTiles"], page["usbMark"])
+
+
+def test_each_tile_names_its_master_and_marks_the_odd_type(page):
+    lines = {name: (line, mark, title)
+             for text, line, mark, title in page["masterLines"]
+             for name in ("radxa-01", "radxa-02", "radxa-03", "radxa-04",
+                          "radxa-05") if name in text}
+    assert lines["radxa-01"] == ("master 48E8854C324C", None, None), lines
+    assert lines["radxa-05"][0] == "master 5CF26F473930MCU ID 3930", lines
+    assert lines["radxa-05"][1] == "MCU ID 3930"
+    assert lines["radxa-05"][2] == USB_BOARD_TOOLTIP
+    # Not said (an older agent) or offline: no line at all.
+    for name in ("radxa-02", "radxa-03", "radxa-04"):
+        assert lines[name] == (None, None, None), (name, lines[name])
 
 
 def test_recover_bus_can_be_pressed_on_a_healthy_unit(page):

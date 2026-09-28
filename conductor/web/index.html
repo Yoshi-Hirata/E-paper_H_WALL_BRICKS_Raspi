@@ -289,6 +289,7 @@ input[type=range] { width: 100%; }
 /* "Recover bus", beside the stall mark it belongs to: a button the size of
    the words around it, never one that redraws the tile's line height. */
 button.small { font-size: 11px; padding: 1px 6px; vertical-align: baseline; }
+.tile .mb { color: var(--dim); font-size: 11px; margin-top: 2px; }
 .tile .l { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 .go { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 10px; }
 .go button.big { padding: 7px 16px; font-weight: 600; }
@@ -4172,11 +4173,41 @@ const SHOWBOARD = (() => {
              offline: false, missing: b.missing };
   }
 
+  // ---- which board is the unit's master (/status usb_board) ----
+  // The boards carry no printed serial or type; the one on the unit's USB
+  // cable - its master - is the only one a unit can name, from its USB
+  // serial (the STM32's unique ID). Most of the fleet's masters end in
+  // 324C; two read ...3930 and behaved differently (one showed wrong
+  // colours in a solid-colour demo although FW_260923 went in without
+  // error, 2026-09-28). So: the serial on a small line, and an amber mark
+  // for any type that is not the usual one. Nothing for a unit that has not
+  // said (null: no worker has had its port yet, or an agent too old to say),
+  // for a master whose serial could not be read, or for an offline unit,
+  // whose last answer may be about a master since unplugged.
+  const USB_BOARD_COMMON = "324C";
+  const USB_BOARD_WHY = "This board's MCU serial differs from most boards"
+    + " (…324C). Two such boards behaved differently (colours) on"
+    + " 2026-09-28. Only the board on the USB cable can be identified.";
+  function usbBoard(u) {
+    const b = u && u.online ? u.usb_board : null;
+    if (!b || typeof b !== "object" || !b.serial) return null;
+    const serial = String(b.serial);
+    const family = b.family ? String(b.family) : "";
+    const odd = !!family && family !== USB_BOARD_COMMON;
+    return { text: "master " + serial, odd,
+             // "MCU ID", not "board type": the suffix is the tail of the
+             // MCU's unique ID - not a proven board type (review of 59fbded).
+             mark: odd ? "MCU ID " + (family === "other" ? serial.slice(-4) : family) : "",
+             title: odd ? USB_BOARD_WHY
+               : "The USB serial of the board on this unit's USB cable - the"
+                 + " only board a unit can identify." };
+  }
+
   return { AMBER_S, RED_S, FIRED_S, LAG_BAD_MS, RTT_SLOW_MS, RESTART_S, ARROWS,
            STALL_STREAK_N, STALL_FRESH_S, STALL_DEGRADED_MS,
            mmss, secs, arrow, tone, isBag, phase, atRest, rowAt, rowText,
            ahead, firedAgo, header, boardsOf, busStall, vitals,
-           owned, recoverTargets, recoverText, recoverReport };
+           owned, recoverTargets, recoverText, recoverReport, usbBoard };
 })();
 // <<< /SHOWBOARD >>>
 
@@ -5040,6 +5071,16 @@ function usbResetMark(u) {
 // unit's own `owned`, never the phase): after an Upload that includes a unit
 // still reading `local`; a unit on its own menu or demo, or idle in the PC's
 // white standby, gets none - it would refuse, and must not be taken over.
+// The master's USB serial on a small line of its own, and the amber
+// "MCU ID 3930" beside it when it is not the fleet's usual 324C
+// (SHOWBOARD.usbBoard() decides both, and the tooltip).
+function usbBoardLine(u) {
+  const m = SHOWBOARD.usbBoard(u);
+  if (!m) return "";
+  return `<div class="mb" title="${esc(m.title)}">${esc(m.text)}`
+    + (m.odd ? `<span class="vf re" title="${esc(m.title)}">${esc(m.mark)}</span>` : "")
+    + `</div>`;
+}
 function recoverButton(u) {
   if (!u || !u.online || showMidRun() || !SHOWBOARD.owned(u)) return "";
   return ` <button class="small" data-recover-bus="${esc(u.name)}" `
@@ -5186,6 +5227,7 @@ function renderTiles() {
       <div class="row"><span>Pictures</span><b>${picturesText(u)}${restartMark(u)}${clearText(u)}</b></div>
       <div class="row"><span>On unit</span><b>${demosOnUnitHtml(u)}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
+      ${usbBoardLine(u)}
       ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}
       ${u.unit_error ? `<div class="e">${esc(u.unit_error)}</div>` : ""}
       ${u.refused ? `<div class="e">${esc(u.refused)}</div>` : ""}

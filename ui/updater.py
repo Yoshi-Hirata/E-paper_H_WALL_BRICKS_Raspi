@@ -43,7 +43,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 import serial
 
 import ota
-from epaper.transport import Bus, find_port, port_serial
+from epaper.transport import (USB_BOARD_READ_S, Bus, find_port, port_serial,
+                              usb_board_info, usb_board_info_bounded)
 
 from . import flashlog
 from .config import LOG_HISTORY
@@ -149,7 +150,8 @@ class FirmwareUpdater:
                  verify_wait: float = VERIFY_WAIT_S, echo_log: bool = True,
                  serial_of=port_serial,
                  flash_log: Path = flashlog.DEFAULT_PATH,
-                 images: list[Path] | None = None):
+                 images: list[Path] | None = None,
+                 board_info=usb_board_info):
         """`firmware` is the image offered first; `images` every image the
         operator may switch to (default: the one given, or the repo's)."""
         self.firmware = Path(firmware) if firmware else None
@@ -162,6 +164,15 @@ class FirmwareUpdater:
         if self.firmware is not None and self.firmware not in self.images:
             self.images.append(self.firmware)
         self._serial_of = serial_of
+        # The USB board's SERIAL and TYPE for the confirm screen
+        # (transport.usb_board_info - the descriptor only, no frame):
+        # read at every scan, None until the first one.
+        self._board_info = board_info
+        self.usb_board: dict | None = None
+        self._usb_board_guard = threading.Lock()
+        # Set by ui/main.py to the runner's note_usb_board: a read made
+        # here (runner stopped, the unit its own) also fills /status.
+        self.usb_board_sink = None
         self.flash_log = Path(flash_log)
         self.boards = list(boards) if boards else list(range(1, 21))
         self.port = port
@@ -333,7 +344,27 @@ class FirmwareUpdater:
             if self.addr == addr and not self.busy:
                 self.board_state = state
 
+    def _read_usb_board(self) -> None:
+        """On the probe thread, bounded (transport.usb_board_info_bounded):
+        a descriptor read can hang behind a USB reset, and the scan must go
+        on regardless - a read that does not come back shows as "none"."""
+        def work(_):
+            port = self.port or self._locate()
+            return dict(self._board_info(port) or {}) if port else None
+        try:
+            got = usb_board_info_bounded(None, USB_BOARD_READ_S, read=work,
+                                         guard=self._usb_board_guard)
+        except Exception:                 # noqa: BLE001 - shown as "none"
+            got = None
+        self.usb_board = got or {"serial": None, "family": None}
+        if got and self.usb_board_sink is not None:
+            try:
+                self.usb_board_sink(got)      # the runner's /status cache
+            except Exception:                 # noqa: BLE001 - optional
+                pass
+
     def _scan(self) -> None:
+        self._read_usb_board()
         result = self._with_bus(lambda bus: ota.scan(bus, self.boards))
         if self.busy or self._probe_pending is not None:
             return                      # superseded by a newer request

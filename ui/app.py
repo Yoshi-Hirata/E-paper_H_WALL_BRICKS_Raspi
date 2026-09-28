@@ -21,6 +21,15 @@ FW VERSION asks every configured address its OTA state (0x29) and
 lists what each answering board runs (ui/versions.py) - the runner is
 stopped for the scan and stays stopped on the way out, no repaint.
 
+BOARD INFO (ui/boardinfo.py, the last row) names the board on the USB cable - the only
+one a unit can name: its USB serial (the STM32 unique ID), its TYPE (the
+serial's last four characters; most of the fleet reads 324C), what FW
+VERSION's own scan says it runs, and this unit's flash record for it.
+The serial, type and record are read without a byte on the wire; the FW
+line is FW VERSION's scan (the runner is stopped for it, the same way),
+and is not read at all while the PC drives the unit. KEY1 reads again,
+KEY2 goes back to the menu.
+
 GIT PULL, the last row, updates the checkout itself: `git pull
 --ff-only` in the repo the service runs from (ui/puller.py), and when
 the commit moved KEY1 exits the process - the service is Restart=always,
@@ -116,6 +125,7 @@ class Screen(Enum):
     RUNNING = "running"
     UPDATE = "update"
     VERSIONS = "versions"
+    BOARDINFO = "boardinfo"
     PULL = "pull"
     REBOOT = "reboot"
     REMOTE = "remote"
@@ -140,7 +150,7 @@ class App:
                  relock_after: float = RELOCK_AFTER_S,
                  clock=time.monotonic, updater=None, puller=None,
                  host: str | None = None, versions=None, rebooter=None,
-                 remote=None, player=None, demos=None):
+                 remote=None, player=None, demos=None, boardinfo=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -160,6 +170,12 @@ class App:
         self.rebooter = rebooter
         if rebooter is not None:
             self.patterns.append(rebooter.menu_entry)
+        # BOARD INFO is the last row, so GIT PULL and REBOOT keep theirs.
+        # It reads FW through `versions` (the same worker, so its scan
+        # already counts in remote.busy below).
+        self.boardinfo = boardinfo
+        if boardinfo is not None:
+            self.patterns.append(boardinfo.menu_entry)
         # The show PC's session (ui/remote.py). It may not take the port
         # while something that must not be interrupted holds the unit.
         self.remote = remote
@@ -277,6 +293,9 @@ class App:
             return
         if self.screen is Screen.VERSIONS:
             self._handle_versions(event)
+            return
+        if self.screen is Screen.BOARDINFO:
+            self._handle_boardinfo(event)
             return
         if self.screen is Screen.REBOOT:
             self._handle_reboot(event)
@@ -408,6 +427,49 @@ class App:
             # white repaint (the scan only sent PLAY_STOP and 0x29, the
             # panels still hold whatever they showed before).
             self.screen = Screen.MENU
+        self._dirty = True
+
+    def _handle_boardinfo(self, event: str) -> None:
+        if self.boardinfo.busy:
+            return                  # the FW read holds the port; let it finish
+        if event in ("key1", "press"):
+            self._read_boardinfo()
+        elif event == "key2":
+            # Like FW VERSION: straight back, no repaint, runner stopped.
+            self.screen = Screen.MENU
+        self._dirty = True
+
+    def _pc_driving(self) -> bool:
+        """Is the show PC in charge of this unit right now - its session
+        active or on the port, or its show on the garment? Then BOARD INFO
+        leaves the port alone and does not read FW."""
+        remote = self.remote
+        if remote is not None:
+            if remote.active:
+                return True
+            owned = getattr(remote, "owned", None)
+            if callable(owned) and owned():
+                return True
+        player = self.player
+        if player is not None:
+            if player.is_demo and self._playing_demo is not None:
+                return True
+            if self._pc_show_wins(player) is not None:
+                return True
+        return False
+
+    def _read_boardinfo(self) -> None:
+        read_fw = not self._pc_driving()
+        if read_fw and self.versions is not None:
+            # FW VERSION's scan needs the port to itself - stopped the same
+            # way _enter_versions() stops it.
+            self.runner.stop()
+            self._standby = False
+        self.boardinfo.read(read_fw)
+
+    def _enter_boardinfo(self) -> None:
+        self._read_boardinfo()
+        self.screen = Screen.BOARDINFO
         self._dirty = True
 
     def _enter_versions(self) -> None:
@@ -771,6 +833,9 @@ class App:
         if self.patterns[self.selected].key == "versions":
             self._enter_versions()
             return
+        if self.patterns[self.selected].key == "boardinfo":
+            self._enter_boardinfo()
+            return
         if self.patterns[self.selected].key == "reboot":
             self._enter_reboot()
             return
@@ -843,13 +908,20 @@ class App:
                 updater.phase, updater.board_state, updater.done,
                 updater.recent(LOG_LINES), error=updater.error,
                 locked=self.locked, host=self.host,
-                image_choice=updater.image_choice)
+                image_choice=updater.image_choice,
+                usb_board=getattr(updater, "usb_board", None),
+                bus_shared=bool(getattr(updater, "bus_shared", False)))
         if self.screen is Screen.VERSIONS:
             versions = self.versions
             return render.versions_screen(
                 versions.rows, versions.status, versions.phase,
                 versions.bundled, offset=versions.offset, locked=self.locked,
                 host=self.host)
+        if self.screen is Screen.BOARDINFO:
+            info = self.boardinfo
+            return render.boardinfo_screen(
+                info.lines(), info.busy, usb_line=info.usb_line(),
+                locked=self.locked, host=self.host)
         if self.screen is Screen.PULL:
             puller = self.puller
             return render.pull_screen(
@@ -916,11 +988,17 @@ class App:
                 return ("update", updater.phase, updater.addr,
                         updater.board_state, updater.done, updater.size,
                         tuple(updater.recent(LOG_LINES)), updater.error,
-                        self.locked)
+                        self.locked,
+                        tuple(sorted((getattr(updater, "usb_board", None)
+                                      or {}).items())),
+                        bool(getattr(updater, "bus_shared", False)))
             if self.screen is Screen.VERSIONS:
                 versions = self.versions
                 return ("versions", versions.phase, tuple(versions.rows),
                         versions.status, versions.offset, self.locked)
+            if self.screen is Screen.BOARDINFO:
+                return ("boardinfo", self.boardinfo.key(),
+                        self.boardinfo.busy, self.locked)
             if self.screen is Screen.PULL:
                 puller = self.puller
                 return ("pull", puller.phase, puller.before, puller.after,

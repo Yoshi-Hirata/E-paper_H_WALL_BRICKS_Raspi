@@ -378,6 +378,13 @@ class UnitLink:
                 # this unit" on the tile; None (not asked yet, or an agent
                 # too old to say) puts nothing.
                 "usb_reset_ok": status.get("usb_reset_ok"),
+                # The board on the unit's USB cable (its master), as the
+                # unit read it off the USB descriptor: {"serial", "family"}
+                # - family "324C" like most of the fleet, or "3930" /
+                # "other", which the tile marks amber (two 3930 boards
+                # behaved differently, 2026-09-28). None until the unit's
+                # worker has had the port, or from an agent too old to say.
+                "usb_board": status.get("usb_board"),
                 # Whether the PC's worker holds the unit's port - the only
                 # time Recover bus means anything (ui/remote.py's owned()).
                 # Missing from an agent too old to say, which also has no

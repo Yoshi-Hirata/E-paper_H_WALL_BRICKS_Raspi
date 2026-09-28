@@ -364,6 +364,11 @@ def make_runner(bus, **kwargs):
     # empty or silent wall. DegradedMaster's tests supply reset_available.
     kwargs.setdefault("usb_reset_check",
                       lambda port: (False, "not in the tests"))
+    # ...nor the real USB descriptor read behind /status usb_board: the
+    # same answer on every machine (a board with no serial), unless a test
+    # of that field supplies its own.
+    kwargs.setdefault("usb_board_info",
+                      lambda port: {"serial": None, "family": None})
     return DemoRunner(open_bus=lambda port: bus, **kwargs)
 
 
