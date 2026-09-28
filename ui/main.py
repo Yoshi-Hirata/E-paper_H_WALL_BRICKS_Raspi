@@ -375,10 +375,12 @@ def main() -> int:
                          "still works")
     ap.add_argument("--no-keep-away", action="store_true",
                     help="do not send the keep-away stop: by default the "
-                         "master never goes 60 s without a broadcast STOP "
-                         "while the PC drives the unit - once 40 s have "
+                         "master is not left 60 s without a broadcast STOP "
+                         "(while the PC drives the unit, in a local demo "
+                         "and in a long burn) - once 40 s have "
                          "passed one goes out after the last picture is "
-                         "complete and 1.5 s or more before the next cue, "
+                         "complete and 1.5 s (at the closest 1.0 s) before "
+                         "the next cue, "
                          "even inside the heartbeat's own hold (the master "
                          "resumes its factory autoplay ~85 s after the last "
                          "STOP; SPECIFICATION 4.6)")

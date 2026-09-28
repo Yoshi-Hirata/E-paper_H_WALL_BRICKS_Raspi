@@ -187,9 +187,11 @@ Timeline タブの **Load bundle…**(演出家のシミュレーターの Save 
 **絵が描き終わって 0.5 秒後、次のキューの 1.5 秒以上前**の最初の瞬間に STOP を
 1 つ送る(ログ `keep-away stop (40 s since the last stop, 5.4 s before 35)`)。
 キューが詰まりすぎてその隙間が無いときは 1 度だけ
-`keep-away: no room for a stop between these cues (cues 9.5 s apart)` と言い、
-キューの 0.5 秒前までに入れる。オペレーターがすることは無い(止めるのは
-`--no-keep-away`、SPECIFICATION 4.6)。
+`keep-away: no room for a stop between these cues (cues 9.8 s apart)` と言い、
+キューの 1.0 秒前までに入れる。これで守れるのは、キューの間隔が「絵の完成 +
+1.5 秒」(8 秒の絵なら 9.5 秒)以上のとき ―― それより詰まった間には STOP を
+置けない。ローカルのデモ(SOLID16 など)と長い Upload の焼き込みでも同じように
+送る。オペレーターがすることは無い(止めるのは `--no-keep-away`、SPECIFICATION 4.6)。
 Timeline の CUES の上に琥珀色で
 `AZ271SC6302: 76 s of cues without room for a stop (8:23–9:30) - leave 2 s after a
 picture is complete` と出たら、その衣装のキューが「絵の完成 + 2 秒」より詰まって
