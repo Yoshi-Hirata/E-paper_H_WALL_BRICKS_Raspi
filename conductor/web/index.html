@@ -718,12 +718,7 @@ const ui = { tab: "items", item: null, design: null, mode: "design", view: "outs
              // nextLeadUntil is when a NEXT the operator just pressed
              // actually fires (performance.now() + the lead), which is what
              // the header counts down during the lead.
-             // startLeadUntil is the same for ③ START: when the show the
-             // operator just started reaches the position it was started
-             // from. Only read for a START from a mark (the position is not
-             // negative then); from 0:00 the countdown reads straight off
-             // the negative position, on every tab and after a reload.
-             bagsOpen: false, stage: false, nextLeadUntil: 0, startLeadUntil: 0 };
+             bagsOpen: false, stage: false, nextLeadUntil: 0 };
 let fleet = null;
 let state = null;
 // The last GET /api/fleet/demos answer ({units: {unit: [demo,...]}, offline: [unit,...]}),
@@ -3720,14 +3715,57 @@ function clearAfterNote() {
 // Never part of what an Upload writes - changing it asks for no Upload.
 const START_COUNTDOWN_DEFAULT_S = 11, START_COUNTDOWN_MIN_S = 3, START_COUNTDOWN_MAX_S = 60;
 const COUNTDOWN_TITLE = "③ START の後、ショーが 0:00 になるまでのカウントダウン"
-  + "(既定 11 秒 = -0:11 から)。ショーと一緒に保存。"
+  + "(既定 11 秒 = -0:11 から)。ショーと一緒に保存。0:00 から始めるときに使う。"
+  + "途中位置からの START は「NEXT / MOVE take effect in」の秒数を使う。"
   + "\n\nHow long ③ START counts down (-0:11 ... -0:01) before the show's 0:00 "
-  + "- the music starts at 0:00. 3 to 60 s, stored with the show. NEXT / MOVE "
-  + "keep their own lead (the field on the right). No Upload needed to change it.";
+  + "- the music starts at 0:00. 3 to 60 s, stored with the show. No Upload "
+  + "needed to change it.\n\nUsed when the show starts from 0:00. A start from "
+  + "a mark uses \"NEXT / MOVE take effect in\".";
 function startCountdown() {
   const s = Number(state && state.show && state.show.start_countdown_s);
   return Number.isFinite(s) && s >= START_COUNTDOWN_MIN_S && s <= START_COUNTDOWN_MAX_S
     ? s : START_COUNTDOWN_DEFAULT_S;
+}
+const NEXT_NOT_YET = "The show has not started yet";
+// A typed number of seconds, read the way the server reads it: NFKC first (so
+// full-width "１１" is 11), then rounded to a tenth exactly as Python's
+// round(x, 1) does - to the nearest tenth of the double's exact value, an
+// exact tie to the even tenth - and only THEN range-checked, so 2.96 is 3.0
+// on both sides. null when it is not a number in [low, high].
+function parseSeconds(text, low, high) {
+  const clean = String(text === null || text === undefined ? "" : text).normalize("NFKC").trim();
+  // Plain decimal only - Number() would take "0x10" and Python's float()
+  // "1_1"; the server applies this same pattern (check_start_countdown).
+  if (!/^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$/.test(clean)) return null;
+  const x = Number(clean);
+  if (!Number.isFinite(x)) return null;
+  // A double lies exactly halfway between two tenths only when it is a
+  // whole number of quarters and not of halves (x.25, x.75 - a tenth's
+  // denominator has a 5 no binary fraction can hold); x * 4 and x * 2 are
+  // exact. Anything else, toFixed() rounds the double's exact value - which
+  // is what round() does too (7.35 is 7.3499... in both, so 7.3).
+  const tie = Number.isInteger(x * 4) && !Number.isInteger(x * 2);
+  const floor = Math.floor(x * 10);                    // exact for a tie
+  const tenth = tie
+    ? (floor % 2 === 0 ? floor : floor + 1) / 10      // an exact tie: to even
+    : Number(x.toFixed(1));
+  return tenth >= low && tenth <= high ? tenth : null;
+}
+// The save of a typed countdown still on its way to the server, so a ③ START
+// pressed straight after the typing waits for it (and uses the new value).
+let countdownSaving = null;
+function saveCountdown(seconds) {
+  countdownSaving = (async () => {
+    try {
+      const answer = await api("/api/show/start_countdown", { s: seconds });
+      if (answer && answer.error) toast(`Could not save it: ${answer.error}`);
+    } catch (err) {
+      toast(`Could not save it: ${err.message}`);
+    }
+    await refresh();                  // re-renders, the field included
+  })();
+  const mine = countdownSaving;
+  return mine.finally(() => { if (countdownSaving === mine) countdownSaving = null; });
 }
 // ---- THE SHOW's NOW -> NEXT board ---------------------------------------
 // Under the big clock: one header line saying what fires next and in how
@@ -3970,11 +4008,6 @@ const SHOWBOARD = (() => {
         && now.agoS >= 0 && now.agoS < FIRED_S) out.fired = true;
     if (now.leadLeft !== null && now.leadLeft !== undefined && now.leadLeft > 0)
       out.note = "NEXT in " + secs(now.leadLeft) + " s";
-    // A START from a mark (not 0:00) never reads negative - the position runs
-    // up to the mark - so the page hands over what is left of that lead.
-    else if (now.phase === "running" && now.startLeft !== null
-             && now.startLeft !== undefined && now.startLeft > 0 && now.t >= 0)
-      out.note = "START in " + secs(now.startLeft) + " s";
     const first = (now.groups || [])[0] || null;
     const cd = now.phase === "running" ? countdown(now.t) : null;
     if (cd) {
@@ -4445,12 +4478,6 @@ function boardThumb(cache, box, item, colors, shifts) {
   cache.colors = new Map();
   box.querySelectorAll("g[data-k]").forEach(el => cache.circles.set(el.dataset.k, el.querySelector("circle")));
 }
-// Seconds left of the ③ START lead this page just sent, or null. Only read
-// for a START from a mark; from 0:00 the negative position says it all.
-function startLeftS() {
-  const ms = ui.startLeadUntil - performance.now();
-  return ms > 0 ? ms / 1000 : null;
-}
 // The 250 ms repaint. Text, classes and a handful of circle fills - never
 // innerHTML, unless the timeline itself changed under it (boardSig) or a
 // garment settled on a new design.
@@ -4485,7 +4512,6 @@ function paintBoard() {
                                groups: SHOWBOARD.ahead(all, t), names,
                                agoS: SHOWBOARD.firedAgo(all, t),
                                leadLeft: leadMs > 0 ? leadMs / 1000 : null,
-                               startLeft: startLeftS(),
                                cleared: clearedPhase() });
   const H = BOARD.head;
   if (H) {
@@ -4716,9 +4742,9 @@ function showClockText() {
     // ③ START's countdown: "START in 11 s" over a big -0:11, counting to
     // 0:00 in the board's own 10 s / 3 s colours (SHOWBOARD.countdown).
     const cd = run.state === "running" ? SHOWBOARD.countdown(now) : null;
+    // Read off the position alone - never a timer of this page's own - so a
+    // HOLD, RESUME, MOVE or STOP can never leave it saying something stale.
     if (cd) { word = cd.label; big = cd.big; tone = cd.tone; }
-    else if (run.state === "running" && startLeftS() !== null && now >= 0)
-      word = "START in " + SHOWBOARD.secs(startLeftS()) + " s";
     // fleetDuration(): the length the units were uploaded with - what they
     // actually run - not this page's Show length, which the operator may
     // have changed since (the clock must never read RUNNING after the units
@@ -4750,10 +4776,15 @@ function showClockText() {
   // has always had - the conductor refuses it too, this is only saying so
   // before the click).
   const cleared = clearedUnits();
+  // ③ START's countdown (the position still below 0:00, running or held):
+  // NEXT would cut it short and start the music mid-track, so it waits for
+  // the show to begin (review of 3f67087, LOW-3).
+  const counting = !!run && now !== null && now < 0;
   const able = { "show-preset": want > 0 && !run && !unitsBusy && !cleared.length,
                  "show-start": want > 0 && !cleared.length,
                  "show-hold": running, "show-resume": holding,
-                 "show-next-cue": (running && upcoming.length > 0) || holding, "show-stop": !!run || unitsBusy,
+                 "show-next-cue": !counting && ((running && upcoming.length > 0) || holding),
+                 "show-stop": !!run || unitsBusy,
                  // Enabled during a run too: it asks first and sends
                  // `force` - see the click handler.
                  "show-upload": state.show.cues.length && !demoCueBad,
@@ -4764,6 +4795,8 @@ function showClockText() {
                  // nothing is exactly what hid this feature before).
                  "show-write": true, "demo-open": true };
   for (const [id, on] of Object.entries(able)) { const b = $("#" + id); if (b) b.disabled = !on; }
+  const nextBtn = $("#show-next-cue");
+  if (nextBtn) nextBtn.title = counting ? NEXT_NOT_YET : "";
   // Upload while a run exists writes into boards the show may still be
   // reading from, so it asks first and goes out with `force` (the server
   // requires it, § "stop the show first").
@@ -5545,15 +5578,26 @@ document.addEventListener("click", async e => {
     // seconds, silently, after the confirm the operator just answered. ②
     // Show preset has already swept, and each unit checks its own bus before
     // every cue that has room for it (ui/runner.py's PRECHECK_S).
-    // START's lead is the show's own countdown ("Countdown before START",
-    // 11 s unless changed), never the NEXT / MOVE field: the fleet counts
-    // down -0:11 ... 0:00 and the music starts at 0:00 (2026-09-29).
-    const lead = startCountdown();
+    // From 0:00, START's lead is the show's own countdown ("Countdown before
+    // START", 11 s unless changed): the fleet counts down -0:11 ... 0:00 and
+    // the music starts at 0:00 (2026-09-29). From a mark it is the NEXT /
+    // MOVE field's lead, exactly as before - a restart mid-show is not a
+    // show opening (review of 3f67087, MED-1). The server defaults the same way.
+    let lead = ui.lead;
+    if (!(startAt > 0)) {
+      // Pressed straight after typing a new countdown (no Enter, no blur
+      // yet, or its save still on the way): the NEW value is the one meant.
+      const field = $("#show-countdown");
+      const typed = field ? parseSeconds(field.value, START_COUNTDOWN_MIN_S, START_COUNTDOWN_MAX_S) : null;
+      if (countdownSaving) await countdownSaving;
+      if (typed !== null && typed !== startCountdown()) await saveCountdown(typed);
+      else if (typed === null && field) {
+        toast(`Countdown not changed (enter ${START_COUNTDOWN_MIN_S} to ${START_COUNTDOWN_MAX_S} seconds) — starting with ${startCountdown()} s`);
+        field.value = startCountdown();
+      }
+      lead = startCountdown();
+    }
     const startBody = () => ({ lead_s: lead, ...answers });
-    // Remembered for a START from a mark, whose position never reads
-    // negative (see startLeftS); cleared below unless the fleet started.
-    const landed = () => { ui.startLeadUntil = startAt > 0 ? performance.now() + lead * 1000 : 0; };
-    landed();
     let result = await fleetCommand("start", startBody(), `③ START (in ${lead} s)`, "show");
     // Two gates, each with its own question and its own answer: the
     // boards that did not take their pictures (`force`), and a fleet
@@ -5571,7 +5615,6 @@ document.addEventListener("click", async e => {
                      + `two different timelines at the same time.`)) break;
         answers.split_ok = true;
       } else break;
-      landed();
       result = await fleetCommand("start", startBody(), `③ START (in ${lead} s)`, "show");
     }
     // A 200 with a "nothing uploaded"/"already running" note also has
@@ -5580,10 +5623,13 @@ document.addEventListener("click", async e => {
     // (fix round finding 7).
     if (result && result.from_s !== undefined && Object.keys(result.units || {}).length) {
       ui.manual = false; ui.seekSent = null; dropSeek(); renderSeekBlock();
-    } else ui.startLeadUntil = 0;
+    }
     return;
   }
   if (e.target.id === "show-next-cue") {
+    // The button is off during ③ START's countdown; a poll landing between
+    // renders must not let one through either (review of 3f67087, LOW-3).
+    if (fleet?.run && fleetShowPos() < 0) { toast(NEXT_NOT_YET); return; }
     // The lead the units were given, remembered on this PC's own wall clock:
     // the board's header counts it down ("NEXT in 3 s") so the operator can
     // see that the press landed before anything on stage moves. Set before
@@ -5775,8 +5821,8 @@ document.addEventListener("change", async e => {
   const id = e.target.id;
   if (e.target.dataset.choice !== undefined) { ui.choices[e.target.dataset.choice] = e.target.value; return; }
   if (id === "fleet-lead") {
-    const seconds = Number(e.target.value);
-    if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
+    const seconds = parseSeconds(e.target.value, 0.5, 60);   // the server's own rule
+    if (seconds !== null) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
     return;
   }
   // "Countdown before START": stored with the show (show.json, undoable), so
@@ -5784,21 +5830,16 @@ document.addEventListener("change", async e => {
   // the server afterwards, so a refusal puts the field back to what the show
   // really holds.
   if (id === "show-countdown") {
-    const text = String(e.target.value).trim();
-    const seconds = Number(text);
-    if (!text || !(seconds >= START_COUNTDOWN_MIN_S && seconds <= START_COUNTDOWN_MAX_S)) {
+    const seconds = parseSeconds(e.target.value, START_COUNTDOWN_MIN_S, START_COUNTDOWN_MAX_S);
+    if (seconds === null) {
       toast(`Enter ${START_COUNTDOWN_MIN_S} to ${START_COUNTDOWN_MAX_S} seconds`);
       e.target.value = startCountdown();
       return;
     }
-    try {
-      const answer = await api("/api/show/start_countdown", { s: seconds });
-      if (answer && answer.error) toast(`Could not save it: ${answer.error}`);
-    } catch (err) {
-      toast(`Could not save it: ${err.message}`);
-    }
-    await refresh();
-    render();
+    // ③ START may already be waiting on this very save (it reads the field
+    // itself when pressed straight after typing): one save, not two.
+    if (countdownSaving) { await countdownSaving; if (seconds === startCountdown()) return; }
+    await saveCountdown(seconds);
     return;
   }
   if (id === "write-loop") { ui.demoLoop = e.target.checked; return; }

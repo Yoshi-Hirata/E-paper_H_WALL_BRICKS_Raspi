@@ -3688,6 +3688,12 @@ def test_the_countdown_refuses_anything_outside_three_to_sixty(workspace):
     for fine in (3, 60, 11, "12", 4.5):
         workspace.set_start_countdown(fine)
     assert check_start_countdown("12") == 12.0
+    # The page's own rule (parseSeconds): NFKC, then a plain decimal only.
+    assert check_start_countdown("１１") == 11.0
+    assert check_start_countdown(" 2.96 ") == 3.0
+    for junk in ("0x10", "1_1", "١١", "", "inf", "11s"):
+        with pytest.raises(ValueError, match="start_countdown_s: 3 to 60"):
+            check_start_countdown(junk)
     # A hand-edited show.json with a broken value still counts down 11 s.
     assert start_countdown_of({"start_countdown_s": "junk"}) == 11.0
     assert start_countdown_of({}) == 11.0
@@ -3736,6 +3742,43 @@ def test_export_and_import_carry_the_countdown(workspace):
     with pytest.raises(ValueError, match="start_countdown_s: 3 to 60"):
         other.import_show(dict(exported, start_countdown_s=90))
     assert other.state()["show"]["start_countdown_s"] == 14.5
+
+
+def test_the_default_countdown_is_never_written_as_a_key(workspace):
+    # Importing an export (which always carries the value) must not leave
+    # `start_countdown_s: 11.0` in show.json - on any write path (LOW-5).
+    grid = "Look22_color_pattern01_grid.csv"
+    workspace.set_timeline(600, [{"id": "a", "item": "Look22", "at": 0,
+                                  "design": grid}])
+    stored = lambda: json.loads((workspace.root / "show.json").read_text(encoding="utf-8"))
+    exported = workspace.export_show()
+    assert exported["start_countdown_s"] == 11.0
+    # The first import also writes the export's own spelling of the other
+    # keys (labels, units, dips...); the second one is the pure round trip.
+    workspace.import_show(exported)
+    assert "start_countdown_s" not in stored()
+    exported = workspace.export_show()
+    before, depth = workspace.revision(), workspace.state()["history"]["undo"]
+    workspace.import_show(exported)
+    assert "start_countdown_s" not in stored()
+    assert workspace.revision() == before
+    assert workspace.state()["history"]["undo"] == depth, "a no-op import made a step"
+    # A chosen value then an import of the default: the key goes.
+    workspace.set_start_countdown(20)
+    assert stored()["start_countdown_s"] == 20.0
+    workspace.import_show(dict(exported, start_countdown_s="11.0"))
+    assert "start_countdown_s" not in stored()
+    assert workspace.start_countdown() == 11.0
+    # ...a bundle the same.
+    workspace.set_start_countdown(20)
+    workspace.import_bundle({"format": "epaper-show-bundle", "version": 1, "files": {},
+                             "show": {"format": "epaper-show", "version": 1,
+                                      "start_countdown_s": 11}})
+    assert "start_countdown_s" not in stored()
+    # ...and so does setting it back by hand.
+    workspace.set_start_countdown(20)
+    workspace.set_start_countdown(11.0)
+    assert "start_countdown_s" not in stored()
 
 
 def test_a_bundle_carries_the_countdown_only_when_it_has_one(tmp_path):
@@ -3799,6 +3842,23 @@ def test_the_countdown_over_http_and_start_without_a_lead(tmp_path):
         # ...and the page's own lead_s still wins when it sends one.
         code, answer = post("/api/fleet/start", {"lead_s": 4, "force": True})
         assert code == 200 and answer["lead_s"] == 4.0, answer
+        post("/api/fleet/stop", {})
+        # A START from a mark is not a show opening: with no lead of its own
+        # it takes the ordinary 3 s, never the countdown (review MED-1) -
+        # whether the mark comes in the request or from an earlier MOVE.
+        code, answer = post("/api/fleet/start", {"from_s": 20, "manual": True})
+        assert code == 200 and answer["lead_s"] == 3.0 and answer["from_s"] == 20.0, answer
+        post("/api/fleet/stop", {})
+        fleet.start_at = 30.0
+        code, answer = post("/api/fleet/start", {})
+        assert code == 200 and answer["lead_s"] == 3.0 and answer["from_s"] == 30.0, answer
+        post("/api/fleet/stop", {})
+        # ...and an explicit from_s of 0 is the opening again.
+        code, answer = post("/api/fleet/start", {"from_s": 0})
+        assert code == 200 and answer["lead_s"] == 16.0, answer
+        # NEXT with no lead is 3 s, as it always was.
+        code, answer = post("/api/fleet/next", {})
+        assert code == 200 and answer["lead_s"] == 3.0, answer
     finally:
         server.shutdown()
         server.server_close()

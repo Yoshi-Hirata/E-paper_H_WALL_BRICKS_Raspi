@@ -119,6 +119,7 @@ _REVISION_IGNORES = {"music", "labels", "clear_after_show", "start_countdown_s"}
 # counts down START_COUNTDOWN_S. NEXT / MOVE keep their own, shorter lead.
 START_COUNTDOWN_S = 11.0
 START_COUNTDOWN_RANGE_S = (3.0, 60.0)
+_PLAIN_DECIMAL = re.compile(r"^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$")
 
 
 def check_start_countdown(value) -> float:
@@ -127,6 +128,13 @@ def check_start_countdown(value) -> float:
     low, high = START_COUNTDOWN_RANGE_S
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise ValueError(f"start_countdown_s: {low:.0f} to {high:.0f} seconds")
+    if isinstance(value, str):
+        # What the page's parseSeconds() accepts, exactly: NFKC (full-width
+        # "１１" is 11), then a plain decimal - no "0x10", no "1_1", no
+        # other scripts' digits float() would quietly take.
+        value = unicodedata.normalize("NFKC", value).strip()
+        if not _PLAIN_DECIMAL.match(value):
+            raise ValueError(f"start_countdown_s: {low:.0f} to {high:.0f} seconds")
     try:
         seconds = round(float(value), 1)
     except (TypeError, ValueError):
@@ -518,6 +526,11 @@ class Workspace:
     def _commit(self, before: dict, after: dict) -> None:
         """Save an edit of the show (lock held). The version it replaces
         becomes the next undo; a new edit ends the redo line."""
+        # A countdown equal to the default is stored as NO key, whichever
+        # path wrote it (set_start_countdown, a show file, a bundle): the
+        # file says only what somebody changed (review of 3f67087, LOW-5).
+        if after.get("start_countdown_s") == START_COUNTDOWN_S:
+            after = {k: v for k, v in after.items() if k != "start_countdown_s"}
         if after == before:
             return
         history = self._load_history()
@@ -947,15 +960,9 @@ class Workspace:
         seconds = check_start_countdown(seconds)
         with self._lock:
             before = self._load_show()
-            want = None if seconds == START_COUNTDOWN_S else seconds
-            if before.get("start_countdown_s") == want:
-                return                          # nothing changed: not a step
-            after = dict(before)
-            if want is None:
-                after.pop("start_countdown_s", None)
-            else:
-                after["start_countdown_s"] = want
-            self._commit(before, after)
+            # _commit() drops the key again when it is the default, and
+            # makes no step when nothing changed.
+            self._commit(before, dict(before, start_countdown_s=seconds))
 
     def start_countdown(self) -> float:
         """The show's countdown before ③ START (see set_start_countdown)."""
@@ -2946,14 +2953,15 @@ class Handler(BaseHTTPRequestHandler):
                                "mode": mode, "to_s": to_s,
                                "start_at": snap["start_at"], "note": note})
         if command in ("start", "next"):
-            # The page always says which lead it means (START: the show's
-            # "Countdown before START"; NEXT: the "take effect in" field).
-            # A START that does not say gets the show's countdown too.
-            default = (self.workspace.start_countdown() if command == "start"
-                       else DEFAULT_LEAD_S)
-            lead = float(body.get("lead_s", default))
-            if not 0.5 <= lead <= 60:
-                raise ValueError("lead time is 0.5-60 s")
+            # The page always says which lead it means (START from 0:00: the
+            # show's "Countdown before START"; START from a mark and NEXT: the
+            # "take effect in" field). A START that does not say gets the
+            # same thing - decided below, once `at` is known.
+            lead = body.get("lead_s")
+            if lead is not None or command == "next":
+                lead = float(DEFAULT_LEAD_S if lead is None else lead)
+                if not 0.5 <= lead <= 60:
+                    raise ValueError("lead time is 0.5-60 s")
             if command == "start":
                 if not fleet.shows:
                     return self._json({"units": {}, "note":
@@ -2995,6 +3003,12 @@ class Handler(BaseHTTPRequestHandler):
                 # `force` that waves through a second START also waves
                 # through a unit that merely failed to burn some boards
                 # (never one still burning, offline, or on another show).
+                if lead is None:
+                    # From 0:00 the show's countdown (11 s unless changed);
+                    # from a mark the ordinary lead - a restart mid-show is
+                    # not a show opening (review of 3f67087, MED-1).
+                    lead = (DEFAULT_LEAD_S if float(at or 0) > 0
+                            else self.workspace.start_countdown())
                 results = fleet.start_show(lead, at, force=bool(body.get("force")))
                 response = {"units": results, "lead_s": lead, "from_s": at}
                 if at > 0:

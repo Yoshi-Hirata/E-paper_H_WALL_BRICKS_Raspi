@@ -53,12 +53,19 @@ def test_the_two_fields_say_which_buttons_they_are_for():
     assert start < PAGE.index('id="show-countdown"') < PAGE.index('id="show-clear-after"')
 
 
-def test_start_sends_the_countdown_and_nothing_else_does():
-    handler = PAGE[PAGE.index('if (e.target.id === "show-start")'):
-                   PAGE.index('if (e.target.id === "show-next-cue")')]
-    assert "const lead = startCountdown();" in handler
+def test_start_sends_the_countdown_from_zero_and_the_other_lead_from_a_mark():
+    handler = _strip(PAGE[PAGE.index('if (e.target.id === "show-start")'):
+                          PAGE.index('if (e.target.id === "show-next-cue")')])
+    assert "let lead = ui.lead;" in handler
+    assert "if (!(startAt > 0)) {" in handler
+    assert "lead = startCountdown();" in handler
     assert "{ lead_s: lead, ...answers }" in handler
-    assert "ui.lead" not in _strip(handler), "START still reads the NEXT/MOVE field"
+    # A value typed and not yet saved is saved first (LOW-1).
+    assert "if (countdownSaving) await countdownSaving;" in handler
+    assert "await saveCountdown(typed);" in handler
+    # No timer of the page's own for the lead (LOW-2): the countdown reads
+    # off the position alone.
+    assert "startLeadUntil" not in PAGE and "startLeft" not in PAGE
     # NEXT, MOVE, Back to 0:00 and GO are exactly as they were.
     assert 'fleetCommand("next", { lead_s: lead }' in PAGE
     assert "const lead = ui.lead;\n    ui.nextLeadUntil" in PAGE
@@ -78,8 +85,12 @@ def test_the_countdown_is_stored_with_the_show_not_in_the_browser():
            "START_COUNTDOWN_MAX_S = 60;" in PAGE
     handler = PAGE[PAGE.index('if (id === "show-countdown")'):]
     handler = handler[:handler.index("return;\n  }\n") + 20]
-    assert 'api("/api/show/start_countdown", { s: seconds })' in handler
+    assert "await saveCountdown(seconds);" in handler
+    assert 'api("/api/show/start_countdown", { s: seconds })' in _function_body("saveCountdown")
     assert "localStorage" not in handler
+    # refresh() renders already: no second render() after it (LOW-7).
+    assert "render();" not in _function_body("saveCountdown")
+    assert "render();" not in handler
     # ...and the page and the server agree on the range.
     for fine in (3, 60, 11):
         assert check_start_countdown(fine) == fine
@@ -117,9 +128,9 @@ def _heads():
         "head_minus_two": one("running", -1.5),
         "head_at_zero": one("running", 0.0),
         "head_held_in_the_countdown": one("holding", -5.0),
-        "head_from_a_mark": one("running", 25.0, startLeft=4.2),
-        "head_from_a_mark_done": one("running", 30.5, startLeft=None),
-        "head_next_wins": one("running", 25.0, startLeft=4.2, leadLeft=2.0),
+        # A START from a mark leads in over a position that is not negative:
+        # the board reads exactly as it did before the countdown existed.
+        "head_from_a_mark": one("running", 25.0),
     }
 
 
@@ -213,13 +224,10 @@ def test_a_hold_during_the_countdown_is_a_hold(layer):
     assert held["cap"] == "NEXT (HELD)" and held["countText"] is None, held
 
 
-def test_a_start_from_a_mark_says_so_while_it_leads_in(layer):
-    # From a mark the position never reads negative: it runs up to the mark.
-    assert layer["head_from_a_mark"]["note"] == "START in 5 s"
-    assert layer["head_from_a_mark"]["cap"] == "NEXT"
-    assert layer["head_from_a_mark_done"]["note"] == ""
-    # A NEXT pressed meanwhile is the newer thing to say.
-    assert layer["head_next_wins"]["note"] == "NEXT in 2 s"
+def test_a_start_from_a_mark_reads_as_it_always_did(layer):
+    h = layer["head_from_a_mark"]
+    assert h["cap"] == "NEXT" and h["note"] == "" and h["countText"] is None, h
+    assert h["time"] == "0:30" and h["count"] == 5
 
 
 # ------------------------------------------------- the whole page, running
@@ -237,6 +245,12 @@ _RUNS = {
                 "now": 5.0},
     "holding": {"t0": 0.0, "state": "holding", "held_at": 20.0, "force": False,
                 "now": 20.0},
+    # HOLD pressed during the countdown, and RESUME after it (LOW-2): the
+    # fleet keeps the position, so 6 s are still to go.
+    "held_countdown": {"t0": 0.0, "state": "holding", "held_at": -6.0,
+                       "force": False, "now": -6.0},
+    "resumed_countdown": {"t0": 0.0, "state": "running", "held_at": None,
+                          "force": False, "now": -5.9},
 }
 
 
@@ -260,6 +274,7 @@ class _Stand:
         written = ws.written_state()
         page = INDEX_HTML.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1)
         self.run = "none"
+        self.start_at = 0.0                  # a MOVE made before START
         self.sent = []                       # [command, body] as they arrived
         stand = self
 
@@ -315,7 +330,7 @@ class _Stand:
                         "shows": {n: {"id": "S1", "cues": 2, "boards": []}
                                   for n in ("radxa-01", "radxa-02")},
                         "clear_in_s": None, "corrections": [], "prepared": {},
-                        "start_at": 0.0, "show_duration": 180.0,
+                        "start_at": stand.start_at, "show_duration": 180.0,
                         "burn": {"burned": 0, "total": 0}, "timeline": written})
                 if path == "/api/fleet/demos":
                     return self._json({"units": {}, "offline": [], "failed": {}})
@@ -323,6 +338,7 @@ class _Stand:
                     args = dict(p.split("=", 1) for p in
                                 self.path.partition("?")[2].split("&") if "=" in p)
                     stand.run = args.get("run", stand.run)
+                    stand.start_at = float(args.get("start_at", stand.start_at))
                     return self._json({"run": stand.run})
                 if path == "/test/sent":
                     return self._json(stand.sent)
@@ -342,8 +358,16 @@ class _Stand:
         self.httpd.server_close()
 
 
+# Typed values the page and the server must read the same way: boundaries,
+# tenths, exact binary ties (2.25 -> 2.2 in Python, half to even), full-width
+# digits, blanks and junk.
+PARSE_CASES = ["11", "3", "60", "2.94", "2.95", "2.96", "60.04", "60.05", "60.06",
+               "7.25", "7.35", "7.75", "12.25", "12.75", "4.45", "59.95", "3.05", "１１", " 15 ", "１２.５",
+               "", "  ", "abc", "1e1", "NaN", "Infinity", "-11", "0x10", "3.049999"]
+
 _PAGE_PROBE = """
 <script>
+var PARSE_CASES = %(parse)s;
 (function () {
   var out = { error: null };
   function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -390,17 +414,34 @@ _PAGE_PROBE = """
       await wait(600);
       out.afterBad = $q("#show-countdown").value;
       out.badToast = $q("#toast").textContent;
+      // ...full-width digits are read as the server reads them (LOW-6).
+      type("show-countdown", "\\uff11\\uff12");            // "１２"
+      await wait(1200);
+      out.afterFullWidth = state.show.start_countdown_s;
 
       // 3. The NEXT / MOVE field is its own, and in memory as before.
-      type("fleet-lead", "5");
+      type("fleet-lead", "\\uff15");                       // "５"
       await wait(300);
       out.leadAfter = ui.lead;
 
-      // 4. ③ START sends the countdown; NEXT, MOVE, Back to 0:00 and GO
-      //    send the other field.
+      // 4. ③ START from 0:00 sends the countdown - the one just TYPED, with
+      //    no Enter and no blur before the click (LOW-1).
+      $q("#show-countdown").value = "15";
+      $q("#show-start").click();
+      await wait(2000);
+      out.startLog = ui.showLog.split("\\n")[0];
+      out.savedBeforeStart = state.show.start_countdown_s;
+      out.fieldAfterStart = $q("#show-countdown").value;
+      // ...from a mark it sends the NEXT / MOVE lead, not the countdown (MED-1).
+      await fetch("/test/fleet?start_at=60");
+      await wait(1600);
+      out.startBtnFromMark = $q("#show-start").textContent;
       $q("#show-start").click();
       await wait(1500);
-      out.startLog = ui.showLog.split("\\n")[0];
+      out.markLog = ui.showLog.split("\\n")[0];
+      await fetch("/test/fleet?start_at=0");
+      await wait(1600);
+      // NEXT, MOVE, Back to 0:00 and GO send the other field too.
       ui.manual = true;
       await commitSeek(30);
       await wait(600);
@@ -423,6 +464,16 @@ _PAGE_PROBE = """
       out.cdHead = { cap: head("[data-cap]"), count: head("[data-count]"),
                      cls: ($q("#nownext [data-count]") || {}).className,
                      note: head("[data-note]") };
+      // NEXT is off while the countdown runs, and says why (LOW-3).
+      out.cdNext = { disabled: $q("#show-next-cue").disabled, title: $q("#show-next-cue").title };
+      var before = (await sent()).length;
+      window.toastWas = null;
+      $q("#show-next-cue").disabled = false;          // even forced on, the click refuses
+      $q("#show-next-cue").click();
+      await wait(600);
+      out.cdNextSent = (await sent()).length - before;
+      out.cdNextToast = $q("#toast").textContent;
+      showClockText();
       await fetch("/test/fleet?run=late_countdown");
       await wait(1600);
       await refreshFleetNow();
@@ -435,12 +486,38 @@ _PAGE_PROBE = """
       out.stageCount = ($q("#nn-stage #nownext [data-count]") || {}).textContent;
       $q("#nn-stage-btn").click();
       await wait(600);
-      // 6. Once the show is running the clock is the show's position again.
+      // 6. HOLD during the countdown, then RESUME: the clock reads off the
+      //    position, so it holds and then goes on from what was left (LOW-2).
+      await fetch("/test/fleet?run=held_countdown");
+      await wait(1600);
+      await refreshFleetNow();
+      out.heldClock = clockNow();
+      out.heldNext = { disabled: $q("#show-next-cue").disabled, title: $q("#show-next-cue").title };
+      await fetch("/test/fleet?run=resumed_countdown");
+      await wait(1600);
+      await refreshFleetNow();
+      out.resumedClock = clockNow();
+      // ...and STOP leaves nothing counting.
+      await fetch("/test/fleet?run=none");
+      await wait(1600);
+      await refreshFleetNow();
+      out.stoppedClock = clockNow();
+      out.stoppedHead = head("[data-cap]");
+      // 7. Once the show is running the clock is the show's position again,
+      //    and NEXT is back.
       await fetch("/test/fleet?run=running");
       await wait(1600);
       await refreshFleetNow();
       out.runClock = clockNow();
       out.runHeadCap = head("[data-cap]");
+      // (This stand's units report no cue ahead, so a running show's NEXT
+      // has nothing to bring forward; a HOLD past 0:00 is where it is on.)
+      await fetch("/test/fleet?run=holding");
+      await wait(1600);
+      await refreshFleetNow();
+      out.runNext = { disabled: $q("#show-next-cue").disabled, title: $q("#show-next-cue").title };
+      // 8. The page reads a typed number exactly as the server does (LOW-6).
+      out.parsed = PARSE_CASES.map(function (c) { return parseSeconds(c, 3, 60); });
     } catch (e) { out.error = String((e && e.stack) || e); }
     var pre = document.createElement("pre");
     pre.id = "page-out";
@@ -462,7 +539,7 @@ _PAGE_PROBE = """
 def page(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("countdownpage")
     _require_browser(tmp)
-    stand = _Stand(tmp, _PAGE_PROBE)
+    stand = _Stand(tmp, _PAGE_PROBE.replace("%(parse)s", json.dumps(PARSE_CASES)))
     try:
         dom = _dump_dom_long(stand.url, tmp)
     finally:
@@ -487,17 +564,73 @@ def test_the_countdown_is_saved_with_the_show_and_survives_a_reload(page):
     assert page["afterReload"] == "15"
     assert page["afterBad"] == "15", "a refused value stayed in the field"
     assert "3 to 60" in page["badToast"]
+    assert page["afterFullWidth"] == 12, "full-width digits were refused"
     saved = [body for command, body in page["sent"] if command == "countdown"]
-    assert saved == [{"s": 15}], "the refused value reached the server"
-    assert page["leadAfter"] == 5
+    # 15 typed, 2 refused (never sent), １２ typed, then 15 typed and START
+    # pressed straight after - saved once, before the START went out.
+    assert saved == [{"s": 15}, {"s": 12}, {"s": 15}], page["sent"]
+    assert page["leadAfter"] == 5, "the full-width NEXT / MOVE lead was refused"
 
 
-def test_start_sends_the_countdown_and_next_move_go_send_their_own_lead(page):
-    leads = {command: body.get("lead_s") for command, body in page["sent"]
-             if command != "countdown"}
-    assert leads["start"] == 15, page["sent"]
+def test_start_from_zero_uses_the_value_typed_just_before_it(page):
+    order = [command for command, _ in page["sent"]]
+    starts = [body for command, body in page["sent"] if command == "start"]
+    assert starts[0]["lead_s"] == 15, page["sent"]
+    # The save of 15 went out BEFORE the START that depends on it.
+    saves = [i for i, command in enumerate(order) if command == "countdown"]
+    assert len(saves) == 3 and saves[2] < order.index("start"), order
     assert page["startLog"].startswith("③ START (in 15 s)"), page["startLog"]
+    assert page["savedBeforeStart"] == 15 and page["fieldAfterStart"] == "15"
+
+
+def test_start_from_a_mark_uses_the_next_move_lead(page):
+    starts = [body for command, body in page["sent"] if command == "start"]
+    assert len(starts) == 2, page["sent"]
+    assert page["startBtnFromMark"] == "③ START FROM 1:00"
+    assert starts[1]["lead_s"] == 5, "a START from a mark counted the countdown down"
+    assert page["markLog"].startswith("③ START (in 5 s)"), page["markLog"]
+
+
+def test_next_move_and_go_send_their_own_lead(page):
+    leads = {command: body.get("lead_s") for command, body in page["sent"]
+             if command not in ("countdown", "start")}
     assert leads["seek"] == 5 and leads["next"] == 5 and leads["fire"] == 5, page["sent"]
+
+
+def test_next_waits_for_the_countdown(page):
+    assert page["cdNext"] == {"disabled": True, "title": "The show has not started yet"}
+    assert page["cdNextSent"] == 0, "NEXT went out during the countdown"
+    assert page["cdNextToast"] == "The show has not started yet"
+    assert page["heldNext"] == {"disabled": True, "title": "The show has not started yet"}
+    assert page["runNext"] == {"disabled": False, "title": ""}
+
+
+def test_hold_resume_and_stop_during_the_countdown_read_right(page):
+    held = page["heldClock"]
+    assert held["word"] == "ON HOLD" and held["big"] == "-0:06", held
+    assert "cd-" not in held["cls"], "a held countdown is coloured like a running one"
+    resumed = page["resumedClock"]
+    assert resumed["big"] in ("-0:06", "-0:05"), resumed
+    assert resumed["word"] == "START in " + resumed["big"][-1] + " s", resumed
+    assert "cd-amber" in resumed["cls"], resumed
+    stopped = page["stoppedClock"]
+    assert stopped["word"] == "NOT STARTED" and stopped["big"] == "0:00", stopped
+    assert "START in" not in page["stoppedHead"]
+
+
+def test_the_page_reads_a_typed_number_exactly_as_the_server_does(page):
+    def server(text):
+        try:
+            return check_start_countdown(text)
+        except ValueError:
+            return None
+    assert page["parsed"] == [server(c) for c in PARSE_CASES], \
+        list(zip(PARSE_CASES, page["parsed"], [server(c) for c in PARSE_CASES]))
+    # ...and the cases that matter at the edges, spelled out.
+    got = dict(zip(PARSE_CASES, page["parsed"]))
+    assert got["2.96"] == 3.0 and got["2.94"] is None
+    assert got["60.04"] == 60.0 and got["60.06"] is None
+    assert got["１１"] == 11 and got["0x10"] is None and got[""] is None
 
 
 def test_the_big_clock_counts_down_to_zero(page):
