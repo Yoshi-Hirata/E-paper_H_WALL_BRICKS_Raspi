@@ -1387,6 +1387,9 @@
   const SLOT_CAPACITY = 20;
   const MAX_CUES_PER_UNIT = 18;
   const DEFAULT_DURATION_S = 600.0;
+  // conductor/timeline.py's MAX_DURATION_S: the longest a show may be set
+  // to (15:00, 2026-09-28). A project with no duration is still 600 s.
+  const MAX_DURATION_S = 900.0;
 
   const _CLOCK = /^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)\s*$/;
 
@@ -1712,7 +1715,7 @@
   const timeline = {
     REFRESH_S, LEGACY_REFRESH_S, PANEL_REPAINT_S, REFRESH_RANGE_S,
     GAP_AFTER_REFRESH_S,
-    SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S,
+    SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S, MAX_DURATION_S,
     parseClock, formatClock, cleanRefresh, effectiveRefresh, completeS,
     panelRepaintOf, panelRefresh, spanOf,
     sweeps, clean, resolve, applyTransitions, times, ends, minInterval,

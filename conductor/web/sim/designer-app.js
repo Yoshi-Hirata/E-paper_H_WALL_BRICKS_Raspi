@@ -31,7 +31,10 @@
   const MAX_PROJECT_BYTES = 4 * 1024 * 1024;
   const WARN_BUNDLE_BYTES = 6 * 1024 * 1024;
   const REFUSE_BUNDLE_BYTES = 8 * 1024 * 1024;
-  const MAX_SHOW_DURATION_S = 99 * 60 + 59;   // the Show length field's own 99:59 ceiling
+  // The longest show there can be: conductor/timeline.py's MAX_DURATION_S
+  // (15:00, 2026-09-28 - the music became a 10:54 track). The operator's
+  // Conductor refuses a longer show outright, so this page does too.
+  const MAX_SHOW_DURATION_S = 15 * 60;
   // The gap left between one design finishing being drawn and the next one
   // starting, when a design is APPENDED rather than placed by hand (the "+"
   // at the end of a track row, and EDIT CUE's "Add next design after this
@@ -700,6 +703,7 @@
     return item.designs.find(d => !used.has(d.name)) || item.designs[0] || null;
   }
   function clockShort(sec) { return globalThis.SIM.mmss.format(sec); }
+  function showTooLong() { return `A show is at most ${clockShort(MAX_SHOW_DURATION_S)}`; }
 
   // ---- Appending the next design (user, 2026-09-25) ------------------
   // The director's team builds a show by adding one design after another
@@ -914,7 +918,7 @@
     return `<div class="tl-wrap">
       <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div></div></div>
       ${rows || `<div class="empty">No items yet.</div>`}
-      <div style="position:absolute;left:150px;right:var(--tl-add-w);top:0;bottom:0;pointer-events:none"><div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div></div>`;
+      <div style="position:absolute;left:150px;right:var(--tl-add-w);top:0;bottom:0;pointer-events:none"><div id="music-silence" hidden><span>silence</span></div><div id="music-end" hidden><span id="music-end-label"></span></div><div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div></div>`;
   }
   function rulerTicks(D) {
     // The existing tiers, but never finer than D/200 (adversarial review
@@ -1005,7 +1009,9 @@
     const root = $("#content");
     const items = trackItems();
     root.innerHTML = `<div class="toolbar">
-        <div class="group"><span>Show length</span>${mmssField("show-duration", state.show.duration)}</div>
+        <div class="group"><span>Show length</span>${mmssField("show-duration", state.show.duration)}
+          <button type="button" id="tl-fit" disabled>Fit to music</button>
+          <span class="warn" id="music-note"></span></div>
         <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}" title="${esc(REFRESH_HELP)}"> s</div>
         <div class="group"><button id="save-project">Save project…</button><label class="filebtn" tabindex="0" role="button">Open project…<input id="open-project" type="file" accept=".json"></label></div>
         ${musicControl()}
@@ -1034,19 +1040,73 @@
           if (input) { input.value = globalThis.SIM.mmss.format(state.show.duration); input.dispatchEvent(new Event("input")); }
           return;
         }
-        globalThis.SIM.app.setShow({ duration: Math.min(MAX_SHOW_DURATION_S, sec) });
+        if (sec > MAX_SHOW_DURATION_S) {
+          toast(showTooLong() + " - kept " + globalThis.SIM.mmss.format(state.show.duration) + ".");
+          const input = $("#show-duration");
+          if (input) { input.value = globalThis.SIM.mmss.format(state.show.duration); input.dispatchEvent(new Event("input")); }
+          return;
+        }
+        globalThis.SIM.app.setShow({ duration: sec });
       });
       $("#show-refresh").onchange = e => { const v = Number(e.target.value); if (v >= 1 && v <= 60) globalThis.SIM.app.setShow({ refresh_s: v }); else e.target.value = state.show.refresh_s.toFixed(1); };
       renderCueEditor(state.show.cues.find(c => sameId(c.id, ui.cue)) || null);
       wireTrackEvents();
     }
     $("#save-project").onclick = saveProjectFile;
+    $("#tl-fit").onclick = fitToMusic;
     $("#open-project").onchange = e => { if (e.target.files[0]) openProjectFile(e.target.files[0]); e.target.value = ""; };
     const mp = $("#music-pick"); if (mp) mp.onchange = e => { if (e.target.files[0]) globalThis.SIM.app.pickMusic(e.target.files[0]); e.target.value = ""; };
     const mc = $("#music-clear"); if (mc) mc.onclick = () => globalThis.SIM.app.clearMusic();
     const mb = $("#music-builtin"); if (mb) mb.onclick = () => globalThis.SIM.app.useBuiltInMusic();
     renderDock();
     updatePlayheadDom(transport.playhead);
+    paintMusicEnd();
+  }
+  // ---- where the music ends (2026-09-28) ----
+  // 「音源の終わりがわかるように」: an amber line where the music ends, the
+  // show left after it hatched as silence, or - when the music outlasts the
+  // show - an amber note by Show length. The same answers as the operator's
+  // Timeline (SIM.transport.musicEndInfo = index.html's musicEndInfo()).
+  function musicEnd() {
+    return globalThis.SIM.transport.musicEndInfo(transport ? transport.musicLength : 0,
+                                                 state.show.duration, MAX_SHOW_DURATION_S, clockShort);
+  }
+  function paintMusicEnd() {
+    if (!state || ui.tab !== "timeline") return;
+    const D = state.show.duration, info = musicEnd();
+    const marker = $("#music-end"), silence = $("#music-silence"), note = $("#music-note"), fit = $("#tl-fit");
+    const drawn = !!(info && info.marker);
+    if (marker) {
+      marker.hidden = !drawn;
+      if (drawn) {
+        const pct = 100 * info.at / D;
+        marker.style.left = pct.toFixed(3) + "%";
+        marker.classList.toggle("flip", pct > 75);
+        $("#music-end-label").textContent = info.label;
+      }
+    }
+    if (silence) {
+      const on = drawn && info.silence >= 0.5;
+      silence.hidden = !on;
+      if (on) silence.style.left = (100 * info.at / D).toFixed(3) + "%";
+    }
+    if (note) note.textContent = info ? info.note : "";
+    if (fit) {
+      fit.disabled = !info;
+      fit.title = !info ? "Pick the music first"
+        : info.tooLong ? `The music (${clockShort(info.at)}) is longer than a show can be: sets the show to ${clockShort(MAX_SHOW_DURATION_S)}`
+        : `Set Show length to the music's length, rounded up to the next second (${clockShort(info.fit)})`;
+    }
+  }
+  // Never automatic: Show length changes only when the designer presses it.
+  function fitToMusic() {
+    const info = musicEnd();
+    if (!info) { toast("The music's length is not known yet - pick the music first."); return; }
+    const why = info.tooLong
+      ? `The music is ${clockShort(info.at)} and a show is at most ${clockShort(MAX_SHOW_DURATION_S)}, so Show length is ${clockShort(info.fit)}.`
+      : `Show length is ${clockShort(info.fit)}: the music's length, rounded up.`;
+    if (info.fit !== state.show.duration) globalThis.SIM.app.setShow({ duration: info.fit });
+    toast(why);
   }
   // Module-level so the drag-tracking pointermove/pointerup/pointercancel
   // listeners can be registered ONCE (see wireGlobalDragHandlers, called once
@@ -1234,6 +1294,7 @@
       onPlayhead: t => updatePlayheadDom(t),
       onThumbTick: t => redrawThumbs(t),
       toast,
+      onMusicLength: () => paintMusicEnd(),
     });
     return transport;
   }
@@ -1949,7 +2010,9 @@
             // round 2, third pass - N3): a project file that asked for
             // something out of range got the clamp with no sign anything
             // had changed from what it actually said.
-            if (clamped !== d) toast(`Show length clamped to ${globalThis.SIM.mmss.format(clamped)}.`);
+            if (clamped !== d) toast(d > MAX_SHOW_DURATION_S
+              ? `${showTooLong()} - Show length clamped to ${globalThis.SIM.mmss.format(clamped)}.`
+              : `Show length clamped to ${globalThis.SIM.mmss.format(clamped)}.`);
             project.show.duration = clamped;
           }
         }

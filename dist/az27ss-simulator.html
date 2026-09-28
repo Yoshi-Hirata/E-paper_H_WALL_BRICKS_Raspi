@@ -191,6 +191,17 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
 .cue-hold.dragging { cursor: grabbing; opacity: .8; z-index: 4; outline: 2px dashed var(--accent); }
 .tl-wrap { position: relative; }
 #playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--err); pointer-events: none; z-index: 3; }
+/* Where the music ends (2026-09-28) - index.html's same marker: an amber
+   dashed line with its words at the ruler, the show after it hatched as
+   silence. Drawn only when the music ends inside the show. */
+#music-end { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--warn); pointer-events: none; z-index: 2; }
+#music-end span { position: absolute; top: 2px; left: 4px; white-space: nowrap; font-size: 10.5px; font-weight: 600;
+  color: var(--warn); background: var(--panel); padding: 0 3px; border-radius: 2px; }
+#music-end.flip span { left: auto; right: 6px; }
+#music-silence { position: absolute; top: 22px; bottom: 0; right: 0; pointer-events: none; z-index: 1;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, var(--line) 6px 8px); }
+#music-silence span { position: absolute; bottom: 2px; left: 6px; font-size: 10.5px; color: var(--dim); }
+#music-note:empty { display: none; }
 #ph-head { position: absolute; top: -11px; left: 50%; transform: translateX(-50%); z-index: 4;
   cursor: ew-resize; pointer-events: auto; padding: 0 6px; touch-action: none; }
 #ph-head svg { display: block; }
@@ -1707,6 +1718,9 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   const SLOT_CAPACITY = 20;
   const MAX_CUES_PER_UNIT = 18;
   const DEFAULT_DURATION_S = 600.0;
+  // conductor/timeline.py's MAX_DURATION_S: the longest a show may be set
+  // to (15:00, 2026-09-28). A project with no duration is still 600 s.
+  const MAX_DURATION_S = 900.0;
 
   const _CLOCK = /^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)\s*$/;
 
@@ -2032,7 +2046,7 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   const timeline = {
     REFRESH_S, LEGACY_REFRESH_S, PANEL_REPAINT_S, REFRESH_RANGE_S,
     GAP_AFTER_REFRESH_S,
-    SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S,
+    SLOT_CAPACITY, MAX_CUES_PER_UNIT, DEFAULT_DURATION_S, MAX_DURATION_S,
     parseClock, formatClock, cleanRefresh, effectiveRefresh, completeS,
     panelRepaintOf, panelRefresh, spanOf,
     sweeps, clean, resolve, applyTransitions, times, ends, minInterval,
@@ -2955,6 +2969,7 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
   //   onPlayhead(t),                          cheap per-frame DOM poke (marker position, time labels)
   //   onThumbTick(t),                         throttled (~100ms) redraw of the looks row
   //   toast(msg),
+  //   onMusicLength(),                        optional: the music's length became known (or went)
   // }
   function create(cfg) {
     const player = new Audio();
@@ -2962,6 +2977,29 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     let playing = false, anchor = 0, startT = 0, playhead = 0;
     let seeking = false;               // a manual scrub is in progress - tick() must not fight it
     let lastThumbAt = 0;
+    // Past the end of the music, the show goes on in silence to its END on
+    // the wall clock (2026-09-28: a show may now be longer than its music -
+    // index.html's ui.pastMusic, the same rule). The show's clock is the
+    // master: at END the music stops with it, however much is left.
+    let pastMusic = false;
+    const MUSIC_END_SLACK_S = 0.05;
+    function musicLength() {
+      return playerUrl && Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0;
+    }
+    function runOnPastTheMusic(t) { pastMusic = true; anchor = performance.now(); startT = t; }
+    // A seek while playing: past the end of the track the wall clock runs
+    // on from there; back inside it, the music picks up again.
+    function followSeek(t) {
+      if (!playing || !playerUrl) return;
+      const len = musicLength();
+      if (len > 0 && t >= len - MUSIC_END_SLACK_S) { player.pause(); runOnPastTheMusic(t); }
+      else if (pastMusic) {
+        pastMusic = false;
+        player.currentTime = t;
+        const p = player.play();
+        if (p?.catch) p.catch(err => { playing = false; cfg.onPlayingChange(false); cfg.toast("Could not play the music: " + err.message); });
+      }
+    }
 
     function updatePlayheadDom(t) { cfg.onPlayhead(t); }
 
@@ -2974,10 +3012,16 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     function tick() {
       if (!playing) return;
       if (!cfg.isActive()) { pausePlayback(); return; }
-      if (playerUrl && player.paused) { pausePlayback(); return; }
+      // Paused by itself (autoplay policy, media keys) stops the preview;
+      // the track having ENDED does not - `ended` is read here as well as
+      // listened for, since this frame can see the pause before the event.
+      if (playerUrl && !pastMusic && player.paused) {
+        if (player.ended) runOnPastTheMusic(Math.max(playhead, player.currentTime));
+        else { pausePlayback(); return; }
+      }
       if (seeking) { requestAnimationFrame(tick); return; }
       const D = cfg.duration();
-      let t = playerUrl ? player.currentTime : (performance.now() - anchor) / 1000 + startT;
+      let t = playerUrl && !pastMusic ? player.currentTime : (performance.now() - anchor) / 1000 + startT;
       if (t >= D) { haltPlaybackAt(D); return; }
       playhead = t;
       updatePlayheadDom(t);
@@ -2988,7 +3032,12 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     function startPlayback() {
       if (playing || !cfg.isActive()) return;
       playing = true;
-      if (playerUrl) {
+      pastMusic = false;
+      const len = musicLength();
+      if (playerUrl && len > 0 && playhead >= len - MUSIC_END_SLACK_S) {
+        player.pause();                  // nothing left to hear, but the show goes on
+        runOnPastTheMusic(playhead);
+      } else if (playerUrl) {
         player.currentTime = playhead;
         const p = player.play();
         if (p?.catch) p.catch(err => { playing = false; cfg.onPlayingChange(false); cfg.toast("Could not play the music: " + err.message); });
@@ -3001,11 +3050,13 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
     function pausePlayback() {
       if (!playing) return;
       playing = false;
+      pastMusic = false;
       player.pause();
       cfg.onPlayingChange(false);
     }
     function stopPlayback() {
       playing = false;
+      pastMusic = false;
       player.pause();
       if (playerUrl) player.currentTime = 0;
       playhead = 0;
@@ -3028,11 +3079,17 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       playhead = t;
       updatePlayheadDom(t);
       cfg.onThumbTick(t);
-      if (playerUrl) player.currentTime = t;
+      if (playerUrl) { player.currentTime = t; followSeek(t); }
       else if (playing) { anchor = performance.now(); startT = t; }
     }
-    player.addEventListener("ended", () => { if (playing) haltPlaybackAt(player.currentTime); });
+    // The track ended before the show: carry on in silence (it used to stop
+    // dead here, at the end of the track rather than the end of the show).
+    player.addEventListener("ended", () => {
+      if (playing && !pastMusic) runOnPastTheMusic(Math.max(playhead, player.currentTime));
+    });
     player.addEventListener("seeked", () => { seeking = false; });
+    for (const ev of ["loadedmetadata", "durationchange", "emptied"])
+      player.addEventListener(ev, () => { if (cfg.onMusicLength) cfg.onMusicLength(); });
 
     function setMusic(url) {
       if (url === playerUrl) return;
@@ -3041,6 +3098,7 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       if (url) player.src = url;
       else { player.removeAttribute("src"); player.load(); }
       playing = false;
+      pastMusic = false;
       cfg.onPlayingChange(false);
     }
 
@@ -3083,7 +3141,7 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       if (!phDrag) return;
       phDrag = null;
       const t = playhead;
-      if (playerUrl) player.currentTime = t;
+      if (playerUrl) { player.currentTime = t; followSeek(t); }
       else if (playing) { anchor = performance.now(); startT = t; }
       // Unconditionally (adversarial review, 2026-09-25), not only in the
       // no-music branch: the playerUrl branch was relying on the audio
@@ -3099,14 +3157,32 @@ button.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset:
       MAX_MUSIC,
       get playing() { return playing; },
       get playhead() { return playhead; },
+      get pastMusic() { return pastMusic; },
+      get musicLength() { return musicLength(); },
       setMusic, play: startPlayback, pause: pausePlayback, stop: stopPlayback, toggle: togglePlayback,
       seek: seekTo, beginDrag, dragMove, endDrag, cancelDrag,
       get seeking() { return seeking; },
     };
   }
 
+  // The music's length against the show's (index.html's musicEndInfo(), the
+  // same answers; `clock` is the page's own time format):
+  //   label   "music ends 10.54"        marker  the music ends inside the show
+  //   silence show left after the music note    the music outlasts the show
+  //   fit     Fit to music's length: rounded UP, at most `max`
+  //   tooLong the music is longer than any show can be
+  function musicEndInfo(music, show, max, clock) {
+    if (!(music > 0) || !(show > 0)) return null;
+    const whole = Math.max(1, Math.ceil(music - 0.001));
+    const over = music - show;
+    return { at: music, label: "music ends " + clock(music),
+             marker: music <= show, silence: Math.max(0, show - music),
+             note: over > 0.001 ? `music continues ${clock(Math.max(1, over))} past the end of the show` : "",
+             fit: Math.min(max, whole), tooLong: whole > max };
+  }
+
   globalThis.SIM = Object.assign(globalThis.SIM || {}, {
-    transport: { create, MAX_MUSIC },
+    transport: { create, MAX_MUSIC, musicEndInfo },
   });
 })();
 </script>
@@ -3457,7 +3533,10 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
   const MAX_PROJECT_BYTES = 4 * 1024 * 1024;
   const WARN_BUNDLE_BYTES = 6 * 1024 * 1024;
   const REFUSE_BUNDLE_BYTES = 8 * 1024 * 1024;
-  const MAX_SHOW_DURATION_S = 99 * 60 + 59;   // the Show length field's own 99:59 ceiling
+  // The longest show there can be: conductor/timeline.py's MAX_DURATION_S
+  // (15:00, 2026-09-28 - the music became a 10:54 track). The operator's
+  // Conductor refuses a longer show outright, so this page does too.
+  const MAX_SHOW_DURATION_S = 15 * 60;
   // The gap left between one design finishing being drawn and the next one
   // starting, when a design is APPENDED rather than placed by hand (the "+"
   // at the end of a track row, and EDIT CUE's "Add next design after this
@@ -4126,6 +4205,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     return item.designs.find(d => !used.has(d.name)) || item.designs[0] || null;
   }
   function clockShort(sec) { return globalThis.SIM.mmss.format(sec); }
+  function showTooLong() { return `A show is at most ${clockShort(MAX_SHOW_DURATION_S)}`; }
 
   // ---- Appending the next design (user, 2026-09-25) ------------------
   // The director's team builds a show by adding one design after another
@@ -4340,7 +4420,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     return `<div class="tl-wrap">
       <div class="tl-row" style="border:0;min-height:22px"><div></div><div class="tl-ruler" id="ruler">${rulerTicks(D)}</div><div></div></div>
       ${rows || `<div class="empty">No items yet.</div>`}
-      <div style="position:absolute;left:150px;right:var(--tl-add-w);top:0;bottom:0;pointer-events:none"><div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div></div>`;
+      <div style="position:absolute;left:150px;right:var(--tl-add-w);top:0;bottom:0;pointer-events:none"><div id="music-silence" hidden><span>silence</span></div><div id="music-end" hidden><span id="music-end-label"></span></div><div id="playhead"><div id="ph-head" title="Drag to seek, or press and drag anywhere on the ruler"><svg width="14" height="10"><polygon points="0,0 14,0 7,10" fill="var(--err)"/></svg><span id="ph-time"></span></div></div></div></div>`;
   }
   function rulerTicks(D) {
     // The existing tiers, but never finer than D/200 (adversarial review
@@ -4431,7 +4511,9 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
     const root = $("#content");
     const items = trackItems();
     root.innerHTML = `<div class="toolbar">
-        <div class="group"><span>Show length</span>${mmssField("show-duration", state.show.duration)}</div>
+        <div class="group"><span>Show length</span>${mmssField("show-duration", state.show.duration)}
+          <button type="button" id="tl-fit" disabled>Fit to music</button>
+          <span class="warn" id="music-note"></span></div>
         <div class="group"><span>Default refresh time</span><input type="text" id="show-refresh" size="4" value="${state.show.refresh_s.toFixed(1)}" title="${esc(REFRESH_HELP)}"> s</div>
         <div class="group"><button id="save-project">Save project…</button><label class="filebtn" tabindex="0" role="button">Open project…<input id="open-project" type="file" accept=".json"></label></div>
         ${musicControl()}
@@ -4460,19 +4542,73 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
           if (input) { input.value = globalThis.SIM.mmss.format(state.show.duration); input.dispatchEvent(new Event("input")); }
           return;
         }
-        globalThis.SIM.app.setShow({ duration: Math.min(MAX_SHOW_DURATION_S, sec) });
+        if (sec > MAX_SHOW_DURATION_S) {
+          toast(showTooLong() + " - kept " + globalThis.SIM.mmss.format(state.show.duration) + ".");
+          const input = $("#show-duration");
+          if (input) { input.value = globalThis.SIM.mmss.format(state.show.duration); input.dispatchEvent(new Event("input")); }
+          return;
+        }
+        globalThis.SIM.app.setShow({ duration: sec });
       });
       $("#show-refresh").onchange = e => { const v = Number(e.target.value); if (v >= 1 && v <= 60) globalThis.SIM.app.setShow({ refresh_s: v }); else e.target.value = state.show.refresh_s.toFixed(1); };
       renderCueEditor(state.show.cues.find(c => sameId(c.id, ui.cue)) || null);
       wireTrackEvents();
     }
     $("#save-project").onclick = saveProjectFile;
+    $("#tl-fit").onclick = fitToMusic;
     $("#open-project").onchange = e => { if (e.target.files[0]) openProjectFile(e.target.files[0]); e.target.value = ""; };
     const mp = $("#music-pick"); if (mp) mp.onchange = e => { if (e.target.files[0]) globalThis.SIM.app.pickMusic(e.target.files[0]); e.target.value = ""; };
     const mc = $("#music-clear"); if (mc) mc.onclick = () => globalThis.SIM.app.clearMusic();
     const mb = $("#music-builtin"); if (mb) mb.onclick = () => globalThis.SIM.app.useBuiltInMusic();
     renderDock();
     updatePlayheadDom(transport.playhead);
+    paintMusicEnd();
+  }
+  // ---- where the music ends (2026-09-28) ----
+  // 「音源の終わりがわかるように」: an amber line where the music ends, the
+  // show left after it hatched as silence, or - when the music outlasts the
+  // show - an amber note by Show length. The same answers as the operator's
+  // Timeline (SIM.transport.musicEndInfo = index.html's musicEndInfo()).
+  function musicEnd() {
+    return globalThis.SIM.transport.musicEndInfo(transport ? transport.musicLength : 0,
+                                                 state.show.duration, MAX_SHOW_DURATION_S, clockShort);
+  }
+  function paintMusicEnd() {
+    if (!state || ui.tab !== "timeline") return;
+    const D = state.show.duration, info = musicEnd();
+    const marker = $("#music-end"), silence = $("#music-silence"), note = $("#music-note"), fit = $("#tl-fit");
+    const drawn = !!(info && info.marker);
+    if (marker) {
+      marker.hidden = !drawn;
+      if (drawn) {
+        const pct = 100 * info.at / D;
+        marker.style.left = pct.toFixed(3) + "%";
+        marker.classList.toggle("flip", pct > 75);
+        $("#music-end-label").textContent = info.label;
+      }
+    }
+    if (silence) {
+      const on = drawn && info.silence >= 0.5;
+      silence.hidden = !on;
+      if (on) silence.style.left = (100 * info.at / D).toFixed(3) + "%";
+    }
+    if (note) note.textContent = info ? info.note : "";
+    if (fit) {
+      fit.disabled = !info;
+      fit.title = !info ? "Pick the music first"
+        : info.tooLong ? `The music (${clockShort(info.at)}) is longer than a show can be: sets the show to ${clockShort(MAX_SHOW_DURATION_S)}`
+        : `Set Show length to the music's length, rounded up to the next second (${clockShort(info.fit)})`;
+    }
+  }
+  // Never automatic: Show length changes only when the designer presses it.
+  function fitToMusic() {
+    const info = musicEnd();
+    if (!info) { toast("The music's length is not known yet - pick the music first."); return; }
+    const why = info.tooLong
+      ? `The music is ${clockShort(info.at)} and a show is at most ${clockShort(MAX_SHOW_DURATION_S)}, so Show length is ${clockShort(info.fit)}.`
+      : `Show length is ${clockShort(info.fit)}: the music's length, rounded up.`;
+    if (info.fit !== state.show.duration) globalThis.SIM.app.setShow({ duration: info.fit });
+    toast(why);
   }
   // Module-level so the drag-tracking pointermove/pointerup/pointercancel
   // listeners can be registered ONCE (see wireGlobalDragHandlers, called once
@@ -4660,6 +4796,7 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
       onPlayhead: t => updatePlayheadDom(t),
       onThumbTick: t => redrawThumbs(t),
       toast,
+      onMusicLength: () => paintMusicEnd(),
     });
     return transport;
   }
@@ -5375,7 +5512,9 @@ globalThis.SIM = Object.assign(globalThis.SIM || {}, { STARTER: {
             // round 2, third pass - N3): a project file that asked for
             // something out of range got the clamp with no sign anything
             // had changed from what it actually said.
-            if (clamped !== d) toast(`Show length clamped to ${globalThis.SIM.mmss.format(clamped)}.`);
+            if (clamped !== d) toast(d > MAX_SHOW_DURATION_S
+              ? `${showTooLong()} - Show length clamped to ${globalThis.SIM.mmss.format(clamped)}.`
+              : `Show length clamped to ${globalThis.SIM.mmss.format(clamped)}.`);
             project.show.duration = clamped;
           }
         }
