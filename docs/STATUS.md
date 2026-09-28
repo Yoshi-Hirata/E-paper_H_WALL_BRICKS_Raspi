@@ -43,6 +43,11 @@
 - 実際の LOOK26 スカートの線上(偽の親基板、実時間): 8:17.5 STOP → 8:23 / 8:38 →
   **8:57.6 keep-away** → 9:03 / 9:14 / 9:25 / 9:37 → **9:45.5 keep-away** → 10:08
   ガード。最長 48 秒
+- Conductor: Timeline に琥珀色の警告(エラーではない)―― ある機体の送信が「機体の
+  数える絵の完成 + 2 秒」の余地を 60 秒を超えて残さないとき
+  `AZ271SC6302: 76 s of cues without room for a stop (8:23–9:30) - leave 2 s after a
+  picture is complete`。`timeline.keep_away_gaps()` とシミュレーターの
+  `keepAwayGaps()` は同じ純関数(ゴールデン 4 件)。本番の LOOK26 では出ない
 
 **BOARD INFO: USB の基板を名乗らせる(2026-09-28、読むだけの追加)**
 

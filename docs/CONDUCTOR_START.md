@@ -4,7 +4,7 @@
 > - **機体が自動で行うこと**: 基板の監視 / USB が切れたら即座に再接続 / 待機中の
 >   バスの自動修復(USB リセット)/ 間隔の空いたキューの 9 秒前の確認 /
 >   親基板に 60 秒以上 STOP を切らさない(keep-away ―― 詰まったキューの連続でも
->   オートプレイが戻らない)
+>   オートプレイが戻らない。Timeline の琥珀色 `… without room for a stop` は警告のみ)
 > - **オペレーターが行うこと**: 電源は 12 V → Radxa の順 / **① Upload** のあと、
 >   `ready` のタイルで **Recover bus** を 1 回押し、`bus was already clear` と出るのを
 >   確認 / タイルに赤で `bus degraded (n stalls) — press Recover bus, or reboot the Radxa`
@@ -190,6 +190,11 @@ Timeline タブの **Load bundle…**(演出家のシミュレーターの Save 
 `keep-away: no room for a stop between these cues (cues 9.5 s apart)` と言い、
 キューの 0.5 秒前までに入れる。オペレーターがすることは無い(止めるのは
 `--no-keep-away`、SPECIFICATION 4.6)。
+Timeline の CUES の上に琥珀色で
+`AZ271SC6302: 76 s of cues without room for a stop (8:23–9:30) - leave 2 s after a
+picture is complete` と出たら、その衣装のキューが「絵の完成 + 2 秒」より詰まって
+60 秒を超えて続いている。エラーではない(機体は STOP を入れる)が、できれば
+どこか 1 か所の間を 2 秒以上空ける。本番の LOOK26 では出ない。
 
 ### ショーの長さと音源の終わり(2026-09-28)
 
