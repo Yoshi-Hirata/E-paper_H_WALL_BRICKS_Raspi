@@ -522,15 +522,21 @@ ttyACM0 で戻り、8 秒後に `panels online: 22/22`、白のスタンバイ�
 **`no usb reset on this unit`**(レビュー L2)―― そこでの復旧は失敗しかしない
 ので、本番前に分かるように。
 
-> **問う相手は、直前の掃引で答えた基板のうち一番小さいアドレス**
-> (`_health_board()`。9a8c045 のレビュー M1)。「きれい」の判定も証明も直前点検
-> も、その基板へのユニキャスト STOP の ACK で決める。1 番の基板が無い衣装や、
-> USB の基板が別の DIP アドレスの衣装でも、健全なバスを「黙っている」と読まない
-> (以前はアドレス 1 に固定で、点検のたびに健全な USB をリセットしていた)。中継
-> される STOP は掃引自身が送っているもので、劣化したマスタは何も中継しないから、
-> 黙っていればやはり劣化。まだ誰も答えていない(掃引の前)ときだけアドレス 1。
-> ログは問うた相手を言う: アドレス 1 なら `master answers`、ほかなら
-> `board 2 answers`。**それでも本番前に、健全な機体
+> **問う相手は候補の順に**(`_health_candidates()`、重複なし。f9efd43 の
+> ゲート、レビュアーの設計): ① **最後に健全さの問いに答えた基板**(このワーカー
+> だけの記憶、`_health_sticky`)、② 直前の掃引で答えた**一番小さい**アドレス、
+> ③ **一番大きい**アドレス(たぶんもう一方のハーネス)。生きている基板が 1 枚
+> なら その基板だけ、何も分かっていなければアドレス 1。「きれい」の判定も証明も
+> 直前点検も、この候補へのユニキャスト STOP の ACK で決め、**どれか 1 枚が答えれば
+> バスは生きている**(答えた基板が次から最初に聞かれる)。中継される STOP は掃引
+> 自身が送っているもので、劣化したマスタは何も中継しないから、全員黙っていれば
+> やはり劣化。1 番の無い衣装、USB の基板が別の DIP の衣装(LOOK28 では 1 番では
+> ない)、**ショーの途中で基板が落ちた衣装**(LOOK28: 前身頃の 485 ケーブルが
+> 抜けて 1〜11 番が死に、健全なマスタは 12〜22 番の中 ―― ショー中は誰も `live`
+> から外さない)でも、健全なバスを「黙っている」と読まない。ログは問うた基板を
+> 言う: `board 2 answers` / `board 1 silent, board 12 answers` /
+> `no board answers (board 1, 22 silent)`(USB の基板のアドレスは分からない
+> ので、「master」とは言わない)。**それでも本番前に、健全な機体
 > それぞれで Recover bus を 1 回押し、トーストが `bus was already clear` と
 > 言うことを確かめる**(CONDUCTOR_START.md §6)。健全な衣装で
 > `recovered` や `failed` と出たら、その機体は `--precheck 0 --no-auto-recover`
@@ -546,7 +552,7 @@ ttyACM0 で戻り、8 秒後に `panels online: 22/22`、白のスタンバイ�
 決して通らず、健全な機体の Recover bus は決して `already clear` と言えなかった。
 
 いまの問い(`_master_answers()`)は**プローブ掃引自身の最初の問いと同じ**:
-最小の生きている基板(無ければアドレス 1)への `stop(n)` を 1 回送り、
+上の候補の基板への `stop(n)` を送り、
 `transport.ACK_TIMEOUT_S`(0.5 秒)の窓でその基板からの答えを待つ(`_probe()`
 と同じ)。健全なマスタは ms で ACK し、
 劣化したマスタは何も返さない。**0x02 は健全さの判定にもう使わない**(キューの
@@ -570,16 +576,19 @@ STOP には健全なときだけ ACK** する ―― この種の間違いがテ
 2. **`PROOF_GAP_S` = 3 秒の沈黙のあと**のブロードキャスト STOP が
    `RECOVERED_MS`(100 ms)未満
 
-両方そろって初めて `bus recovered by usb reset (358 → 2 ms, master answers)`。
+両方そろって初めて `bus recovered by usb reset (358 → 2 ms, board 1 answers)`。
+アイドルの問い(はしごの 0.、証明、預けた掃引の前)は、**1 回ごとに次の候補へ**
+(最大 3 枚 × 0.5 秒、同じ基板に 2 度は聞かない。候補が 1 枚ならその基板に
+2 回)。
 どちらかが欠けたら `bus recovery failed (…)` で、何が見つかったかを添える:
-`master silent` / `master answers, but a stop after 3 s took 272 ms` /
+`no board answers (board 1, 22 silent)` / `board 1 answers, but a stop after 3 s took 272 ms` /
 `usb reset: …`(できなかった理由)。`bus_recovery.by = "usb_reset"`。
 
 #### 復旧のはしご(`_recover_bus()`、アイドルの自動と `POST /bus/recover`)
 
 0. **いまの状態を測る**: 時間を計った STOP と、それが詰まりでなければマスタへの
    ユニキャスト STOP。書き込みが例外だった STOP は速くても「きれい」ではない。**STOP が 200 ms 未満で、かつマスタが答えたときだけ「きれい」**
-   (`bus is clear, nothing to recover (2 ms, master answers)`、ページでは
+   (`bus is clear, nothing to recover (2 ms, board 1 answers)`、ページでは
    `bus was already clear`)。STOP だけだと、自動復旧を起こしたハートビートの
    直後なので 61 ms と読んでしまう。**沈黙はそうやってごまかせない。**記録済みの
    `bus_stall.ms` は信じない(何分も前のものかもしれない)
@@ -598,7 +607,7 @@ STOP には健全なときだけ ACK** する ―― この種の間違いがテ
    そこでは show フレームが最初で、その後ろには何も続けない
 3. **証明**(上)。3 秒の沈黙の途中で**キューが武装されたり、prepare / 焼き込みの
    ジョブが入ったら、そこで打ち切って**その時点の判定を出す:
-   `bus recovered by usb reset (358 ms, master answers, proof cut short by a cue)`
+   `bus recovered by usb reset (358 ms, board 1 answers, proof cut short by a cue)`
    (レビュー L1)―― Recover bus のすぐ後の START が証明のせいで遅れることはない
 
 リセットは**ポートの開き直しと同じく掃引を預ける**(下の「預けた掃引」)。
@@ -624,28 +633,36 @@ STOP には健全なときだけ ACK** する ―― この種の間違いがテ
 
 **時間を計ったブロードキャスト STOP と、マスタへのユニキャスト STOP**(両方
 ―― 直前にハートビートが出ていればブロードキャストだけでは速く読めてしまう)。
-**健全なら T−8.5 あたりのフレーム 2 つ(ブロードキャストの 0x17 と、最小の
-生きている基板への 0x17 とその ACK)で終わり、ほかには何も送らない。**USB
-リセットに進むのは、STOP が 200 ms 以上ブロックしたとき、STOP の書き込みが例外
-だったとき、ACK が無かったときだけ。**ただし STOP が 50 ms 未満**
-(`STALL_LOG_MS`)で ACK が 1 回だけ欠けたのは、健全なバスでフレームが 1 つ失われ
-ただけ(劣化した書き込みは 61 ms 以上ブロックする)なので、入るならもう 1 回
-聞き、**2 回続けて欠けたときだけ**リセットする(9a8c045 のレビュー L2):
-`precheck q08: bus ok (0 ms, master answers on the second ask)` /
-`precheck q09: master missed an ACK twice (0 ms) → usb reset → …` /
-2 回目が入らなければ
-`precheck q10: master missed an ACK once, no time to ask again (0 ms) → not reset`。リセットのあとはマスタの ACK で確かめる(「proof-lite」
+**健全なら T−8.5 あたりのフレーム 2 つ(ブロードキャストの 0x17 と、候補の
+1 番目への 0x17 とその ACK)で終わり、ほかには何も送らない。**
+
+- 問い 1: 候補の 1 番目へ、読み `MASTER_ASK_S` 0.5 秒
+- 欠けたら、**計った STOP が 50 ms 未満(`STALL_LOG_MS`)のときだけ**問い 2:
+  **候補の 2 番目**(1 枚しかなければ同じ基板)へ、**短い読み
+  `HEALTH_SECOND_ASK_S` 0.2 秒**。ただし問い 2 の後ろにリセットの段がまだ入る
+  とき(`now + 0.3 + USB_RESET_BUDGET_S ≤ T − 5.0`。0.3 = 50 ms 未満の STOP の
+  後ろの書き込みを 2 倍の 0.1 と見て + 0.2)だけ。**入らなければ、1 回の欠けで
+  リセットする** ―― 余計なリセットは radxa-07 では無害、直し損ねはキューを
+  失う(f9efd43 のゲート MED-1: 劣化したマスタで STOP が 50 ms 未満に読めると、
+  以前は 0.5 秒の問いを 2 回して `no time for a usb reset` になり、キューが劣化
+  したバスに出ていた)
+- どれかが答えれば `bus ok`(`precheck q01: board 1 silent, board 12 answers →
+  bus ok (0 ms)`)。**2 回とも欠けたらリセット**
+- STOP が 200 ms 以上、STOP の書き込みが例外、STOP が 50 ms 以上で 1 回欠けた
+  とき も、そのままリセット
+
+リセットのあとは候補の 1 番目の ACK で確かめる(「proof-lite」
 ―― 3 秒の沈黙はトリガ前に入らない。沈黙まで含めた証明はアイドルの復旧がする)。
 
 健全なショーの 1 キューの線上(偽物のマスタ、本物の `PRECHECK_S` 8.5 と保留 5.0):
 
 ```
 T -8.465  send  0x17  0xFF (broadcast)    直前点検の STOP
-T -8.465  ask   0x17  1                    マスタへのユニキャスト STOP → ACK
+T -8.465  ask   0x17  1                    候補の 1 番目へのユニキャスト STOP → ACK
 T +0.001  send  0x1D  0xFF (broadcast)    キュー
 T +1.016  send  0x17  0xFF (broadcast)    ガード STOP(この試験では guard_delay 1 秒)
 ```
-ログ `precheck q01: bus ok (0 ms, master answers)`、`cue q01 fired slot 19 +1 ms`。
+ログ `precheck q01: bus ok (0 ms, board 1 answers)`、`cue q01 fired slot 19 +1 ms`。
 
 - ① **トリガ前 5 秒(`REMOTE_GUARD_HOLD_S`)にはトリガ以外何も送らない**。
   残りが **5.4 秒**(保留 5 秒 + 劣化した書き込み 1 回 `DEGRADED_WRITE_S`
@@ -656,20 +673,27 @@ T +1.016  send  0x17  0xFF (broadcast)    ガード STOP(この試験では guar
   問わずにリセットの段へ。**USB リセットの段は `USB_RESET_BUDGET_S` = 2.4 秒**
   (リセット 0.3 + ノード復帰 約 0.45 + オープン 0.3 + その直後の STOP 0.4 +
   確かめのユニキャスト STOP 0.4 + 読み 0.5)が `T − 5.0` までに収まるときだけ
-  始める ―― T−8.1 から始めて T−5.7。STOP が 200 ms 未満なら問い(0.9 まで、劣化
-  したマスタでは書き込みの直後なので 0.56)が先に入り、どの上限でも
-  T−8.5 + 0.2 + 0.9 + 2.4 = T−5.0 に収まる。
+  始める ―― T−8.1 から始めて T−5.7。STOP が 200 ms 未満なら問い 1(0.9 まで、
+  劣化したマスタでは書き込みの直後なので 0.56)が先に入り、どの上限でも
+  T−8.5 + 0.2 + 0.9 + 2.4 = T−5.0 に収まる。STOP が 50 ms 未満なら問い 2 は
+  上の条件でしか入らない: T−8.45 から STOP 0.05、問い 1 0.56 まで、問い 2 0.3
+  まで → リセットは T−7.54 までに始まる。実測(偽物、書き込み 30 ms で劣化):
+  リセット開始 T−7.66、確かめまで T−6.57。1 番が死んで残りが健全: T−8.45 に
+  `board 1 silent, board 3 answers → bus ok`、リセット 0 回。
   **リセット自体・ノード待ち・オープンは `T − 5.0` で打ち切る**(レビュー M2 ――
   sudo が 4.5 秒固まった実験では T−3.11 に開き直していた)。打ち切ったあとの
   「ポートだけ」の開き直しだけはトリガの直前まで試す(開いたポートが無いと
   キューそのものが出ない)。各フレームはさらに 1 つずつ `_frame_refusal()` で
   確かめる
 
-ログ: `precheck q03: bus ok (2 ms, master answers)` /
-`precheck q03: stalled 358 ms → usb reset → ok (master answers)` /
-`precheck q03: master silent (61 ms) → usb reset → ok (master answers)` /
+ログ: `precheck q03: bus ok (2 ms, board 1 answers)` /
+`precheck q03: board 1 silent, board 12 answers → bus ok (0 ms)` /
+`precheck q03: stalled 358 ms → usb reset → ok (board 1 answers)` /
+`precheck q03: board 1 silent (61 ms) → usb reset → ok (board 1 answers)` /
+`precheck q03: no board answers (board 1, 3 silent) (30 ms) → usb reset → …` /
+`precheck q03: board 1 silent, no time to ask another (30 ms) → usb reset → …` /
 `precheck q03: write failed: … → usb reset → …` /
-`… → usb reset → master still silent` / `… → no time for a usb reset` /
+`… → usb reset → no answer (board 1 silent)` / `… → no time for a usb reset` /
 `… → usb reset → failed (usb reset: …)`。測る STOP の書き込みが例外なら、
 どれほど速く失敗しても `bus ok` とは言わず、黙ったマスタと同じくリセットへ進む
 (Recover bus の「already clear」判定と、再列挙後の `bus ok` も同じ ―― 失敗した
@@ -726,7 +750,7 @@ answering` → ポートの開き直し → 掃引、の輪から出られなか
 12:46:03 に `panels online: 22/22`。
 
 ログ: `owed probe sweep: bus stalled 358 ms → recovery first` →
-`bus recovered by usb reset (358 → 0 ms, master answers)` →(預け直した 20 秒の
+`bus recovered by usb reset (358 → 0 ms, board 1 answers)` →(預け直した 20 秒の
 あと)`panels online: 22/22`。はしごはアイドルの自動復旧と同じ回数(3 回)と
 間隔(60 秒)を数え、使い切ったとき、または `--no-auto-recover` のときは
 `owed probe sweep: bus …, sweeping all the same` で従来どおり掃引する(そこで
