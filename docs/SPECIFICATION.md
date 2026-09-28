@@ -368,6 +368,41 @@ REMOTE のブロードキャスト書き込み(表示 0x1D、ガード・定期�
 Conductor は `conductor/fleet.py` がそのまま通し、タイルは
 `re-sent` と同じ琥珀色で `bus stalled 303 ms` と出す。
 
+### 4.2a ③ START のカウントダウン(2026-09-29)
+
+依頼者:「コンダクターのTHE SHOWについて、ショー開始までのカウントダウン時間を
+設定できるように。… 任意に設定するのが難しい場合、-11秒スタートとなるようにして。」
+
+- **設定**: `show.json` の `start_countdown_s`(秒、3〜60、小数は 0.1 秒単位。
+  **キーが無ければ 11**、11 に戻すとキーを消す)。Conductor の ③ START の隣の
+  `Countdown before START [11] s`。`POST /api/show/start_countdown {"s": 秒}`、
+  `/api/state` の `show.start_countdown_s`。undo / redo、ショーの書き出し・読み込み
+  (書き出しには常に入る。キーの無いファイルやデザイナーのバンドルは今の値を変えない)
+- **機体には届かない**: ユニットのショーファイルにも `revision()` にも入らない
+  (`_REVISION_IGNORES`)ので、変えても id は変わらず Upload を求めない
+- **効き方**: **0:00 からの** ③ START の `lead_s`(`fleet.start_show(lead_s, at)` の
+  t0 = clock + lead − at)。`lead_s` を送らない 0:00 からの START もこの値。
+  **途中位置からの START(`START FROM 1:00`、`from_s` / start_at > 0)は従来どおり
+  `NEXT / MOVE take effect in [3] s` の秒数**(送らなければ 3 秒)― 途中再開はショーの
+  幕開けではない。NEXT / MOVE / Back to 0:00 / GO もこの欄(0.5〜60、ブラウザのメモリだけ)
+- **入力**: どちらの欄も NFKC(全角 `１１` も可)→ 0.1 秒に丸め(Python の round と同じ)→
+  範囲チェック。値を打って Enter も離脱もせずに ③ START を押しても、打った値で保存してから送る
+- **表示**: 位置が負の間、大きな時計は `START in 11 s` の下に `-0:11` … `-0:01`、
+  NOW → NEXT ボード(ステージモニターも同じ)は見出しが `START in n s`、大きな数字が
+  `-0:nn`、注記 `The show starts at 0:00.`。秒は切り上げ、色は 10 秒で琥珀・3 秒で赤。
+  位置だけから決まるので HOLD / RESUME / STOP 後も食い違わない。**カウントダウン中は
+  NEXT を押せない**(`The show has not started yet`。押すとカウントダウンを縮めて曲が
+  途中から鳴る)。途中位置からの START は従来と同じ表示
+- **音**: SHOWMUSIC は変更なし ― 負の位置では鳴らさず、0:00 で鳴り始める
+- **機体側**(変更なし): t0 が 3 秒先でも 11 秒先でも同じ扱い(次のキューを
+  t0 + sent で arm)。最初のキューは 0:00 の見た目のトリガで、送出は **t0 − 8 秒**
+  (既定 refresh 8 秒の 1 描画前)。既定 11 秒ではそれが **3 秒前**に arm されるので、
+  キュー前の PRECHECK(ブロードキャスト STOP + 1 台への問い合わせ、9 秒前から、ただし
+  残り REMOTE_GUARD_HOLD_S 5.0 + DEGRADED_WRITE_S 0.4 = **5.4 秒以上**のときだけ始める)
+  は**このトリガには間に合わず走らない** ― 3 秒のリードのとき(トリガはすでに過去で即送出)
+  と同じ。このトリガにも PRECHECK が走るのはカウントダウン 13.4 秒以上。0:00 より後の
+  最初のキューは従来どおり 9 秒前に PRECHECK
+
 ### 4.3 ショー後のスロット消去(0x14、2026-09-27)
 
 ショーのあと、依頼者が STOP を押してから衣装の Radxa を抜いた。基板はまだ

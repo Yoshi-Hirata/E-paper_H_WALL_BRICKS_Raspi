@@ -18,6 +18,22 @@
 
 ## 2. 直近で完成したもの
 
+**③ START のカウントダウン(2026-09-29、Conductor だけ・機体の再配布なし)**
+
+- THE SHOW の ③ START の隣に `Countdown before START [11] s`(3〜60 秒、既定 11)。
+  ショーに保存(`show.json` の `start_countdown_s`、無ければ 11)、undo・書き出し /
+  読み込みつき、ショーの id と Upload には無関係(SPECIFICATION 4.2a)
+- 0:00 からの ③ START はこの秒数をリードに送る。大きな時計・NOW → NEXT ボード・ステージ
+  モニターが `START in 11 s` / `-0:11` … `-0:01` と数え、0:00 でショーと曲が始まる
+  (SHOWMUSIC は無変更、テストで plan() を固定)。カウントダウン中は NEXT 不可
+- 旧欄は `NEXT / MOVE take effect in [3] s`(NEXT・MOVE・Back to 0:00・GO・途中位置からの
+  START、値と振る舞いは従来どおり)
+- レビュー(3f67087)MED-1・LOW-1〜7 を反映: 途中位置からの START は 3 秒側、打ってすぐの
+  START は新しい値、表示は位置だけから、カウントダウン中の NEXT 不可、PRECHECK の数値、
+  既定値はどの経路でもキー無し、全角数字と 0.1 秒丸めをサーバーと同じに
+- テスト: `tests/test_conductor_countdown.py`(ページ・純粋層・ページ全体)、
+  `test_conductor_server.py` の countdown 7 件、`test_conductor_music.py` の 4 ケース
+
 **BOARD INFO: USB の基板を名乗らせる(2026-09-28、読むだけの追加)**
 
 - 基板には印字の ID が無い。USB シリアル(STM32 の固有 ID)の末尾 4 文字を
