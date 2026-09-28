@@ -158,7 +158,10 @@ def test_one_bus_verdict_serves_the_tile_the_row_and_the_notes():
     # Red for the streak, today's amber for one - the same two classes the
     # landing check uses, so a unit reads the same wherever the trouble is.
     assert 's.degraded ? "no" : "re"' in mark
-    assert "esc(opts && opts.short ? s.short : s.text)" in mark
+    # `short` is read once and used twice - for the words, and to keep the
+    # "Recover bus" button off the row (see the next test).
+    assert "const short = !!(opts && opts.short)" in mark
+    assert "esc(short ? s.short : s.text)" in mark
     assert "esc(s.title)" in mark
     # The NOW -> NEXT row's state cell is one column of a grid: it gets the
     # two-word form, and the sentence stays on the tile (M1).
@@ -216,6 +219,59 @@ def test_start_itself_is_not_gated_on_the_bus():
     gate = gate[:gate.index("\n    def ")]
     for word in ("bus_stall", "degraded", "stall"):
         assert word not in gate, f"the START gate refuses on {word!r}"
+
+
+def test_recover_bus_sits_on_the_mark_and_runs_before_the_preset_only():
+    # The button is on the mark itself, so it is where the operator is
+    # already looking, and it carries the unit's name for the delegated
+    # click handler (2026-09-28).
+    mark = _function_body("stallMark")
+    assert "data-recover-bus" in mark and "esc(u.name)" in mark
+    # Not mid-run and not for a unit that is not answering: the unit would
+    # refuse the first and cannot hear the second. Not on the NOW -> NEXT
+    # row either (`short`), for M1's own reason - a button in that one grid
+    # column would push the row's numbers off the end of it.
+    assert "short || showMidRun() || !u.online" in mark
+    assert '[data-recover-bus]' in PAGE and "recoverBuses([" in PAGE
+    # One unit at a time, on its own proxy - never a fleet-wide command.
+    sweep = _function_body("recoverBuses")
+    assert "/api/units/${encodeURIComponent(name)}/bus/recover" in sweep
+    assert "Promise.all" in sweep, "the units are recovered one after another"
+    assert "SHOWBOARD.recoverReport(answers)" in sweep
+    assert "commandInFlight" in sweep, "a double click sends it twice"
+    # ② Show preset sweeps first - three seconds at most, then the preset
+    # goes whatever came back (review F7).
+    before = _function_body("recoverBeforePreset")
+    assert before.count("SHOWBOARD.recoverTargets") == 1
+    assert "PRESET_RECOVER_WAIT_MS" in before
+    assert "const PRESET_RECOVER_WAIT_MS = 3000;" in PAGE
+    assert "AbortController" in sweep and "abort.abort()" in sweep
+    clicks = PAGE[PAGE.index('e.target.id === "show-preset"'):]
+    preset = clicks[:clicks.index('e.target.id === "show-start"')]
+    assert "await recoverBeforePreset();" in preset
+    # ③ START does NOT: it has to go the instant it is pressed, the show
+    # has music (review F7). Nothing of the recovery is left in its handler.
+    start = clicks[clicks.index('e.target.id === "show-start"'):]
+    start = start[:start.index('fleetCommand("start"')]
+    code = _strip_comments(start)
+    assert "recover" not in code.lower(), "START waits for a bus recovery"
+    assert "recoverBeforeShow" not in PAGE, "the old START sweep is still there"
+
+
+def test_the_units_own_endpoint_decides_whether_a_recovery_is_safe():
+    # The conductor proxies and gates nothing: only the UNIT knows whether a
+    # cue is armed on it, and this PC may not even be the one driving it.
+    server = (REPO / "conductor" / "server.py").read_text(encoding="utf-8")
+    assert "/api/units/" in server and "/bus/recover" in server
+    assert "fleet.recover_bus(name)" in server
+    fleet_py = (REPO / "conductor" / "fleet.py").read_text(encoding="utf-8")
+    assert 'link.post("/bus/recover"' in fleet_py
+    # learn=False: the unit holds the connection for seconds by design, and
+    # that round trip must not reach the clock model.
+    assert "learn=False" in fleet_py[fleet_py.index("def recover_bus"):
+                                     fleet_py.index("def recover_bus") + 1200]
+    # ...and the unit's own report of the last recovery reaches the page.
+    assert '"bus_recovery": status.get("bus_recovery")' in fleet_py
 
 
 def test_the_board_asks_the_internet_for_nothing():
@@ -532,6 +588,72 @@ CALLS = {
     "vitals_degraded_while_running": ["vitals", _u(name="radxa-01", bus_stall=_stall(count=37)),
                                       TOPS, True],
     "vitals_one_stall": ["vitals", _u(name="radxa-01", bus_stall=_stall()), TOPS, False],
+    # ---- which units ② Show preset and ③ START recover first (2026-09-28)
+    "recover_none_needed": ["recoverTargets", [_u()], False],
+    "recover_one_fresh_stall": ["recoverTargets",
+                                [_u(), _u(name="radxa-07", bus_stall=_stall())],
+                                False],
+    # Two 359 ms stalls ARE this state; waiting for the fifth (the red mark's
+    # own threshold) is waiting for the show.
+    "recover_before_it_is_red": ["recoverTargets",
+                                 [_u(name="radxa-07", bus_stall=_stall(count=2))],
+                                 False],
+    # A board merely busy repainting blocks 50-60 ms: under S's
+    # STALL_DEGRADED_MS (150), and a recovery would buy it nothing (F7).
+    "recover_shallow_stall_left_alone": ["recoverTargets",
+                                         [_u(name="radxa-07",
+                                             bus_stall=_stall(ms=88.0))], False],
+    "recover_right_at_the_depth": ["recoverTargets",
+                                   [_u(name="radxa-07",
+                                       bus_stall=_stall(ms=150.0))], False],
+    "recover_old_stall_left_alone": ["recoverTargets",
+                                     [_u(name="radxa-07",
+                                         bus_stall=_stall(ago_s=1200.0))], False],
+    "recover_cleared_left_alone": ["recoverTargets",
+                                   [_u(name="radxa-07",
+                                       bus_stall={"ms": None, "frame": None,
+                                                  "at": None, "count": 37,
+                                                  "ago_s": None})], False],
+    "recover_offline_left_alone": ["recoverTargets",
+                                   [{"name": "radxa-07", "online": False,
+                                     "bus_stall": _stall()}], False],
+    # Never inside a run: the unit would refuse it, and asking costs a second
+    # of a show.
+    "recover_not_while_running": ["recoverTargets",
+                                  [_u(name="radxa-07", bus_stall=_stall())], True],
+    "recover_no_units_at_all": ["recoverTargets", [], False],
+    # ---- and what each answer reads as
+    "recover_said_padding": ["recoverText", "radxa-07",
+                             {"recovered": True, "by": "padding",
+                              "before_ms": 359.0, "after_ms": 2.0}],
+    "recover_said_reopen": ["recoverText", "radxa-07",
+                            {"recovered": True, "by": "reopen",
+                             "before_ms": 359.4, "after_ms": 3.2}],
+    "recover_said_failed": ["recoverText", "radxa-07",
+                            {"recovered": False, "by": None,
+                             "before_ms": 359.0, "after_ms": 358.0}],
+    "recover_said_nothing_wrong": ["recoverText", "radxa-07",
+                                   {"recovered": True, "by": None,
+                                    "before_ms": 2.0, "after_ms": 2.0}],
+    "recover_said_refused": ["recoverText", "radxa-07",
+                             {"error": "a show is running - stop it first"}],
+    "recover_said_nothing": ["recoverText", "radxa-07", None],
+    "recover_report_all_well": ["recoverReport",
+                                [{"name": "radxa-07",
+                                  "result": {"recovered": True, "by": "padding",
+                                             "before_ms": 359.0, "after_ms": 2.0}},
+                                 {"name": "radxa-03",
+                                  "result": {"recovered": True, "by": "reopen",
+                                             "before_ms": 300.0, "after_ms": 3.0}}]],
+    "recover_report_one_hopeless": ["recoverReport",
+                                    [{"name": "radxa-07",
+                                      "result": {"recovered": True, "by": "padding",
+                                                 "before_ms": 359.0, "after_ms": 2.0}},
+                                     {"name": "radxa-03",
+                                      "result": {"recovered": False, "by": None,
+                                                 "before_ms": 359.0,
+                                                 "after_ms": 358.0}}]],
+    "recover_report_of_nothing": ["recoverReport", []],
 }
 
 # The row texts, one per state the board has to be right in.
@@ -1010,6 +1132,67 @@ def test_the_now_next_row_carries_the_same_verdict(board):
     assert "bus" not in r["vitals_degraded_while_running"]["text"]
 
 
+# ---- "Recover bus" (2026-09-28, LOOK28 / radxa-07) ----
+#
+# The state the red mark above asks for a restart over has a cheaper cure the
+# unit can run itself: the resync padding, and a port reopen behind it
+# (ui/runner.py's _recover_bus()). ② Show preset and ③ START try it FIRST,
+# because a degraded unit takes the preset and refreshes no panel.
+
+def test_the_units_to_recover_are_the_ones_still_stalling_now(board):
+    r = board["results"]
+    assert r["recover_none_needed"] == []
+    assert r["recover_one_fresh_stall"] == ["radxa-07"]
+    # Two stalls is already enough - this does not wait for the red mark's
+    # five, because five is the show.
+    assert r["recover_before_it_is_red"] == ["radxa-07"]
+    # The same depth S's red mark is drawn from: 150 ms counts, 88 does not.
+    assert r["recover_right_at_the_depth"] == ["radxa-07"]
+    # Shallow, old, taken down by the unit itself, offline, mid-run, nothing
+    # at all: a port is never reopened on any of these.
+    for name in ("recover_shallow_stall_left_alone",
+                 "recover_old_stall_left_alone", "recover_cleared_left_alone",
+                 "recover_offline_left_alone", "recover_not_while_running",
+                 "recover_no_units_at_all"):
+        assert r[name] == [], name
+
+
+def test_each_answer_reads_as_what_it_took_or_what_is_left_to_do(board):
+    r = board["results"]
+    padded = r["recover_said_padding"]
+    assert padded["text"] == "radxa-07: bus recovered by padding (359 → 2 ms)"
+    assert padded["ok"] is True and padded["tone"] == ""
+    assert r["recover_said_reopen"]["text"] == \
+        "radxa-07: bus recovered by reopen (359 → 3 ms)"
+    # A failure names the cure and NO numbers: "358 ms" is nothing the
+    # operator can act on at 19:58.
+    failed = r["recover_said_failed"]
+    assert failed["text"] == "radxa-07: bus recovery failed — restart the unit"
+    assert failed["ok"] is False and failed["tone"] == "warn"
+    # A healthy unit: the button is not a lie either way.
+    assert r["recover_said_nothing_wrong"]["text"] == "radxa-07: bus was already clear"
+    assert r["recover_said_nothing_wrong"]["ok"] is True
+    # A refusal and a unit off the WLAN both come back as themselves.
+    refused = r["recover_said_refused"]
+    assert refused["text"] == \
+        "radxa-07: bus recovery — a show is running - stop it first"
+    assert refused["tone"] == "warn"
+    assert "no answer from the unit" in r["recover_said_nothing"]["text"]
+
+
+def test_one_unit_that_still_needs_restarting_is_the_whole_message(board):
+    r = board["results"]
+    good = r["recover_report_all_well"]
+    assert good["ok"] is True and good["tone"] == ""
+    assert good["text"] == ("radxa-07: bus recovered by padding (359 → 2 ms) · "
+                           "radxa-03: bus recovered by reopen (300 → 3 ms)")
+    bad = r["recover_report_one_hopeless"]
+    assert bad["ok"] is False and bad["tone"] == "warn"
+    assert "radxa-03: bus recovery failed — restart the unit" in bad["text"]
+    # Nothing was recovered, so there is nothing to say - not an empty toast.
+    assert r["recover_report_of_nothing"] is None
+
+
 def test_an_agent_too_old_to_list_its_boards_is_not_guessed_at(board):
     r = board["results"]
     # One garment, the whole unit: the old counts do compare, so a missing
@@ -1181,6 +1364,13 @@ class _Stand:
         # neither is evidence that THIS show is on stage.
         self.demo4 = False
         self.stale3 = False
+        # What POST /api/units/<name>/bus/recover answers: "padding" and
+        # "reopen" are the two cures, "never" the unit that has to be
+        # restarted (ui/runner.py's _recover_bus()).
+        self.recover = "padding"
+        # Every command in the order it arrived, so a test can say that the
+        # recovery ran BEFORE the preset and not merely that both happened.
+        self.asked = []
         # "Clear pictures after the show": a real setting on this stand-in, so
         # the page's checkbox can be ticked and read back the way it is on the
         # night (the server stores it with the show, not in the browser).
@@ -1233,6 +1423,21 @@ class _Stand:
                     stand.cleared.append(sorted(names))
                     return self._json({"units": {n: {"ok": True}
                                                  for n in names}})
+                # The per-unit recover proxy (conductor/server.py), and what
+                # the unit answers - steered by /test/fleet?recover=...
+                if path.startswith("/api/units/") and path.endswith("/bus/recover"):
+                    name = path[len("/api/units/"):-len("/bus/recover")]
+                    stand.asked.append(f"recover:{name}")
+                    if stand.recover == "never":
+                        return self._json({"recovered": False, "by": None,
+                                           "before_ms": 359.0,
+                                           "after_ms": 358.0})
+                    return self._json({"recovered": True,
+                                       "by": stand.recover,
+                                       "before_ms": 359.0, "after_ms": 2.0})
+                if path == "/api/fleet/preset":
+                    stand.asked.append("preset")
+                    return self._json({"units": {"radxa-01": {"ok": True}}})
                 self.do_GET()
 
             def do_GET(self):
@@ -1286,6 +1491,9 @@ class _Stand:
                         stand.demo4 = args["demo4"] == "1"
                     if "stale3" in args:
                         stand.stale3 = args["stale3"] == "1"
+                    if "recover" in args:
+                        stand.recover = args["recover"]
+                        stand.asked = []        # each step asks its own way
                     if "uploaded" in args:
                         stand.uploaded = args["uploaded"] == "1"
                     if "clear_in" in args:
@@ -1296,7 +1504,8 @@ class _Stand:
                                        "uploaded": stand.uploaded})
                 if path == "/test/asked":
                     return self._json({"clear_after": stand.clear_after,
-                                       "cleared": stand.cleared})
+                                       "cleared": stand.cleared,
+                                       "asked": list(stand.asked)})
                 return self._json({})
 
         self.port = _free_port()
@@ -1614,6 +1823,34 @@ _PAGE_PROBE = """
         tile: document.querySelector("#tiles .tile").textContent,
         note: document.querySelector("#show-degraded").textContent,
         row: board().querySelector(".nn-row [data-vit]").textContent };
+      // ...and no "Recover bus" to press in the middle of a show.
+      out.recoverMidRun = !!document.querySelector("[data-recover-bus]");
+
+      // 15. "Recover bus" (2026-09-28): the button beside the mark, and the
+      //     sweep (2) Show preset makes before it sends anything.
+      await fetch("/test/fleet?run=none&stall=degraded&recover=padding");
+      await wait(1600);
+      var btn = document.querySelector("[data-recover-bus]");
+      out.recoverButton = { there: !!btn, unit: btn && btn.dataset.recoverBus,
+                            label: btn && btn.textContent };
+      btn.click();
+      await wait(1200);
+      out.recoverToast = { text: document.querySelector("#toast").textContent,
+                           cls: document.querySelector("#toast").className };
+      out.recoverAsked = await (await fetch("/test/asked")).json();
+      // A unit nothing can fix: the toast says restart, in the warn tone.
+      await fetch("/test/fleet?recover=never");
+      await wait(1200);
+      document.querySelector("[data-recover-bus]").click();
+      await wait(1200);
+      out.recoverFailedToast = { text: document.querySelector("#toast").textContent,
+                                 cls: document.querySelector("#toast").className };
+      // (2) Show preset sweeps first, then sends the preset.
+      await fetch("/test/fleet?recover=padding&uploaded=1&show=ran");
+      await wait(1600);
+      document.querySelector("#show-preset").click();
+      await wait(1600);
+      out.presetOrder = await (await fetch("/test/asked")).json();
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -2050,3 +2287,30 @@ def test_nothing_about_it_changes_once_the_show_is_running(page):
     assert "bus stalled 359 ms" in r["tile"], r["tile"]
     assert r["note"] == "", r["note"]
     assert "bus degraded" not in r["row"], r["row"]
+    # ...and there is nothing to press mid-show either: the unit would
+    # refuse a recovery, so the button is not offered.
+    assert page["recoverMidRun"] is False
+
+
+def test_recover_bus_is_pressed_from_the_tile_and_reports_what_it_took(page):
+    btn = page["recoverButton"]
+    assert btn["there"] is True and btn["unit"] == "radxa-01"
+    assert btn["label"] == "Recover bus"
+    # The toast the operator reads: what was wrong, what fixed it, and the
+    # two numbers that show it really is fixed.
+    toast = page["recoverToast"]
+    assert toast["text"] == "radxa-01: bus recovered by padding (359 → 2 ms)", toast
+    assert toast["cls"] == "", "a recovery that worked is not a warning"
+    assert page["recoverAsked"]["asked"] == ["recover:radxa-01"]
+    # A unit nothing here can fix names the one thing left to do, in amber.
+    failed = page["recoverFailedToast"]
+    assert failed["text"] == "radxa-01: bus recovery failed — restart the unit", failed
+    assert failed["cls"] == "warn", failed
+
+
+def test_show_preset_recovers_before_it_sends_anything(page):
+    # The order is the whole point: a degraded unit ACCEPTS the preset and
+    # refreshes no panel (radxa-07, 2026-09-28), so the recovery has to be
+    # in front of it and not behind it.
+    asked = page["presetOrder"]["asked"]
+    assert asked == ["recover:radxa-01", "preset"], asked

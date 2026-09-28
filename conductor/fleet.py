@@ -56,6 +56,11 @@ DEFAULT_LEAD_S = 3.0
 T0_TOLERANCE_S = 0.05      # a unit's T0 further off than this is corrected
 SUPERVISE_EVERY_S = 3.0    # at most one correction per unit in this time
 DEMO_SAVE_TIMEOUT_S = TIMEOUT_S * 4    # /demo/save includes an eMMC write
+# POST /bus/recover holds the connection for as long as the recovery takes:
+# the unit bounds its own work at ~11 s and its wait at 15 s (ui/remote.py's
+# RECOVER_WAIT_S), so this has to outlive that and say "no answer" only when
+# the unit really has stopped answering.
+RECOVER_TIMEOUT_S = 20.0
 # How often a unit is asked what demos it holds (GET /demo/list, from the
 # poll loop). The store only changes when someone writes or deletes one -
 # and those update the cache straight from the answer - so this is just
@@ -358,6 +363,14 @@ class UnitLink:
                 # that window is lost rather than late - this is the
                 # only place that says so out loud.
                 "bus_stall": status.get("bus_stall"),
+                # What the unit's last bus recovery took, if any
+                # (ui/runner.py's _recover_bus()): {"by", "before_ms",
+                # "after_ms", "ago_s", "count"}. Missing altogether from
+                # an agent too old to have the endpoint - which is also
+                # the one that answers 404 to POST /bus/recover, so the
+                # page's "Recover bus" says "too old" rather than
+                # pretending it worked.
+                "bus_recovery": status.get("bus_recovery"),
                 # Taking the show's pictures back out of slots 1-18 once
                 # the show is over (ui/remote.py's clear()): {"state",
                 # "done", "total", "failed"}, state "none" until one is
@@ -1804,6 +1817,25 @@ class Fleet:
         self.last_fire = {"lead_s": lead_s, "units": sorted(cues),
                           "wall": time.time() + lead_s}
         return results
+
+    def recover_bus(self, name: str) -> dict:
+        """POST /bus/recover to ONE unit - the tile's "Recover bus".
+
+        One unit, not the fleet: this is a button next to a mark on one
+        tile, and the page's own pre-preset sweep calls it per unit in
+        parallel so each answer lands on its own tile.
+
+        `learn=False`: the unit holds the connection for as long as the
+        recovery takes (seconds, by design), and feeding that round trip
+        into the clock model would poison the offset with a "slow path"
+        that has nothing to do with the network - the same reason a demo
+        write skips it.
+        """
+        link = self.links.get(name)
+        if link is None:
+            raise KeyError(f"unknown unit {name}")
+        return link.post("/bus/recover", {}, learn=False,
+                         timeout=RECOVER_TIMEOUT_S)
 
     def simple(self, names, path: str) -> "dict[str, dict]":
         """cancel / standby / release."""

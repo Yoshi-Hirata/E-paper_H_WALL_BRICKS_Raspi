@@ -7,12 +7,22 @@ import time
 import serial
 from serial.tools import list_ports
 
-from .protocol import ADDR_BROADCAST, Frame, decode, hexdump
+from .protocol import ADDR_BROADCAST, MIN_FRAME_LEN, Frame, decode, hexdump
 
 BAUDRATE = 115200
 ACK_TIMEOUT_S = 0.5
 WRITE_TIMEOUT_S = 2.0
 MAX_RETRIES = 3
+# Zero bytes the firmware's frame parser throws away (a frame opens
+# AA 55): what an open writes so the bytes lost to the DTR toggle are
+# these and not the first real frame's head.
+PAD_BYTES = 8
+# ...and what a RESYNC writes, which is a different job: a parser that
+# latched onto the middle of a frame has to be pushed out of it, so this
+# is a whole minimum frame's worth rather than the eight an open needs
+# (ui/runner.py's _recover_bus(); the 2026-09-28 LOOK28 state, where
+# every write blocked 359 ms and nothing was executed).
+RESYNC_PAD_BYTES = MIN_FRAME_LEN
 
 # STM32 USB CDC (board's virtual COM port)
 KNOWN_VID_PID = {(0x0483, 0x5740)}
@@ -53,6 +63,12 @@ def find_port() -> str | None:
 
 class Bus:
     def __init__(self, port: str, verbose: bool = True):
+        self.verbose = verbose
+        self._rx = b""
+        self.ser = None
+        self._open(port)
+
+    def _open(self, port: str) -> None:
         # write_timeout: a wedged board CDC stops draining USB, and a
         # write into that state blocks forever (frames are <100 bytes,
         # so any real send completes in milliseconds). Fail fast with
@@ -65,12 +81,51 @@ class Bus:
         # frame parser discards, so any loss hits the padding instead of
         # the first real frame.
         time.sleep(0.2)
-        self.ser.write(b"\x00" * 8)
-        self.ser.flush()
+        self.pad()
         time.sleep(0.1)
         self.ser.reset_input_buffer()
-        self.verbose = verbose
         self._rx = b""
+
+    @property
+    def port(self) -> str:
+        """The device name this bus is on - kept after a close(), which is
+        what a reopen falls back to when find_port() comes up empty."""
+        return self.ser.port
+
+    def pad(self, count: int = PAD_BYTES) -> None:
+        """Write `count` zero bytes: nothing the firmware can read as a
+        frame, so they are discarded wherever its parser happens to be.
+
+        An open sends them because the DTR toggle eats the first bytes;
+        a recovery sends RESYNC_PAD_BYTES of them because a parser stuck
+        mid-frame has to be pushed past the end of whatever it thinks it
+        is reading (see RESYNC_PAD_BYTES).
+        """
+        self.ser.write(b"\x00" * count)
+        self.ser.flush()
+
+    def reopen(self, port: str | None = None) -> str:
+        """Close this port and open it again IN PLACE, keeping the object.
+
+        A reopen is the DTR toggle and the padding of a fresh open - the
+        one thing a restart of the unit's service does that nothing else
+        does, and the cure for a master whose USB CDC has stopped
+        executing what it accepts (ui/runner.py's _recover_bus()).
+
+        In place, because the callers hold this object several frames
+        deep: the remote worker's `bus` is a local of _run_remote() and
+        the recovery is reached from inside _fire_at()'s own wait, where
+        no rebinding could ever reach it. `port` may differ from the
+        current one - a USB re-enumeration renames ttyACM0 to ttyACM1 -
+        and defaults to the name already in use. Returns the name opened.
+        """
+        try:
+            self.ser.close()
+        except Exception:               # noqa: BLE001 - it is going anyway
+            pass
+        port = port or self.port
+        self._open(port)
+        return port
 
     def close(self):
         self.ser.close()

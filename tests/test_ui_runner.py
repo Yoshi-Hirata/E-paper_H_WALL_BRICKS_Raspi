@@ -106,6 +106,69 @@ class FakeBus:
         self.closed = True
 
 
+class RecoveringBus(FakeBus):
+    """A bus whose every write BLOCKS until it is put right again.
+
+    The 2026-09-28 LOOK28 state (ui/runner.py's RECOVERED_MS): the master
+    accepts every frame, executes none, and every write takes ~360 ms.
+    `cure` is what stops it - which is the whole question the recovery
+    exists to answer, since the padding-alone test could not be run from
+    the show PC:
+
+      "padding"  the resync padding bytes (transport.RESYNC_PAD_BYTES)
+      "reopen"   only the port closed and opened again
+      "never"    nothing here does; the unit has to be restarted
+    """
+
+    def __init__(self, cure: str = "padding", seconds: float = 0.36,
+                 port: str = "/dev/fake", **kwargs):
+        super().__init__(**kwargs)
+        self.cure, self.block_s = cure, seconds
+        self.stalled = True
+        self.padded: "list[int]" = []       # pad() calls, with their counts
+        self.reopened: "list[str]" = []     # reopen() calls, with the port
+        self.port = port
+
+    def pad(self, count=8):
+        self.padded.append(count)
+        if self.cure == "padding":
+            self.stalled = False
+
+    def reopen(self, port=None):
+        self.port = port or self.port
+        self.reopened.append(self.port)
+        if self.cure in ("padding", "reopen"):
+            self.stalled = False
+        return self.port
+
+    def unplug(self, back_as: "str | None" = None):
+        """A USB re-enumeration: the device node goes, and comes back under
+        `back_as` (the kernel's ttyACM0 -> ttyACM1). Paired with
+        `token()` below as the runner's link_token."""
+        self.gone = self.port
+        self.back_as = back_as or self.port
+
+    def token(self, port: str):
+        """What DemoRunner(link_token=...) reads: None for a node that is
+        not there. A port that has been unplugged reads as gone until the
+        one it comes back as is asked for."""
+        if getattr(self, "gone", None) is None:
+            return "up"
+        return "up" if port == getattr(self, "back_as", None) else None
+
+    def _block(self):
+        if self.stalled:
+            time.sleep(self.block_s)
+
+    def send(self, frame):
+        self._block()
+        super().send(frame)
+
+    def request(self, frame, retries=3, timeout=None):
+        self._block()
+        return super().request(frame, retries=retries, timeout=timeout)
+
+
 def wait_until(predicate, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

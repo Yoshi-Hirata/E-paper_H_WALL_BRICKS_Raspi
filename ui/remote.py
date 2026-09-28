@@ -96,6 +96,11 @@ DEFAULT_SLOT = 19
 # guard, covering every other caller too (an operator's own /prepare+/fire,
 # not just a ShowPlayer-run show).
 FIRE_IMMINENT_S = 0.05
+# How long POST /bus/recover waits for the worker's answer. The recovery
+# itself is bounded at about 11 s (ui/runner.py's _recover_bus()); this is
+# that with room for the worker to reach the job, and a 409 saying so
+# rather than an HTTP client left hanging.
+RECOVER_WAIT_S = 15.0
 
 
 class RemoteError(ValueError):
@@ -122,10 +127,13 @@ def _seconds(value) -> "float | None":
 
 
 def _with_age(stall: "dict | None") -> "dict | None":
-    """A copy of the runner's bus_stall with `ago_s` filled in, or None.
+    """A copy of one of the runner's timestamped records (bus_stall,
+    bus_recovery, resend) with `ago_s` filled in, or None.
 
     A copy, because the worker thread owns the original and goes on
-    updating it while the PC reads this one.
+    updating it while the PC reads this one. The age is worked out on
+    the unit's own clock: the PC's differs, and this is one subtraction
+    between two readings of the same one.
     """
     if not stall:
         return None
@@ -141,6 +149,13 @@ class RemoteSession:
         # Set by the App: true while an OTA, a scan or a reboot owns the
         # unit - a cue must not pull the port from under a flash.
         self.busy = busy or (lambda: False)
+        # True while a show (or a stored demo) is being played or held -
+        # set by ShowPlayer.__init__(), which is the only thing that
+        # knows. A bus recovery reopens the port, so it never runs
+        # inside a run however far off the next cue looks
+        # (ui/runner.py's _recover_quiet()); with no player at all
+        # nothing is ever being played, which is the safe reading.
+        self.playing = lambda: False
 
         self.on_release = None         # set by the show player's owner
         self.active = False            # the unit is under remote control
@@ -244,6 +259,8 @@ class RemoteSession:
         # Which slots the clear in hand is about, so a second ask for the
         # SAME ones is a no-op rather than a restart - see clear().
         self._clear_slots: "list[int] | None" = None
+        # POST /bus/recover, waiting for the worker (see recover_bus()).
+        self._recover_job: "dict | None" = None
 
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -648,6 +665,97 @@ class RemoteSession:
             job, self._clear_job = self._clear_job, None
             return job
 
+    # ---- POST /bus/recover ----
+
+    def recover_bus(self, timeout: float = RECOVER_WAIT_S) -> dict:
+        """Get the bus working again, and say what it took.
+
+        The worker thread owns the port, so this queues the job, wakes
+        it and waits for the answer - the same shape as a clear, with a
+        reply instead of a progress record. Answers {"recovered", "by"
+        ("padding" | "reopen" | null), "before_ms", "after_ms"}; `by`
+        null with recovered true is "there was nothing wrong", which is
+        the honest answer to a button pressed on a healthy unit.
+
+        Refused (409) while anything else could want the bus - see
+        recover_refusal(), which the worker asks AGAIN when it takes the
+        job: the gate can close in the moment between the two (a START
+        arriving, a picture beginning), and it is the later answer that
+        counts.
+        """
+        refusal = self.recover_refusal()
+        if refusal:
+            raise RemoteError(refusal)
+        done = threading.Event()
+        job = {"done": done, "result": None}
+        with self._lock:
+            self._recover_job = job
+        # Nobody on the port at all (the unit on its own menu): the same
+        # move a clear makes - the worker that does this work is started,
+        # and it picks the job up as soon as it has the bus.
+        if not self.runner.remote and self.runner.start_remote(self) is False:
+            with self._lock:
+                self._recover_job = None
+            raise RemoteError("bus busy: the previous worker has not finished")
+        self._wake.set()
+        if not done.wait(max(0.0, timeout)):
+            with self._lock:
+                if self._recover_job is job:
+                    self._recover_job = None
+            raise RemoteError("the worker did not answer in time")
+        result = dict(job["result"] or {})
+        if result.get("error"):
+            # The worker found a gate closed when it came to the job.
+            raise RemoteError(result["error"])
+        return result
+
+    def recover_refusal(self) -> "str | None":
+        """Why a bus recovery may not run now, or None when it may.
+
+        A recovery reopens the port and sends frames, so it stands aside
+        for everything a cue or a picture could be hurt by (review F6):
+
+        * an OTA, a scan or a reboot owning the unit;
+        * a show being played or held;
+        * a cue armed within the runner's recover_quiet (60 s);
+        * the last cue's picture still drawing - the runner's
+          `_guard_floor`, its refresh plus its span: a STOP into a sweep
+          leaves the change half-drawn, and a master busy repainting reads
+          as a stall and would be "recovered" by a reopen it never needed.
+
+        The runner's numbers are read off the runner rather than imported:
+        this module imports nothing of ours (see ui/runner.py's import of
+        READY), and a test that compresses them compresses these gates.
+        """
+        if self.busy():
+            return "unit is busy (firmware update, scan or reboot)"
+        if self.playing():
+            return "a show is running - stop it first"
+        with self._lock:
+            at = self.fire_at if self.phase == ARMED else None
+        if at is not None:
+            left = at - self._clock()
+            if left < self.runner.recover_quiet:
+                return (f"a cue fires in {max(0.0, left):.0f} s - "
+                        f"stop the show first")
+        floor = getattr(self.runner, "_guard_floor", None)
+        if floor is not None:
+            left = floor - time.monotonic()
+            if left > 0:
+                return (f"a repaint is in progress - try again in "
+                        f"{math.ceil(left)} s")
+        return None
+
+    def take_recover_job(self) -> "dict | None":
+        with self._lock:
+            job, self._recover_job = self._recover_job, None
+            return job
+
+    def recovered(self, job: dict, result: dict) -> None:
+        """The worker's answer to one recover_bus(); wakes the waiter."""
+        job["result"] = dict(result)
+        job["done"].set()
+
     def clear_started(self, epoch: int, total: int) -> None:
         """How many (board, slot) pairs this clear is about - the worker
         knows the garment's list, the caller does not."""
@@ -943,6 +1051,29 @@ class RemoteSession:
                 # clock - the PC's differs, and this is one subtraction
                 # between two readings of the same one.
                 "bus_stall": _with_age(runner.bus_stall),
+                # The last time a bus that was accepting frames and
+                # executing none was got working again (ui/runner.py's
+                # _recover_bus()): {"by" ("padding" | "reopen" | null),
+                # "before_ms", "after_ms", "at" (wall clock), "ago_s",
+                # "count"}. None until one has been run in this worker.
+                "bus_recovery": _with_age(runner.bus_recovery),
+                # The opt-in fire-time re-send (--resend-on-stall), and
+                # whether this unit has it on at all: a cue whose own
+                # broadcast blocked, sent again once. None until one has.
+                "resend_on_stall": bool(runner.resend_on_stall),
+                "resend": _with_age(runner.resend),
+                # The health check two seconds before the last cue
+                # (ui/runner.py's PRECHECK_S): {"cue", "before_ms", "by"
+                # ("padding" | "reopen" | null), "after_ms", "at",
+                # "ago_s"}. `before_ms` of 1-2 ms with `by` null is the
+                # normal answer - the port was fine and nothing was done.
+                "precheck": _with_age(runner.precheck),
+                # The three kill switches as the unit is actually running
+                # them (ui/main.py's --precheck SECONDS, --no-port-watch,
+                # --no-auto-recover), so the PC can see which are on.
+                "precheck_s": runner.precheck_s,
+                "port_watch": bool(runner.port_watch),
+                "auto_recover": bool(runner.auto_recover),
                 "burn": burn,
                 # Taking the pictures back out of slots 1-18 after the
                 # show (see the module docstring): {"state", "done",

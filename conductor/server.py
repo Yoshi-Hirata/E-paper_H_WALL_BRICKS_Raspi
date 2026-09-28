@@ -2585,6 +2585,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if self.path.startswith("/api/fleet/"):
                 return self._fleet_command(self.path[len("/api/fleet/"):], body)
+            if (self.path.startswith("/api/units/")
+                    and self.path.endswith("/bus/recover")):
+                return self._recover_bus(urllib.parse.unquote(
+                    self.path[len("/api/units/"):-len("/bus/recover")]))
             if self.path in ("/api/undo", "/api/redo"):
                 step = (self.workspace.undo if self.path == "/api/undo"
                         else self.workspace.redo)
@@ -2684,6 +2688,29 @@ class Handler(BaseHTTPRequestHandler):
         compiled ones would let one written LOOK claim the whole
         timeline - the one thing the chip exists to answer."""
         return sorted(set(shows) | self.workspace.timeline_units())
+
+    def _recover_bus(self, name: str) -> None:
+        """POST /api/units/<name>/bus/recover - straight through to that
+        unit's own endpoint (ui/agent.py).
+
+        One unit, and no gate of its own: the UNIT decides whether this
+        is safe (it refuses while a show is running or holding, or a cue
+        is armed within the minute), and it is the only thing that can -
+        this conductor may not even be the one driving it. Everything
+        that can go wrong is an answer, never a 500: an unknown unit, a
+        refusal, a unit that has gone off the WLAN, an agent too old for
+        the endpoint (404). The page shows whatever comes back.
+        """
+        fleet = self.fleet
+        if fleet is None:
+            return self._json({"error": "no fleet configured"}, status=400)
+        try:
+            return self._json(fleet.recover_bus(name))
+        except KeyError as exc:
+            return self._json({"error": str(exc).strip('"')}, status=404)
+        except Exception as exc:        # noqa: BLE001 - reported, never raised
+            return self._json({"error": str(exc) or exc.__class__.__name__},
+                              status=502)
 
     def _fleet_command(self, command: str, body: dict) -> None:
         fleet = self.fleet
