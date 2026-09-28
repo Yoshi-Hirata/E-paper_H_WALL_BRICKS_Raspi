@@ -2001,6 +2001,12 @@ player.addEventListener("ended", () => {
   if (ui.playing && !ui.pastMusic) runOnPastTheMusic(Math.max(ui.playhead, player.currentTime));
 });
 player.addEventListener("seeked", () => { seeking = false; });
+// Running on past the music, the element has nothing to play - but a media
+// key (or the OS's own player controls) can still play() it, and an ended
+// element starts again from 0:00 under a show that is minutes further on.
+// Put it straight back; the preview's own clock never noticed.
+for (const ev of ["play", "playing"])
+  player.addEventListener(ev, () => { if (ui.playing && ui.pastMusic) player.pause(); });
 // The music's length arrives when the element has read the file's header,
 // some time after the page drew the Timeline - and goes when it is removed.
 for (const ev of ["loadedmetadata", "durationchange", "emptied"]) player.addEventListener(ev, paintMusicEnd);
@@ -2073,10 +2079,21 @@ function paintMusicEnd() {
   if (note) note.textContent = info ? info.note : "";
   if (fit) {
     fit.disabled = !info;
-    fit.title = !info ? (playerUrl ? "Waiting for the music's length" : "Load the music first (THE LOOKS AT, below)")
+    fit.title = !info ? (playerUrl ? "Waiting for the music's length" : "Load the music first")
       : info.tooLong ? `The music (${clock(info.at)}) is longer than a show can be: sets the show to ${clock(MAX_SHOW_DURATION_S)}`
       : `Set Show length to the music's length, rounded up to the next second (${clock(info.fit)})`;
   }
+}
+// A different length is a different show (a new show id), so pictures a unit
+// already holds for the uploaded one no longer count: START refuses until an
+// Upload. Said where the operator changes it, not only at START (review
+// 2026-09-28). True when any unit holds (or is writing) the pictures of the
+// show this PC last uploaded to it.
+const UPLOAD_AGAIN = "Upload again before START.";
+function picturesOnUnits() {
+  return (fleet?.units || []).some(u => u.show && !u.show.demo && fleet.shows?.[u.name]
+    && u.show.id === fleet.shows[u.name].id
+    && ["burned", "failed", "burning"].includes((u.show.burn || {}).state));
 }
 // Fit to music: never automatic - the show's length changes only when the
 // operator presses this.
@@ -2088,8 +2105,9 @@ async function fitToMusic() {
     : `Show length is ${clock(info.fit)}: the music's length, rounded up.`;
   if (info.fit === state.show.duration) { toast(why, info.tooLong ? "warn" : ""); return; }
   ui.playhead = Math.min(ui.playhead, info.fit);
+  const uploaded = picturesOnUnits();          // asked before the show changes
   const result = await saveShow(state.show.cues, info.fit);
-  if (!result?.error) toast(why, info.tooLong ? "warn" : "");
+  if (!result?.error) toast(uploaded ? `${why} ${UPLOAD_AGAIN}` : why, info.tooLong || uploaded ? "warn" : "");
 }
 // THE SHOW's clock carries the same fact, in small print under the time.
 function musicEndClockHtml() {
@@ -4514,7 +4532,11 @@ function showClockText() {
   if (run) {
     now = run.state === "holding" ? run.now : run.now + (performance.now() - fleet.at) / 1000;
     word = run.state === "holding" ? "ON HOLD" : now < 0 ? "STARTS IN" : "RUNNING" + (run.adopted ? " (RECOVERED FROM THE UNITS)" : "");
-    if (run.state === "running" && now > state.show.duration) word = "ENDED";
+    // fleetDuration(): the length the units were uploaded with - what they
+    // actually run - not this page's Show length, which the operator may
+    // have changed since (the clock must never read RUNNING after the units
+    // have ended, review 2026-09-28).
+    if (run.state === "running" && now > fleetDuration()) word = "ENDED";
   }
   box.className = "showclock " + (run ? run.state : "");
   box.innerHTML = `<small>${word}</small>${now === null ? "0:00" : clock(now)}${musicEndClockHtml()}`;
@@ -5537,7 +5559,10 @@ document.addEventListener("change", async e => {
     // Refused, not clamped: the length the operator typed is not the one
     // they would get, and the field goes back to what the show really is.
     if (typed > MAX_SHOW_DURATION_S) { toast(SHOW_TOO_LONG, "warn"); renderTimeline(); return; }
-    ui.playhead = Math.min(ui.playhead, typed); await saveShow(state.show.cues, typed);
+    const uploaded = typed !== state.show.duration && picturesOnUnits();
+    ui.playhead = Math.min(ui.playhead, typed);
+    const result = await saveShow(state.show.cues, typed);
+    if (uploaded && !result?.error) toast(`Show length is ${clock(typed)}. ${UPLOAD_AGAIN}`, "warn");
   } else if (id === "refresh") {
     const seconds = Number(e.target.value);
     if (!(seconds >= 1 && seconds <= 60)) { toast("Enter a refresh time of 1 to 60 seconds"); renderTimeline(); return; }

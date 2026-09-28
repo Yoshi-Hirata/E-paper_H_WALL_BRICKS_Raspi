@@ -72,6 +72,8 @@ class _Stand:
         wav = _wav()
         ws.save_music("track.wav", io.BytesIO(wav), len(wav))
         page = INDEX_HTML.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1)
+        self.mode = "none"
+        stand = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -110,11 +112,11 @@ class _Stand:
                     return self._json(ws.state())
                 if path == "/api/music/file":
                     return self._send(wav, "audio/wav")
+                if path == "/test/fleet":
+                    stand.mode = self.path.split("=")[-1]
+                    return self._json({"mode": stand.mode})
                 if path == "/api/fleet":
-                    return self._json({"units": [], "last_fire": None, "run": None,
-                                       "shows": {}, "corrections": [], "prepared": {},
-                                       "start_at": 0.0, "show_duration": None,
-                                       "timeline": None})
+                    return self._json(_fleet(stand.mode))
                 if path == "/api/fleet/demos":
                     return self._json({"units": {}, "offline": [], "failed": {}})
                 return self._json({})
@@ -132,6 +134,25 @@ class _Stand:
     def close(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+
+
+def _fleet(mode):
+    """/api/fleet as the probe steers it: nothing uploaded; one unit holding
+    the pictures of the show it was uploaded; or a run the units have ENDED
+    (a 0:20 show at 0:30) while this page's Show length says longer."""
+    answer = {"units": [], "last_fire": None, "run": None, "shows": {},
+              "corrections": [], "prepared": {}, "start_at": 0.0,
+              "show_duration": None, "timeline": None}
+    if mode == "burned":
+        answer["units"] = [{"name": "radxa-01", "online": True,
+                            "show": {"id": "S1", "state": "loaded",
+                                     "burn": {"state": "burned"}}}]
+        answer["shows"] = {"radxa-01": {"id": "S1", "cues": 1}}
+    if mode == "ended":
+        answer["run"] = {"t0": 0.0, "state": "running", "held_at": None,
+                         "force": False, "now": 30.0}
+        answer["show_duration"] = 20.0
+    return answer
 
 
 _PROBE = """
@@ -178,8 +199,10 @@ _PROBE = """
       out.longShow = timeline();
 
       // 2. A show shorter than the music: no line, an amber note instead.
+      q("#toast").textContent = "";
       await typeLength("0:20");
       out.shortShow = timeline();
+      out.shortShowToast = toastNow();          // nothing uploaded: nothing to say
 
       // 3. Fit to music: the length rounded UP, and said so.
       q("#toast").textContent = "";
@@ -246,6 +269,12 @@ _PROBE = """
       await wait(1000); step();
       out.startedPast = { playing: ui.playing, pastMusic: ui.pastMusic,
                           played: fake.plays - playsBefore, playhead: ui.playhead };
+      // 6c'. A media key plays the ended element: it is put straight back.
+      var pausesAtKey = fake.pauses;
+      player.dispatchEvent(new Event("play"));
+      await wait(100);
+      out.mediaKey = { repaused: fake.pauses > pausesAtKey, playing: ui.playing,
+                       pastMusic: ui.pastMusic };
       // 6d. A seek back inside the music while running on: the music resumes there.
       player.currentTime = 10; previewSeeked(10);
       await wait(300);
@@ -263,6 +292,31 @@ _PROBE = """
       fake.t = 20.3; await wait(500); step();
       out.musicLonger = { playing: ui.playing, playhead: ui.playhead,
                           paused: fake.paused, pausedByTheEnd: fake.pauses > pausesBefore };
+
+      // 7. A unit holds the pictures of the uploaded show: changing the
+      //    length (a new show id) says Upload again, by hand and by Fit.
+      pausePlayback();
+      await fetch("/test/fleet?mode=burned");
+      await fetchFleet();
+      ui.tab = "timeline"; render();
+      await wait(300);
+      q("#toast").textContent = "";
+      await typeLength("0:25");
+      out.uploadAgainTyped = { toast: toastNow(), duration: state.show.duration };
+      q("#toast").textContent = "";
+      q("#tl-fit").click();
+      await wait(700);
+      out.uploadAgainFit = { toast: toastNow(), duration: state.show.duration };
+
+      // 8. The units ENDED a 0:20 show; this page says 0:31. The clock
+      //    follows the units.
+      await fetch("/test/fleet?mode=ended");
+      await fetchFleet();
+      ui.tab = "fleet"; render();
+      await wait(600);
+      out.endedWord = ((q("#show-clock") || {}).querySelector
+                       ? (q("#show-clock").querySelector("small") || {}).textContent : "");
+      out.endedPageLength = state.show.duration;
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -311,6 +365,7 @@ def test_the_timeline_marks_where_the_music_ends_and_the_silence_after_it(page):
 
 
 def test_a_show_shorter_than_the_music_says_how_much_music_is_left(page):
+    assert "Upload" not in page["shortShowToast"], page["shortShowToast"]
     short = page["shortShow"]
     assert short["duration"] == 20
     assert short["marker"] is False and short["silence"] is False, short
@@ -373,3 +428,23 @@ def test_the_end_of_the_show_stops_music_that_is_longer(page):
     longer = page["musicLonger"]
     assert longer["playing"] is False and longer["playhead"] == 20, longer
     assert longer["paused"] is True and longer["pausedByTheEnd"] is True, longer
+
+
+def test_a_media_key_cannot_restart_the_track_under_the_silent_tail(page):
+    key = page["mediaKey"]
+    assert key == {"repaused": True, "playing": True, "pastMusic": True}, key
+
+
+def test_a_new_length_after_an_upload_says_upload_again(page):
+    typed = page["uploadAgainTyped"]
+    assert typed["duration"] == 25, typed
+    assert typed["toast"] == "Show length is 0:25. Upload again before START.", typed
+    fit = page["uploadAgainFit"]
+    assert fit["duration"] == 31, fit
+    assert fit["toast"] == ("Show length is 0:31: the music's length, rounded up. "
+                            "Upload again before START."), fit
+
+
+def test_the_clock_ends_with_the_units_not_with_the_pages_length(page):
+    assert page["endedPageLength"] == 31
+    assert page["endedWord"] == "ENDED", page["endedWord"]

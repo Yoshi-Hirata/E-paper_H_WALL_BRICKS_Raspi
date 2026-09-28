@@ -1093,7 +1093,7 @@
     if (note) note.textContent = info ? info.note : "";
     if (fit) {
       fit.disabled = !info;
-      fit.title = !info ? "Pick the music first"
+      fit.title = !info ? "Load the music first"
         : info.tooLong ? `The music (${clockShort(info.at)}) is longer than a show can be: sets the show to ${clockShort(MAX_SHOW_DURATION_S)}`
         : `Set Show length to the music's length, rounded up to the next second (${clockShort(info.fit)})`;
     }
@@ -2134,6 +2134,15 @@
   function boot() {
     loadUiPrefs();
     project = adoptBuiltInName(loadProject());
+    // A project autosaved before the 15.00 ceiling may be longer: brought to
+    // 15.00 here with Open project's own sentence, so the bundle it exports
+    // is never refused by the operator's Conductor (review 2026-09-28).
+    let bootNote = null;
+    const storedLength = Number(project.show && project.show.duration);
+    if (Number.isFinite(storedLength) && storedLength > MAX_SHOW_DURATION_S) {
+      project.show.duration = MAX_SHOW_DURATION_S;
+      bootNote = `${showTooLong()} - Show length clamped to ${globalThis.SIM.mmss.format(MAX_SHOW_DURATION_S)}.`;
+    }
     if (!localStorageWorks()) {
       autosaveWarned = true;   // the debounced autosave's own toast would be redundant
       const warn = document.getElementById("autosave-warn");
@@ -2164,6 +2173,7 @@
     wireGlobalDragHandlers();
     wireFps();
     rebuild();
+    if (bootNote) { persist(); toast(bootNote); }
     // The transport gets the built-in track at start-up, before anything is
     // played: the first Play is the user's own click, so the autoplay policy
     // has nothing to object to, and the audio is decoded and ready by then

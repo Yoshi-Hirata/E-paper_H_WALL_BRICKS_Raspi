@@ -103,7 +103,7 @@ _PROBE = """
       Object.defineProperty(P, "ended", { configurable: true, get: function () { return fake.ended; } });
       Object.defineProperty(P, "currentTime", { configurable: true,
         get: function () { return fake.t; }, set: function (v) { fake.t = v; } });
-      P.play = function () { fake.plays++; fake.paused = false; fake.ended = false; return Promise.resolve(); };
+      P.play = function () { fake.el = this; fake.plays++; fake.paused = false; fake.ended = false; return Promise.resolve(); };
       P.pause = function () { fake.pauses++; fake.paused = true; };
 
       await typeLength("0.40");
@@ -113,6 +113,13 @@ _PROBE = """
       await wait(2000);
       out.afterTheMusic = { time: (q("#ph-time") || {}).textContent, plays: fake.plays,
                             button: (q("#tp-play") || {}).textContent };
+      // A media key plays the ended element under the silent tail: it is
+      // put straight back, and the preview runs on.
+      var pausesAtKey = fake.pauses;
+      fake.el.dispatchEvent(new Event("play"));
+      await wait(100);
+      out.mediaKey = { repaused: fake.pauses > pausesAtKey,
+                       button: (q("#tp-play") || {}).textContent };
       await wait(10000);
       out.atTheEnd = { time: (q("#ph-time") || {}).textContent,
                        button: (q("#tp-play") || {}).textContent };
@@ -191,3 +198,63 @@ def test_the_end_of_the_show_stops_music_that_is_longer(sim):
     longer = sim["musicLonger"]
     assert longer["time"] == "0.20" and longer["button"].endswith("Play"), longer
     assert longer["paused"] is True and longer["pausedByTheEnd"] is True, longer
+
+
+def test_a_media_key_cannot_restart_the_track_under_the_silent_tail(sim):
+    key = sim["mediaKey"]
+    assert key["repaused"] is True and key["button"].endswith("Pause"), key
+
+
+# A project autosaved before the ceiling (the field allowed 99.59): the
+# next boot brings it to 15.00 and says so, so its bundle is never refused.
+_AUTOSAVE_PROBE = """
+<script>
+(function () {
+  var KEY = "az27ss.project.v1", FLAG = "az27ss.test.long";
+  function publish(out) {
+    var pre = document.createElement("pre");
+    pre.id = "longsave-out";
+    pre.textContent = JSON.stringify(out);
+    document.body.appendChild(pre);
+  }
+  function ready() {
+    try { var st = SIM.app.getState(); return !!(st && st.items && st.items.length); }
+    catch (e) { return false; }
+  }
+  function go() {
+    var seeded = null;
+    try { seeded = sessionStorage.getItem(FLAG); }
+    catch (e) { publish({ error: null, storage: false }); return; }
+    if (!seeded) {
+      var p = { files: {}, show: JSON.parse(JSON.stringify(SIM.STARTER.show)) };
+      Object.keys(SIM.STARTER.files).forEach(function (n) { p.files[n] = SIM.STARTER.files[n]; });
+      p.show.duration = 1200;
+      try { localStorage.setItem(KEY, JSON.stringify(p)); sessionStorage.setItem(FLAG, "1"); }
+      catch (e) { publish({ error: null, storage: false }); return; }
+      location.reload();
+      return;
+    }
+    setTimeout(function () {
+      publish({ error: null, storage: true, duration: SIM.app.getState().show.duration,
+                exported: SIM.app.exportBundle().show.duration,
+                toast: (document.querySelector("#toast") || {}).textContent || "" });
+    }, 300);
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    if (!ready() && ++tries < 200) return;
+    clearInterval(timer);
+    try { go(); } catch (e) { publish({ error: String((e && e.stack) || e) }); }
+  }, 50);
+})();
+</script>
+"""
+
+
+def test_an_autosave_longer_than_15_minutes_comes_back_at_15(tmp_path):
+    _require_browser(tmp_path)
+    data = _probe_page(tmp_path, _AUTOSAVE_PROBE, "longsave-out")
+    if not data.get("storage"):
+        pytest.skip("localStorage is not usable in this headless profile")
+    assert data["duration"] == 900 and data["exported"] == 900, data
+    assert data["toast"] == "A show is at most 15.00 - Show length clamped to 15.00.", data

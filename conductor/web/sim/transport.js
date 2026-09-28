@@ -156,6 +156,10 @@
       if (playing && !pastMusic) runOnPastTheMusic(Math.max(playhead, player.currentTime));
     });
     player.addEventListener("seeked", () => { seeking = false; });
+    // A media key can play() the ended element under a show running on past
+    // it - which restarts the track at 0:00. Put it straight back.
+    for (const ev of ["play", "playing"])
+      player.addEventListener(ev, () => { if (playing && pastMusic) player.pause(); });
     for (const ev of ["loadedmetadata", "durationchange", "emptied"])
       player.addEventListener(ev, () => { if (cfg.onMusicLength) cfg.onMusicLength(); });
 
