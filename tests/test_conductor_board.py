@@ -1292,14 +1292,14 @@ def test_a_master_of_another_type_is_marked_amber_and_says_why(board):
     r = board["results"]
     odd = r["usb_board_odd"]
     assert odd["text"] == "master 5CF26F473930" and odd["odd"] is True, odd
-    assert odd["mark"] == "board type 3930"
+    assert odd["mark"] == "MCU ID 3930"
     assert odd["title"] == USB_BOARD_TOOLTIP
     usual = r["usb_board_usual"]
     assert usual["text"] == "master 48E8854C324C" and usual["odd"] is False
     assert usual["mark"] == ""
     # A serial of neither known type is odd too, and named by its tail.
     other = r["usb_board_other"]
-    assert other["odd"] is True and other["mark"] == "board type 89AB", other
+    assert other["odd"] is True and other["mark"] == "MCU ID 89AB", other
     # Nothing to say: not said yet, an old agent, no serial, or offline.
     for key in ("usb_board_not_said", "usb_board_null", "usb_board_no_serial",
                 "usb_board_offline"):
@@ -1983,7 +1983,7 @@ _PAGE_PROBE = """
       out.usbMarkTiles = [].map.call(document.querySelectorAll("#tiles .tile"),
         function (t) { return t.textContent.slice(0, 40); });
       //     ...and the master's USB serial on its own small line, amber
-      //     "board type 3930" only where the type is not the usual 324C.
+      //     "MCU ID 3930" only where the type is not the usual 324C.
       out.masterLines = [].map.call(document.querySelectorAll("#tiles .tile"),
         function (t) {
           var m = t.querySelector(".mb"), v = m && m.querySelector(".vf.re");
@@ -2475,8 +2475,8 @@ def test_each_tile_names_its_master_and_marks_the_odd_type(page):
              for name in ("radxa-01", "radxa-02", "radxa-03", "radxa-04",
                           "radxa-05") if name in text}
     assert lines["radxa-01"] == ("master 48E8854C324C", None, None), lines
-    assert lines["radxa-05"][0] == "master 5CF26F473930board type 3930", lines
-    assert lines["radxa-05"][1] == "board type 3930"
+    assert lines["radxa-05"][0] == "master 5CF26F473930MCU ID 3930", lines
+    assert lines["radxa-05"][1] == "MCU ID 3930"
     assert lines["radxa-05"][2] == USB_BOARD_TOOLTIP
     # Not said (an older agent) or offline: no line at all.
     for name in ("radxa-02", "radxa-03", "radxa-04"):

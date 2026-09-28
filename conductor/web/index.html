@@ -4195,7 +4195,9 @@ const SHOWBOARD = (() => {
     const family = b.family ? String(b.family) : "";
     const odd = !!family && family !== USB_BOARD_COMMON;
     return { text: "master " + serial, odd,
-             mark: odd ? "board type " + (family === "other" ? serial.slice(-4) : family) : "",
+             // "MCU ID", not "board type": the suffix is the tail of the
+             // MCU's unique ID - not a proven board type (review of 59fbded).
+             mark: odd ? "MCU ID " + (family === "other" ? serial.slice(-4) : family) : "",
              title: odd ? USB_BOARD_WHY
                : "The USB serial of the board on this unit's USB cable - the"
                  + " only board a unit can identify." };
@@ -5070,7 +5072,7 @@ function usbResetMark(u) {
 // still reading `local`; a unit on its own menu or demo, or idle in the PC's
 // white standby, gets none - it would refuse, and must not be taken over.
 // The master's USB serial on a small line of its own, and the amber
-// "board type 3930" beside it when it is not the fleet's usual 324C
+// "MCU ID 3930" beside it when it is not the fleet's usual 324C
 // (SHOWBOARD.usbBoard() decides both, and the tooltip).
 function usbBoardLine(u) {
   const m = SHOWBOARD.usbBoard(u);
