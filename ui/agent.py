@@ -28,13 +28,15 @@ a show.
                      EXECUTING NONE working again (ui/runner.py's
                      _recover_bus(); the 2026-09-28 LOOK28 state, where
                      every write blocked 359 ms for ever and the preset
-                     refreshed no panel). The padding first, the port
-                     reopen if that was not it. The only answer on this
-                     server that is not /status: {"recovered": bool,
-                     "by": "padding" | "reopen" | null, "before_ms",
-                     "after_ms"} - `by` null with recovered true is
-                     "there was nothing wrong", which is what a healthy
-                     unit answers. Bounded at ~6 s of work, 15 s of
+                     refreshed no panel). The cure is a USB device
+                     reset of the master, PROVEN by its answering 0x02
+                     and a fast STOP after a 3 s pause - padding and a
+                     port reopen did not cure it on the unit. The only
+                     answer on this server that is not /status:
+                     {"recovered": bool, "by": "usb_reset" | null,
+                     "before_ms", "after_ms"} - `by` null with recovered
+                     true is "there was nothing wrong", which is what a
+                     healthy unit answers. ~4.5 s of work, 15 s of
                      waiting. Refused (409) while a show is running or
                      holding, while a cue is armed within the minute,
                      while the last cue's picture is still drawing ("a

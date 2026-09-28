@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 import time
 
 import serial
@@ -59,6 +63,104 @@ def find_port() -> str | None:
     if len(usb) == 1:
         return usb[0].device
     return None
+
+
+# ---- resetting the master's USB device (2026-09-28, radxa-07) ----
+# A master in the degraded state accepts every frame, executes none and
+# answers nothing, and neither padding, a port reopen, a STOP nor a probe
+# sweep brings it back. A USB device reset does, in 0.3 s: on LOOK28
+# `sudo -n usbreset 0483:5740` (kernel: "usb 1-1: reset full-speed USB
+# device") had the node back as ttyACM0, `panels online: 22/22` eight seconds
+# later and the burn intact. The "restart cured it" of the day before were
+# Radxa REBOOTS - a USB power cycle, i.e. the same thing, much slower.
+USBDEVFS_RESET = (ord("U") << 8) | 20         # _IO('U', 20), linux/usbdevice_fs.h
+USBRESET_TIMEOUT_S = 5.0
+
+
+def _usb_device(port: str) -> "dict | None":
+    """The USB device behind the serial `port`: {"vid", "pid", "busnum",
+    "devnum", "sysfs"}, or None when `port` is not a USB serial port that
+    is there right now.
+
+    Only ever the device behind THIS port - never a search by VID:PID
+    across the machine: the test suite runs on the Radxas too, and must not
+    be able to reset a real master that happens to be plugged in.
+    """
+    for info in list_ports.comports():
+        if info.device != port or info.vid is None:
+            continue
+        sysfs = getattr(info, "usb_device_path", None)
+        if not sysfs and info.location:
+            # "1-1:1.0" is the interface; the device is the part before ":".
+            sysfs = "/sys/bus/usb/devices/" + info.location.split(":", 1)[0]
+        if not sysfs:
+            return None
+        try:
+            with open(os.path.join(sysfs, "busnum")) as f:
+                busnum = int(f.read().strip())
+            with open(os.path.join(sysfs, "devnum")) as f:
+                devnum = int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+        return {"vid": info.vid, "pid": info.pid, "busnum": busnum,
+                "devnum": devnum, "sysfs": sysfs}
+    return None
+
+
+def usb_reset(port: str) -> "tuple[bool, str]":
+    """Reset the USB device behind the serial `port`, as a re-plug would.
+
+    Returns (done, how): how it was done ("ioctl" / "sudo usbreset"), or why
+    it could not be. Two means, the first that works:
+
+      a  the USBDEVFS_RESET ioctl on /dev/bus/usb/BBB/DDD, if this process
+         may write that node - on the Radxas it is root:root crw-rw-r--, so
+         normally it may not;
+      b  `sudo -n usbreset VID:PID` (the service user has NOPASSWD sudo and
+         /usr/bin/usbreset exists), bounded at USBRESET_TIMEOUT_S.
+
+    The port should be CLOSED first: the node goes away with the reset and
+    comes back - possibly under another name - about 0.3-0.45 s later.
+    Anything but Linux answers "unsupported" and touches nothing.
+    """
+    if not sys.platform.startswith("linux"):
+        return False, f"unsupported on {sys.platform}"
+    dev = _usb_device(port) if port else None
+    if dev is None:
+        return False, f"no USB device behind {port}"
+    node = f"/dev/bus/usb/{dev['busnum']:03d}/{dev['devnum']:03d}"
+    tried = []
+    if os.access(node, os.W_OK):
+        try:
+            import fcntl
+
+            fd = os.open(node, os.O_WRONLY)
+            try:
+                fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+            finally:
+                os.close(fd)
+            return True, "ioctl"
+        except OSError as exc:
+            tried.append(f"ioctl: {exc}")
+    else:
+        tried.append(f"ioctl: {node} not writable")
+    tool = shutil.which("usbreset")
+    if tool is None:
+        tried.append("usbreset: not installed")
+        return False, "; ".join(tried)
+    ident = f"{dev['vid']:04x}:{dev['pid']:04x}"
+    try:
+        done = subprocess.run(["sudo", "-n", tool, ident], capture_output=True,
+                              text=True, timeout=USBRESET_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        tried.append(f"sudo usbreset: {exc}")
+        return False, "; ".join(tried)
+    if done.returncode == 0:
+        return True, "sudo usbreset"
+    said = (done.stderr or done.stdout or "").strip().splitlines()
+    tried.append(f"sudo usbreset exited {done.returncode}"
+                 + (f": {said[-1]}" if said else ""))
+    return False, "; ".join(tried)
 
 
 class Bus:

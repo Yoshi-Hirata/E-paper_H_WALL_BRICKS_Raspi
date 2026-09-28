@@ -673,9 +673,9 @@ class RemoteSession:
         The worker thread owns the port, so this queues the job, wakes
         it and waits for the answer - the same shape as a clear, with a
         reply instead of a progress record. Answers {"recovered", "by"
-        ("padding" | "reopen" | null), "before_ms", "after_ms"}; `by`
-        null with recovered true is "there was nothing wrong", which is
-        the honest answer to a button pressed on a healthy unit.
+        ("usb_reset" | null), "before_ms", "after_ms"}; `by` null with
+        recovered true is "there was nothing wrong", which is the honest
+        answer to a button pressed on a healthy unit.
 
         Refused (409) while anything else could want the bus - see
         recover_refusal(), which the worker asks AGAIN when it takes the
@@ -1053,20 +1053,21 @@ class RemoteSession:
                 "bus_stall": _with_age(runner.bus_stall),
                 # The last time a bus that was accepting frames and
                 # executing none was got working again (ui/runner.py's
-                # _recover_bus()): {"by" ("padding" | "reopen" | null),
-                # "before_ms", "after_ms", "at" (wall clock), "ago_s",
-                # "count"}. None until one has been run in this worker.
+                # _recover_bus()): {"by" ("usb_reset" | null), "before_ms",
+                # "after_ms", "at" (wall clock), "ago_s", "count"}. None
+                # until one has been run in this worker.
                 "bus_recovery": _with_age(runner.bus_recovery),
-                # The opt-in fire-time re-send (--resend-on-stall), and
-                # whether this unit has it on at all: a cue whose own
-                # broadcast blocked, sent again once. None until one has.
+                # The fire-time re-send after a USB reset (ON by default;
+                # --no-resend-on-stall), and whether this unit has it on:
+                # {"cue", "before_ms", "after_ms", "late_s", "by", "at",
+                # "ago_s", "count"}. None until a cue has stalled.
                 "resend_on_stall": bool(runner.resend_on_stall),
                 "resend": _with_age(runner.resend),
-                # The health check two seconds before the last cue
-                # (ui/runner.py's PRECHECK_S): {"cue", "before_ms", "by"
-                # ("padding" | "reopen" | null), "after_ms", "at",
-                # "ago_s"}. `before_ms` of 1-2 ms with `by` null is the
-                # normal answer - the port was fine and nothing was done.
+                # The check PRECHECK_S before the last cue that had one:
+                # {"cue", "before_ms", "by" ("usb_reset" | null),
+                # "master_answers", "after_ms" (null: no timed STOP after a
+                # reset there), "at", "ago_s"}. A `before_ms` of 1-2 ms with
+                # the master answering and `by` null is the normal answer.
                 "precheck": _with_age(runner.precheck),
                 # The three kill switches as the unit is actually running
                 # them (ui/main.py's --precheck SECONDS, --no-port-watch,
