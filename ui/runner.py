@@ -322,7 +322,7 @@ FIRE_RESEND_BUDGET_S = 2.5
 # unicast STOP to the master, which ACKs it (both; the broadcast alone could
 # read fast if a heartbeat had just gone out - see PROOF_GAP_S). A healthy
 # port answers both in milliseconds and that is the whole check - the whole
-# healthy wire at ~T-8.5 is those two frames. The USB reset follows ONLY a
+# healthy wire at ~T-9.0 is those two frames. The USB reset follows ONLY a
 # broadcast STOP that blocked STALL_RECOVER_MS or more, whose write failed,
 # or a master that did not ACK.
 #
@@ -344,31 +344,30 @@ FIRE_RESEND_BUDGET_S = 2.5
 # second always answered - the master is still relaying the broadcast).
 #
 # The budget, stated at its worst (final gate on 05cc86a, LOW-3). The check
-# begins at T-8.5 plus the wait's tick lag (<= 50 ms): T-8.45. Every ask's
+# begins at T-9.0 plus the wait's tick lag (<= 50 ms): T-8.95. Every ask's
 # read overshoots its window by up to READ_OVERSHOOT_S (transport.Bus.recv()
 # polls with a 0.05 s timeout). The USB reset step - the reset 0.3, the
 # node back ~0.45, the open 0.3, the STOP straight after it (review M4) 0.4,
 # the settle 0.15 and the question that proves it (0.4 + 0.5 + 0.05) - is
 # USB_RESET_BUDGET_S = 2.55 s, and it is begun only if it ends by T-5.0.
+# PRECHECK_S is 9.0 (PM, after the radxa-07 run of dc846a1) so that every
+# path below fits with every limit hit at once:
 #
 #  * STOP stalled (>= 0.2 s, 0.4 at worst): no question, straight to the
-#    reset - begun by T-8.05, done by T-5.50.
+#    reset - begun by T-8.55, done by T-6.00.
 #  * STOP under 0.2 s but not under 50 ms: the settle and one question,
-#    0.15 + 0.95 at worst, ending by T-7.15 - and then the reset does NOT
-#    fit at every limit at once (T-4.60): "no time for a usb reset". On the
-#    degraded master the unit showed (61 ms writes behind a write) the
-#    question ends by T-7.63 and the reset by T-5.08.
+#    0.15 + 0.95 at worst, ending by T-7.65; one miss resets at once, done by
+#    T-5.10.
 #  * STOP under 50 ms: the settle and question 1 (its write behind a fast
-#    STOP allowed 0.1), 0.80 at worst, ending by T-7.60. Question 2
+#    STOP allowed 0.1), 0.80 at worst, ending by T-8.10. Question 2
 #    (HEALTH_SECOND_ASK_COST_S 0.35) only if the reset still fits behind it
-#    (begun by T-7.90 at the latest). ONE MISS HERE IS NEVER A VERDICT (PM,
-#    after the radxa-07 run): if question 2 does not fit, nothing is reset -
-#    "stop 1 ms, board 1 silent, no time to ask another - not reset". The
-#    degraded master shows itself by its write time (61-358 ms measured);
-#    "degraded but fast" is caught whenever two questions fit. At
-#    PRECHECK_S 8.5 on the unit's timings (a 1 ms STOP, question 1 ending
-#    ~T-7.80) they do NOT fit - they need a lead of about 8.6 s, 8.8 at
-#    every limit - so there it is left to the idle recovery.
+#    - it does: it ends by T-7.75, and after two misses the reset is done
+#    by T-5.20. ONE MISS HERE IS NEVER A VERDICT (PM, after the radxa-07
+#    run): if question 2 ever does not fit (a --precheck below about 8.8),
+#    nothing is reset - "stop 1 ms, board 1 silent, no time to ask another -
+#    not reset". The degraded master shows itself by its write time (61-358
+#    ms measured); "degraded but fast" is caught whenever two questions fit,
+#    which at 9.0 is always.
 #
 # Each step is asked again against the clock before it is begun, and the
 # reset itself is bounded by T-5.0 whatever sudo does (review M2). With the
@@ -376,11 +375,16 @@ FIRE_RESEND_BUDGET_S = 2.5
 # alone ("proof-lite"); the idle recovery proves with both.
 #
 # WHICH CUES GET ONE, in practice: the previous cue's guard floor has to be
-# past at T-8.5, and at the unit's --guard-delay 30 that floor is 30-38 s
-# after the fire for this show's refresh and span. So only a cue 38.5-46.5 s
-# or more after the one before it is checked - 14 of the 36 cue-to-cue gaps
-# of showdata/show.json, and NONE of the finale burst (11-28 s gaps).
-PRECHECK_S = 8.5
+# past at T-9.0 for the whole check - floor + 9.0 s after the previous fire.
+# At the unit's --guard-delay 30 the floor is max(30, refresh + span + 23)
+# s after the fire (_guard_for()), so a cue 39-47 s or more after the one
+# before it. (A floor that passes later, but before T-5.4, still gets a
+# check begun then, on a shorter clock.) showdata/show.json as it stands
+# (LOOK28, one garment, 8 cues, refresh 7-8 s, span 0-1 s: floor +31 s):
+# 3 of its 7 gaps are checked - 437, 48 and 43 s - the same 3 as at 8.5,
+# and none of the 11-15 s gaps. (The first cue is checked only if it is
+# armed PRECHECK_S or more before its trigger.)
+PRECHECK_S = 9.0
 # One degraded write, for the per-frame question (_frame_refusal()): may
 # THIS frame still go before the hold?
 DEGRADED_WRITE_S = 0.4

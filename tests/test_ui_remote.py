@@ -2693,7 +2693,7 @@ def test_precheck_zero_switches_the_check_off():
 def test_the_budgets_hold_with_the_units_own_timings(monkeypatch):
     """Measured, not asserted from the arithmetic: with the unit's timings
     (358 ms writes, a 0.3 s reset, the node back 0.44 s later, a 0.3 s open)
-    the pre-cue check begun at T-8.5 is done before T-5.0, and the idle
+    the pre-cue check begun at T-PRECHECK_S is done before T-5.0, and the idle
     recovery with the REAL 3 s proof gap is inside the agent's 15 s."""
     from ui.runner import PRECHECK_S, PROOF_GAP_S, REMOTE_GUARD_HOLD_S
 
@@ -3161,7 +3161,7 @@ def test_no_auto_recover_leaves_a_stalling_bus_to_the_operator():
 def test_the_status_says_which_kill_switches_are_on():
     session, runner, bus = make_session()
     status = session.status()
-    assert status["precheck_s"] == 8.5       # PM: both cures fit (SPEC 4.5)
+    assert status["precheck_s"] == 9.0       # PM: both asks + reset fit
     assert status["port_watch"] is True and status["auto_recover"] is True
     runner.stop()
     off = make_runner(FakeBus(), precheck=0, port_watch=False,
@@ -3577,7 +3577,7 @@ def test_one_lost_ack_behind_a_fast_stop_is_asked_again_not_reset(
     assert len(bus.resets) == 1
 
 
-@pytest.mark.parametrize("lead", [8.5, 8.8])
+@pytest.mark.parametrize("lead", ["default", 8.5])
 def test_a_degraded_master_with_a_fast_stop_is_reset_before_the_hold(
         monkeypatch, lead):
     """Gate on f9efd43, MED-1 (review_T11/t_degfast.py): a master that
@@ -3588,12 +3588,14 @@ def test_a_degraded_master_with_a_fast_stop_is_reset_before_the_hold(
     T-5.0 and the cue is on time.
 
     After the radxa-07 run of dc846a1 one miss behind a fast STOP is never
-    a verdict, and the first ask waits ASK_SETTLE_S: at the default
-    PRECHECK_S 8.5 the two asks no longer fit, so this case is "not reset"
-    there (left to the idle recovery); at a lead of 8.8 it is caught."""
+    a verdict, and the first ask waits ASK_SETTLE_S. At the old 8.5 the two
+    asks no longer fit, so this case was "not reset" (left to the idle
+    recovery); the PM set PRECHECK_S to 9.0, where it is caught."""
     from ui.runner import PRECHECK_S, REMOTE_GUARD_HOLD_S
 
-    assert PRECHECK_S == 8.5
+    assert PRECHECK_S == 9.0
+    if lead == "default":
+        lead = PRECHECK_S
     bus = degraded(monkeypatch, quick_s=0.03, slow_s=0.03, reset_s=0.3,
                    reenum_s=0.44, open_s=0.3)
     bus.degraded = False
@@ -3624,7 +3626,7 @@ def test_a_degraded_master_with_a_fast_stop_is_reset_before_the_hold(
         return
     assert said and "→ usb reset → ok (board" in said[0], said
     assert len(bus.resets) == 1 and bus.degraded is False
-    assert reset_at and reset_at[0] <= -7.4 + 0.05, reset_at   # begun by T-7.4
+    assert reset_at and reset_at[0] <= -7.75 + 0.05, reset_at  # by T-7.75
     assert runner.precheck["by"] == "usb_reset"
     late_ms = session.status()["late_ms"]
     assert late_ms is not None and late_ms < 250, late_ms
@@ -3725,6 +3727,18 @@ def test_a_second_ask_that_just_fits_never_costs_the_reset(monkeypatch, lead):
         assert bus.resets == []
     if lead == 8.8:                                  # both fit here
         assert len(bus.resets) == 1
+
+
+def test_at_the_default_lead_both_asks_and_the_reset_fit(monkeypatch):
+    """PM: PRECHECK_S 9.0 so that a degraded master whose STOP reads fast
+    gets both asks AND the reset, with the transport's own overshoots."""
+    from ui.runner import PRECHECK_S
+
+    bus = _AtTheLimits()
+    runner, said = _precheck_at(monkeypatch, bus, PRECHECK_S, "q05")
+    assert said and "no board answers (board 1, 3 silent)" in said[0], said
+    assert "→ usb reset → ok" in said[0], said
+    assert len(bus.resets) == 1
 
 
 def test_the_second_ask_costs_no_more_than_it_is_allowed(monkeypatch):

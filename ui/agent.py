@@ -29,8 +29,9 @@ a show.
                      _recover_bus(); the 2026-09-28 LOOK28 state, where
                      every write blocked 359 ms for ever and the preset
                      refreshed no panel). The cure is a USB device
-                     reset of the master, PROVEN by its answering 0x02
-                     and a fast STOP after a 3 s pause - padding and a
+                     reset of the master, PROVEN by a live board's ACK
+                     to a unicast STOP and a fast STOP after a 3 s
+                     pause - padding and a
                      port reopen did not cure it on the unit. The only
                      answer on this server that is not /status:
                      {"recovered": bool, "by": "usb_reset" | null,
