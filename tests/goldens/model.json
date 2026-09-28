@@ -12515,6 +12515,7 @@
      ]
     },
     "warnings": [
+     "Look22: 101 s of cues without room for a stop (1:00) - leave 2 s after a picture is complete",
      "Look22: no preset at 0:00 - it opens on whatever it showed before the show"
     ]
    },
@@ -15170,6 +15171,963 @@
    },
    "kind": "timeline",
    "name": "refresh8_preset_that_sweeps",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p1",
+     "id": "p",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 8.0,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 503.0,
+     "design": "p2",
+     "id": "q0",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 7.0,
+     "span": 1.0,
+     "sweep": null
+    },
+    {
+     "at": 518.0,
+     "design": "p2",
+     "id": "q1",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 7.0,
+     "span": 1.0,
+     "sweep": null
+    },
+    {
+     "at": 543.0,
+     "design": "p2",
+     "id": "q2",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 8.0,
+     "span": 0.0,
+     "sweep": null
+    },
+    {
+     "at": 554.0,
+     "design": "p2",
+     "id": "q3",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 8.0,
+     "span": 0.0,
+     "sweep": null
+    },
+    {
+     "at": 565.0,
+     "design": "p2",
+     "id": "q4",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 7.0,
+     "span": 1.0,
+     "sweep": null
+    },
+    {
+     "at": 577.0,
+     "design": "p2",
+     "id": "q5",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": 8.0,
+     "span": 0.0,
+     "sweep": null
+    }
+   ],
+   "duration": 655.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 503.0,
+      "end_source": "next",
+      "id": "p",
+      "refresh": 8.0,
+      "refresh_source": "cue",
+      "sent": -8.0
+     },
+     {
+      "complete": 511.0,
+      "end": 518.0,
+      "end_source": "next",
+      "id": "q0",
+      "refresh": 7.0,
+      "refresh_source": "cue",
+      "sent": 503.0
+     },
+     {
+      "complete": 526.0,
+      "end": 543.0,
+      "end_source": "next",
+      "id": "q1",
+      "refresh": 7.0,
+      "refresh_source": "cue",
+      "sent": 518.0
+     },
+     {
+      "complete": 551.0,
+      "end": 554.0,
+      "end_source": "next",
+      "id": "q2",
+      "refresh": 8.0,
+      "refresh_source": "cue",
+      "sent": 543.0
+     },
+     {
+      "complete": 562.0,
+      "end": 565.0,
+      "end_source": "next",
+      "id": "q3",
+      "refresh": 8.0,
+      "refresh_source": "cue",
+      "sent": 554.0
+     },
+     {
+      "complete": 573.0,
+      "end": 577.0,
+      "end_source": "next",
+      "id": "q4",
+      "refresh": 7.0,
+      "refresh_source": "cue",
+      "sent": 565.0
+     },
+     {
+      "complete": 585.0,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "q5",
+      "refresh": 8.0,
+      "refresh_source": "cue",
+      "sent": 577.0
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "p": [],
+     "q0": [],
+     "q1": [],
+     "q2": [],
+     "q3": [],
+     "q4": [],
+     "q5": []
+    },
+    "warnings": []
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "keep_away_look26_has_room",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p1",
+     "id": "p",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 503.0,
+     "design": "p2",
+     "id": "t0",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 512.5,
+     "design": "p2",
+     "id": "t1",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 522.0,
+     "design": "p2",
+     "id": "t2",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 531.5,
+     "design": "p2",
+     "id": "t3",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 541.0,
+     "design": "p2",
+     "id": "t4",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 550.5,
+     "design": "p2",
+     "id": "t5",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 560.0,
+     "design": "p2",
+     "id": "t6",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 569.5,
+     "design": "p2",
+     "id": "t7",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 655.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 503.0,
+      "end_source": "next",
+      "id": "p",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": -8.0
+     },
+     {
+      "complete": 511.0,
+      "end": 512.5,
+      "end_source": "next",
+      "id": "t0",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 503.0
+     },
+     {
+      "complete": 520.5,
+      "end": 522.0,
+      "end_source": "next",
+      "id": "t1",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 512.5
+     },
+     {
+      "complete": 530.0,
+      "end": 531.5,
+      "end_source": "next",
+      "id": "t2",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 522.0
+     },
+     {
+      "complete": 539.5,
+      "end": 541.0,
+      "end_source": "next",
+      "id": "t3",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 531.5
+     },
+     {
+      "complete": 549.0,
+      "end": 550.5,
+      "end_source": "next",
+      "id": "t4",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 541.0
+     },
+     {
+      "complete": 558.5,
+      "end": 560.0,
+      "end_source": "next",
+      "id": "t5",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 550.5
+     },
+     {
+      "complete": 568.0,
+      "end": 569.5,
+      "end_source": "next",
+      "id": "t6",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 560.0
+     },
+     {
+      "complete": 577.5,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "t7",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 569.5
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "p": [],
+     "t0": [],
+     "t1": [],
+     "t2": [],
+     "t3": [],
+     "t4": [],
+     "t5": [],
+     "t6": [],
+     "t7": []
+    },
+    "warnings": [
+     "Look22: 76 s of cues without room for a stop (8:23\u20139:30) - leave 2 s after a picture is complete"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "keep_away_no_room_warns",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 0.0,
+     "design": "p1",
+     "id": "p",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 503.0,
+     "design": "p2",
+     "id": "t0",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 512.5,
+     "design": "p2",
+     "id": "t1",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 522.0,
+     "design": "p2",
+     "id": "t2",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 531.5,
+     "design": "p2",
+     "id": "t3",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 541.0,
+     "design": "p2",
+     "id": "t4",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 550.5,
+     "design": "p2",
+     "id": "t5",
+     "item": "Look22",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 655.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 0.0,
+      "end": 503.0,
+      "end_source": "next",
+      "id": "p",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": -8.0
+     },
+     {
+      "complete": 511.0,
+      "end": 512.5,
+      "end_source": "next",
+      "id": "t0",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 503.0
+     },
+     {
+      "complete": 520.5,
+      "end": 522.0,
+      "end_source": "next",
+      "id": "t1",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 512.5
+     },
+     {
+      "complete": 530.0,
+      "end": 531.5,
+      "end_source": "next",
+      "id": "t2",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 522.0
+     },
+     {
+      "complete": 539.5,
+      "end": 541.0,
+      "end_source": "next",
+      "id": "t3",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 531.5
+     },
+     {
+      "complete": 549.0,
+      "end": 550.5,
+      "end_source": "next",
+      "id": "t4",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 541.0
+     },
+     {
+      "complete": 558.5,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "t5",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 550.5
+     }
+    ],
+    "minInterval": {
+     "radxa-09": 9.0
+    },
+    "problems": {
+     "p": [],
+     "t0": [],
+     "t1": [],
+     "t2": [],
+     "t3": [],
+     "t4": [],
+     "t5": []
+    },
+    "warnings": []
+   },
+   "gap": 1.0,
+   "items": {
+    "look22": {
+     "boards": 16,
+     "designs": {
+      "g1.csv": {
+       "full": true,
+       "partial": true
+      },
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Look22",
+     "unit": "radxa-09"
+    }
+   },
+   "kind": "timeline",
+   "name": "keep_away_no_room_short",
+   "refresh": 8.0
+  },
+  {
+   "cues": [
+    {
+     "at": 100.0,
+     "design": "p2",
+     "id": "s0",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 100.0,
+     "design": "p1",
+     "id": "u0",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 109.5,
+     "design": "p2",
+     "id": "s1",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 109.5,
+     "design": "p1",
+     "id": "u1",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 119.0,
+     "design": "p2",
+     "id": "s2",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 119.0,
+     "design": "p1",
+     "id": "u2",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 128.5,
+     "design": "p2",
+     "id": "s3",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 128.5,
+     "design": "p1",
+     "id": "u3",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 138.0,
+     "design": "p2",
+     "id": "s4",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 138.0,
+     "design": "p1",
+     "id": "u4",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 147.5,
+     "design": "p2",
+     "id": "s5",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 147.5,
+     "design": "p1",
+     "id": "u5",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 157.0,
+     "design": "p2",
+     "id": "s6",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 157.0,
+     "design": "p1",
+     "id": "u6",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 166.5,
+     "design": "p2",
+     "id": "s7",
+     "item": "Skirt",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    },
+    {
+     "at": 166.5,
+     "design": "p1",
+     "id": "u7",
+     "item": "Top",
+     "partial": false,
+     "refresh_s": null,
+     "span": null,
+     "sweep": null
+    }
+   ],
+   "duration": 655.0,
+   "expect": {
+    "cues": [
+     {
+      "complete": 108.0,
+      "end": 109.5,
+      "end_source": "next",
+      "id": "s0",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 100.0
+     },
+     {
+      "complete": 108.0,
+      "end": 109.5,
+      "end_source": "next",
+      "id": "u0",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 100.0
+     },
+     {
+      "complete": 117.5,
+      "end": 119.0,
+      "end_source": "next",
+      "id": "s1",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 109.5
+     },
+     {
+      "complete": 117.5,
+      "end": 119.0,
+      "end_source": "next",
+      "id": "u1",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 109.5
+     },
+     {
+      "complete": 127.0,
+      "end": 128.5,
+      "end_source": "next",
+      "id": "s2",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 119.0
+     },
+     {
+      "complete": 127.0,
+      "end": 128.5,
+      "end_source": "next",
+      "id": "u2",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 119.0
+     },
+     {
+      "complete": 136.5,
+      "end": 138.0,
+      "end_source": "next",
+      "id": "s3",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 128.5
+     },
+     {
+      "complete": 136.5,
+      "end": 138.0,
+      "end_source": "next",
+      "id": "u3",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 128.5
+     },
+     {
+      "complete": 146.0,
+      "end": 147.5,
+      "end_source": "next",
+      "id": "s4",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 138.0
+     },
+     {
+      "complete": 146.0,
+      "end": 147.5,
+      "end_source": "next",
+      "id": "u4",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 138.0
+     },
+     {
+      "complete": 155.5,
+      "end": 157.0,
+      "end_source": "next",
+      "id": "s5",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 147.5
+     },
+     {
+      "complete": 155.5,
+      "end": 157.0,
+      "end_source": "next",
+      "id": "u5",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 147.5
+     },
+     {
+      "complete": 165.0,
+      "end": 166.5,
+      "end_source": "next",
+      "id": "s6",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 157.0
+     },
+     {
+      "complete": 165.0,
+      "end": 166.5,
+      "end_source": "next",
+      "id": "u6",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 157.0
+     },
+     {
+      "complete": 174.5,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "s7",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 166.5
+     },
+     {
+      "complete": 174.5,
+      "end": 655.0,
+      "end_source": "show",
+      "id": "u7",
+      "refresh": 8.0,
+      "refresh_source": "show",
+      "sent": 166.5
+     }
+    ],
+    "minInterval": {
+     "radxa-05": 9.0
+    },
+    "problems": {
+     "s0": [],
+     "s1": [],
+     "s2": [],
+     "s3": [],
+     "s4": [],
+     "s5": [],
+     "s6": [],
+     "s7": [],
+     "u0": [],
+     "u1": [],
+     "u2": [],
+     "u3": [],
+     "u4": [],
+     "u5": [],
+     "u6": [],
+     "u7": []
+    },
+    "warnings": [
+     "Skirt + Top: 76 s of cues without room for a stop (1:40\u20132:46) - leave 2 s after a picture is complete",
+     "Skirt: no preset at 0:00 - it opens on whatever it showed before the show",
+     "Top: no preset at 0:00 - it opens on whatever it showed before the show"
+    ]
+   },
+   "gap": 1.0,
+   "items": {
+    "skirt": {
+     "boards": 8,
+     "designs": {
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Skirt",
+     "unit": "radxa-05"
+    },
+    "top": {
+     "boards": 8,
+     "designs": {
+      "p1": {
+       "full": true,
+       "partial": true
+      },
+      "p2": {
+       "full": true,
+       "partial": true
+      }
+     },
+     "item": "Top",
+     "unit": "radxa-05"
+    }
+   },
+   "kind": "timeline",
+   "name": "keep_away_shared_unit",
    "refresh": 8.0
   },
   {
