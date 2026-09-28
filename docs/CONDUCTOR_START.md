@@ -273,8 +273,12 @@ the show` と出る ― **本番前にこの文が出ていないことを確か
    `radxa-01: bus degraded — press Recover bus (or reboot the Radxa), then Upload`
    (2 台以上なら `radxa-01, radxa-02: bus degraded — press Recover bus (or reboot these Radxas), then Upload`)
    ―― **START は止めない**(詰まっていてもキューは出る、ただ遅れる)
-5. **健全な機体それぞれで Recover bus を 1 回押す**(ボタンはショーが走って
-   いない間、どのタイルの `Fired late by` の行にも出る)。
+5. **`ready` のタイルそれぞれで Recover bus を 1 回押す**(ボタンはショーが
+   走っていない間、Conductor の手にある機体 ―― チップが `standby` / `ready` /
+   `armed` / `fired` / `failed` ―― のタイルの `Fired late by` の行に出る。
+   **`local`(機体が自分のメニューやデモにいる)のタイルには出ない**: そこで
+   押すと機体を乗っ取ってデモを止めてしまうので、機体も
+   `unit is on its own menu - nothing to recover from here` で断る)。
    トーストは **`radxa-01: bus was already clear`** でなければならない。
    **健全な衣装なのに `bus recovered…` や `bus recovery failed…` と出たら**、
    その機体は USB ケーブルの先の基板がアドレス 1 でないなどで、機体の判定が

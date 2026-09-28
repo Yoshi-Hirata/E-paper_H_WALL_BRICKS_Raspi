@@ -161,6 +161,32 @@ def test_a_sudo_that_hangs_is_given_only_the_callers_time(monkeypatch):
     assert done is False and "no answer in 0.5 s" in how
 
 
+def test_usb_reset_never_raises(monkeypatch):
+    """Review of 6a2d136, N1: the caller has just closed its port - anything
+    going wrong in here (comports(), sysfs, odd bytes from usbreset) must be
+    an answer it can act on, never an exception."""
+    _linux_with_a_master(monkeypatch)
+
+    def boom(port):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    monkeypatch.setattr(transport, "_usb_device", boom)
+    done, how = transport.usb_reset("/dev/ttyACM0", timeout=1.0)
+    assert done is False and how.startswith("usb reset raised:"), how
+
+
+def test_usbreset_output_is_decoded_without_raising(monkeypatch):
+    ran = _linux_with_a_master(monkeypatch)
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen.update(kwargs)
+        return ran and None or type("Done", (), {"returncode": 0,
+                                                 "stdout": "", "stderr": ""})()
+    monkeypatch.setattr(transport.subprocess, "run", run)
+    transport.usb_reset("/dev/ttyACM0")
+    assert seen.get("errors") == "replace" and seen.get("text") is True
+
+
 def test_nothing_is_reset_off_linux():
     if sys.platform.startswith("linux"):
         return                                       # the Radxas: see above

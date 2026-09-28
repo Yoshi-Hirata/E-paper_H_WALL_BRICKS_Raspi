@@ -678,6 +678,19 @@ USB リセットもポートの開き直しも、プローブ掃引を `_setup_o
 - `a show is running - stop it first`
 - `a cue fires in N s - stop the show first`(60 秒以内)
 - `a repaint is in progress - try again in N s`(直前の絵の `_guard_floor` まで)
+- **`unit is on its own menu - nothing to recover from here`** ―― 機体が
+  Conductor の手に無い(自分のメニュー、自分のデモ)。**ワーカーは起こさない**:
+  以前はここで `start_remote()` を呼び、デモを止めて REMOTE ワーカーを立て、
+  STOP と基板ごとの 0x17/0x1B を送っていた(6a2d136 のレビュー N2)。
+
+**復旧の試みがセッションを落とすことは無い**(6a2d136 のレビュー N1)。
+`usb_reset()` は何が起きても例外ではなく答えを返し(`usb reset raised: …`、
+usbreset の出力は `errors="replace"` で読む)、ランナー側もリセットの呼び出し・
+`find_port()`・ノードの確認を個別に守ったうえで、直前点検・発火時の再送・
+アイドルの復旧をそれぞれ外側でも守る。例外が出ても、言って(`… raised: …`)、
+ポートが閉じていれば監視に引き渡し、キューはそのまま出る。以前はリセットの
+例外が `_run_remote` まで抜け、`ERROR bus boom` でセッションが落ち、次の
+キューが出なかった。
 
 #### キルスイッチ
 
@@ -693,8 +706,10 @@ USB リセットもポートの開き直しも、プローブ掃引を `_setup_o
 
 #### Conductor 側
 
-**Recover bus** ボタンは、ショーが走っていない間**オンラインのどのタイルにも**
-出る(「bus degraded」/「bus stalled」の印があればその隣)―― 健全な機体で
+**Recover bus** ボタンは、ショーが走っていない間、**Conductor の手にある
+(`standby` / `ready` / `armed` / `fired` / `failed`)オンラインのタイル**に
+出る(`local` には出ない ―― レビュー N2。「bus degraded」/「bus stalled」の印が
+あればその隣。② Show preset 前の掃引も `local` の機体は飛ばす)―― 健全な機体で
 押して `bus was already clear` を確かめるのが本番前の手順だから(上の「前提」、
 レビュー M3)。実行中は出ない、NOW → NEXT の行にも出ない。トーストは
 `radxa-07: bus recovered by usb reset (358 → 2 ms)`(通常)、

@@ -690,13 +690,9 @@ class RemoteSession:
         job = {"done": done, "result": None}
         with self._lock:
             self._recover_job = job
-        # Nobody on the port at all (the unit on its own menu): the same
-        # move a clear makes - the worker that does this work is started,
-        # and it picks the job up as soon as it has the bus.
-        if not self.runner.remote and self.runner.start_remote(self) is False:
-            with self._lock:
-                self._recover_job = None
-            raise RemoteError("bus busy: the previous worker has not finished")
+        # No start_remote() here, on purpose (review N2): recover_refusal()
+        # has just said the PC's own worker is on the port. A unit on its
+        # own menu is refused there, never taken over.
         self._wake.set()
         if not done.wait(max(0.0, timeout)):
             with self._lock:
@@ -713,7 +709,10 @@ class RemoteSession:
         """Why a bus recovery may not run now, or None when it may.
 
         A recovery reopens the port and sends frames, so it stands aside
-        for everything a cue or a picture could be hurt by (review F6):
+        for everything a cue or a picture could be hurt by (review F6) -
+        and it only ever runs on a port the PC already owns: a unit on its
+        own menu or playing its own demo is refused, never taken over
+        (review N2, last below):
 
         * an OTA, a scan or a reboot owning the unit;
         * a show being played or held;
@@ -744,6 +743,12 @@ class RemoteSession:
             if left > 0:
                 return (f"a repaint is in progress - try again in "
                         f"{math.ceil(left)} s")
+        if not self.active or self.runner.remote is not self:
+            # On its own menu, or playing its own demo: the PC does not own
+            # this unit's port, and taking it (start_remote) would stop the
+            # demo and start a REMOTE worker that STOPs and probes every
+            # board (review of 6a2d136, N2). Nothing is started.
+            return "unit is on its own menu - nothing to recover from here"
         return None
 
     def take_recover_job(self) -> "dict | None":

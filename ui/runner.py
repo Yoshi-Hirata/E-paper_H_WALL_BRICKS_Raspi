@@ -2252,8 +2252,8 @@ class DemoRunner:
         own zero padding is not a frame. A reset owes the probe sweep
         exactly as a reopen does (OWED_SETTLE_S, _owed_setup_clear()).
         """
-        port = getattr(bus, "port", None) or self.port or find_port()
-        old = self._link_token(port) if port else None
+        port = getattr(bus, "port", None) or self.port or self._safe_find_port()
+        old = self._safe_token(port)
         try:
             bus.close()
         except Exception:               # noqa: BLE001 - closing is best effort
@@ -2261,10 +2261,17 @@ class DemoRunner:
         timeout = USBRESET_TIMEOUT_S
         if give_up_at is not None:
             timeout = min(timeout, max(0.1, give_up_at - time.monotonic()))
-        done, how = self._usb_reset(port, timeout=timeout)
+        try:
+            done, how = self._usb_reset(port, timeout=timeout)
+        except Exception as exc:        # noqa: BLE001 - an answer, not a raise
+            # The port was closed a moment ago: whatever the reset did, the
+            # one thing that must follow is the reopen below (review N1 - an
+            # uncaught raise here failed the session and lost the next cue).
+            done, how = False, f"usb reset raised: {exc or exc.__class__.__name__}"
         if not done:
-            return False, self._reopen_after_failure(bus, port, reopen_by,
-                                                     f"usb reset: {how}")
+            if not how.startswith("usb reset raised"):
+                how = f"usb reset: {how}"
+            return False, self._reopen_after_failure(bus, port, reopen_by, how)
         # The node goes and comes back - 0.44 s on the unit. Wait for a NEW
         # one (the token changes with every enumeration), under whatever
         # name it takes; if none is seen in time, try the name we have.
@@ -2273,14 +2280,14 @@ class DemoRunner:
             limit = min(limit, give_up_at)
         found = None
         while time.monotonic() < limit:
-            candidate = self.port or find_port()
-            token = self._link_token(candidate) if candidate else None
+            candidate = self.port or self._safe_find_port()
+            token = self._safe_token(candidate)
             if token is not None and token != old:
                 found = candidate
                 break
             if not self._sleep(RETRY_POLL_S):
                 break
-        found = found or self.port or find_port() or port
+        found = found or self.port or self._safe_find_port() or port
         # Owed from here on, whether or not the open below works: the
         # boards' view of this port is gone either way.
         self._setup_owed = True
@@ -2295,13 +2302,45 @@ class DemoRunner:
             self.emit(f"port {opened}")
         return True, how
 
+    def _safe_find_port(self) -> "str | None":
+        """find_port() that answers None instead of raising - comports()
+        can fail, and a recovery must not (review N1)."""
+        try:
+            return find_port()
+        except Exception:               # noqa: BLE001 - "not found", for now
+            return None
+
+    def _safe_token(self, port: "str | None"):
+        """The node's identity (link_token), or None - never a raise."""
+        if not port:
+            return None
+        try:
+            return self._link_token(port)
+        except Exception:               # noqa: BLE001 - "not there", for now
+            return None
+
+    @staticmethod
+    def _bus_closed(bus) -> bool:
+        """True only when the bus says its port is closed (transport.Bus's
+        pyserial object); a transport that cannot say is taken as open."""
+        ser = getattr(bus, "ser", None)
+        return ser is not None and getattr(ser, "is_open", True) is False
+
+    def _survived(self, bus, what: str, exc: BaseException) -> None:
+        """A recovery path raised anyway: say it, and hand a port it may
+        have left closed to the watcher (_needs_reopen). A recovery attempt
+        must never fail the session or lose a cue (review of 6a2d136, N1)."""
+        self.emit(f"{what} raised: {exc or exc.__class__.__name__}")
+        if self._bus_closed(bus):
+            self._needs_reopen = True
+
     def _reopen_after_failure(self, bus, port: "str | None",
                               reopen_by: "float | None", why: str) -> str:
         """After a reset that was abandoned: open the port again as it is,
         once more, bounded by `reopen_by` - never leave it closed. If even
         that fails the watcher is told (`_needs_reopen`) and keeps trying on
         its own poll. Returns `why`, with what became of the port."""
-        port = port or self.port or find_port()
+        port = port or self.port or self._safe_find_port()
         if port:
             try:
                 self._open_retrying(bus, port, reopen_by)
@@ -2567,21 +2606,29 @@ class DemoRunner:
                     "before_ms": None, "after_ms": None}
         self._recovering = True
         try:
-            before = self._timed_stop(bus, groups)
-            if before < STALL_RECOVER_MS and self._master_answers(bus, groups):
-                return self._recovery_done(None, before, before, True,
-                                           "master answers")
-            done, how = self._usb_reset_reopen(bus)
-            if not done:
-                return self._recovery_done(None, before, None, False, how)
-            self._stop_after_reset(bus, groups)
-            proven, after, found = self._prove_recovered(bus, groups)
-            if proven:
-                return self._recovery_done("usb_reset", before, after, True,
-                                           found)
-            return self._recovery_done(None, before, after, False, found)
+            return self._recover_bus_steps(bus, groups)
+        except Exception as exc:        # noqa: BLE001 - see _survived()
+            self._survived(bus, "bus recovery", exc)
+            return {"recovered": False, "by": None,
+                    "before_ms": None, "after_ms": None}
         finally:
             self._recovering = False
+
+    def _recover_bus_steps(self, bus, groups: int) -> dict:
+        """_recover_bus()'s ladder, under its guard."""
+        before = self._timed_stop(bus, groups)
+        if before < STALL_RECOVER_MS and self._master_answers(bus, groups):
+            return self._recovery_done(None, before, before, True,
+                                       "master answers")
+        done, how = self._usb_reset_reopen(bus)
+        if not done:
+            return self._recovery_done(None, before, None, False, how)
+        self._stop_after_reset(bus, groups)
+        proven, after, found = self._prove_recovered(bus, groups)
+        if proven:
+            return self._recovery_done("usb_reset", before, after, True,
+                                       found)
+        return self._recovery_done(None, before, after, False, found)
 
     def _stop_after_reset(self, bus, groups: int,
                           at: "float | None" = None) -> None:
@@ -2879,8 +2926,8 @@ class DemoRunner:
         if now < self._next_port_poll:
             return False
         self._next_port_poll = now + max(self.port_poll, RETRY_POLL_S)
-        port = self.port or find_port() or getattr(bus, "port", None)
-        if not port or self._link_token(port) is None:
+        port = self.port or self._safe_find_port() or getattr(bus, "port", None)
+        if not port or self._safe_token(port) is None:
             return False
         try:
             sent, why = self._fast_reopen(bus, groups, port=port, at=at)
@@ -3108,7 +3155,12 @@ class DemoRunner:
                     # itself whether this tick is its moment: after the
                     # last picture's floor, and never inside the hold
                     # before `at` (see PRECHECK_S).
-                    self._precheck(bus, groups, cue_id, at)
+                    # Guarded: a check that raised must never fail the
+                    # session or lose this cue (review N1).
+                    try:
+                        self._precheck(bus, groups, cue_id, at)
+                    except Exception as exc:    # noqa: BLE001 - _survived()
+                        self._survived(bus, f"precheck {cue_id}", exc)
                     self._reprobe(bus, groups)
                     # This wait, not the idle loop, is where a running
                     # show spends the stretch between two cues - so the
@@ -3128,8 +3180,14 @@ class DemoRunner:
             # the cue +5251 ms). A re-send that went is the frame the
             # picture starts from, and takes its place.
             sent_at = time.monotonic()
-            resent = self._resend_on_stall(bus, groups, frame, cue_id,
-                                           took_ms, at)
+            try:
+                resent = self._resend_on_stall(bus, groups, frame, cue_id,
+                                               took_ms, at)
+            except Exception as exc:        # noqa: BLE001 - review N1
+                # The cue already went; a re-send that raised costs nothing
+                # but itself, and the original frame stays the cue's.
+                self._survived(bus, f"cue {cue_id} re-send", exc)
+                resent = None
             sent_at = self._last_show_at = resent or sent_at
             if self._probing:
                 # Fired from inside a probe sweep (_fire_before_probing()):

@@ -4082,11 +4082,17 @@ const SHOWBOARD = (() => {
   // and FRESH (STALL_FRESH_S), so last hour's hiccup does not reopen a
   // healthy port. Not waiting for the fifth stall, though: two of 359 ms
   // are already this state. Never during a run - the unit would refuse it.
+  // The phases in which the PC owns a unit's port. A unit on its own menu or
+  // playing its own demo (`local`) is not recovered from here - the unit
+  // refuses it, and must never be taken over by it (review N2). A unit that
+  // does not say its phase (an old agent) is left to decide for itself.
+  const RECOVER_PHASES = ["standby", "ready", "armed", "fired", "failed"];
   function recoverTargets(units, running) {
     if (running) return [];
     return (units || []).filter(u => {
       const s = u && u.bus_stall;
       return u && u.online && s && typeof s.ms === "number"
+        && (u.phase === undefined || RECOVER_PHASES.includes(u.phase))
         && s.ms >= STALL_DEGRADED_MS
         && typeof s.ago_s === "number" && s.ago_s <= STALL_FRESH_S;
     }).map(u => u.name);
@@ -4168,7 +4174,7 @@ const SHOWBOARD = (() => {
            STALL_STREAK_N, STALL_FRESH_S, STALL_DEGRADED_MS,
            mmss, secs, arrow, tone, isBag, phase, atRest, rowAt, rowText,
            ahead, firedAgo, header, boardsOf, busStall, vitals,
-           recoverTargets, recoverText, recoverReport };
+           RECOVER_PHASES, recoverTargets, recoverText, recoverReport };
 })();
 // <<< /SHOWBOARD >>>
 
@@ -5028,8 +5034,12 @@ function usbResetMark(u) {
 // which is what shows the unit's verdicts can be trusted (review M3; the
 // master on the USB cable has to be bus address 1). Never mid-run: the unit
 // refuses it and the words on a tile must not change under the operator.
+// Only on a unit the PC OWNS (review of 6a2d136, N2): on its own menu or
+// playing its own demo (`local`) the unit refuses it anyway, and before
+// that fix it would have taken the port - stopping the demo.
 function recoverButton(u) {
-  if (!u || !u.online || showMidRun()) return "";
+  if (!u || !u.online || showMidRun()
+      || !SHOWBOARD.RECOVER_PHASES.includes(u.phase)) return "";
   return ` <button class="small" data-recover-bus="${esc(u.name)}" `
     + `title="Reset the master's USB and check that it answers again - `
     + `what a reboot of the Radxa does to the bus, in a few seconds. A `

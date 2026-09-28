@@ -2055,8 +2055,16 @@ def test_the_recovery_backs_off_and_then_leaves_it_to_the_operator(monkeypatch):
 
 def test_the_endpoint_answers_what_the_reset_took(monkeypatch):
     bus = degraded(monkeypatch)
+    bus.degraded = False                          # healthy for the setup
     runner = degraded_runner(bus)
     session = RemoteSession(runner)
+    # The PC owns this unit first - as it does before any Recover bus: a
+    # unit on its own menu is refused, never taken over (review N2).
+    session.arm("c1", 1)
+    assert wait_until(lambda: any("panels online" in l
+                                  for l in runner.recent(20)), timeout=10.0)
+    time.sleep(0.3)
+    bus.degraded = True
     agent = Agent(session, port=0, host="127.0.0.1", name="radxa-07")
     agent.start()
     try:
@@ -2382,6 +2390,126 @@ def test_the_status_says_whether_a_usb_reset_is_possible(monkeypatch):
     assert status["usb_reset_ok"] is False
     assert any("no usb reset on this unit (no usbreset here)" in l
                for l in runner.recent(20))
+
+
+# ---- a recovery attempt can never fail a session or lose a cue (N1) ----
+# Review of 6a2d136 (review_T8/t_raise.py): a usb_reset that RAISED - from
+# comports(), an undecodable usbreset output, anything - left the port closed
+# and escaped into _run_remote: "ERROR bus boom", the session failed and the
+# next cue never fired. One test per path, each with a reset that raises.
+
+def raising_reset(port, timeout=None):
+    raise RuntimeError("boom")
+
+
+def test_a_reset_that_raises_on_the_idle_path_fails_nothing(monkeypatch):
+    bus = degraded(monkeypatch)
+    runner = degraded_runner(bus, usb_reset=raising_reset)
+    time.sleep(0.25)
+    result = runner._recover_bus(bus, 2)
+    assert result["recovered"] is False
+    assert bus.reopened == ["/dev/ttyACM0"]      # the port is open again
+    assert any("bus recovery failed" in l and "usb reset raised: boom" in l
+               for l in runner.recent(20))
+
+
+def test_a_reset_that_raises_before_a_cue_loses_no_cue(monkeypatch):
+    """The reviewer's t_raise, compressed: the master is silent at the
+    pre-cue check, the reset raises - and the cue still fires on time, the
+    session never fails."""
+    bus, runner, session, at = armed(monkeypatch, usb_reset=raising_reset)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
+    runner.stop()
+    assert session.phase == FIRED
+    late_ms = session.status()["late_ms"]
+    assert late_ms is not None and late_ms < 359 + 150, late_ms
+    assert any("usb reset raised: boom" in l for l in runner.recent(30))
+    assert not [l for l in runner.recent(30) if "ERROR" in l]
+
+
+def test_a_reset_that_raises_at_fire_time_keeps_the_cue(monkeypatch):
+    bus, runner, session, at = fire_on_a_degraded_master(
+        monkeypatch, usb_reset=raising_reset)
+    assert session.phase == FIRED and len(shows(bus)) == 1
+    assert any("re-send failed (usb reset raised: boom)" in l
+               for l in runner.recent(40))
+    assert not [l for l in runner.recent(40) if "ERROR" in l]
+
+
+def test_find_port_raising_in_the_middle_of_a_reset_is_survived(monkeypatch):
+    bus = DegradedMaster()
+
+    def comports_failed():
+        raise OSError("comports failed")
+    monkeypatch.setattr("ui.runner.find_port", comports_failed)
+    runner = degraded_runner(bus)
+    time.sleep(0.25)
+    done, why = runner._usb_reset_reopen(
+        bus, give_up_at=time.monotonic() + 0.5)
+    assert done is True and bus.reopened == ["/dev/ttyACM0"], why
+
+
+def test_whatever_else_raises_in_a_check_never_fails_the_session(monkeypatch):
+    """The outer guards: the pre-cue check and the idle ladder themselves
+    raising, for any reason not foreseen above."""
+    bus = RecoveringBus("padding", deaf_boards=False)
+    bus.stalled = False
+    runner = recovery_runner(bus, precheck=3.6, remote_guard_hold=HOLD)
+
+    def kaboom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+    monkeypatch.setattr(runner, "_precheck", kaboom)
+    monkeypatch.setattr(runner, "_recover_bus_steps", kaboom)
+    session = RemoteSession(runner)
+    session.prepare("c1", {1: array(1), 2: array(2)})
+    assert wait_until(lambda: session.phase == READY, timeout=10.0)
+    session.fire("c1", time.monotonic() + 4.0)
+    assert wait_until(lambda: session.phase == FIRED, timeout=10.0)
+    result = runner._recover_bus(bus, 2)
+    runner.stop()
+    assert session.phase == FIRED
+    assert result["recovered"] is False
+    said = runner.recent(200)
+    assert any("precheck c1 raised: kaboom" in l for l in said)
+    assert any("bus recovery raised: kaboom" in l for l in said)
+
+
+# ---- Recover bus never takes over a unit on its own menu (N2) ----
+
+def test_recover_bus_on_a_unit_playing_its_own_demo_is_refused(monkeypatch):
+    """Review of 6a2d136, N2 (review_T8/t_press.py L): recover_bus() used to
+    call start_remote() - the demo stopped, a REMOTE worker started, STOPs
+    and per-board probes went out. Now it is refused, and nothing moves."""
+    bus = FakeBus(deaf_boards=False)
+    resets = []
+    runner = make_runner(bus, boards=[1, 2, 3], verify_fire=False,
+                         usb_reset=lambda p, timeout=None: (
+                             resets.append(p), (False, "t"))[1])
+    session = RemoteSession(runner)
+    runner.start(BY_KEY["wave"])
+    assert wait_until(lambda: runner.cycle >= 1, timeout=20.0)
+    agent = Agent(session, port=0, host="127.0.0.1", name="radxa-02")
+    agent.start()
+    try:
+        code, answer = call(agent, "/bus/recover", {})
+    finally:
+        agent.stop()
+    still_the_demo = (runner.running and runner.pattern is not None
+                      and runner.remote is None)
+    runner.stop()
+    assert code == 409
+    assert answer["error"] == ("unit is on its own menu - nothing to "
+                               "recover from here")
+    assert still_the_demo and resets == []
+
+
+def test_recover_bus_on_an_idle_unit_starts_no_worker():
+    bus = FakeBus()
+    runner = make_runner(bus)
+    session = RemoteSession(runner)
+    with pytest.raises(RemoteError, match="own menu"):
+        session.recover_bus(timeout=1.0)
+    assert not runner.running and runner.remote is None
 
 
 # ---- the pre-cue check: a USB reset before the cue, on its own clock ----

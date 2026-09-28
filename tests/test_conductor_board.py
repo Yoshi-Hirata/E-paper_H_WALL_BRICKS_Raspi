@@ -232,8 +232,12 @@ def test_recover_bus_sits_on_the_mark_and_runs_before_the_preset_only():
     button = _function_body("recoverButton")
     assert "data-recover-bus" in button and "esc(u.name)" in button
     # ...and the button is there on a HEALTHY tile too, for the pre-show
-    # "bus was already clear" check (review M3) - never mid-run.
+    # "bus was already clear" check (review M3) - never mid-run, and only on
+    # a unit the PC owns: never `local` (review N2).
     assert "showMidRun()" in button and "!u.online" in button
+    assert "SHOWBOARD.RECOVER_PHASES.includes(u.phase)" in button
+    assert ('const RECOVER_PHASES = ["standby", "ready", "armed", "fired", '
+            '"failed"];') in PAGE
     assert "${stallMark(u) || recoverButton(u)}" in PAGE
     # Not mid-run and not for a unit that is not answering: the unit would
     # refuse the first and cannot hear the second. Not on the NOW -> NEXT
@@ -614,6 +618,14 @@ CALLS = {
     "recover_shallow_stall_left_alone": ["recoverTargets",
                                          [_u(name="radxa-07",
                                              bus_stall=_stall(ms=88.0))], False],
+    # A unit on its own menu or playing its own demo is not the PC's to
+    # recover (review N2); one in a Conductor-owned phase is.
+    "recover_local_unit_left_alone": ["recoverTargets",
+                                      [_u(name="radxa-07", phase="local",
+                                          bus_stall=_stall())], False],
+    "recover_ready_unit": ["recoverTargets",
+                           [_u(name="radxa-07", phase="ready",
+                               bus_stall=_stall())], False],
     "recover_right_at_the_depth": ["recoverTargets",
                                    [_u(name="radxa-07",
                                        bus_stall=_stall(ms=150.0))], False],
@@ -1166,6 +1178,9 @@ def test_the_units_to_recover_are_the_ones_still_stalling_now(board):
     assert r["recover_before_it_is_red"] == ["radxa-07"]
     # The same depth S's red mark is drawn from: 150 ms counts, 88 does not.
     assert r["recover_right_at_the_depth"] == ["radxa-07"]
+    # Only a unit the PC owns (review N2).
+    assert r["recover_ready_unit"] == ["radxa-07"]
+    assert r["recover_local_unit_left_alone"] == []
     # Shallow, old, taken down by the unit itself, offline, mid-run, nothing
     # at all: a port is never reopened on any of these.
     for name in ("recover_shallow_stall_left_alone",
@@ -1387,6 +1402,9 @@ class _Stand:
         # the cure, "never" the unit that has to be
         # restarted (ui/runner.py's _recover_bus()).
         self.recover = "usb_reset"
+        # radxa-05 back on its own menu (phase `local`): no Recover bus on
+        # its tile (review N2).
+        self.local5 = False
         # Every command in the order it arrived, so a test can say that the
         # recovery ran BEFORE the preset and not merely that both happened.
         self.asked = []
@@ -1490,7 +1508,9 @@ class _Stand:
                                   # USB at all (review L2); the others have
                                   # not said, as an older agent would not.
                                   _unit("radxa-05", show=show, clear=clear,
-                                        usb_reset_ok=False)],
+                                        usb_reset_ok=False,
+                                        phase=("local" if stand.local5
+                                               else "ready"))],
                         "last_fire": None, "run": _RUNS[stand.run],
                         "shows": ({n: {"id": "S1", "cues": 2, "boards": []}
                                    for n in ("radxa-01", "radxa-02",
@@ -1510,6 +1530,8 @@ class _Stand:
                     stand.unit_clear = args.get("clear", stand.unit_clear)
                     stand.stall = args.get("stall", stand.stall)
                     stand.stall2 = args.get("stall2", stand.stall2)
+                    if "local5" in args:
+                        stand.local5 = args["local5"] == "1"
                     if "demo4" in args:
                         stand.demo4 = args["demo4"] == "1"
                     if "stale3" in args:
@@ -1885,6 +1907,14 @@ _PAGE_PROBE = """
       //     ones included, for the pre-show check (review M3).
       out.recoverOnTiles = [].map.call(document.querySelectorAll("#tiles .tile"),
         function (t) { return !!t.querySelector("[data-recover-bus]"); });
+
+      // 18. ...but not on a unit back on its own menu (review N2): the unit
+      //     would refuse it, and must never be taken over by it.
+      await fetch("/test/fleet?local5=1");
+      await wait(1600);
+      out.recoverWhenLocal = [].map.call(document.querySelectorAll("#tiles .tile"),
+        function (t) { return [t.textContent.indexOf("radxa-05") >= 0,
+                               !!t.querySelector("[data-recover-bus]")]; });
     } catch (e) { out.error = String((e && e.stack) || e); }
     publish();
   })();
@@ -2362,6 +2392,15 @@ def test_recover_bus_can_be_pressed_on_a_healthy_unit(page):
                         "radxa-05") if name in text}
     assert has == {"radxa-01": True, "radxa-02": True, "radxa-03": False,
                    "radxa-04": True, "radxa-05": True}, tiles
+
+
+def test_no_recover_bus_on_a_unit_on_its_own_menu(page):
+    """Review of 6a2d136, N2: only on a tile the PC owns - a unit that is
+    `local` (its own menu, its own demo) gets no button."""
+    five = [has for is_five, has in page["recoverWhenLocal"] if is_five]
+    others = [has for is_five, has in page["recoverWhenLocal"] if not is_five]
+    assert five == [False], page["recoverWhenLocal"]
+    assert others.count(True) == 3, page["recoverWhenLocal"]   # 01, 02, 04
 
 
 def test_show_preset_recovers_before_it_sends_anything(page):

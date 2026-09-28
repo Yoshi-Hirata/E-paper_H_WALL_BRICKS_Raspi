@@ -119,6 +119,21 @@ def usbreset_argv(tool: str, dev: dict) -> "list[str]":
 
 def usb_reset(port: str, timeout: float = USBRESET_TIMEOUT_S
               ) -> "tuple[bool, str]":
+    """Reset the USB device behind the serial `port` - never raises.
+
+    Anything at all going wrong in here (comports(), sysfs, the ioctl, a
+    usbreset that prints undecodable bytes) is an ANSWER, "usb reset raised:
+    ...", never an exception: the caller has just closed its port and must
+    be able to open it again whatever happened (review of 6a2d136, N1). See
+    _usb_reset() for what it does.
+    """
+    try:
+        return _usb_reset(port, timeout)
+    except Exception as exc:            # noqa: BLE001 - an answer, not a raise
+        return False, f"usb reset raised: {exc or exc.__class__.__name__}"
+
+
+def _usb_reset(port: str, timeout: float) -> "tuple[bool, str]":
     """Reset the USB device behind the serial `port`, as a re-plug would.
 
     Returns (done, how): how it was done ("ioctl" / "sudo usbreset"), or why
@@ -166,7 +181,7 @@ def usb_reset(port: str, timeout: float = USBRESET_TIMEOUT_S
     timeout = max(0.1, min(USBRESET_TIMEOUT_S, float(timeout)))
     try:
         done = subprocess.run(usbreset_argv(tool, dev), capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         tried.append(f"sudo usbreset: no answer in {timeout:.1f} s")
         return False, "; ".join(tried)
