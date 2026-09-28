@@ -301,6 +301,8 @@ button.small { font-size: 11px; padding: 1px 6px; vertical-align: baseline; }
 .showclock { font-size: 40px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; min-width: 150px; }
 .showclock small { display: block; font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
 .showclock.running small { color: var(--ok); } .showclock.holding small { color: var(--warn); }
+/* ③ START's countdown (-0:11 ... -0:01): the board's own 10 s / 3 s colours. */
+.showclock.cd-amber { color: var(--warn); } .showclock.cd-red { color: var(--err); }
 .showclock .music-end { display: block; font-size: 12px; font-weight: 600; color: var(--dim); margin-top: 6px; max-width: 240px; line-height: 1.3; }
 .showclock .music-end.over { color: var(--warn); font-weight: 400; margin-top: 2px; }
 .shownext { font-size: 13px; color: var(--dim); min-width: 220px; }
@@ -716,7 +718,12 @@ const ui = { tab: "items", item: null, design: null, mode: "design", view: "outs
              // nextLeadUntil is when a NEXT the operator just pressed
              // actually fires (performance.now() + the lead), which is what
              // the header counts down during the lead.
-             bagsOpen: false, stage: false, nextLeadUntil: 0 };
+             // startLeadUntil is the same for ③ START: when the show the
+             // operator just started reaches the position it was started
+             // from. Only read for a START from a mark (the position is not
+             // negative then); from 0:00 the countdown reads straight off
+             // the negative position, on every tab and after a reload.
+             bagsOpen: false, stage: false, nextLeadUntil: 0, startLeadUntil: 0 };
 let fleet = null;
 let state = null;
 // The last GET /api/fleet/demos answer ({units: {unit: [demo,...]}, offline: [unit,...]}),
@@ -3705,6 +3712,23 @@ function clearAfterNote() {
   if (!state.show.clear_after_show) return "";
   return "— tick before ① Upload for the units to clear on their own";
 }
+// The field next to ③ START (2026-09-29, the owner: 「ショー開始までのカウント
+// ダウン時間を設定できるように ... -11秒スタートとなるようにして」). Stored with
+// the show (show.json's start_countdown_s, 11 s when it says nothing), so a
+// reload or a second PC counts down the same. It is ONLY ③ START's lead: NEXT,
+// MOVE, Back to 0:00 and GO keep the "take effect in" field's own, shorter one.
+// Never part of what an Upload writes - changing it asks for no Upload.
+const START_COUNTDOWN_DEFAULT_S = 11, START_COUNTDOWN_MIN_S = 3, START_COUNTDOWN_MAX_S = 60;
+const COUNTDOWN_TITLE = "③ START の後、ショーが 0:00 になるまでのカウントダウン"
+  + "(既定 11 秒 = -0:11 から)。ショーと一緒に保存。"
+  + "\n\nHow long ③ START counts down (-0:11 ... -0:01) before the show's 0:00 "
+  + "- the music starts at 0:00. 3 to 60 s, stored with the show. NEXT / MOVE "
+  + "keep their own lead (the field on the right). No Upload needed to change it.";
+function startCountdown() {
+  const s = Number(state && state.show && state.show.start_countdown_s);
+  return Number.isFinite(s) && s >= START_COUNTDOWN_MIN_S && s <= START_COUNTDOWN_MAX_S
+    ? s : START_COUNTDOWN_DEFAULT_S;
+}
 // ---- THE SHOW's NOW -> NEXT board ---------------------------------------
 // Under the big clock: one header line saying what fires next and in how
 // many seconds, then one row per garment - what it is wearing now, how it
@@ -3924,9 +3948,21 @@ const SHOWBOARD = (() => {
       return "show ended — pictures NOT cleared everywhere";
     return null;
   }
+  // ③ START's countdown (2026-09-29): a running show still before its 0:00
+  // is counting down to it, -0:11 ... -0:01, and reads that way on the big
+  // clock, the board and the stage monitor alike. Whole seconds, rounded UP
+  // like every other countdown here, so the label and the number agree and
+  // the last part-second still reads "-0:01"; the colours are the board's own
+  // 10 s / 3 s. Null when there is nothing to count down (t at or past 0).
+  function countdown(t) {
+    if (t === null || t === undefined || !(t < 0)) return null;
+    const n = secs(-t);
+    if (n <= 0) return null;
+    return { secs: n, big: "-" + mmss(n), label: "START in " + n + " s", tone: tone(n) };
+  }
   function header(now) {
-    const out = { cap: "NEXT", time: "", count: null, tone: "", fired: false,
-                  garments: [], following: [], note: "" };
+    const out = { cap: "NEXT", time: "", count: null, countText: null, tone: "",
+                  fired: false, garments: [], following: [], note: "" };
     // Only a running show fires anything. A HOLD freezes agoS at whatever it
     // was, and "loaded" reads the preset (sent before 0:00) as a cue that
     // just went out - neither is a flash the operator should see.
@@ -3934,7 +3970,27 @@ const SHOWBOARD = (() => {
         && now.agoS >= 0 && now.agoS < FIRED_S) out.fired = true;
     if (now.leadLeft !== null && now.leadLeft !== undefined && now.leadLeft > 0)
       out.note = "NEXT in " + secs(now.leadLeft) + " s";
+    // A START from a mark (not 0:00) never reads negative - the position runs
+    // up to the mark - so the page hands over what is left of that lead.
+    else if (now.phase === "running" && now.startLeft !== null
+             && now.startLeft !== undefined && now.startLeft > 0 && now.t >= 0)
+      out.note = "START in " + secs(now.startLeft) + " s";
     const first = (now.groups || [])[0] || null;
+    const cd = now.phase === "running" ? countdown(now.t) : null;
+    if (cd) {
+      // The countdown IS the header: the big number, its colour, and the
+      // words. What fires once the show is under way follows underneath.
+      out.cap = cd.label;
+      out.count = cd.secs;
+      out.countText = cd.big;
+      out.tone = cd.tone;
+      out.following = (now.groups || []).slice(0, 3).map(g => ({
+        at: mmss(Math.max(0, g.at)),
+        what: g.cues.map(c => now.names[c.id] || c.item).join(" + "),
+        design: [...new Set(g.cues.map(c => c.label))].join(" + ") }));
+      out.note = out.note || "The show starts at 0:00.";
+      return out;
+    }
     if (now.phase === "ended") {
       out.cap = "SHOW ENDED";
       out.note = out.note || clearedNote(now.cleared) || "show ended";
@@ -4206,7 +4262,7 @@ const SHOWBOARD = (() => {
   return { AMBER_S, RED_S, FIRED_S, LAG_BAD_MS, RTT_SLOW_MS, RESTART_S, ARROWS,
            STALL_STREAK_N, STALL_FRESH_S, STALL_DEGRADED_MS,
            mmss, secs, arrow, tone, isBag, phase, atRest, rowAt, rowText,
-           ahead, firedAgo, header, boardsOf, busStall, vitals,
+           ahead, firedAgo, countdown, header, boardsOf, busStall, vitals,
            owned, recoverTargets, recoverText, recoverReport, usbBoard };
 })();
 // <<< /SHOWBOARD >>>
@@ -4389,6 +4445,12 @@ function boardThumb(cache, box, item, colors, shifts) {
   cache.colors = new Map();
   box.querySelectorAll("g[data-k]").forEach(el => cache.circles.set(el.dataset.k, el.querySelector("circle")));
 }
+// Seconds left of the ③ START lead this page just sent, or null. Only read
+// for a START from a mark; from 0:00 the negative position says it all.
+function startLeftS() {
+  const ms = ui.startLeadUntil - performance.now();
+  return ms > 0 ? ms / 1000 : null;
+}
 // The 250 ms repaint. Text, classes and a handful of circle fills - never
 // innerHTML, unless the timeline itself changed under it (boardSig) or a
 // garment settled on a new design.
@@ -4423,12 +4485,15 @@ function paintBoard() {
                                groups: SHOWBOARD.ahead(all, t), names,
                                agoS: SHOWBOARD.firedAgo(all, t),
                                leadLeft: leadMs > 0 ? leadMs / 1000 : null,
+                               startLeft: startLeftS(),
                                cleared: clearedPhase() });
   const H = BOARD.head;
   if (H) {
     H.cap.textContent = h.cap;
     H.time.textContent = h.time;
-    H.count.textContent = h.count === null ? "" : "−" + h.count + " s";
+    // ③ START's countdown prints the position itself ("-0:11"); every other
+    // countdown here is seconds to the next cue ("−9 s").
+    H.count.textContent = h.count === null ? "" : h.countText || "−" + h.count + " s";
     H.count.className = "nn-count " + h.tone;
     H.fired.hidden = !h.fired;
     H.what.textContent = h.garments.join(" · ");
@@ -4559,13 +4624,15 @@ function renderFleet() {
         <button class="big" id="show-upload" ${cueCount && !cueBad ? "" : "disabled"} title="${esc(UPLOAD_TITLE)}">① Upload</button>
         <button class="big" id="show-preset">② Show preset (the 0:00 look)</button>
         <button class="big fire" id="show-start">③ START</button>
+        <label class="meta" title="${esc(COUNTDOWN_TITLE)}">Countdown before START <input type="text"
+          id="show-countdown" value="${startCountdown()}" style="width:46px"> s</label>
         <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
           id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
           Clear pictures after the show
           <span class="none" id="show-clear-after-note">${
             esc(clearAfterNote())}</span></label>
         <button class="big" id="show-write" title="The other way to put this timeline on the units: stored in each unit's own menu, played from KEY1 with no PC at all. Opens the same &quot;Write to units…&quot; dialog as the Timeline tab.">④ Save on units (plays without this PC)</button>
-        <label class="meta">START / NEXT / MOVE take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
+        <label class="meta">NEXT / MOVE take effect in <input type="text" id="fleet-lead" value="${ui.lead}" style="width:46px"> s</label>
         <span style="flex:1"></span>
         <button class="big hold" id="show-hold">HOLD</button>
         <button class="big" id="show-resume">RESUME</button>
@@ -4642,18 +4709,24 @@ function showClockText() {
     }
   }
   const run = fleet.run;
-  let now = null, word = "NOT STARTED";
+  let now = null, word = "NOT STARTED", big = null, tone = "";
   if (run) {
     now = run.state === "holding" ? run.now : run.now + (performance.now() - fleet.at) / 1000;
-    word = run.state === "holding" ? "ON HOLD" : now < 0 ? "STARTS IN" : "RUNNING" + (run.adopted ? " (RECOVERED FROM THE UNITS)" : "");
+    word = run.state === "holding" ? "ON HOLD" : "RUNNING" + (run.adopted ? " (RECOVERED FROM THE UNITS)" : "");
+    // ③ START's countdown: "START in 11 s" over a big -0:11, counting to
+    // 0:00 in the board's own 10 s / 3 s colours (SHOWBOARD.countdown).
+    const cd = run.state === "running" ? SHOWBOARD.countdown(now) : null;
+    if (cd) { word = cd.label; big = cd.big; tone = cd.tone; }
+    else if (run.state === "running" && startLeftS() !== null && now >= 0)
+      word = "START in " + SHOWBOARD.secs(startLeftS()) + " s";
     // fleetDuration(): the length the units were uploaded with - what they
     // actually run - not this page's Show length, which the operator may
     // have changed since (the clock must never read RUNNING after the units
     // have ended, review 2026-09-28).
     if (run.state === "running" && now > fleetDuration()) word = "ENDED";
   }
-  box.className = "showclock " + (run ? run.state : "");
-  box.innerHTML = `<small>${word}</small>${now === null ? "0:00" : clock(now)}${musicEndClockHtml()}`;
+  box.className = "showclock " + (run ? run.state : "") + (tone ? " cd-" + tone : "");
+  box.innerHTML = `<small>${esc(word)}</small>${big !== null ? big : now === null ? "0:00" : clock(now)}${musicEndClockHtml()}`;
   const upcoming = fleet.units.filter(u => u.online && u.show && u.show.next).map(u => ({ unit: u.name, ...u.show.next }))
     .sort((a, b) => a.in_s - b.in_s);
   const loaded = fleet.units.filter(u => u.online && u.show && fleet.shows[u.name] && u.show.id === fleet.shows[u.name].id).length;
@@ -5472,8 +5545,16 @@ document.addEventListener("click", async e => {
     // seconds, silently, after the confirm the operator just answered. ②
     // Show preset has already swept, and each unit checks its own bus before
     // every cue that has room for it (ui/runner.py's PRECHECK_S).
-    const startBody = () => ({ lead_s: ui.lead, ...answers });
-    let result = await fleetCommand("start", startBody(), `③ START (in ${ui.lead} s)`, "show");
+    // START's lead is the show's own countdown ("Countdown before START",
+    // 11 s unless changed), never the NEXT / MOVE field: the fleet counts
+    // down -0:11 ... 0:00 and the music starts at 0:00 (2026-09-29).
+    const lead = startCountdown();
+    const startBody = () => ({ lead_s: lead, ...answers });
+    // Remembered for a START from a mark, whose position never reads
+    // negative (see startLeftS); cleared below unless the fleet started.
+    const landed = () => { ui.startLeadUntil = startAt > 0 ? performance.now() + lead * 1000 : 0; };
+    landed();
+    let result = await fleetCommand("start", startBody(), `③ START (in ${lead} s)`, "show");
     // Two gates, each with its own question and its own answer: the
     // boards that did not take their pictures (`force`), and a fleet
     // split over two uploads - a one-LOOK Upload, or an edit nobody
@@ -5490,7 +5571,8 @@ document.addEventListener("click", async e => {
                      + `two different timelines at the same time.`)) break;
         answers.split_ok = true;
       } else break;
-      result = await fleetCommand("start", startBody(), `③ START (in ${ui.lead} s)`, "show");
+      landed();
+      result = await fleetCommand("start", startBody(), `③ START (in ${lead} s)`, "show");
     }
     // A 200 with a "nothing uploaded"/"already running" note also has
     // result.error unset, so !result.error alone is not "it actually started" -
@@ -5498,7 +5580,7 @@ document.addEventListener("click", async e => {
     // (fix round finding 7).
     if (result && result.from_s !== undefined && Object.keys(result.units || {}).length) {
       ui.manual = false; ui.seekSent = null; dropSeek(); renderSeekBlock();
-    }
+    } else ui.startLeadUntil = 0;
     return;
   }
   if (e.target.id === "show-next-cue") {
@@ -5695,6 +5777,28 @@ document.addEventListener("change", async e => {
   if (id === "fleet-lead") {
     const seconds = Number(e.target.value);
     if (seconds >= 0.5 && seconds <= 60) ui.lead = seconds; else { toast("Enter 0.5 to 60 seconds"); e.target.value = ui.lead; }
+    return;
+  }
+  // "Countdown before START": stored with the show (show.json, undoable), so
+  // it survives a reload and reads the same on a second PC. Refreshed from
+  // the server afterwards, so a refusal puts the field back to what the show
+  // really holds.
+  if (id === "show-countdown") {
+    const text = String(e.target.value).trim();
+    const seconds = Number(text);
+    if (!text || !(seconds >= START_COUNTDOWN_MIN_S && seconds <= START_COUNTDOWN_MAX_S)) {
+      toast(`Enter ${START_COUNTDOWN_MIN_S} to ${START_COUNTDOWN_MAX_S} seconds`);
+      e.target.value = startCountdown();
+      return;
+    }
+    try {
+      const answer = await api("/api/show/start_countdown", { s: seconds });
+      if (answer && answer.error) toast(`Could not save it: ${answer.error}`);
+    } catch (err) {
+      toast(`Could not save it: ${err.message}`);
+    }
+    await refresh();
+    render();
     return;
   }
   if (id === "write-loop") { ui.demoLoop = e.target.checked; return; }

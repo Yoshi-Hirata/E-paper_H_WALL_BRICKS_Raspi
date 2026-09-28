@@ -256,6 +256,12 @@ CASES = {
     # The START lead counts down with a negative position.
     "lead_in_before_zero": _case(showTime=-2.5, audioPaused=True),
     "lead_in_with_audio_left_running": _case(showTime=-2.5),
+    # ...and the 11 s "Countdown before START" (2026-09-29) is the same
+    # negative position, only longer: plan() is untouched by it.
+    "countdown_eleven": _case(showTime=-11.0, audioPaused=True),
+    "countdown_eleven_audio_running": _case(showTime=-11.0),
+    "countdown_last_tenth": _case(showTime=-0.1, audioPaused=True),
+    "countdown_reaches_zero": _case(showTime=0.0, audioTime=0.0, audioPaused=True),
     # Autoplay refused after a reload.
     "autoplay_blocked": _case(blocked=True, audioPaused=True),
     "joined_after_the_click": _case(blocked=False, audioPaused=True),
@@ -406,6 +412,18 @@ def test_the_start_lead_does_not_play_the_track_early(plans):
     assert r["lead_in_before_zero"]["action"] == "none"
     assert r["lead_in_before_zero"]["state"] == "paused"
     assert r["lead_in_with_audio_left_running"]["action"] == "pause"
+
+
+def test_the_eleven_second_countdown_plays_nothing_until_zero(plans):
+    # The exact answers plan() gave the 3 s lead before the countdown
+    # existed: silent while negative, and the track starts AT 0:00.
+    r = plans["results"]
+    silent = {"action": "none", "at": None, "state": "paused", "join": False}
+    assert r["countdown_eleven"] == silent
+    assert r["countdown_last_tenth"] == silent
+    assert r["countdown_eleven_audio_running"] == dict(silent, action="pause")
+    assert r["countdown_reaches_zero"] == {"action": "play", "at": 0.0,
+                                           "state": "playing", "join": False}
 
 
 def test_autoplay_refused_asks_for_one_click_and_retries_nothing(plans):
