@@ -638,29 +638,69 @@ def _look26(spacings=None):
     return cues
 
 
-def test_the_real_look26_leaves_room_for_every_stop():
-    """11 s after an 8 s picture is 3 s of room: the keep-away's 0.5 s
-    after the picture and 1.5 s before the next cue both fit."""
+def test_the_real_look26_replays_with_no_gap_over_60_s():
+    """Both garments of LOOK26 as showdata/show.json has them: the unit's
+    own STOPs (heartbeat, pre-cue check, keep-away, guard) leave the master
+    at most 40 s without one."""
     assert keep_away_gaps(_look26(), REFRESH_S) == []
-    assert not [w for w in problems(_look26(), 655)[1] if "room" in w]
+    tops = _look26()
+    tops[1]["at"] = 485.0
+    assert keep_away_gaps(tops, REFRESH_S) == []
+    assert not [w for w in problems(_look26(), 655)[1] if "stop" in w]
 
 
-def test_cues_closer_than_picture_plus_two_seconds_warn_after_60_s():
-    tight = [cue("p", "Look22", 0, "p1")] + [
-        cue(f"t{n}", "Look22", 503 + n * 9.5, "p2") for n in range(8)]
-    # 1.5 s before 8:23 to 0.5 s after the last picture (9:29.5 + 8 s).
-    assert keep_away_gaps(tight, REFRESH_S) == [(76.5, 503.0, 569.5)]
-    found, warnings = validate(tight, ITEMS, 655)
+def test_the_replay_finds_the_review_case_a_stretch_count_missed():
+    """Review of 2a67ef8, MED-A: every gap between 23 and 95 has room, but
+    it comes before the keep-away is due; then nine cues 9 s apart leave
+    none. The unit's last STOP is the keep-away at 0:54 and the next the
+    one after the last picture, at 2:28.5 - 94.5 s."""
+    trap = [cue("p", "Look22", 0, "p1")] + [
+        cue(f"c{n}", "Look22", at, "p2") for n, at in enumerate(
+            (23, 43, 63, 83, 95, 104, 113, 122, 131, 140))]
+    assert keep_away_gaps(trap, REFRESH_S) == [(94.5, 54.0, 148.5, 8.0)]
+    found, warnings = validate(trap, ITEMS, 655)
     assert all(v == [] for v in found.values())       # a warning, not a problem
-    assert [w for w in warnings if "room" in w] == [
-        "Look22: 76 s of cues without room for a stop (8:23–9:30) - leave "
-        "2 s after a picture is complete"]
-    # 57.5 s of the same: under the 60, nothing to say.
-    assert keep_away_gaps(tight[:7], REFRESH_S) == []
-    # ...and 10.0 s apart is exactly the 2 s of room: fine however long.
-    roomy = [cue("p", "Look22", 0, "p1")] + [
-        cue(f"t{n}", "Look22", 503 + n * 10.0, "p2") for n in range(12)]
-    assert keep_away_gaps(roomy, REFRESH_S) == []
+    assert [w for w in warnings if "stop" in w] == [
+        "Look22: 94 s without a stop (0:54–2:28) - cues too close for the "
+        "unit to send one"]
+
+
+def test_the_replay_follows_the_units_last_resort():
+    """9.5 s apart: picture + 0.5 + the 1.0 s floor fits - no gap. 9.0 s
+    apart (the Timeline's own floor, complete + 1.0) fits nothing."""
+    def run(step):
+        return [cue("p", "Look22", 0, "p1")] + [
+            cue(f"t{n}", "Look22", 503 + n * step, "p2") for n in range(12)]
+    assert keep_away_gaps(run(9.5), REFRESH_S) == []
+    assert keep_away_gaps(run(10.0), REFRESH_S) == []
+    assert [g[0] for g in keep_away_gaps(run(9.0), REFRESH_S)] == [116.5]
+
+
+def test_one_picture_no_stop_can_get_past_has_its_own_words():
+    lone = [cue("p", "Look22", 0, "p1"),
+            cue("x", "Look22", 100, "p2", refresh_s=60.0)]
+    lone[1]["span"] = 2.0
+    assert [w for w in validate(lone, ITEMS, 655)[1] if "stop" in w] == [
+        "Look22: one picture takes 62 s - no stop can be sent while it draws"]
+
+
+def test_the_replayed_rules_are_the_units_own_numbers():
+    import ui.runner as runner
+    from conductor import timeline
+    assert timeline.KEEPAWAY_DUE_S == runner.KEEPAWAY_DUE_S
+    assert timeline.KEEPAWAY_MAX_GAP_S == runner.KEEPAWAY_MAX_GAP_S
+    assert timeline.KEEPAWAY_AFTER_PICTURE_S == runner.KEEPAWAY_AFTER_PICTURE_S
+    assert timeline.KEEPAWAY_BEFORE_CUE_S == runner.KEEPAWAY_BEFORE_CUE_S
+    assert (timeline.KEEPAWAY_MIN_BEFORE_CUE_S
+            == runner.KEEPAWAY_MIN_BEFORE_CUE_S)
+    assert timeline.UNIT_HEARTBEAT_S == runner.REMOTE_GUARD_S
+    assert timeline.UNIT_HOLD_S == runner.REMOTE_GUARD_HOLD_S
+    assert timeline.UNIT_PRECHECK_S == runner.PRECHECK_S
+    assert timeline.UNIT_PRECHECK_LEAD_S == (runner.REMOTE_GUARD_HOLD_S
+                                             + runner.DEGRADED_WRITE_S)
+    assert timeline.UNIT_GUARD_DELAY_S == 30.0      # DemoRunner's default
+    assert timeline.UNIT_GUARD_MARGIN_S == 30.0 - runner.GUARD_REFRESH_S
+    assert timeline.UNIT_GUARD_MAX_S == runner.GUARD_MAX_S
 
 
 def test_the_keep_away_room_is_measured_from_what_the_unit_is_told():

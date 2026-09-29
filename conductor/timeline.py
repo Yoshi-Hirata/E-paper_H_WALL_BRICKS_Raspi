@@ -131,19 +131,37 @@ MAX_DURATION_S = 900.0
 DURATION_TOO_LONG = "A show is at most 15:00"
 
 
-# The unit's STOP keep-away (ui/runner.py's KEEPAWAY_*, SPECIFICATION 4.6):
-# the master resumes its factory autoplay ~85 s after the last broadcast
-# STOP, so the unit sends one at least every KEEPAWAY_MAX_GAP_S - after a
-# picture is complete (the refresh + span the UNIT is told, plus
-# KEEPAWAY_AFTER_PICTURE_S) and KEEPAWAY_BEFORE_CUE_S or more before the
-# next send. A garment whose sends leave no such room for longer than
-# KEEPAWAY_MAX_GAP_S gets a warning (keep_away_gaps() below): the unit still
-# squeezes a stop in down to half a second before a trigger, but that is
-# the last resort, not the plan.
+# The unit's broadcast STOPs, replayed (keep_away_gaps() below): the master
+# resumes its factory autoplay ~85 s after the last broadcast STOP, and the
+# unit (ui/runner.py) means never to leave it KEEPAWAY_MAX_GAP_S without one.
+# Which STOPs it can send depends on the cues, so the Timeline replays the
+# unit's own rules over a show and warns about a gap the unit cannot close
+# (SPECIFICATION 4.6). The numbers are ui/runner.py's defaults - a test
+# holds them equal:
+#   * the heartbeat, every UNIT_HEARTBEAT_S after the last STOP, once the last
+#     fire's guard floor has passed, never within UNIT_HOLD_S of a trigger;
+#   * the guard floor: the fire + max(UNIT_GUARD_DELAY_S, picture +
+#     UNIT_GUARD_MARGIN_S), picture = the refresh + span the unit is told;
+#   * the pre-cue check's STOP, UNIT_PRECHECK_S before a cue (or at the floor,
+#     if that is later), begun only with UNIT_PRECHECK_LEAD_S still to go;
+#   * the keep-away, at the first instant from the last STOP + KEEPAWAY_DUE_S
+#     that is KEEPAWAY_AFTER_PICTURE_S after the picture is complete and
+#     KEEPAWAY_BEFORE_CUE_S before the next trigger - or, when the next room
+#     would come after KEEPAWAY_MAX_GAP_S, KEEPAWAY_MIN_BEFORE_CUE_S before it;
+#   * after the last cue, the guard STOP at its floor.
+KEEPAWAY_DUE_S = 40.0
 KEEPAWAY_MAX_GAP_S = 60.0
 KEEPAWAY_AFTER_PICTURE_S = 0.5
 KEEPAWAY_BEFORE_CUE_S = 1.5
+KEEPAWAY_MIN_BEFORE_CUE_S = 1.0
 KEEPAWAY_ROOM_S = KEEPAWAY_AFTER_PICTURE_S + KEEPAWAY_BEFORE_CUE_S   # 2.0
+UNIT_HEARTBEAT_S = 15.0
+UNIT_HOLD_S = 5.0
+UNIT_PRECHECK_S = 9.0
+UNIT_PRECHECK_LEAD_S = 5.4
+UNIT_GUARD_DELAY_S = 30.0
+UNIT_GUARD_MARGIN_S = 23.0
+UNIT_GUARD_MAX_S = 200.0
 
 
 def check_duration(value) -> float:
@@ -311,41 +329,103 @@ def unit_picture_s(group: "list[dict]", refresh: float = REFRESH_S) -> float:
             + max(span_of(c) for c in group))
 
 
-def keep_away_gaps(unit_cues: "list[dict]", refresh: float = REFRESH_S
-                   ) -> "list[tuple[float, float, float]]":
-    """[(seconds, first send, last send)] for every stretch of ONE unit's
-    sends that leaves the unit's keep-away STOP no room for longer than
-    KEEPAWAY_MAX_GAP_S.
+def _unit_next_stop(now: float, last: float, floor: "float | None",
+                    done: "float | None", trigger: "float | None",
+                    picture: float, prechecked: bool
+                    ) -> "tuple[float, str] | None":
+    """(when, what) of the unit's next broadcast STOP from `now`, by the
+    rules listed at UNIT_HEARTBEAT_S - with a cue armed at `trigger`
+    (`picture` its own) or, with `trigger` None, after the last cue. The
+    earliest wins; on a tie the first named here."""
+    found: "list[tuple[float, str]]" = []
+    if trigger is None:
+        if floor is not None:
+            found.append((max(now, floor), "guard"))
+    elif not prechecked:
+        check = trigger - UNIT_PRECHECK_S
+        if floor is not None:
+            check = max(check, floor)
+        check = max(check, now)
+        if trigger - check >= UNIT_PRECHECK_LEAD_S:
+            found.append((check, "precheck"))
+    beat = last + UNIT_HEARTBEAT_S
+    if floor is not None:
+        beat = max(beat, floor)
+    beat = max(beat, now)
+    if trigger is None or trigger - beat >= UNIT_HOLD_S:
+        found.append((beat, "heartbeat"))
+    keep = last + KEEPAWAY_DUE_S
+    if done is not None:
+        keep = max(keep, done)
+    keep = max(keep, now)
+    if trigger is None or trigger - keep >= KEEPAWAY_BEFORE_CUE_S:
+        found.append((keep, "keep-away"))
+    elif (trigger - keep >= KEEPAWAY_MIN_BEFORE_CUE_S
+          and trigger + picture + KEEPAWAY_AFTER_PICTURE_S
+          >= last + KEEPAWAY_MAX_GAP_S):
+        found.append((keep, "keep-away"))
+    best = None
+    for entry in found:
+        if best is None or entry[0] < best[0]:
+            best = entry
+    return best
 
-    After a send there is room for a stop when the next send is at least
-    KEEPAWAY_ROOM_S (2 s) after its picture is complete (unit_picture_s()):
-    the stop goes KEEPAWAY_AFTER_PICTURE_S after the picture and
-    KEEPAWAY_BEFORE_CUE_S before the next send. Before the first send and
-    after the last there is always room. A stretch runs from the end of one
-    room (the latest a stop could go, 1.5 s before the stretch's first
-    send) to the start of the next (0.5 s after the stretch's last picture)
-    - the shortest the master can possibly go without a stop there. Sends
-    at the same instant are one broadcast (showfile.py), as in validate().
-    """
+
+def keep_away_gaps(unit_cues: "list[dict]", refresh: float = REFRESH_S
+                   ) -> "list[tuple[float, float, float, float]]":
+    """[(seconds, from, to, longest picture)] for every gap between two
+    broadcast STOPs longer than KEEPAWAY_MAX_GAP_S, found by REPLAYING the
+    unit's own rules (listed at UNIT_HEARTBEAT_S) over ONE unit's sends -
+    not by measuring stretches of cues: a stop comes from whichever rule
+    can place one first, and a run of cues that leaves room only before
+    the keep-away is due still starves the master (review of 2a67ef8,
+    MED-A: cues at 23, 43, 63, 83 then every 9 s from 95 to 140 go 94.5 s
+    without a stop). `longest picture` is the longest one sent inside the
+    gap, so the caller can name a single picture no stop can get past.
+
+    The show is replayed from 0:00 as if a STOP went out then (the unit
+    heartbeats while it waits for START); the preset, sent before START,
+    is not part of it. Sends at the same instant are one broadcast
+    (showfile.py), as in validate(); each send's picture is the one the
+    unit is told (unit_picture_s()). The replay ends at the first STOP
+    after the last send."""
     moment_cues: "dict[float, list[dict]]" = {}
     for cue in unit_cues:
         moment_cues.setdefault(times(cue, refresh)[0], []).append(cue)
-    moments = sorted(moment_cues)
-    found: "list[tuple[float, float, float]]" = []
-    if not moments:
+    sends = [(sent, min(UNIT_GUARD_MAX_S,
+                        unit_picture_s(moment_cues[sent], refresh)))
+             for sent in sorted(moment_cues) if sent > 0]
+    found: "list[tuple[float, float, float, float]]" = []
+    if not sends:
         return found
-    room_end, first = moments[0] - KEEPAWAY_BEFORE_CUE_S, moments[0]
-    for index, sent in enumerate(moments):
-        opens = (sent + unit_picture_s(moment_cues[sent], refresh)
-                 + KEEPAWAY_AFTER_PICTURE_S)
-        after = moments[index + 1] if index + 1 < len(moments) else None
-        if after is not None and after - KEEPAWAY_BEFORE_CUE_S < opens:
-            continue                    # no room between these two sends
-        stretch = round(opens - room_end, 3)
-        if stretch > KEEPAWAY_MAX_GAP_S:
-            found.append((stretch, first, sent))
-        if after is not None:
-            room_end, first = after - KEEPAWAY_BEFORE_CUE_S, after
+    now = last = 0.0
+    floor = done = None
+    longest = 0.0
+    for index in range(len(sends) + 1):
+        trigger, picture = (sends[index] if index < len(sends)
+                            else (None, 0.0))
+        prechecked = False
+        while True:
+            step = _unit_next_stop(now, last, floor, done, trigger,
+                                   picture, prechecked)
+            if step is None or (trigger is not None and step[0] >= trigger):
+                break
+            at, what = step
+            gap = round(at - last, 3)
+            if gap > KEEPAWAY_MAX_GAP_S:
+                found.append((gap, last, at, longest))
+            now = last = at
+            longest = 0.0
+            if what == "precheck":
+                prechecked = True
+            if trigger is None:
+                return found
+        now = trigger
+        floor = trigger + max(UNIT_GUARD_DELAY_S,
+                              min(UNIT_GUARD_MAX_S,
+                                  picture + UNIT_GUARD_MARGIN_S))
+        done = trigger + picture + KEEPAWAY_AFTER_PICTURE_S
+        longest = max(longest, picture)
     return found
 
 
@@ -603,20 +683,19 @@ def validate(cues: "list[dict]", items: "dict[str, dict]",
                             f"({detail})")
             previous_sent, previous_group = sent, group
 
-        # The unit's STOP keep-away needs room between pictures and the next
-        # send (keep_away_gaps()). A warning, never a problem: the unit
-        # still gets its stop in, down to half a second before a trigger.
+        # The unit's broadcast STOPs, replayed (keep_away_gaps()): a gap over
+        # 60 s is a master left to go back to its autoplay. A warning, never
+        # a problem - the show still runs.
         names = " + ".join(sorted({items[c["item"].lower()]["item"]
                                    for c in unit_cues}, key=str.lower))
-        for stretch, first, last in keep_away_gaps(unit_cues, refresh):
-            first = max(0.0, first)
-            span = (format_clock(first) if format_clock(first)
-                    == format_clock(last) else
-                    f"{format_clock(first)}–{format_clock(last)}")
-            warnings.append(f"{names}: {stretch:.0f} s of cues without room "
-                            f"for a stop ({span}) - leave "
-                            f"{KEEPAWAY_ROOM_S:g} s after a picture is "
-                            "complete")
+        for gap, since, until, longest in keep_away_gaps(unit_cues, refresh):
+            if longest + KEEPAWAY_ROOM_S > KEEPAWAY_MAX_GAP_S:
+                warnings.append(f"{names}: one picture takes {longest:.0f} s "
+                                "- no stop can be sent while it draws")
+                continue
+            warnings.append(f"{names}: {gap:.0f} s without a stop "
+                            f"({format_clock(since)}–{format_clock(until)}) "
+                            "- cues too close for the unit to send one")
 
     for key, item in sorted(items.items()):
         track = [c for c in cues if c["item"].lower() == key]
