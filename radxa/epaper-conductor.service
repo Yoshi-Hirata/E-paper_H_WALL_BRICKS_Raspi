@@ -19,14 +19,18 @@ Environment=PYTHONUNBUFFERED=1
 # 11's 3.9) runs it; the repo's .venv is for the unit's own UI. --host
 # 0.0.0.0 opens the page to the hotspot (10.42.0.1:8765) and to the router
 # network when both are up; --speaker plays the show's music through mpg123
-# on this unit's USB speaker (apt install mpg123), -o alsa because a service
-# has no PulseAudio session. The passcode every OTHER host has to give the
+# on this unit's speaker (apt install mpg123). `-o pulse`: the Conductor
+# runs as radxa, whose PulseAudio is persistent (loginctl enable-linger,
+# exit-idle-time = -1 - radxa/EXHIBITION.md) and routes to a Bluetooth
+# speaker (Bose SoundLink Flex, A2DP - its USB is HID only) or a USB speaker
+# alike. `--speaker-output alsa` is the fallback for a plain USB speaker if
+# PulseAudio misbehaves. The passcode every OTHER host has to give the
 # page lives in /home/radxa/exhibition/fleet.json ("passcode", chmod 600) -
 # never here, where `systemctl show` would print it; with --host 0.0.0.0 the
 # Conductor refuses to start without one, or with the example value. The
 # workspace is its own folder, never ./showdata: an exhibition show must
 # not be confused with a rehearsal's.
-ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --speaker-output alsa --port 8765
+ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --speaker-output pulse --port 8765
 # always, not on-failure: with the Loop on, this process IS the show, and a
 # clean exit would leave the garments on their last look until somebody
 # reached a terminal.

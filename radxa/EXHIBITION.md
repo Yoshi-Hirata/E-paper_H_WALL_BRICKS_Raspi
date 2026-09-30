@@ -5,7 +5,8 @@
 >   **radxa-05 は制御専用 ― 衣装は付けない**(ショーの中で radxa-05 に衣装を割り当てない)。
 >   ほかの機体はそのホットスポットに固定アドレス `10.42.0.1NN` で入る。
 >   ルータも PC も会場には要らない
-> - ショーの音は **radxa-05 の USB スピーカー**から出る(`mpg123`)
+> - ショーの音は **radxa-05 のスピーカー**から出る(`mpg123` → PulseAudio → Bluetooth の Bose、
+>   または USB スピーカー)
 > - **Loop** を入れておくと、ショーが終わるたびに待ち時間(既定 45 秒、40 秒以上)のあと
 >   ③ START を Conductor 自身が押す(カウントダウン込み)。STOP で止まる
 > - ショーのデータ(ワークスペース)は事務所の PC で作り、Conductor の画面の
@@ -27,8 +28,8 @@ radxa-05  ─┬─  radxa-01  10.42.0.101:8787
 ```
 
 - Conductor は `python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0
-  --speaker --speaker-output alsa --passcode … --port 8765` を systemd(`epaper-conductor.service`)
-  が常時動かす。落ちても 10 秒で立ち上がる
+  --speaker --speaker-output pulse --port 8765` を systemd(`epaper-conductor.service`)が常時
+  動かす。落ちても 10 秒で立ち上がる
 - **Conductor だけの再起動なら続く**: Conductor が立ち上がると自分のワークスペースを
   コンパイルし、**同じショー(同じ id)を持っていて絵が書き込み済み**(一部の基板が失敗した
   `failed` も含む ― START の関門が判断する)の機体をそのまま「持っている」とみなす
@@ -53,7 +54,7 @@ radxa-05  ─┬─  radxa-01  10.42.0.101:8787
 ssh で `radxa@192.168.51.105`(事務所)に入って、順に。リポジトリは最新に
 (`cd ~/E-paper_H_WALL_BRICKS_Raspi && git pull --ff-only`)。
 
-### 2.1 mpg123 を入れる・音量を固定する
+### 2.1 mpg123 を入れる・音量を固定する(USB スピーカーのとき)
 
 ```bash
 sudo apt-get update
@@ -75,13 +76,59 @@ defaults.pcm.card 1
 defaults.ctl.card 1
 ```
 
-音量を決めて**保存**する(サービスは PulseAudio 無しの ALSA 直なので、ここで決めた
-値がそのまま会場の音量):
+音量を決めて**保存**する(`--speaker-output alsa` で ALSA 直に鳴らすときはここで決めた
+値がそのまま会場の音量。既定の `pulse` では 2.1b の `pactl` と本体のボタン):
 
 ```bash
 amixer sset Master 80%     # Master が無いカードは `amixer scontrols` で名前を見る(PCM など)
 sudo alsactl store
 ```
+
+### 2.1b Bluetooth スピーカー(Bose など)
+
+2026-09-30 に radxa-05 と **Bose SoundLink Flex** で確認した手順(radxa-05 では済んでいる。
+イメージを焼き直した機体では**この順に**もう一度)。Bose の USB は HID だけで USB オーディオ
+にならないので Bluetooth(A2DP)で使う。サービスは `--speaker-output pulse`(radxa ユーザの
+PulseAudio 経由。Bluetooth でも USB スピーカーでも同じ設定で鳴る。PulseAudio が変なときの
+逃げ道は 2.1 の USB スピーカー + `--speaker-output alsa`)。
+
+a. **使っていないログイン画面のユーザ `sddm` を止め、radxa の PulseAudio を常駐にする**
+   (`sddm` が自分の PulseAudio を立ち上げて A2DP の口を先に掴むため、sink が出てこなかった):
+
+```bash
+sudo systemctl disable --now sddm
+sudo loginctl enable-linger radxa
+mkdir -p ~/.config/pulse && echo "exit-idle-time = -1" >> ~/.config/pulse/daemon.conf && systemctl --user restart pulseaudio
+```
+
+b. **ペアリング**。スピーカーをペアリングモード(青点滅)にし、**近くのスマホ・PC の Bluetooth を
+   切る**(Bose はそちらに自動接続してペアリングモードから抜ける)。BlueZ はペアリングしていない
+   スキャン結果を 30 秒ほどで忘れるので、**スキャンとペアリングは 1 回の bluetoothctl セッションで**:
+
+```bash
+bluetoothctl --timeout 20 scan on            # MAC を探す
+bluetoothctl devices | grep -v LE-           # `LE-…` は BLE(音声ではない)。うちの Bose: AC:BF:71:FA:8F:AB
+MAC=AC:BF:71:FA:8F:AB
+{ echo "scan on"; for i in $(seq 1 30); do sleep 2; bluetoothctl devices | grep -q "^Device $MAC" && break; done; echo "pair $MAC"; sleep 8; echo "trust $MAC"; sleep 1; echo "connect $MAC"; sleep 6; echo "quit"; } | bluetoothctl
+```
+
+c. **既定の sink にする**(`<MAC_>` は MAC の `:` を `_` にしたもの):
+
+```bash
+pactl list short sinks                       # bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink が出ること
+pactl set-default-sink bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink
+pactl set-sink-volume bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink 100%
+```
+
+   音の大きさは**スピーカー本体の + ボタン**で決める(AVRCP)。PulseAudio の 100 % は天井。
+
+d. **テスト**: `mpg123 -o pulse <曲>` を 10 秒。sink-input は出ているのに無音なら、スピーカーが
+   別の音源(スマホ)を鳴らしている ― `bluetoothctl disconnect $MAC; bluetoothctl connect $MAC`
+   で radxa-05 が有効な音源になる。
+
+e. **注意**: A2DP は **100〜200 ms** 遅れる ― 測って `--speaker-lead-ms` に入れる(6 章)。
+   スピーカーの電源を入れ直したあとは自動で再接続するはず(Trusted)― 一度確かめる。
+   **スピーカーの自動オフのタイマーは切る**か、Loop の待ち時間をそれより短くしておく。
 
 ### 2.2 ホットスポットと「展示モードの武装」
 
@@ -287,8 +334,8 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
 | パスコードを忘れた | radxa-05 の `/home/radxa/exhibition/fleet.json`(`sudo cat`)。ブラウザで入れ直したいときは `localStorage` の `conductor.passcode` を消す(または別のブラウザ) |
 | `epaper-conductor` が起動しない、journal に `refusing to serve on 0.0.0.0` | fleet.json の `"passcode"` が無い / 例の値のまま。2.3 |
 | 機体が offline | その機体の電源。`AZ-Epaper` に入っているか(LCD の上部バーの IP が 10.42.0.1NN か)。3 章のプロファイルが無い・番号違い。2.2 の予約に MAC が無い機体はスマホと番地がぶつかることがある |
-| 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。音量は 2.1 の `amixer` |
-| 音が絵より遅れる / 早い | `--speaker-lead-ms`(既定 50 = 測ったパイプ往復 + 50 ms 早くアンパウズ。**50 は当て推量**: クリック音源で一度測って決める)を service の ExecStart で変えて `daemon-reload` + `restart` |
+| 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。Bluetooth: `pactl list short sinks` に `bluez_sink.…a2dp_sink` が無ければ 2.1b の b〜c(スピーカーの電源、スマホの Bluetooth を切る)、sink はあるのに無音なら `bluetoothctl disconnect` → `connect`(2.1b d)。音量は本体の + ボタン / `pactl`(USB 直なら 2.1 の `amixer`) |
+| 音が絵より遅れる / 早い | `--speaker-lead-ms`(既定 50 = 測ったパイプ往復 + 50 ms 早くアンパウズ。**50 は当て推量**、Bluetooth(A2DP)は 100〜200 ms 余計に遅れる: クリック音源で一度測って決める)を service の ExecStart で変えて `daemon-reload` + `restart` |
 | Loop が回らない | `Loop` のチェック、待ち時間が 40〜600 か。Units タブの `Corrected automatically:` の行に `Loop: …` の理由 |
 | 再起動後に START が `Upload again` / `Upload first` | 機体が持っているショーが今のタイムラインと違う(送り直した・編集した)。① Upload |
 | ショーを差し替えたい | 会場でも PC を `AZ-Epaper` に入れれば 4 章の手順で送れる(先に STOP) |

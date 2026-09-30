@@ -1888,7 +1888,8 @@ def test_the_service_file_carries_no_passcode():
     from pathlib import Path as _P
     service = (_P(__file__).resolve().parents[1] / "radxa" / "epaper-conductor.service").read_text(encoding="utf-8")
     assert "--passcode" not in service.split("ExecStart=")[1].split("\n")[0]
-    assert "--host 0.0.0.0" in service and "--speaker-output alsa" in service
+    assert "--host 0.0.0.0" in service and "--speaker-output pulse" in service
+    assert "alsa" in service, "the USB-only fallback must stay documented"
 
 
 def test_the_passcode_cookie_counts_for_the_music_file_only(tmp_path):
@@ -1923,6 +1924,9 @@ def test_a_truncated_import_leaves_no_spool_behind(tmp_path):
         conn.endheaders()
         conn.send(b"x" * 1000)                       # ...and stops
         conn.close()
+        # The server thread may not even have made the spool yet: give the
+        # request time to be handled, then require the spool to be gone.
+        time.sleep(0.5)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and any(
                 p.name.startswith(".import-") for p in root.iterdir()):

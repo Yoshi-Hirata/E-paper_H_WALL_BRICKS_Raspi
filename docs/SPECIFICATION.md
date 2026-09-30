@@ -1105,7 +1105,7 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
 Wi-Fi ホットスポット `AZ-Epaper`(10.42.0.1)でもあり、**制御専用(衣装なし)**。ほかの機体は
 固定アドレス radxa-NN → `10.42.0.1NN:8787` でそこに入る。操作手順は `radxa/EXHIBITION.md`、
 配備ファイルは `radxa/epaper-conductor.service`(`Restart=always`、`After=network-online.target
-epaper-exhibition-net.service`、`--speaker-output alsa --passcode …`)、`radxa/exhibition/fleet.json`
+epaper-exhibition-net.service`、`--speaker-output pulse`)、`radxa/exhibition/fleet.json`
 (`units`: radxa-05 自身は `127.0.0.1:8787`、`hotspot`、`passcode`)、
 `radxa/epaper-exhibition-net.service` + `radxa/exhibition-net.sh`(oneshot、radxa-05 だけ:
 起動後 90 秒までにクライアントの Wi-Fi が `activated` にならなければ ― 知っているルータの
@@ -1180,7 +1180,9 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   停電すると agent は `burn none` を報告するので ① Upload が要る。同じネットワークに Conductor
   は 1 台(PC と radxa-05 が同時に同じ機体を見ると T0 を補正し合う)
 - **`serve --speaker`**(`conductor/speaker.py`): ホストの `mpg123 -R --keep-open`(remote-control、
-  stdin / stdout のパイプ、`-o <module>` は `--speaker-output`)でショーの音楽を鳴らす。
+  stdin / stdout のパイプ、`-o <module>` は `--speaker-output`: 展示の既定は **`pulse`** ― radxa
+  ユーザの常駐 PulseAudio 経由で Bluetooth の Bose(A2DP、遅延 100〜200 ms は `--speaker-lead-ms`
+  で)でも USB スピーカーでも鳴る。`alsa` は USB スピーカー直の逃げ道)でショーの音楽を鳴らす。
   専用スレッド、HTTP スレッドは `status()` を読むだけ(待ちに使う Condition と status の
   ロックは別)。**再生状態は mpg123 が出す `@P n` そのもの**(連番付き。コマンドの返答は
   送信後に届いた行だけを見る)で、`P`(トグル)は**状態が目標と違うときだけ**送る。
