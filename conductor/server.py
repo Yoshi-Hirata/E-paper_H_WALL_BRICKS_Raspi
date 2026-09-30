@@ -12,6 +12,13 @@ one JSON document, /api/state, rebuilt from the workspace folder on
 every request - a dozen small CSVs parse in milliseconds, and it means
 a file edited or dropped in by hand shows up on the next refresh.
 
+The exhibition's show is authored on the same PC by a SECOND Conductor
+(Start Exhibition Conductor.bat: `serve --workspace exhibition-data --port
+8766 --label EXHIBITION`) - the same code, its own port, its own folder
+and an amber EXHIBITION badge on its page, so the two windows and the two
+data sets are never mixed up. Only one of them may drive the fleet at a
+time (radxa/EXHIBITION.md).
+
 Workspace (default ./showdata, git-ignored: the designs are the
 client's, not the repo's):
     files/*.csv     the maps and colour grids, as delivered
@@ -2838,6 +2845,7 @@ class Handler(BaseHTTPRequestHandler):
     local_hosts = _LOCAL_HOSTS             # clients the passcode never applies to
     hotspot: str = DEFAULT_HOTSPOT_UNIT    # fleet.json's "hotspot" (wifi_select)
     adopt: bool = False                    # the exhibition's Conductor (serve --adopt)
+    label: "str | None" = None             # serve --label: the page's amber badge
     prepared: "dict[str, str]" = {}        # unit -> the cue it was last sent
     prepared_lock = threading.Lock()       # request threads share the dict
     send_jobs: "dict[str, SendJob]" = {}   # id -> a workspace transfer
@@ -3005,7 +3013,14 @@ class Handler(BaseHTTPRequestHandler):
                 query = urllib.parse.parse_qs(self.path.partition("?")[2])
                 return self._simulator(query.get("music", ["0"])[0] == "1")
             if path == "/api/state":
-                return self._json(self.workspace.state())
+                # `label` is this Conductor's name when it is a SEPARATE
+                # one (serve --label EXHIBITION): the page wears it as an
+                # amber badge and puts it first in the window title. null
+                # on the show PC's own Conductor, whose page is unchanged.
+                # `workspace_name` is the folder's own name (showdata /
+                # exhibition-data) next to `workspace`, the full path.
+                return self._json(dict(self.workspace.state(), label=self.label,
+                                       workspace_name=self.workspace.root.name))
             if path == "/api/fleet":
                 # `timeline` is about the workspace, not the units: what
                 # the timeline is now, and what it was when it was last
@@ -3909,13 +3924,62 @@ def make_server(workspace, port: int = 8765, host: str = "127.0.0.1",
                 fleet: "Fleet | None" = None, speaker=None,
                 token: "str | None" = None, passcode: "str | None" = None,
                 hotspot: str = DEFAULT_HOTSPOT_UNIT,
-                adopt: bool = False) -> ThreadingHTTPServer:
+                adopt: bool = False,
+                label: "str | None" = None) -> ThreadingHTTPServer:
     handler = type("BoundHandler", (Handler,),
                    {"workspace": Workspace(workspace), "fleet": fleet,
                     "speaker": speaker, "token": token, "passcode": passcode,
-                    "hotspot": hotspot, "adopt": adopt, "prepared": {},
-                    "send_jobs": {}})
+                    "hotspot": hotspot, "adopt": adopt, "label": label,
+                    "prepared": {}, "send_jobs": {}})
     return _Server((host, port), handler)
+
+
+# `serve --label`: the name of a Conductor that is a SEPARATE application
+# from the show PC's own - Start Exhibition Conductor.bat passes EXHIBITION.
+# The page wears it as an amber badge next to the app name, puts it first in
+# the window title and tints the tab's icon amber; /api/state carries it.
+# Short, because it sits in the top bar and in a browser tab's title.
+LABEL_MAX = 24
+
+
+def clean_label(label) -> "str | None":
+    """`serve --label`, tidied: one line, trimmed, at most LABEL_MAX
+    characters; None for nothing at all (the show PC's own Conductor)."""
+    text = " ".join(str(label or "").split())
+    return text[:LABEL_MAX] or None
+
+
+# The fleet.json a labelled Conductor (Start Exhibition Conductor.bat on the
+# PC) writes into its EMPTY workspace, once: the default units (192.168.51.10x,
+# the router's addresses, default_units()) with radxa-05 named as the hotspot
+# unit - which is what the fleet-wide Wi-Fi switch and "Send workspace to"
+# default to. Never a passcode, never "adopt", never a speaker: those are
+# radxa-05's own (radxa/exhibition/fleet.json), and the PC's copy is for
+# authoring, Upload and Send. An existing fleet.json is never touched.
+PC_FLEET_TEMPLATE = {
+    "_comment": ("This PC's exhibition Conductor (Start Exhibition Conductor.bat, "
+                 "port 8766, workspace exhibition-data). The units are the router's "
+                 "defaults radxa-NN -> 192.168.51.1NN:8787; \"hotspot\" names the unit "
+                 "that is the AZ-Epaper hotspot at the venue. To Send workspace to "
+                 "radxa-05 add its \"passcode\" here (the same value as in "
+                 "/home/radxa/exhibition/fleet.json on radxa-05) - nothing else: "
+                 "no adopt, no speaker, this is not the venue's Conductor."),
+    "hotspot": DEFAULT_HOTSPOT_UNIT,
+}
+
+
+def write_fleet_template(root: Path, template: dict = PC_FLEET_TEMPLATE) -> bool:
+    """Put `template` at <root>/fleet.json when there is none - True when
+    written, False when a fleet.json (any content, even a broken one)
+    was already there. Whole or not at all, like set_fleet_option()."""
+    path = Path(root) / "fleet.json"
+    if path.exists():
+        return False
+    scratch = path.with_name(path.name + ".tmp")
+    scratch.write_text(json.dumps(template, indent=1, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+    os.replace(scratch, path)
+    return True
 
 
 def already_serving(port: int) -> bool:
@@ -4024,15 +4088,18 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
           speaker_lead_ms: "float | None" = None,
           speaker_output: "str | None" = None, speaker_factory=None,
           speaker_runner=None, passcode: "str | None" = None,
-          adopt: bool = False) -> int:
+          adopt: bool = False, label: "str | None" = None) -> int:
     """`python -m conductor serve`. `host` is 127.0.0.1 unless asked
     (EXHIBITION mode: 0.0.0.0 on the unit that is also the hotspot);
     `speaker` plays the show's music through mpg123 on this host
     (conductor/speaker.py), `speaker_lead_ms` trims its output allowance,
     `speaker_output` is mpg123's -o module ("alsa" under systemd);
-    `passcode` (or fleet.json's) gates the page from other hosts."""
+    `passcode` (or fleet.json's) gates the page from other hosts; `label`
+    names a SEPARATE Conductor (the PC's exhibition one: its page wears
+    the badge, and its empty workspace gets PC_FLEET_TEMPLATE once)."""
     import webbrowser
 
+    label = clean_label(label)
     url = f"http://127.0.0.1:{port}"
     # Double-clicking the launcher twice must not be an error, and must
     # not start a second server: it just brings the page up again.
@@ -4041,7 +4108,8 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
         if open_browser:
             webbrowser.open(url)
         return 0
-    config = Workspace(workspace)
+    config = Workspace(workspace)             # makes the folder (and files/)
+    templated = bool(label) and write_fleet_template(config.root)
     units, token = config.fleet_config()
     stored = config.fleet_option("passcode")
     if passcode and stored and str(passcode) != str(stored):
@@ -4058,7 +4126,8 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
     adopt = bool(adopt or config.fleet_option("adopt", False))
     try:
         server = make_server(workspace, port, host, token=token,
-                             passcode=passcode, hotspot=hotspot, adopt=adopt)
+                             passcode=passcode, hotspot=hotspot, adopt=adopt,
+                             label=label)
     except OSError as exc:
         print(f"cannot listen on {host}:{port}: {exc}", flush=True)
         return 1
@@ -4099,10 +4168,15 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
     if open_browser:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     for reachable in reachable_urls(host, port):
-        print(f"conductor UI: {reachable}", flush=True)
+        print(f"{label + ' ' if label else ''}conductor UI: {reachable}", flush=True)
     print(f"  workspace {Path(workspace).resolve()}"
+          + (f"  label: {label}" if label else "")
           + ("  speaker: mpg123 on this host" if speaker else "")
           + ("  passcode: set" if passcode else ""), flush=True)
+    if templated:
+        print(f"  wrote {Path(workspace).resolve() / 'fleet.json'} (hotspot "
+              f"{hotspot}; add radxa-05's \"passcode\" there before Send "
+              "workspace to ...)", flush=True)
     if compiled:
         print(f"  show compiles for {', '.join(sorted(compiled))} - a unit "
               "holding it is adopted on its first poll", flush=True)

@@ -28,6 +28,14 @@ body { margin: 0; font: 14px/1.5 "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
 header { display: flex; align-items: center; gap: 14px; padding: 10px 18px; flex-wrap: wrap;
   background: var(--panel); border-bottom: 1px solid var(--line); }
 header h1 { font-size: 16px; margin: 0; letter-spacing: .04em; }
+/* serve --label (Start Exhibition Conductor.bat passes EXHIBITION): a SEPARATE
+   Conductor's name, worn as an amber badge right after the app name so its
+   window is never taken for the show's. Made by applyLabel() only when the
+   server says so - the show PC's own page has no badge, no title change and
+   no tab icon of its own, exactly as before. */
+header .app-label { background: var(--warn); color: var(--warn-ink); font-weight: 700;
+  font-size: 12px; letter-spacing: .12em; padding: 2px 10px; border-radius: 5px;
+  margin-left: -4px; white-space: nowrap; }
 header .ws { color: var(--dim); font-size: 12px; margin-left: auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
 button, select, input[type=text], .filebtn { font: inherit; color: var(--ink); background: var(--panel);
@@ -869,9 +877,40 @@ const itemFull = i => !i ? "" : [i.look ? "LOOK " + i.look : "", i.model].filter
 const itemByKey = key => state.items.find(i => i.item === key);
 const designLabel = d => d.label || d.name;
 
+// serve --label (Start Exhibition Conductor.bat: EXHIBITION): a SEPARATE
+// Conductor says so in the top bar (an amber badge after the app name), first
+// in the tab's title ("EXHIBITION · Conductor") and in the tab's icon (amber),
+// so the operator can tell its window from the show's at a glance. Done once,
+// from the first /api/state that carries a label; without one nothing here
+// runs and the show PC's page is what it always was.
+let appLabelShown = null;
+function applyLabel(label) {
+  if (typeof label !== "string" || !label.trim() || appLabelShown) return;
+  appLabelShown = label.trim();
+  const badge = document.createElement("span");
+  badge.id = "app-label";
+  badge.className = "app-label";
+  badge.textContent = appLabelShown;
+  badge.title = `This is the ${appLabelShown} Conductor (workspace ${state.workspace_name || "?"}), not the show's own`;
+  $("header h1").after(badge);
+  document.title = appLabelShown + " · Conductor";
+  const initial = /^[\p{L}\p{N}]/u.test(appLabelShown) ? appLabelShown[0].toUpperCase() : "!";
+  const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">`
+    + `<rect width="32" height="32" rx="7" fill="#e0a200"/>`
+    + `<text x="16" y="23" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif"`
+    + ` font-size="20" font-weight="700" fill="#1d1d24">${initial}</text></svg>`;
+  const link = document.createElement("link");
+  link.id = "app-icon";
+  link.rel = "icon";
+  link.type = "image/svg+xml";
+  link.href = "data:image/svg+xml," + encodeURIComponent(icon);
+  document.head.appendChild(link);
+}
+
 async function refresh() {
   state = await api("/api/state");
   $("#ws").textContent = "workspace: " + state.workspace;
+  applyLabel(state.label);
   if (!state.items.some(i => i.item === ui.item)) ui.item = state.items[0]?.item ?? null;
   maxRankCache.clear();               // ranks/maps may have changed under us
   refreshModelCache.clear();          // cue ids may now mean different cues

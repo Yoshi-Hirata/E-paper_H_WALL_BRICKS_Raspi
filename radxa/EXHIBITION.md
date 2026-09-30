@@ -46,6 +46,11 @@ radxa-05  ─┬─  radxa-01  10.42.0.101:8787
 - **Conductor は 1 台だけ**: PC の Conductor と radxa-05 の Conductor が同じネットワークで
   同じ機体を見ると、互いの T0 を「補正」し合って喧嘩する。会場では PC の Conductor を閉じる
   (事務所で radxa-05 に送るときも、送ったら PC 側は Units タブを開いたまま START しない)
+- **PC では展示専用の Conductor を使う**: `Start Exhibition Conductor.bat`(ポート **8766**、
+  フォルダ **`exhibition-data/`**、ページに琥珀色の **EXHIBITION** バッジ、ウィンドウタイトル
+  `EXHIBITION · Conductor`)。本番ショーの `Start Conductor.bat`(8765、`showdata/`)とは
+  **別のアプリ**として振る舞い、データも混ざらない。ただし中身は同じプログラムなので、
+  **2 つを同時に機体へ向けない**(片方だけ Units タブで Upload / START する)。4 章
 - 機体の割り当ては `/home/radxa/exhibition/fleet.json`(雛形 `radxa/exhibition/fleet.json`:
   `units`、`hotspot`(= radxa-05)、`passcode`)。radxa-05 自身は `127.0.0.1:8787`
 - ルータのネットワーク(192.168.51.x)と両方が見えるところでは、**radxa-01〜04・06〜10 は
@@ -284,22 +289,41 @@ Conductor の Units タブの **All units → AZ-Epaper in 20 s / All units → 
 
 ## 4. ショーを radxa-05 に送る(PC から、ssh 不要)
 
-1. 事務所の PC で `Start Conductor.bat` → いつもどおり Designs / Timeline でショーを作る
+> **PC には Conductor が 2 つある。** 本番ショーの **`Start Conductor.bat`**(ポート 8765、
+> データは `showdata/`)と、展示の **`Start Exhibition Conductor.bat`**(ポート **8766**、
+> データは **`exhibition-data/`**)。同じプログラムだが、展示のほうはページの左上に琥珀色の
+> **EXHIBITION** バッジ、ブラウザのタブは `EXHIBITION · Conductor`、黒いウィンドウのタイトルは
+> `E-paper Exhibition Conductor`、タブのアイコンも琥珀色 ― 本番の窓と見分けがつく。
+> データも別フォルダなので、展示のショーを作っても本番のショーは変わらない
+> (バックアップも別: `Backup exhibition-data.bat` → `..\exhibition-data-<日時>.zip`)。
+>
+> **決まり: 2 つの Conductor を同時に機体へ向けない。** PC の展示 Conductor(8766)の役目は
+> **ショーを作る・リハーサルで Upload する・radxa-05 にワークスペースを送る**まで。
+> 会場では **radxa-05 自身の Conductor** がショーを回す(PC の Conductor は閉じる)。
+> 本番 Conductor(8765)と展示 Conductor(8766)の両方で Units タブを開いて Upload / START
+> することは決してしない(互いの T0 を補正し合って喧嘩する ― 1 章)。
+
+1. 事務所の PC で **`Start Exhibition Conductor.bat`** → http://localhost:8766 が開く
+   (ページ左上に **EXHIBITION**)。いつもどおり Designs / Timeline でショーを作る
    (CSV、タイムライン、音楽、遷移、機体の割り当て)。**機体の割り当て(radxa-NN)は
-   会場と同じにし、radxa-05 には衣装を割り当てない**
+   会場と同じにし、radxa-05 には衣装を割り当てない**。
+   初回は `exhibition-data/` が作られ、その中に `fleet.json`(`"hotspot": "radxa-05"` と
+   コメントだけ。機体はルータの既定 `192.168.51.1NN`)が一度だけ書かれる ― 以後は
+   触らない(手で書き換えたものが残る)
 2. PC を radxa-05 に届くネットワークにつなぐ:
    - radxa-05 がルータにつながっているなら送り先は **`192.168.51.105:8765`**
    - radxa-05 がホットスポットで立ち上がっているなら PC を `AZ-Epaper` に入れる →
      送り先は **`10.42.0.1:8765`**
-3. PC の Conductor の **Units タブ → SEND THIS WORKSPACE TO ANOTHER CONDUCTOR**:
+3. PC の展示 Conductor の **Units タブ → SEND THIS WORKSPACE TO ANOTHER CONDUCTOR**:
    送り先を入れて **Send workspace to …**。PC の Conductor が相手に **本当に Conductor か**
    (`/api/fleet` が答えるか)を確かめてから送る。進み具合(MB)と、向こうが受け取った内容
-   (CSV の数・キューの数・音楽・機体ごとのショー id)が出る。PC 側の `showdata/fleet.json`
-   に radxa-05 と同じ `"passcode"` を書いておく(送るときに一緒に渡す)
+   (CSV の数・キューの数・音楽・機体ごとのショー id)が出る。PC 側の
+   **`exhibition-data/fleet.json`** に radxa-05 と同じ `"passcode"` を書いておく
+   (送るときに一緒に渡す。`showdata/fleet.json` ではない)
 4. 断られるとき:
    - `a run is active on this Conductor - STOP it first` … radxa-05 でショーが動いている
      (Loop の待ち時間中も含む)。10.42.0.1:8765 を開いて STOP してから送り直す
-   - `passcode required` … radxa-05 のパスコードが PC 側の `showdata/fleet.json` に無い
+   - `passcode required` … radxa-05 のパスコードが PC 側の `exhibition-data/fleet.json` に無い
    - `fleet token required` … radxa-05 の `fleet.json` に `token` がある。PC 側にも同じ `token`
    - `the workspace is at most 200 MB` … 音楽ファイルが大きすぎる(音楽の上限は 64 MB)
    - `… is not a Conductor` … 送り先の番地が違う(機体のエージェント 8787 や別の機器)
@@ -310,7 +334,7 @@ Conductor の Units タブの **All units → AZ-Epaper in 20 s / All units → 
 コマンドラインでも同じことができる(パスコード・トークンはヘッダで):
 
 ```bash
-curl -o ws.tar http://127.0.0.1:8765/api/workspace/export                        # PC 側で書き出し
+curl -o ws.tar http://127.0.0.1:8766/api/workspace/export                        # PC の展示 Conductor(8766)から書き出し
 curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: <パスコード>" http://10.42.0.1:8765/api/workspace/import
 ```
 

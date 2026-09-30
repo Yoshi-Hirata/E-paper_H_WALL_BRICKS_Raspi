@@ -2,6 +2,8 @@
 
     python -m conductor serve                # the web UI, http://127.0.0.1:8765
     python -m conductor serve --host 0.0.0.0 --speaker   # EXHIBITION mode (radxa/EXHIBITION.md)
+    python -m conductor serve --workspace exhibition-data --port 8766 --label EXHIBITION
+                                             # the exhibition's own Conductor on the PC
     python -m conductor check  Look22_map.csv Look22_color_pattern01_grid.csv
     python -m conductor check  Look22_map.csv                 # the map alone
     python -m conductor preview Look22_map.csv GRID.csv -o look22_p01.png
@@ -144,7 +146,7 @@ def cmd_serve(args) -> int:
                  host=args.host, speaker=args.speaker,
                  speaker_lead_ms=args.speaker_lead_ms,
                  speaker_output=args.speaker_output, passcode=args.passcode,
-                 adopt=args.adopt)
+                 adopt=args.adopt, label=args.label)
 
 
 def main(argv=None) -> int:
@@ -219,6 +221,15 @@ def main(argv=None) -> int:
                         "(EXHIBITION mode: the page asks once); this host's "
                         "own clients need none. fleet.json's \"passcode\" "
                         "does the same")
+    p.add_argument("--label", default=None, metavar="TEXT",
+                   help="name this Conductor as a SEPARATE one - the page "
+                        "wears the text as an amber badge and puts it first "
+                        "in the window title (\"EXHIBITION · Conductor\"), "
+                        "so its window is never mistaken for the show's; a "
+                        "labelled Conductor's empty workspace gets a "
+                        "fleet.json naming radxa-05 as the hotspot. Start "
+                        "Exhibition Conductor.bat: --workspace "
+                        "exhibition-data --port 8766 --label EXHIBITION")
     p.add_argument("--open", action="store_true",
                    help="open the page in the default browser")
     p.set_defaults(func=cmd_serve)

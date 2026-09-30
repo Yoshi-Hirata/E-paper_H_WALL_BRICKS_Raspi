@@ -31,6 +31,25 @@ UI 本体の使い方は README の「Conductor」の節を参照。
 デスクトップにショートカットを置きたいときは、`Start Conductor.bat` を右クリック →
 「ショートカットの作成」→ できたショートカットをデスクトップへ。
 
+### 1b. Conductor は 2 つある(本番と展示)
+
+リポジトリ直下には起動用の bat が 2 つある。**同じプログラム**だが、**別のアプリ**として動く:
+
+| | 本番ショー | 展示(EXHIBITION) |
+|---|---|---|
+| 起動 | `Start Conductor.bat` | `Start Exhibition Conductor.bat` |
+| ページ | http://localhost:8765 | http://localhost:8766 |
+| データ | `showdata/` | `exhibition-data/` |
+| 黒いウィンドウのタイトル | `E-paper Show Conductor` | `E-paper Exhibition Conductor` |
+| ページの見た目 | いつもどおり | 左上のアプリ名の隣に琥珀色の **EXHIBITION** バッジ、タブの題名が `EXHIBITION · Conductor`、タブのアイコンも琥珀色 |
+| バックアップ | `Backup showdata.bat` | `Backup exhibition-data.bat` |
+
+展示の Conductor で何をしても本番のショー(`showdata/`)は変わらない。逆も同じ。
+**ただし機体は共通**なので、**2 つを同時に機体へ向けない**(片方だけで Upload / START する。
+両方が同じ機体を見ると互いの T0 を補正し合って喧嘩する)。PC の展示 Conductor はショーを
+作って radxa-05 に送るまでが役目で、会場では radxa-05 自身の Conductor がショーを回す
+(`radxa/EXHIBITION.md` 4 章)。
+
 ## 2. 停止する
 
 黒いウィンドウを閉じる(または そのウィンドウで Ctrl+C)。
@@ -58,7 +77,9 @@ UI 本体の使い方は README の「Conductor」の節を参照。
 python -m conductor serve --open
 ```
 
-別のポートで動かす(2 つ目を試すとき):`python -m conductor serve --port 8766 --workspace <別フォルダ>`
+別のポートで動かす(2 つ目を試すとき):`python -m conductor serve --port 8767 --workspace <別フォルダ>`
+(8766 は展示の Conductor が使う ― 1b 節。`--label <名前>` を付けるとページにその名前の
+琥珀色バッジが出て、窓を取り違えない)
 
 ## 4b. ネットワーク
 
@@ -265,7 +286,9 @@ Units タブのタイルにも、その機体の USB の基板(マスタ)が小�
   `{"units": {"radxa-01": "192.168.51.101:8787", ...}}`(書いた機体だけ上書き)
 - 別 PC で開発・テストもするなら `pip install pytest` のうえ `python -m pytest -q`(約 3 分)
 - **展示(PC もルータも無い会場)**: Conductor を radxa-05 で動かし、ワークスペースは
-  Units タブの **Send workspace to …** で送る。手順は `radxa/EXHIBITION.md`
+  PC の**展示 Conductor**(`Start Exhibition Conductor.bat`、8766、`exhibition-data/` ― 1b 節)の
+  Units タブの **Send workspace to …** で送る。別 PC へ移すときは `Backup exhibition-data.bat`
+  の zip を `exhibition-data/` に展開する。手順は `radxa/EXHIBITION.md`
   (Loop、radxa-05 のスピーカー、`serve --host 0.0.0.0 --speaker`)
 
 ## 6. ショー当日の順番(要点)
