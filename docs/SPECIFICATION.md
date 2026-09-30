@@ -1177,7 +1177,9 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
   **元のプロファイルを `nmcli con up <元>` で戻し**、その結果を先頭に nmcli の 1 行目を
   赤で出す(`ERROR back on <元>: <理由>` / `ERROR <元> NOT restored: <理由>` /
   元が不明なら `ERROR no previous network to go back to: <理由>`。NetworkManager が自分で
-  戻していれば `con up` はせず `back on`)。切り替え中に KEY2 で離れても、失敗の判定は
+  戻していれば `con up` はせず `back on` ―― ただしそう判断するのは失敗直後の読みが
+  実際に通ったときだけで、読みも失敗したら(キャッシュは切り替え前の元の名前のまま
+  なので)信用せず `con up <元>` を打つ)。切り替え中に KEY2 で離れても、失敗の判定は
   次に WIFI を開いたときまで残る(UP/DOWN で消える)。
   **守れるのは nmcli が断った選択だけ**: 圏内に無い SSID、機体に合わないプロファイルなら
   機体は元の場所に残る。nmcli が受け付けた選択はそのまま ―― ホットスポットに乗せた
@@ -1190,12 +1192,15 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
   `/etc` への書き込みもしない ―― セットアップが残したものから選ぶだけ
 - スタンドアロンデモの KEY1 が断られる状態(PC のショーが再生中・保留中、再起動で絵が
   戻ったまま待機中、絵を書き込み中 ―― 同じ `App._pc_show_wins()`)では
-  `PC show running - WIFI locked`、加えて **PC のショーが LOADED で絵が書き込み済み
-  (Upload 済みで START 待ち)**なら `PC show loaded - WIFI locked` と出して何もしない
-  (`App._wifi_locked()`。デモはそのショーを上書きしてよいが、切り替えは何も上書き
-  せず、絵を載せたまま機体を PC の手の届かない所へ移すだけ。burn が `none` の LOADED
-  ―― 再起動で復元されたデモ ―― は錠にならない)。切り替えはランナー・シリアル
-  ポート・基板に一切触れない(ランナーは止めない。実行中のデモはそのまま続く)
+  `PC show running - WIFI locked`、加えて **この起動中に PC が Upload したショーが
+  LOADED で絵が書き込み済み(START 待ち)**なら `PC show loaded - WIFI locked` と出して
+  何もしない(`App._wifi_locked()`。デモはそのショーを上書きしてよいが、切り替えは
+  何も上書きせず、絵を載せたまま機体を PC の手の届かない所へ移すだけ)。**再起動で
+  `restore()` が戻したショー**は、LOADED で burn が記録から `burned` と読めても錠に
+  ならない(`ShowPlayer.loaded_here` が偽 ―― でなければ一度でも PC のショーを流した
+  機体が電源を入れ直すたびに WIFI を永久に失う。レビュー第 2 回、2026-09-30)。
+  切り替えはランナー・シリアルポート・基板に一切触れない(ランナーは止めない。
+  実行中のデモはそのまま続く)
 - **`radxa/firstboot.sh`**(毎起動)はルータ用プロファイルにだけ機体番号の IPv4 を
   入れる。`AZ-Epaper`(mode ap / ipv4.method shared、または名前・SSID が
   `EXPO_SSID`)は対象外で、`connection up` は選んだプロファイルがいま有効なときだけ

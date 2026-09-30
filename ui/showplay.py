@@ -1368,6 +1368,21 @@ class ShowPlayer:
 
     # ---- what the PC and the LCD read ----
 
+    @property
+    def loaded_here(self) -> bool:
+        """True for a show this process load()ed - its burn is the
+        session's own, `_burn_id` names it; False for one restore() read
+        back from disk (state LOADED, burn "burned" from the record, but
+        nobody has uploaded anything since this boot). The LCD's WIFI
+        lock (ui/app.py's _wifi_locked) needs the difference: a PC that
+        uploaded a show since the unit came up is waiting to START it,
+        while a show restored after a power cycle would otherwise keep
+        every unit that ever played one locked for good (review round 2,
+        2026-09-30)."""
+        with self._lock:
+            show = self.show
+            return show is not None and self._burn_id == show["id"]
+
     def status(self) -> "dict | None":
         with self._lock:
             if self.show is None:
