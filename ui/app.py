@@ -49,13 +49,17 @@ wireless NetworkManager profiles, the active one marked; UP/DOWN pick
 one and KEY1 *held* - the REBOOT gesture, a plain press does nothing -
 brings it up (`sudo -n nmcli con up`) on a thread of its own; a
 refusal brings the previous profile back. KEY2 goes back to the menu,
-also while a switch is in flight (it keeps running). Refused with
-"PC show running - WIFI locked" exactly when a demo row's KEY1 is
-refused (_pc_show_wins()). The runner, the port and the boards are
-never touched; the row order is UPDATE FW, FW VERSION, GIT PULL,
-REBOOT, WIFI, EXHIBITION, BOARD INFO. The show PC (or the Conductor on
-radxa-05, before it leaves the network to become the hotspot) can also
-ask for a switch over the agent - POST /wifi/select, with a delay - and
+also while a switch is in flight (it keeps running; a FAILED verdict
+waits on the screen until it is read). Refused with "PC show running -
+WIFI locked" whenever a demo row's KEY1 is refused (_pc_show_wins())
+and with "PC show loaded - WIFI locked" for a PC show uploaded and
+waiting for START (_wifi_locked()). The choice lasts until the next
+reboot - autoconnect is never touched. The runner, the port and the
+boards are never touched either; the row order is UPDATE FW, FW
+VERSION, GIT PULL, REBOOT, WIFI, EXHIBITION, BOARD INFO. The show PC
+(or the Conductor on radxa-05, before it leaves the network to become
+the hotspot) can also ask for a switch over the agent - POST
+/wifi/select, with a delay, under the same _wifi_locked() rule - and
 while that deferral is pending the WIFI screen counts it down
 ("switching to AZ-Epaper in 25 s"); UP/DOWN and a held KEY1 are then
 refused with "switch pending", and KEY2 goes back without cancelling
@@ -147,7 +151,11 @@ from .config import (BLANK_AFTER_S, FRAME_INTERVAL_S, LOG_LINES,
 from .patterns import PATTERNS
 from .remote import RemoteError
 from .runner import DemoRunner
-from .showplay import ENDED, HOLDING, RUNNING, STOPPED
+from .showplay import ENDED, HOLDING, LOADED, RUNNING, STOPPED
+
+# The WIFI row's refusals (ui/wifi.py shows whichever it is given).
+WIFI_LOCKED = "PC show running - WIFI locked"
+WIFI_LOCKED_LOADED = "PC show loaded - WIFI locked"
 
 # Standalone demos poll the store rather than being pushed a change from
 # the agent's HTTP thread - the two run in the same process but talking
@@ -508,12 +516,11 @@ class App:
         elif event == "key1_hold":
             # Only the hold switches - a plain KEY1 does nothing here, a
             # knock must never move a unit off its network. Refused in
-            # exactly the states a demo row's KEY1 is refused: the PC
-            # is driving this unit and would lose it mid-show.
-            note = (self._pc_show_wins(self.player)
-                    if self.player is not None else None)
+            # the states a demo row's KEY1 is refused, and one more
+            # (_wifi_locked): the PC would lose this unit.
+            note = self._wifi_locked()
             if note is not None:
-                wifi.refuse()
+                wifi.refuse(note)
             else:
                 wifi.switch()
         elif event == "key2":
@@ -556,6 +563,40 @@ class App:
             exhibition.close()
             self.screen = Screen.MENU
         self._dirty = True
+
+    def _wifi_locked(self) -> "str | None":
+        """Why the WIFI switch is refused right now, or None
+        (wifi_lock_note, for this App's player)."""
+        return self.wifi_lock_note(self.player)
+
+    @staticmethod
+    def wifi_lock_note(player) -> "str | None":
+        """Why a Wi-Fi switch must be refused for `player`'s unit, or None.
+        One rule for the WIFI row's held KEY1 and the agent's POST
+        /wifi/select (ui/agent.py asks this, now and again when a
+        deferred switch fires).
+
+        Everything that refuses a demo row's KEY1 (_pc_show_wins: the
+        PC's show running or holding, restored onto the garment, its
+        pictures being written) - and one case more: a PC show that is
+        LOADED with its pictures burned, i.e. uploaded and waiting for
+        START. A demo may supersede that (the PC uploads again), but a
+        network switch does not supersede anything: it takes the unit
+        out of the PC's reach with the show's pictures on it. A LOADED
+        show whose burn reads "none" is the other thing that looks like
+        this - a restart's restore() of a demo (radxa-05, 2026-09-26) -
+        and that one does not lock the row."""
+        if player is None:
+            return None
+        note = App._pc_show_wins(player)
+        if note is not None:
+            return WIFI_LOCKED
+        if (player.show is not None and not player.is_demo
+                and player.state == LOADED):
+            burn = (player.status() or {}).get("burn") or {}
+            if burn.get("state") == "burned":
+                return WIFI_LOCKED_LOADED
+        return None
 
     def _handle_versions(self, event: str) -> None:
         versions = self.versions
@@ -635,8 +676,9 @@ class App:
         # The runner keeps the port too: a network switch touches nothing
         # on the serial side, and a running demo carries on through it.
         # The cache is asked to refresh (the reader's thread does the
-        # reading) and the cursor starts on the profile in use.
-        self.wifi.reset()
+        # reading) and the cursor starts on the profile in use. A FAILED
+        # verdict from a switch the operator left mid-way is kept.
+        self.wifi.reopen()
         self.wifi.refresh()
         self.wifi.select_active()
         self.screen = Screen.WIFI

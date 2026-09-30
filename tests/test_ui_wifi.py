@@ -59,6 +59,7 @@ class FakeNmcli:
         self.hang = set(hang)
         self.keep_on_fail = keep_on_fail
         self.signal = signal
+        self.broken = None          # a message: every read fails with it
         self.calls = []
         self.release = threading.Event()
         self.release.set()
@@ -75,6 +76,8 @@ class FakeNmcli:
             return self._up(args, timeout)
         assert args[0] == "nmcli" and args[1] == "-t"
         self.hold_reads.wait(5.0)
+        if self.broken:
+            return 8, self.broken
         if args[-2:] == ["con", "show"]:
             rows = [f"{name}:802-11-wireless:{'yes' if name == self.active else 'no'}:yes"
                     for name in self.profiles]
@@ -97,8 +100,11 @@ class FakeNmcli:
         if "wifi" in args:
             assert args[-2:] == ["--rescan", "no"]     # never a scan
             wifi = self.profiles.get(self.active) if self.active else None
-            if wifi is None or wifi["mode"] == "ap":
+            if wifi is None:
                 return 0, "no:Neighbour:40"
+            if wifi["mode"] == "ap":
+                # Some builds list the hotspot's own AP as active at 100.
+                return 0, f"yes:{self.active}:100"
             return 0, f"yes:{self.active}:{self.signal}\nno:Neighbour:40"
         raise AssertionError(f"unexpected nmcli call {args}")
 
@@ -175,10 +181,12 @@ def test_poll_lists_the_wireless_profiles_and_marks_the_active_one():
     assert not any(call[0] == "sudo" for call in fake.calls)
 
 
-def test_a_hotspot_reads_as_one_without_a_scan_row():
+def test_a_hotspot_reads_as_one_and_never_has_a_signal():
     wifi, fake = make_wifi(active=HOTSPOT)
     fake.profiles[HOTSPOT] = {"mode": "ap", "ip": "10.42.0.1"}
     wifi.poll()
+    # The fake lists the AP itself as active at 100, as some builds do;
+    # a hotspot has no signal of its own (review of cae60f8, L1).
     assert wifi.snapshot() == {"ssid": HOTSPOT, "ip": "10.42.0.1",
                                "signal": None, "mode": "hotspot",
                                "profile": HOTSPOT}
@@ -205,6 +213,25 @@ def test_disconnected_and_a_missing_nmcli_read_as_nulls():
     slow.poll()
     assert slow.snapshot() == WIFI_BLANK
     assert slow.read_state == "error" and "timed out" in slow.read_error
+
+
+def test_a_transient_nmcli_error_keeps_the_last_good_cache():
+    # Review of cae60f8, L2: a NetworkManager restart or a busy D-Bus must
+    # not flicker /status and the screen to nulls.
+    wifi, fake = make_wifi()
+    wifi.poll()
+    good = wifi.snapshot()
+    fake.broken = "Error: NetworkManager is not running."
+    wifi.poll()
+    assert wifi.snapshot() == good
+    assert wifi.rows() == [(ROUTER, "client", True), (HOTSPOT, "client", False)]
+    assert wifi.read_state == "error"
+    assert wifi.current() == (ROUTER, "IP 192.168.51.103  72%  client")
+    assert wifi.status_text() == "nmcli: Error: NetworkManager is not running."
+    fake.broken = None
+    fake.active = HOTSPOT
+    wifi.poll()
+    assert wifi.snapshot()["ssid"] == HOTSPOT and wifi.status_text() == ""
 
 
 def test_the_reader_thread_refreshes_the_cache_on_its_own():
@@ -322,9 +349,11 @@ def test_a_failed_switch_brings_the_previous_profile_back():
     assert fake.active == ROUTER
     assert wifi.restored is True
     assert wifi.error == REFUSAL.splitlines()[0]
+    # The restore's outcome comes first, ahead of nmcli's long sentence,
+    # so the screen's three lines can never cut it off (M3).
     text = wifi.status_text()
-    assert text.startswith("ERROR Error: Connection activation failed")
-    assert text.endswith(f"back on {ROUTER}")
+    assert text.startswith(f"ERROR back on {ROUTER}: Error: Connection "
+                           "activation failed")
     assert wifi.snapshot()["ssid"] == ROUTER
     assert any("ERROR" in line for line in wifi.recent(10))
     # Moving the cursor reads the verdict away; a hold tries again.
@@ -344,7 +373,7 @@ def test_a_failure_networkmanager_recovered_by_itself_is_not_reconnected():
     assert wait_until(lambda: wifi.phase == FAILED)
     assert fake.ups == [HOTSPOT]                # still on the router: left alone
     assert wifi.restored is True
-    assert wifi.status_text().endswith(f"back on {ROUTER}")
+    assert wifi.status_text().startswith(f"ERROR back on {ROUTER}: ")
 
 
 def test_a_hung_nmcli_is_a_failure_and_a_failed_restore_is_said():
@@ -365,7 +394,48 @@ def test_a_hung_nmcli_is_a_failure_and_a_failed_restore_is_said():
     assert wait_until(lambda: wifi.phase == FAILED)
     assert fake.ups == [HOTSPOT, ROUTER]
     assert wifi.restored is False
-    assert wifi.status_text().endswith(f"{ROUTER} NOT restored")
+    assert wifi.status_text().startswith(f"ERROR {ROUTER} NOT restored: Error")
+
+
+def test_with_no_previous_network_the_failure_says_so():
+    # Review of cae60f8, L2: a unit that was not on anything has nothing
+    # to go back to - the text must not pretend otherwise.
+    wifi, fake = make_wifi(active=None, fail=(HOTSPOT,))
+    wifi.poll()
+    wifi.select(+1)
+    wifi.switch()
+    assert wait_until(lambda: wifi.phase == FAILED)
+    assert fake.ups == [HOTSPOT]
+    assert wifi.previous is None and wifi.restored is None
+    assert wifi.status_text().startswith("ERROR no previous network to go back to: ")
+
+
+def test_the_switch_never_sticks_on_connecting(monkeypatch):
+    # Review of cae60f8, L3: an exception nobody foresaw on the switch
+    # thread, or a thread that cannot start, still ends in a verdict.
+    wifi, fake = make_wifi()
+    wifi.poll()
+    wifi.select(+1)
+
+    def boom(target, previous):
+        raise RuntimeError("something nobody foresaw")
+    monkeypatch.setattr(wifi, "_switch_body", boom)
+    wifi.switch()
+    assert wait_until(lambda: wifi.phase == FAILED)
+    assert wifi.error == "something nobody foresaw"
+    assert wifi.status_text() == (f"ERROR {ROUTER} not restored: "
+                                  "something nobody foresaw")
+
+    from ui import wifi as mod
+
+    class NoThread:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("can't start new thread")
+    wifi.reset()
+    monkeypatch.setattr(mod.threading, "Thread", NoThread)
+    wifi.switch()
+    assert wifi.phase == FAILED and not wifi.busy
+    assert wifi.error.startswith("could not start: ")
 
 
 def test_holding_on_the_active_profile_does_nothing_to_the_link():
@@ -396,21 +466,24 @@ def test_refused_while_the_pc_show_runs_holds_or_writes_pictures():
         assert runner.stops == 0
         app.handle("key2")
         assert app.screen is Screen.MENU and wifi.phase == IDLE
-    # The same predicate as a demo row's KEY1: a PC show merely LOADED
-    # (or ENDED, STOPPED) does not lock the row.
-    restored = FakePlayer(state=LOADED)
+    # One case more than a demo row's KEY1 (review of cae60f8, M1): a PC
+    # show LOADED with its pictures burned - uploaded, waiting for START.
+    # A demo may supersede it; a network switch only takes the unit out
+    # of the PC's reach with the show on it.
+    wifi, fake = make_wifi()
+    wifi.poll()
+    app, _ = make_app(wifi, player=FakePlayer(state=LOADED, burn="burned"))
+    enter(app)
+    app.handle("down")
+    app.handle("key1_hold")
+    wifi.join(0.2)
+    assert fake.ups == [] and wifi.phase == LOCKED
+    assert wifi.status_text() == "PC show loaded - WIFI locked"
+    # ...while a show restore() put back on the garment locks it as
+    # "running" (the same as a demo row)...
+    restored = FakePlayer(state=LOADED, burn="none")
     restored.restored_running = True
     restored.restored_id = "pc-show"
-    for player in (FakePlayer(state=LOADED), FakePlayer(state=ENDED)):
-        wifi, fake = make_wifi()
-        wifi.poll()
-        app, _ = make_app(wifi, player=player)
-        enter(app)
-        app.handle("down")
-        app.handle("key1_hold")
-        assert wait_until(lambda: wifi.phase == DONE)
-        assert fake.ups == [HOTSPOT]
-    # ...while a show restore() put back on the garment does.
     wifi, fake = make_wifi()
     wifi.poll()
     app, _ = make_app(wifi, player=restored)
@@ -419,6 +492,60 @@ def test_refused_while_the_pc_show_runs_holds_or_writes_pictures():
     app.handle("key1_hold")
     wifi.join(0.2)
     assert fake.ups == [] and wifi.phase == LOCKED
+    assert wifi.status_text() == LOCKED_NOTE
+    # ...and a LOADED show whose burn reads "none" (a restart's restore()
+    # of a demo, radxa-05 2026-09-26), an ENDED or a STOPPED one, and a
+    # demo's own LOADED+burned, do not lock the row.
+    for player in (FakePlayer(state=LOADED, burn="none"),
+                   FakePlayer(state=ENDED), FakePlayer(state="stopped"),
+                   FakePlayer(state=LOADED, burn="burned", is_demo=True)):
+        wifi, fake = make_wifi()
+        wifi.poll()
+        app, _ = make_app(wifi, player=player)
+        enter(app)
+        app.handle("down")
+        app.handle("key1_hold")
+        assert wait_until(lambda: wifi.phase == DONE)
+        assert fake.ups == [HOTSPOT]
+
+
+def test_a_failure_after_leaving_mid_switch_waits_on_the_screen():
+    # Review of cae60f8, M3: KEY2 is allowed while CONNECTING, so the
+    # verdict may land while the operator is on the menu - it must still
+    # be there, restore outcome first, when WIFI is opened again.
+    wifi, fake = make_wifi(fail=(HOTSPOT,))
+    wifi.poll()
+    app, _ = make_app(wifi)
+    enter(app)
+    app.handle("down")
+    fake.release.clear()
+    app.handle("key1_hold")
+    assert wifi.busy
+    app.handle("key2")
+    assert app.screen is Screen.MENU
+    enter(app)                                  # back while still in flight
+    assert app.screen is Screen.WIFI and wifi.phase == CONNECTING
+    assert wifi.status_text() == f"connecting to {HOTSPOT}…"
+    app.handle("key2")
+    fake.release.set()
+    assert wait_until(lambda: wifi.phase == FAILED)
+    assert app.screen is Screen.MENU
+    enter(app)
+    assert app.screen is Screen.WIFI
+    assert wifi.phase == FAILED                 # not wiped by re-entry
+    assert wifi.status_text().startswith(f"ERROR back on {ROUTER}: ")
+    app.draw()
+    app.handle("up")                            # read: the verdict clears
+    assert wifi.phase == IDLE
+    # A DONE verdict, by contrast, starts the screen clean next time.
+    while wifi.chosen().name != HOTSPOT:
+        app.handle("down")
+    fake.fail.clear()
+    app.handle("key1_hold")
+    assert wait_until(lambda: wifi.phase == DONE)
+    app.handle("key2")
+    enter(app)
+    assert wifi.phase == IDLE
 
 
 def test_locked_unit_cannot_switch():

@@ -117,9 +117,10 @@ a show.
                        AZ-Epaper hotspot, and would never see a later
                        answer. A pending deferral is replaced by a new
                        one; {"cancel": true} takes it back
-                       ({"cancelled": bool}). Refused 409 "PC show
-                       running - WIFI locked" exactly when the WIFI
-                       row's KEY1 is (App._pc_show_wins) - asked again
+                       ({"cancelled": bool}). Refused 409 with the WIFI
+                       row's own words ("PC show running - WIFI locked",
+                       "PC show loaded - WIFI locked") exactly when its
+                       held KEY1 is (App._wifi_locked) - asked again
                        when the timer fires, and a switch refused then
                        is skipped and logged, never run; 409 while a
                        switch is in flight; 404 for a profile not in
@@ -149,9 +150,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .config import WIFI_FIELDS, WIFI_MAX_AFTER_S
 from .remote import DEV_NUMBER_BRAND, RemoteError, RemoteSession
 from .showplay import HOLDING, LOADED, RUNNING
-from .wifi import LOCKED_NOTE, MAX_AFTER_S, WIFI_BLANK
 
 DEFAULT_PORT = 8787
 MAX_BODY = 4 * 1024 * 1024      # a show: cues x boards x 2 x 128 hex chars
@@ -344,15 +345,17 @@ class _Handler(BaseHTTPRequestHandler):
                                                "NetworkManager connection name"})
         after = body.get("after_s", 0)
         if (isinstance(after, bool) or not isinstance(after, (int, float))
-                or not 0 <= float(after) <= MAX_AFTER_S):
+                or not 0 <= float(after) <= WIFI_MAX_AFTER_S):
             return self._answer(400, {"error": f"bad request: after_s - "
-                                               f"0 to {MAX_AFTER_S:g} seconds"})
+                                               f"0 to {WIFI_MAX_AFTER_S:g} seconds"})
         after = float(after)
-        # The same lock as the WIFI row's held KEY1: the PC drives this
-        # unit and would lose it mid-show. Asked again at fire time.
+        # The same lock as the WIFI row's held KEY1 (App._wifi_locked):
+        # the PC would lose this unit. Its own words ("PC show running -
+        # WIFI locked" / "PC show loaded - WIFI locked"), and asked
+        # again at fire time.
         note = self.agent.wifi_refusal()
         if note is not None:
-            return self._answer(409, {"error": LOCKED_NOTE})
+            return self._answer(409, {"error": note})
         if wifi.busy:
             return self._answer(409, {"error": "a switch is in flight"})
         if profile not in wifi.names():
@@ -413,21 +416,24 @@ class Agent:
         # The reader's cache, copied - never a question to nmcli here,
         # and never an exception out of /status.
         if self.wifi is None:
-            return dict(WIFI_BLANK, pending=None)
+            return dict.fromkeys(WIFI_FIELDS + ("pending",))
         try:
             return dict(self.wifi.snapshot(), pending=self.wifi.pending_info())
         except Exception:               # noqa: BLE001 - nulls are an answer
-            return dict(WIFI_BLANK, pending=None)
+            return dict.fromkeys(WIFI_FIELDS + ("pending",))
 
     def wifi_refusal(self) -> "str | None":
         """Why a Wi-Fi switch must not happen right now - the WIFI row's
-        own rule (App._pc_show_wins: the PC's show running or holding,
-        restored onto the garment, or being written) - or None."""
+        own rule (App.wifi_lock_note: the PC's show running or holding,
+        restored onto the garment, being written, or uploaded and
+        waiting for START) - or None. ui.app is imported here, when
+        asked, not at module level: it draws (PIL), this server must
+        stay standard-library-light and free of that import cycle."""
         if self.player is None:
             return None
-        from .app import App            # ui.app draws; imported when asked
+        from .app import App
         try:
-            return App._pc_show_wins(self.player)
+            return App.wifi_lock_note(self.player)
         except Exception as exc:        # noqa: BLE001 - a doubt is a no
             return str(exc) or exc.__class__.__name__
 

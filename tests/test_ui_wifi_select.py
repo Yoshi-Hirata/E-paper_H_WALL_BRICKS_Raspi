@@ -87,25 +87,35 @@ def test_bad_bodies_and_unknown_profiles_are_answered():
 
 
 def test_refused_while_the_pc_show_runs_and_while_a_switch_is_in_flight():
-    for player in (FakePlayer(state=RUNNING), FakePlayer(state=HOLDING),
-                   FakePlayer(state=LOADED, burn="burning")):
+    # The WIFI row's own predicate (App._wifi_locked, review of cae60f8
+    # M1): running / holding / writing pictures, and a PC show uploaded
+    # and waiting for START - each with its own words.
+    cases = [(FakePlayer(state=RUNNING), "PC show running - WIFI locked"),
+             (FakePlayer(state=HOLDING), "PC show running - WIFI locked"),
+             (FakePlayer(state=LOADED, burn="burning"),
+              "PC show running - WIFI locked"),
+             (FakePlayer(state=LOADED, burn="burned"),
+              "PC show loaded - WIFI locked")]
+    for player, words in cases:
         wifi, fake = make_wifi()
         wifi.poll()
         agent, runner = make_agent(wifi, player=player)
         try:
             code, answer = select(agent, profile=HOTSPOT)
             assert code == 409
-            assert answer["error"] == LOCKED_NOTE == "PC show running - WIFI locked"
+            assert answer["error"] == words
             code, answer = select(agent, profile=HOTSPOT, after_s=30)
-            assert code == 409 and answer["error"] == LOCKED_NOTE
+            assert code == 409 and answer["error"] == words
             assert fake.ups == [] and wifi.pending is None
         finally:
             agent.stop()
             runner.stop()
-    # A PC show merely LOADED does not lock it (the WIFI row's own rule).
+    assert LOCKED_NOTE == "PC show running - WIFI locked"
+    # A PC show LOADED with nothing written (a restart's restore of a
+    # demo looks like this) does not lock it - the row's own rule.
     wifi, fake = make_wifi()
     wifi.poll()
-    agent, runner = make_agent(wifi, player=FakePlayer(state=LOADED))
+    agent, runner = make_agent(wifi, player=FakePlayer(state=LOADED, burn="none"))
     try:
         fake.release.clear()
         code, answer = select(agent, profile=HOTSPOT)
@@ -189,7 +199,7 @@ def test_cancel_takes_a_deferral_back_and_a_new_select_replaces_one():
 
 
 def test_the_lock_is_asked_again_when_the_timer_fires():
-    player = FakePlayer(state=LOADED)             # not locked now...
+    player = FakePlayer(state=LOADED, burn="none")   # not locked now...
     wifi, fake = make_wifi()
     wifi.poll()
     agent, runner = make_agent(wifi, player=player)
@@ -201,7 +211,7 @@ def test_the_lock_is_asked_again_when_the_timer_fires():
         assert fake.ups == []                     # skipped, never run
         assert wifi.pending is None
         assert wifi.phase == LOCKED
-        assert wifi.status_text() == (f"PC show running - stop it on the PC - "
+        assert wifi.status_text() == (f"PC show running - WIFI locked - "
                                       f"switch to {HOTSPOT} skipped")
         assert any("skipped" in line and "ERROR" in line
                    for line in wifi.recent(10))
@@ -217,9 +227,9 @@ def test_a_profile_gone_by_fire_time_is_a_failure_not_a_crash():
     wifi.schedule(HOTSPOT, 0.1)
     del fake.profiles[HOTSPOT]
     wifi.poll()
-    assert wait_until(lambda: wifi.phase == "failed")
+    assert wait_until(lambda: wifi.phase == LOCKED)
     assert fake.ups == []
-    assert f"no such profile: {HOTSPOT}" in wifi.status_text()
+    assert wifi.status_text() == f"no such profile: {HOTSPOT} - switch skipped"
 
 
 # ---- the WIFI screen while one is pending ----
