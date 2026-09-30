@@ -67,22 +67,24 @@ settled() {
     return 1
 }
 
-for _ in $(seq 1 "$WAIT_S"); do
+# One clock for the whole wait: $SECONDS since the script started, so a
+# slow nmcli or a scan that takes a while never stretches the deadlines.
+while [ "$SECONDS" -lt "$WAIT_S" ]; do
     settled && exit 0
     sleep 1
 done
 
 # No client profile came up in WAIT_S. A known router still in sight is
-# worth waiting for (it may be booting after the same power cut).
-waited=0
-while [ "$waited" -lt "$SCAN_WAIT_S" ] && known_visible; do
-    echo "exhibition-net: a known router is visible but not joined yet - waiting (${waited}s)"
+# worth waiting for (it may be booting after the same power cut) - up to
+# SCAN_WAIT_S more, on the same clock.
+deadline=$((WAIT_S + SCAN_WAIT_S))
+while [ "$SECONDS" -lt "$deadline" ] && known_visible; do
+    echo "exhibition-net: a known router is visible but not joined yet - waiting (${SECONDS}s)"
     sleep 10
-    waited=$((waited + 10))
     settled && exit 0
 done
 
-if ! nmcli -t -f NAME connection show 2>/dev/null | grep -qx -- "$HOTSPOT"; then
+if ! nmcli -t -f NAME connection show 2>/dev/null | awk -v hs="$HOTSPOT" '$0 == hs { found = 1 } END { exit !found }'; then
     echo "exhibition-net: no client Wi-Fi and no $HOTSPOT profile to start"
     exit 0
 fi

@@ -2009,10 +2009,20 @@ class Workspace:
 
     def fleet_option(self, key: str, default=None):
         """One more key of fleet.json (EXHIBITION mode): "passcode" (the
-        page's, see PASSCODE_HEADER) or "hotspot" (the unit that is the
-        AZ-Epaper hotspot, radxa-05 unless said otherwise)."""
+        page's, see PASSCODE_HEADER), "hotspot" (the unit that is the
+        AZ-Epaper hotspot, radxa-05 unless said otherwise) or
+        "speaker_volume" (the host's loudness, conductor/speaker.py)."""
         value = self._fleet_json().get(key)
         return default if value in (None, "") else value
+
+    def set_fleet_option(self, key: str, value) -> None:
+        """Write one key of fleet.json, keeping the rest - the per-host
+        settings the page changes (the speaker's volume). Whole or not at
+        all, like show.json."""
+        with self._lock:
+            config = self._fleet_json()
+            config[key] = value
+            self._write(self.root / "fleet.json", config)
 
     def compile_units(self, choices: "dict[str, str]", cue: str
                       ) -> "tuple[dict[str, dict], list[str]]":
@@ -3357,6 +3367,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_workspace(body)
             if self.path == "/api/loop":
                 return self._set_loop(body)
+            if self.path == "/api/speaker/volume":
+                # The Conductor host's own loudness (conductor/speaker.py):
+                # {"volume": 0-100} or {"delta": +-n} on the stored value.
+                if self.speaker is None:
+                    return self._json({"error": "no speaker on this Conductor "
+                                                "(serve --speaker)"}, status=400)
+                if "delta" in body:
+                    if not _is_number(body["delta"]):
+                        raise ValueError("delta: a number of percent")
+                    wanted = self.speaker.status()["volume"] + float(body["delta"])
+                else:
+                    wanted = body.get("volume")
+                    if not _is_number(wanted):
+                        raise ValueError("volume: 0 to 100")
+                if not 0 <= float(wanted) <= 100 and "delta" not in body:
+                    raise ValueError("volume: 0 to 100")
+                return self._json(self.speaker.set_volume(wanted))
             if self.path == "/api/files":
                 # A malformed body is the caller's mistake, not a 500:
                 # `files` as a list of bare strings used to reach
@@ -3866,6 +3893,29 @@ def reachable_urls(host: str, port: int) -> "list[str]":
     return urls
 
 
+def offer_startup_shows(fleet: "Fleet", ws: Workspace
+                        ) -> "tuple[dict[str, dict], list[str]]":
+    """EXHIBITION mode's startup adoption (`serve --adopt`): compile the
+    workspace and offer the per-unit shows to the fleet. A unit adopted
+    (it reports that id, pictures burned) is marked as holding the
+    compile's REVISION, exactly as an Upload would mark it - so the page's
+    "changed since" and START's one-timeline gate work over an adopted
+    show, and an edit made after the restart is refused with "Upload
+    again" instead of running the old pictures under the new timeline.
+    A timeline with problems compiles to nothing and offers nothing."""
+    rev = ws.revision()
+    try:
+        compiled, problems = ws.compile_show()
+    except Exception as exc:                # noqa: BLE001 - a bad workspace still serves
+        compiled, problems = {}, [f"{exc.__class__.__name__}: {exc}"]
+    if compiled and not problems:
+        def mark(unit: str) -> None:
+            ws.mark_written("upload", rev, units=[unit],
+                            all_units=sorted(set(compiled) | ws.timeline_units()))
+        fleet.offer_shows(compiled, on_adopt=mark)
+    return compiled, problems
+
+
 def passcode_problem(host: str, passcode) -> "str | None":
     """Why a Conductor bound to other hosts may not start with this
     passcode - none at all, or the example value still in fleet.json - or
@@ -3921,7 +3971,8 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
           host: str = "127.0.0.1", speaker: bool = False,
           speaker_lead_ms: "float | None" = None,
           speaker_output: "str | None" = None, speaker_factory=None,
-          passcode: "str | None" = None) -> int:
+          speaker_runner=None, passcode: "str | None" = None,
+          adopt: bool = False) -> int:
     """`python -m conductor serve`. `host` is 127.0.0.1 unless asked
     (EXHIBITION mode: 0.0.0.0 on the unit that is also the hotspot);
     `speaker` plays the show's music through mpg123 on this host
@@ -3962,17 +4013,16 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
     # The Loop's settings come from THIS workspace's show.json, read when a
     # run reaches its end - never cached on the fleet.
     fleet = Fleet(units, token, loop_settings=ws.loop_settings)
-    # What this workspace compiles to, offered to the units: one that
-    # reports the same show id with its pictures burned is adopted as
-    # holding it, so a restart of this conductor (systemd, a power blip)
-    # does not cost an Upload of every picture before the Loop or START
-    # work again (Fleet.offer_shows). A timeline with problems compiles to
-    # nothing and offers nothing - the page says what is wrong.
-    try:
-        compiled, problems = ws.compile_show()
-    except Exception as exc:                # noqa: BLE001 - a bad workspace still serves
-        compiled, problems = {}, [f"{exc.__class__.__name__}: {exc}"]
-    fleet.offer_shows(compiled)
+    # EXHIBITION mode only (`--adopt`, or fleet.json "adopt": true): what
+    # this workspace compiles to is offered to the units, so a restart of
+    # the headless conductor does not cost an Upload of every picture
+    # before the Loop or START work again. The show PC never offers - a
+    # restart there costs an Upload exactly as it always has (review of
+    # d79681a: an adopted show with no marks let an edit + START run the
+    # old pictures).
+    compiled, problems = {}, []
+    if adopt or bool(config.fleet_option("adopt", False)):
+        compiled, problems = offer_startup_shows(fleet, ws)
     fleet.start()
     server.RequestHandlerClass.fleet = fleet
     player = None
@@ -3985,7 +4035,12 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
         extra = (DEVICE_LATENCY_S if speaker_lead_ms is None
                  else float(speaker_lead_ms) / 1000.0)
         player = Speaker(track, fleet.run_snapshot, factory=speaker_factory,
-                         extra_lead_s=extra, output=speaker_output)
+                         extra_lead_s=extra, output=speaker_output,
+                         runner=speaker_runner,
+                         # The host's loudness lives in fleet.json (per host,
+                         # never in the show), and a change goes back there.
+                         volume=config.fleet_option("speaker_volume", 70),
+                         save_volume=lambda v: ws.set_fleet_option("speaker_volume", v))
         player.start()
         server.RequestHandlerClass.speaker = player
     if open_browser:

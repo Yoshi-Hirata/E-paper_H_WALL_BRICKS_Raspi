@@ -143,7 +143,8 @@ def cmd_serve(args) -> int:
     return serve(args.workspace, args.port, open_browser=args.open,
                  host=args.host, speaker=args.speaker,
                  speaker_lead_ms=args.speaker_lead_ms,
-                 speaker_output=args.speaker_output, passcode=args.passcode)
+                 speaker_output=args.speaker_output, passcode=args.passcode,
+                 adopt=args.adopt)
 
 
 def main(argv=None) -> int:
@@ -206,6 +207,12 @@ def main(argv=None) -> int:
                    help="mpg123's -o output module: 'alsa' under systemd, "
                         "where there is no PulseAudio session (default: "
                         "mpg123's own choice)")
+    p.add_argument("--adopt", action="store_true",
+                   help="EXHIBITION mode: at startup, take a unit that still "
+                        "holds this workspace's show (same id, pictures "
+                        "written) as holding it, so a restart of this "
+                        "headless Conductor needs no Upload. Never on the "
+                        "show PC. fleet.json's \"adopt\": true does the same")
     p.add_argument("--passcode", default=None,
                    help="required from every other host for anything that "
                         "changes the show or hands out its material "

@@ -1107,7 +1107,9 @@ Wi-Fi ホットスポット `AZ-Epaper`(10.42.0.1)でもあり、**制御専用(
 配備ファイルは `radxa/epaper-conductor.service`(`Restart=always`、`After=network-online.target
 epaper-exhibition-net.service`、`--speaker-output pulse`)、`radxa/exhibition/fleet.json`
 (`units`: radxa-05 自身は `127.0.0.1:8787`、`hotspot`、`passcode`)、
-`radxa/epaper-exhibition-net.service` + `radxa/exhibition-net.sh`(oneshot、radxa-05 だけ:
+`radxa/epaper-exhibition-net.service` + `radxa/exhibition-net.sh`(Type=simple ― oneshot だと
+multi-user.target がスクリプトの終わりまで待ち、その後ろの epaper-ui / Conductor が最長 12 分
+出ない。radxa-05 だけ:
 起動後 90 秒までにクライアントの Wi-Fi が `activated` にならなければ ― 知っているルータの
 SSID がスキャンに見えている間は最長 10 分待ってから ― `nmcli con up AZ-Epaper`。
 `AZ-Epaper` 自体は autoconnect=no のまま ― このサービスの有効化が「展示モードの武装」)、
@@ -1164,15 +1166,22 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   ページ: 大時計 `ENDED · NEXT RUN IN 0:45 (run 2)`、NOW → NEXT ボード(ステージ
   モニターも)は見出し `NEXT RUN in 45 s` と `0:45`(10 秒で琥珀、3 秒で赤)、注記に
   理由。STOP の確認文に「Loop も止まる」
-- **Conductor 再起動後のショーの引き取り**(`Fleet.offer_shows` / `_adopt_show`): `fleet.shows`
-  はメモリだけなので、systemd の再起動・停電のあと Conductor は誰が何を持っているか知らない
-  → `serve` は起動時にワークスペースをコンパイルして機体ごとのショーを **提示**し、
+- **Conductor 再起動後のショーの引き取り**(`Fleet.offer_shows` / `_adopt_show`、**`serve --adopt`
+  か fleet.json `"adopt": true` のときだけ** ― PC の既定の起動は main と同じで何も提示しない):
+  `fleet.shows` はメモリだけなので、systemd の再起動のあと Conductor は誰が何を持っているか
+  知らない → `serve --adopt` は起動時にワークスペースをコンパイルして機体ごとのショーを
+  **提示**し(`offer_startup_shows`)、
   `/status` の `show.id` が一致し `burn.state` が `burned`(一部失敗の `failed` も ― START の
   関門が force で判断する)の機体を最初のポールで「持っている」と採用する(corrections `radxa-01: holds this show already (adopted after a
   restart of the conductor)`)。別の id・絵の無い機体は 1 回 `… - Upload before START`。
-  ショーの無いメンバー(radxa-05)は提示に入らないだけ。提示が開いている間は `_targets()` に
-  未採用の機体も入るので、START の関門・Loop の猶予・`started without X` が名指しする
-  (`_send_run` は `has not taken this show yet` で断る)。採用後は `show_duration` が戻り、
+  採用した機体には **その時点のコンパイルの revision で `unit_marks["upload"]` を付ける**
+  (Upload と同じ印)ので、再起動後に編集して START すると `_one_timeline` が `Upload again` と
+  断る(古い絵で新しいタイムラインは走らない)。ショーの無いメンバー(radxa-05)は提示に
+  入らないだけ。提示が開いている間は `_targets()` に未採用の機体も入るので、START の関門・
+  Loop の猶予・`started without X` が名指しする(`_send_run` は **ショーを何も報告しない**
+  機体だけ `has not taken this show yet` で断り、ショーを報告する機体には main と同じく
+  `show: null` で送る ― 途中再起動でコンパイルが機体の持ち物と違っても RESUME / NEXT が
+  断られて HOLD のまま、にはならない。引き取ったランでは報告している機体も `_targets()` に入る)。採用後は `show_duration` が戻り、
   走行中のランは従来の `_adopt()` で引き取られ、Loop はそのランの終わりから回る。
   **Upload は提示を取り下げる**(タイムラインから外した衣装が古い焼き込み済みのショーから
   採用されて START を送られないため)、Save on units は今のコンパイルに無い機体を提示から外す、
@@ -1182,7 +1191,18 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
 - **`serve --speaker`**(`conductor/speaker.py`): ホストの `mpg123 -R --keep-open`(remote-control、
   stdin / stdout のパイプ、`-o <module>` は `--speaker-output`: 展示の既定は **`pulse`** ― radxa
   ユーザの常駐 PulseAudio 経由で Bluetooth の Bose(A2DP、遅延 100〜200 ms は `--speaker-lead-ms`
-  で)でも USB スピーカーでも鳴る。`alsa` は USB スピーカー直の逃げ道)でショーの音楽を鳴らす。
+  で)でも USB スピーカーでも鳴る。サービスは `XDG_RUNTIME_DIR=/run/user/1000` と `PULSE_SERVER`
+  で radxa の PulseAudio を指す。`alsa` は USB スピーカー直の逃げ道)でショーの音楽を鳴らす。
+  **音量**はホストの設定 fleet.json `speaker_volume`(0〜100、既定 70。ショーには入らない):
+  pulse の既定 sink が `bluez_sink.*` なら bluez `MediaTransport1 Volume` = round(v·127/100) を
+  `busctl --system set-property` で書き sink は 100 % に固定(Bose の本体ボタンは効かない ―
+  音源の AVRCP 絶対音量だけ。transport の `fdN` は再接続ごとに変わるので `busctl tree` で
+  5 秒ごとに探し直す)、それ以外は `pactl set-sink-volume @DEFAULT_SINK@ v%`。起動時・sink や
+  transport が(再)出現したとき・変更のたびにスピーカーのスレッドで適用(HTTP スレッドは
+  待つだけ、最長 1.5 秒)。`POST /api/speaker/volume {"volume": 0-100}`(または `{"delta": ±n}`)
+  → `{"volume", "applied": "bluez"|"pulse"|null, "error"}`(他の POST と同じ関門)。
+  `/api/fleet.speaker` に `volume`・`applied`・`volume_error`。ページの MUSIC 行にスライダーと ±
+  (`--speaker` のときだけ)。radxa-05 の LCD の EXHIBITION 画面の LEFT / RIGHT も同じ endpoint。
   専用スレッド、HTTP スレッドは `status()` を読むだけ(待ちに使う Condition と status の
   ロックは別)。**再生状態は mpg123 が出す `@P n` そのもの**(連番付き。コマンドの返答は
   送信後に届いた行だけを見る)で、`P`(トグル)は**状態が目標と違うときだけ**送る。

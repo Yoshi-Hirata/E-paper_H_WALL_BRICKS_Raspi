@@ -15,6 +15,11 @@ Type=simple
 User=radxa
 WorkingDirectory=/home/radxa/E-paper_H_WALL_BRICKS_Raspi
 Environment=PYTHONUNBUFFERED=1
+# A system service has no login session, so `mpg123 -o pulse` would find
+# no server: point it at radxa's (uid 1000) persistent PulseAudio - the
+# one `loginctl enable-linger radxa` keeps running (radxa/EXHIBITION.md).
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 # The Conductor is standard library only, so the system python3 (Debian
 # 11's 3.9) runs it; the repo's .venv is for the unit's own UI. --host
 # 0.0.0.0 opens the page to the hotspot (10.42.0.1:8765) and to the router
@@ -30,7 +35,9 @@ Environment=PYTHONUNBUFFERED=1
 # Conductor refuses to start without one, or with the example value. The
 # workspace is its own folder, never ./showdata: an exhibition show must
 # not be confused with a rehearsal's.
-ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --speaker-output pulse --port 8765
+# --adopt: a restart of THIS conductor takes the units that still hold its
+# show as holding it (EXHIBITION mode only - never on the show PC).
+ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --speaker-output pulse --adopt --port 8765
 # always, not on-failure: with the Loop on, this process IS the show, and a
 # clean exit would leave the garments on their last look until somebody
 # reached a terminal.

@@ -478,6 +478,7 @@ class Fleet:
         # without an Upload of every picture. Per unit, once per offer.
         self._offered: "dict[str, dict]" = {}
         self._offer_said: "set[str]" = set()
+        self._on_adopt = None
         # The two windows the clear after the show waits out: after a STOP
         # (the director's mid-show abort), and after any T0 move (so a seek
         # in the last seconds cannot delete the show). Knobs so the tests
@@ -743,12 +744,14 @@ class Fleet:
         the next run (`next_in_s`), the wait and lead it was armed with,
         how many restarts this show has had, and the refusal the restart
         is waiting out, if any. None while no restart is pending."""
+        self._forget_joined()
         with self._run_lock:
             if self.run is None:
                 return None
             if self._loop_at is None:
                 # Nothing pending - but a run started without somebody
-                # still says so (the page's hint), until the next end.
+                # still says so (the page's hint), until they have joined
+                # or the next end.
                 return ({"next_in_s": None, "wait_s": self._loop_wait,
                          "lead_s": self._loop_lead, "runs": self._loop_runs,
                          "problem": self._loop_problem}
@@ -756,6 +759,25 @@ class Fleet:
             return {"next_in_s": max(0.0, round(self._loop_at - self._clock(), 2)),
                     "wait_s": self._loop_wait, "lead_s": self._loop_lead,
                     "runs": self._loop_runs, "problem": self._loop_problem}
+
+    def _forget_joined(self) -> None:
+        """The "started without X" hint goes once every X left out of the
+        last restart is running this conductor's show (supervision put
+        it in, "started late") - the fault is over and the page should
+        not go on naming it."""
+        with self._run_lock:
+            if not self._loop_problem or not self._loop_skipped:
+                return
+            names = list(self._loop_skipped)
+        for name in names:
+            link = self.links.get(name)
+            unit = ((link.status if link else None) or {}).get("show") or {}
+            show = self.shows.get(name)
+            if not (link and link.online and show and unit.get("id") == show["id"]
+                    and unit.get("state") == "running"):
+                return
+        with self._run_lock:
+            self._loop_problem = None
 
     def run_is_over(self) -> bool:
         """A running run whose position is at or past the show's length -
@@ -770,14 +792,20 @@ class Fleet:
 
     # ---- what the units already hold, after a restart of this conductor ----
 
-    def offer_shows(self, shows: "dict[str, dict]") -> None:
+    def offer_shows(self, shows: "dict[str, dict]", on_adopt=None) -> None:
         """Offer this workspace's compiled shows ({unit: show}) for
         adoption: a unit that reports one of these ids with its pictures
         burned is taken as holding it (_adopt_show, from its next poll).
-        Called once at startup, and with {} to withdraw the offer (an
-        import: the workspace is somebody else's show now). A member with
-        no show of its own (radxa-05, control only) is simply not in it."""
+        Called once at startup - and ONLY with `serve --adopt` (the
+        exhibition's service): the show PC's Conductor never offers, so a
+        restart there costs an Upload exactly as before. `on_adopt(unit)`
+        is the server's hook to mark the unit as holding the startup
+        compile's revision, so "changed since" and the one-timeline gate
+        keep working over an adopted show. Called with {} to withdraw the
+        offer (an Upload, an import). A member with no show of its own
+        (radxa-05, control only) is simply not in it."""
         self._offered = dict(shows)
+        self._on_adopt = on_adopt
         self._offer_said = set()
 
     def _adopt_show(self, link: UnitLink) -> None:
@@ -795,11 +823,18 @@ class Fleet:
         burn = unit.get("burn")
         burned = isinstance(burn, dict) and burn.get("state") in ("burned", "failed")
         if unit.get("id") == offered["id"] and burned:
-            # Rebound, never mutated in place: snapshot() and the page's
-            # requests read `shows` from other threads.
-            self.shows = dict(self.shows, **{link.name: offered})
+            # Rebound under the run lock, never mutated in place:
+            # snapshot() and the page's requests read `shows` from other
+            # threads.
+            with self._run_lock:
+                self.shows = dict(self.shows, **{link.name: offered})
             self._note(f"{link.name}: holds this show already (adopted "
                        "after a restart of the conductor)")
+            if self._on_adopt is not None:
+                try:
+                    self._on_adopt(link.name)
+                except Exception as exc:    # noqa: BLE001 - a mark, not the show
+                    self._note(f"{link.name}: could not mark the adoption: {exc}")
             return
         if link.name not in self._offer_said:
             self._offer_said.add(link.name)
@@ -1293,15 +1328,16 @@ class Fleet:
         would go on driving it and START would post /show/run to a unit
         that is not in the show at all (review F3)."""
         self._cancel_armed_clear()      # the pictures are going back in
-        # An Upload is the truth about who holds what from here on: the
-        # startup offer is withdrawn, so a garment taken OUT of the
-        # timeline cannot be adopted from the burned show it still holds
-        # and be sent a START (review of 53b9b6b, MED-1).
-        self.offer_shows({})
         targets = ([name for name in shows] if only is None
                    else [name for name in only if name in shows])
         if only is not None:
             self._refuse_mixed_duration(shows, targets)
+        # An Upload is the truth about who holds what from here on: the
+        # startup offer is withdrawn (after the refusal above, so a refused
+        # Upload changes nothing), so a garment taken OUT of the timeline
+        # cannot be adopted from the burned show it still holds and be
+        # sent a START (review of 53b9b6b, MED-1).
+        self.offer_shows({})
 
         def action(link):
             excuse = self._demo_excuse(link)
@@ -1508,10 +1544,15 @@ class Fleet:
             if offset is None:
                 raise RuntimeError("clock not measured yet")
             show = self.shows.get(link.name)
-            if show is None and link.name in self._offered:
-                # Offered after a restart and not adopted: the unit does
-                # not hold this show, and a /show/run naming none would
-                # only be refused there. Said here, by name.
+            if show is None and link.name in self._offered \
+                    and not ((link.status or {}).get("show") or {}).get("id"):
+                # Offered after a restart, not adopted, and reporting no
+                # show at all: a /show/run naming none would only be
+                # refused there. Said here, by name. A unit that DOES
+                # report a show is posted `show: None` as ever (main's
+                # behaviour) and runs what it holds - a mid-show restart
+                # whose compile differs from what the units hold must
+                # never leave RESUME / NEXT refused and the fleet on HOLD.
                 raise RuntimeError("has not taken this show yet")
             link.post("/show/run", {"t0": t0 + offset,
                                     "show": show["id"] if show else None,
@@ -1529,6 +1570,13 @@ class Fleet:
         from the units)."""
         known = list(self.shows) + [name for name in self._offered
                                     if name not in self.shows]
+        with self._run_lock:
+            adopted = bool(self.run and self.run.get("adopted"))
+        if adopted:
+            # A run adopted from the units: whoever reports a show is in
+            # it, whether or not this conductor knows that show.
+            known += [name for name, link in self.links.items()
+                      if name not in known and (link.status or {}).get("show")]
         return known or [
             name for name, link in self.links.items()
             if (link.status or {}).get("show")]

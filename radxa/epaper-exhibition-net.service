@@ -6,17 +6,20 @@ Description=EXHIBITION mode: start the AZ-Epaper hotspot when no router is in re
 # this unit is "exhibition mode armed" - see radxa/EXHIBITION.md.
 After=NetworkManager.service
 Wants=NetworkManager.service
-# Deliberately NOT Before=epaper-conductor.service: the Conductor binds
-# 0.0.0.0 and serves the LCD's own row at 127.0.0.1 whatever the Wi-Fi is
-# doing, and this script may wait minutes for a slow router.
+# Nothing is ordered after this unit, on purpose: it may wait minutes for
+# a slow router, and the LCD (epaper-ui) and the Conductor must come up
+# regardless - the Conductor binds 0.0.0.0 and serves the LCD's own row at
+# 127.0.0.1 whatever the Wi-Fi is doing.
 
 [Service]
-Type=oneshot
+# simple, NOT oneshot: a oneshot in multi-user.target's wants holds the
+# target - and every unit ordered After=multi-user.target (epaper-ui, and
+# behind it epaper-conductor) - until the script exits, which here can be
+# 90 s to 12 min after boot (review, 2026-09-30). A simple service is
+# "started" the moment the script is running.
+Type=simple
 ExecStart=/bin/bash /home/radxa/E-paper_H_WALL_BRICKS_Raspi/radxa/exhibition-net.sh
-RemainAfterExit=yes
-# The script may wait up to ~12 min for a slow router; systemd's default
-# oneshot timeout is infinite, this only says so.
-TimeoutStartSec=900
+TimeoutStartSec=infinity
 
 [Install]
 WantedBy=multi-user.target

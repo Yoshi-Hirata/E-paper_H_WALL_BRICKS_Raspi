@@ -28,13 +28,16 @@ radxa-05  ─┬─  radxa-01  10.42.0.101:8787
 ```
 
 - Conductor は `python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0
-  --speaker --speaker-output pulse --port 8765` を systemd(`epaper-conductor.service`)が常時
-  動かす。落ちても 10 秒で立ち上がる
-- **Conductor だけの再起動なら続く**: Conductor が立ち上がると自分のワークスペースを
-  コンパイルし、**同じショー(同じ id)を持っていて絵が書き込み済み**(一部の基板が失敗した
+  --speaker --speaker-output pulse --adopt --port 8765` を systemd(`epaper-conductor.service`)が
+  常時動かす。落ちても 10 秒で立ち上がる
+- **Conductor だけの再起動なら続く**(サービスの `--adopt`。**radxa-05 だけ** ― PC の Conductor は
+  今までどおり再起動すると Upload からで、この引き取りをしない): Conductor が立ち上がると
+  自分のワークスペースをコンパイルし、**同じショー(同じ id)を持っていて絵が書き込み済み**(一部の基板が失敗した
   `failed` も含む ― START の関門が判断する)の機体をそのまま「持っている」とみなす
   (`Corrected automatically:` に `radxa-01: holds this show already (adopted after a restart of
-  the conductor)`)。機体がショーを走らせていればランも引き取り、Loop はそのランの終わりから、
+  the conductor)`)。引き取った機体は「その時点のタイムラインを持っている」印が付くので、
+  そのあとタイムラインを編集して ③ START を押すと従来どおり `Upload again` と断られる
+  (古い絵で新しいタイムラインが走ることはない)。機体がショーを走らせていればランも引き取り、Loop はそのランの終わりから、
   または次の ③ START からまた回る。別のショーを持っている機体・絵の無い機体は
   `… - Upload before START` と出るので **① Upload**。**引き取れるのは Conductor 側だけが
   再起動したとき**: 機体ごと電源が落ちた(会場の停電・ブレーカー)あとは各機体のエージェントが
@@ -120,7 +123,22 @@ pactl set-default-sink bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink
 pactl set-sink-volume bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink 100%
 ```
 
-   音の大きさは**スピーカー本体の + ボタン**で決める(AVRCP)。PulseAudio の 100 % は天井。
+   **スピーカー本体の +/− ボタンはこの構成では効かない**(AVRCP の音量通知もキーイベントも来ない ―
+   スピーカーは音源に従う)。音の大きさは **音源側の AVRCP 絶対音量**、つまり Conductor が
+   busctl で bluez の `MediaTransport1 Volume`(0〜127。47 は小さい、90 が快適、127 が最大)に
+   書く値で決まり、PulseAudio の sink は 100 % に固定しておく。決め方は 3 つ、どれも同じ値
+   (`fleet.json` の `"speaker_volume"`、0〜100、既定 70。ホストごとの設定でショーには入らない):
+   ページの MUSIC 行のスライダー / ± ボタン、radxa-05 の LCD の EXHIBITION 画面の LEFT / RIGHT、
+   または fleet.json を直接。Conductor は起動時・スピーカーがつなぎ直ったとき(transport の
+   `fdN` は再接続のたびに変わるので 5 秒ごとに探し直す)・値を変えたときに適用する。
+   USB スピーカー(pulse の既定 sink が `bluez_sink.*` でない)なら同じ値を
+   `pactl set-sink-volume @DEFAULT_SINK@ NN%` で。手で確かめるなら:
+
+```bash
+busctl --system tree org.bluez | grep -oE '/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/sep[0-9]+/fd[0-9]+'
+busctl --system get-property org.bluez <そのパス> org.bluez.MediaTransport1 Volume     # q 47 など
+busctl --system set-property org.bluez <そのパス> org.bluez.MediaTransport1 Volume q 90
+```
 
 d. **テスト**: `mpg123 -o pulse <曲>` を 10 秒。sink-input は出ているのに無音なら、スピーカーが
    別の音源(スマホ)を鳴らしている ― `bluetoothctl disconnect $MAC; bluetoothctl connect $MAC`
@@ -218,6 +236,19 @@ conductor UI: http://192.168.51.105:8765
 
 `speaker: mpg123 not found` と出たら 2.1 をやり直す(Conductor は止まらない。
 音が出ないだけ)。`epaper-ui`(LCD のメニュー)はそのまま動かしておく。
+
+**音が本当に出る状態かを確かめる**(サービスはログインセッションを持たないので、
+`Environment=XDG_RUNTIME_DIR=/run/user/1000` と `PULSE_SERVER=…` で radxa の PulseAudio に
+つないでいる。これが無いと `-o pulse` はサーバを見つけられない):
+
+```bash
+systemctl status epaper-conductor --no-pager      # active (running)
+journalctl -u epaper-conductor -n 20 --no-pager   # speaker: loaded xxx.mp3, unpause latency … / volume 70 applied via bluez
+```
+
+そのあと画面(10.42.0.1:8765 か 192.168.51.105:8765)の MUSIC 行が
+`music plays on the Conductor host (USB speaker) — loaded, xxx.mp3, …` と **`loaded`** になっている
+こと(`mpg123 exited` や `volume: …` のエラーではなく)を見てから、テストで ③ START を 1 回。
 
 ## 3. ほかの機体(radxa-01〜04・06〜10)で一度だけやること
 
@@ -334,7 +365,7 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
 | パスコードを忘れた | radxa-05 の `/home/radxa/exhibition/fleet.json`(`sudo cat`)。ブラウザで入れ直したいときは `localStorage` の `conductor.passcode` を消す(または別のブラウザ) |
 | `epaper-conductor` が起動しない、journal に `refusing to serve on 0.0.0.0` | fleet.json の `"passcode"` が無い / 例の値のまま。2.3 |
 | 機体が offline | その機体の電源。`AZ-Epaper` に入っているか(LCD の上部バーの IP が 10.42.0.1NN か)。3 章のプロファイルが無い・番号違い。2.2 の予約に MAC が無い機体はスマホと番地がぶつかることがある |
-| 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。Bluetooth: `pactl list short sinks` に `bluez_sink.…a2dp_sink` が無ければ 2.1b の b〜c(スピーカーの電源、スマホの Bluetooth を切る)、sink はあるのに無音なら `bluetoothctl disconnect` → `connect`(2.1b d)。音量は本体の + ボタン / `pactl`(USB 直なら 2.1 の `amixer`) |
+| 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。Bluetooth: `pactl list short sinks` に `bluez_sink.…a2dp_sink` が無ければ 2.1b の b〜c(スピーカーの電源、スマホの Bluetooth を切る)、sink はあるのに無音なら `bluetoothctl disconnect` → `connect`(2.1b d)。音量はページの MUSIC 行のスライダー(= fleet.json `speaker_volume`)。本体のボタンは効かない(2.1b c) |
 | 音が絵より遅れる / 早い | `--speaker-lead-ms`(既定 50 = 測ったパイプ往復 + 50 ms 早くアンパウズ。**50 は当て推量**、Bluetooth(A2DP)は 100〜200 ms 余計に遅れる: クリック音源で一度測って決める)を service の ExecStart で変えて `daemon-reload` + `restart` |
 | Loop が回らない | `Loop` のチェック、待ち時間が 40〜600 か。Units タブの `Corrected automatically:` の行に `Loop: …` の理由 |
 | 再起動後に START が `Upload again` / `Upload first` | 機体が持っているショーが今のタイムラインと違う(送り直した・編集した)。① Upload |

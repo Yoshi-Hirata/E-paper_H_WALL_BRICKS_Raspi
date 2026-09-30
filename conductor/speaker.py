@@ -64,6 +64,7 @@ the tests drive a fake mpg123.
 
 from __future__ import annotations
 
+import re
 import statistics
 import subprocess
 import threading
@@ -73,6 +74,31 @@ from pathlib import Path
 from .fleet import pc_clock
 
 MPG123 = "mpg123"
+# The host's loudness (EXHIBITION mode, measured on radxa-05 with the Bose
+# SoundLink Flex, 2026-09-30): the speaker's own +/- buttons do nothing for
+# us - no AVRCP notification, no key event, the speaker defers to the
+# source - so loudness is entirely the source's AVRCP absolute volume, the
+# bluez MediaTransport1 `Volume` (0-127; 47 was quiet, 90 comfortable, 127
+# loud), set with busctl as user radxa. Its object path's fdN changes on
+# every reconnect, so it is looked up each time. A plain USB speaker is the
+# PulseAudio default sink's own volume instead. Stored per host in
+# fleet.json ("speaker_volume", 0-100, VOLUME_DEFAULT), applied at startup,
+# whenever the sink or transport (re)appears, and on every change.
+VOLUME_DEFAULT = 70
+VOLUME_CHECK_S = 5.0
+VOLUME_APPLY_TIMEOUT_S = 1.5    # how long a POST waits for the thread to apply
+_TRANSPORT_RE = r"/org/bluez/hci[0-9]+/dev_{mac}/sep[0-9]+/fd[0-9]+"
+
+
+def default_runner(argv, timeout: float = 5.0):
+    """Run a tool, answer (exit code, stdout); a missing tool is exit 127."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return 127, ""
+    except subprocess.SubprocessError as exc:
+        return 1, str(exc)
+    return done.returncode, done.stdout
 TICK_S = 0.05              # how often the run is looked at between events
 LOAD_TIMEOUT_S = 5.0       # mpg123 has this long to report a loaded track
 REPLY_TIMEOUT_S = 2.0      # ...and to answer any other command
@@ -101,13 +127,29 @@ class Speaker:
                  binary: str = MPG123, extra_lead_s: float = DEVICE_LATENCY_S,
                  output: "str | None" = None,
                  tick_s: float = TICK_S, retry_s: float = RETRY_S,
-                 track_check_s: float = TRACK_CHECK_S):
+                 track_check_s: float = TRACK_CHECK_S,
+                 runner=None, volume: int = VOLUME_DEFAULT, save_volume=None,
+                 volume_check_s: float = VOLUME_CHECK_S):
         self._track = track
         self._run = run
         self._clock = clock
         self._factory = factory or default_factory
         self._binary = binary
         self._output = output
+        # The host's loudness (see VOLUME_DEFAULT): `runner(argv)` runs
+        # pactl / busctl, `save_volume(v)` persists a change (fleet.json).
+        self._runner = runner or default_runner
+        self._save_volume = save_volume
+        self._volume = self._clamp_volume(volume)
+        self._volume_check_s = volume_check_s
+        self._volume_checked = -1e9
+        self._volume_dirty = True           # apply at startup
+        self._volume_key = None             # (sink, transport path) last applied to
+        self._applied: "str | None" = None  # "bluez" | "pulse" | None
+        self.volume_error: "str | None" = None
+        self._volume_gen = 0                # bumped by every apply attempt
+        self._volume_done = threading.Condition()
+        self._volume_said_key = None        # the sink the log last named
         self._extra_lead = max(0.0, float(extra_lead_s))
         self._tick_s = tick_s
         self._retry_s = retry_s
@@ -168,12 +210,126 @@ class Speaker:
                     "state": self.state,
                     "track": Path(loaded[0]).name if loaded else None,
                     "latency_ms": round(self._latency * 1000, 1),
-                    "playing": self._pstate == PLAYING, "log": list(self.log[-5:])}
+                    "playing": self._pstate == PLAYING, "log": list(self.log[-5:]),
+                    "volume": self._volume, "applied": self._applied,
+                    "volume_error": self.volume_error}
 
     @property
     def playing(self) -> bool:
         with self._reply:
             return self._pstate == PLAYING
+
+    # ---- the host's loudness ----
+
+    @staticmethod
+    def _clamp_volume(value) -> int:
+        try:
+            return max(0, min(100, int(round(float(value)))))
+        except (TypeError, ValueError):
+            return VOLUME_DEFAULT
+
+    def set_volume(self, value) -> dict:
+        """A new loudness (0-100): stored, persisted, and applied by the
+        speaker thread on its next tick - this waits for that (bounded by
+        VOLUME_APPLY_TIMEOUT_S, never on a subprocess itself) and answers
+        {"volume", "applied", "error"}."""
+        volume = self._clamp_volume(value)
+        with self._volume_done:
+            gen = self._volume_gen
+            with self._lock:
+                self._volume = volume
+            self._volume_dirty = True
+        if self._save_volume is not None:
+            try:
+                self._save_volume(volume)
+            except OSError as exc:
+                self._fail(f"could not save the volume: {exc}")
+        with self._volume_done:
+            self._volume_done.wait_for(lambda: self._volume_gen != gen,
+                                       VOLUME_APPLY_TIMEOUT_S)
+        status = self.status()
+        return {"volume": status["volume"], "applied": status["applied"],
+                "error": status["volume_error"]}
+
+    def _volume_tick(self, now: float) -> None:
+        """Every VOLUME_CHECK_S (at once when dirty): where the sound goes
+        right now, and the volume applied there if that changed or the
+        volume did. Cheap - one `pactl info`, plus one `busctl tree` for a
+        Bluetooth sink."""
+        if not self._volume_dirty and now - self._volume_checked < self._volume_check_s:
+            return
+        self._volume_checked = now
+        with self._lock:
+            volume = self._volume
+        applied, key, error = None, None, None
+        try:
+            sink = self._default_sink()
+            if sink is None:
+                error = "no PulseAudio default sink"
+            elif sink.startswith("bluez_sink."):
+                mac = sink.split(".")[1]
+                path = self._transport_path(mac)
+                key = (sink, path)
+                if path is None:
+                    error = f"bluez transport for {mac} not found (speaker connected?)"
+                elif key != self._volume_key or self._volume_dirty:
+                    # The AVRCP absolute volume, 0-127, and the pulse sink
+                    # pinned at 100 % so nothing scales it a second time.
+                    code, out = self._runner(["busctl", "--system", "set-property",
+                                              "org.bluez", path,
+                                              "org.bluez.MediaTransport1", "Volume",
+                                              "q", str(int(round(volume * 127 / 100)))])
+                    if code != 0:
+                        raise RuntimeError(f"busctl set-property: exit {code} {out.strip()}")
+                    code, out = self._runner(["pactl", "set-sink-volume", sink, "100%"])
+                    if code != 0:
+                        raise RuntimeError(f"pactl set-sink-volume: exit {code} {out.strip()}")
+                    applied = "bluez"
+                else:
+                    applied = self._applied
+            else:
+                key = (sink, None)
+                if key != self._volume_key or self._volume_dirty:
+                    code, out = self._runner(["pactl", "set-sink-volume", "@DEFAULT_SINK@",
+                                              f"{volume}%"])
+                    if code != 0:
+                        raise RuntimeError(f"pactl set-sink-volume: exit {code} {out.strip()}")
+                    applied = "pulse"
+                else:
+                    applied = self._applied
+        except (RuntimeError, OSError, IndexError) as exc:
+            error = str(exc)
+        with self._volume_done:
+            with self._lock:
+                self._applied = applied
+                said = self.volume_error == error
+                self.volume_error = error
+            self._volume_key = key if error is None else None
+            self._volume_dirty = error is not None      # a failure: next check again
+            self._volume_gen += 1
+            self._volume_done.notify_all()
+        if error and not said:
+            self._say(f"volume: {error}")
+        elif not error and key != self._volume_said_key:
+            self._volume_said_key = key
+            self._say(f"volume {volume} applied via {applied} ({key[0]})")
+
+    def _default_sink(self) -> "str | None":
+        code, out = self._runner(["pactl", "info"])
+        if code != 0:
+            raise RuntimeError(f"pactl info: exit {code} {out.strip()[:80]}")
+        for line in out.splitlines():
+            if line.startswith("Default Sink:"):
+                sink = line.partition(":")[2].strip()
+                return sink or None
+        return None
+
+    def _transport_path(self, mac: str) -> "str | None":
+        code, out = self._runner(["busctl", "--system", "tree", "org.bluez"])
+        if code != 0:
+            raise RuntimeError(f"busctl tree: exit {code} {out.strip()[:80]}")
+        found = re.findall(_TRANSPORT_RE.format(mac=re.escape(mac)), out)
+        return found[-1] if found else None
 
     # ---- the thread ----
 
@@ -189,6 +345,10 @@ class Speaker:
     def _tick(self) -> float:
         """One look at the run. Returns how long the loop may sleep."""
         now = self._clock()
+        try:
+            self._volume_tick(now)          # the host's loudness, track or not
+        except Exception as exc:            # noqa: BLE001 - said, never fatal
+            self._fail(f"volume: {exc.__class__.__name__}: {exc}")
         if not self._ensure_track(now):
             return self._tick_s
         run, duration = self._run()

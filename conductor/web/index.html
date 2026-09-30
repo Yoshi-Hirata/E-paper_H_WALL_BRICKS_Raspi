@@ -2523,7 +2523,31 @@ function musicBlockHtml() {
     <label title="Volume for both THE SHOW and the Timeline's preview - it is one audio player">Volume
       <input type="range" id="show-music-vol" min="0" max="100" step="1" value="${Math.round(player.volume * 100)}"></label>
     <span class="meta" id="show-music-host" style="display:none" title="${esc(SPEAKER_TITLE)}"></span>
+    <span id="show-music-hostvol" style="display:none" title="${esc(SPEAKER_VOLUME_TITLE)}">
+      <button class="small" id="spk-down">−</button>
+      <input type="range" id="spk-vol" min="0" max="100" step="1" value="70">
+      <button class="small" id="spk-up">+</button>
+      <span class="meta" id="spk-vol-text"></span></span>
   </div>`;
+}
+// The Conductor host's own loudness (conductor/speaker.py): stored in that
+// host's fleet.json, applied to the bluez transport (a Bluetooth speaker -
+// whose own buttons do nothing in this setup) or the PulseAudio sink.
+const SPEAKER_VOLUME_TITLE = "Loudness of the Conductor host's speaker (0-100). A Bluetooth speaker's "
+  + "own +/- buttons do nothing here: the source sets the volume. Stored on the Conductor host.";
+let speakerVolumeInFlight = false;
+async function setSpeakerVolume(body) {
+  if (speakerVolumeInFlight) return;
+  speakerVolumeInFlight = true;
+  try {
+    const answer = await api("/api/speaker/volume", body);
+    if (answer && answer.error) toast(`Speaker volume: ${answer.error}`, "warn");
+    if (fleet && fleet.speaker && answer && typeof answer.volume === "number") {
+      fleet.speaker.volume = answer.volume; fleet.speaker.applied = answer.applied;
+      fleet.speaker.volume_error = answer.error || null;
+    }
+  } catch (err) { toast(`Speaker volume: ${err.message}`, "warn"); }
+  finally { speakerVolumeInFlight = false; paintShowMusic(); }
 }
 // EXHIBITION mode: the Conductor was started with --speaker, so the music
 // plays through mpg123 on the Conductor host itself (a USB speaker on
@@ -2575,6 +2599,11 @@ function paintShowMusic() {
     const sp = fleet && fleet.speaker;
     host.style.display = sp ? "" : "none";
     if (sp) host.textContent = speakerNote(sp);
+    const hostvol = $("#show-music-hostvol"), slider = $("#spk-vol"), text = $("#spk-vol-text");
+    if (hostvol) hostvol.style.display = sp ? "" : "none";
+    if (sp && slider && document.activeElement !== slider && typeof sp.volume === "number") slider.value = sp.volume;
+    if (sp && text) text.textContent = (typeof sp.volume === "number" ? sp.volume + "%" : "")
+      + (sp.applied ? ` (${sp.applied})` : "") + (sp.volume_error ? ` — ${sp.volume_error}` : "");
   }
 }
 const MAX_MUSIC = 64 * 1024 * 1024;
@@ -5777,6 +5806,10 @@ document.addEventListener("click", async e => {
     paintShowMusic();
     return;
   }
+  if (e.target.id === "spk-down" || e.target.id === "spk-up") {
+    await setSpeakerVolume({ delta: e.target.id === "spk-up" ? 5 : -5 });
+    return;
+  }
   if (e.target.id === "tl-simulator") { e.preventDefault(); downloadSimulator(); return; }
   if (e.target.id === "refresh-hint-hide") { dismissRefreshHint(); renderTimeline(); return; }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
@@ -6154,6 +6187,7 @@ document.addEventListener("change", async e => {
   // remembered per browser once a send is made (sendWorkspace).
   if (id === "ws-send-to") { ui.sendTo = e.target.value.trim(); return; }
   if (id === "wifi-router-name") { ui.routerProfile = e.target.value.trim(); return; }
+  if (id === "spk-vol") { await setSpeakerVolume({ volume: Number(e.target.value) }); return; }
   // "Which LOOKs": the rows are left exactly as they are (the radio the
   // arrow keys just moved to keeps the focus) - only what hangs off the
   // choice is repainted.

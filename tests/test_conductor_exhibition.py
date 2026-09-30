@@ -41,6 +41,9 @@ from conductor.speaker import LATENCY_SAMPLES, Speaker
 from tests.test_fleet import StubLink
 from tests.test_look import GRID, MAP
 
+PAGE_TEXT = (Path(__file__).resolve().parents[1] / "conductor" / "web"
+             / "index.html").read_text(encoding="utf-8")
+
 
 # ------------------------------------------------------------ helpers
 
@@ -126,7 +129,7 @@ def test_serve_host_is_a_flag_and_localhost_stays_the_default(monkeypatch):
 
     def fake_serve(workspace, port, open_browser=False, host="127.0.0.1",
                    speaker=False, speaker_lead_ms=None, speaker_output=None,
-                   speaker_factory=None, passcode=None):
+                   speaker_factory=None, passcode=None, adopt=False):
         seen.update(workspace=workspace, port=port, host=host, speaker=speaker,
                     lead=speaker_lead_ms, output=speaker_output, passcode=passcode)
         return 0
@@ -1760,11 +1763,14 @@ def test_an_offered_unit_not_adopted_yet_is_named_not_left_out():
     clock.now += 40.0
     fleet._loop_tick()
     assert "radxa-02: not answering" in fleet.loop_state()["problem"]
-    # A command aimed at it while the offer is open is refused by name.
+    # A command aimed at it while the offer is open: it reports a show
+    # (the old one), so it is posted `show: None` and runs what it holds -
+    # main's behaviour; only a unit reporting NO show is refused by name
+    # (test_a_mid_show_restart_with_a_changed_compile_still_resumes).
     fleet.links["radxa-02"].online = True
     results = fleet._send_run(["radxa-01", "radxa-02"])
-    assert results["radxa-01"]["ok"]
-    assert results["radxa-02"] == {"ok": False, "error": "has not taken this show yet"}
+    assert results["radxa-01"]["ok"] and results["radxa-02"]["ok"]
+    assert [body["show"] for name, body in _posted(fleet, "/show/run") if name == "radxa-02"][-1] is None
 
 
 def test_the_speakers_own_p_excuses_only_its_first_answer(tmp_path):
@@ -1935,3 +1941,326 @@ def test_a_truncated_import_leaves_no_spool_behind(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ------------------------------------------------------------ the host's loudness + final gate
+
+class FakeAudio:
+    """pactl / busctl as the speaker runs them: a default sink that the
+    test can switch, a bluez transport whose fdN changes on reconnect."""
+
+    def __init__(self, sink="alsa_output.usb-Foo.analog-stereo", transport_fd=None):
+        self.sink = sink
+        self.transport_fd = transport_fd            # None: not connected
+        self.calls: "list[list[str]]" = []
+        self.bluez_volume = None
+        self.pulse_volumes: "dict[str, str]" = {}
+        self.fail_busctl = False
+
+    def __call__(self, argv, timeout=5.0):
+        self.calls.append(list(argv))
+        if argv[:2] == ["pactl", "info"]:
+            return 0, f"Server Name: pulseaudio\nDefault Sink: {self.sink}\nDefault Source: x\n"
+        if argv[:2] == ["pactl", "set-sink-volume"]:
+            self.pulse_volumes[argv[2]] = argv[3]
+            return 0, ""
+        if argv[:3] == ["busctl", "--system", "tree"]:
+            if self.fail_busctl:
+                return 1, "Failed to introspect"
+            lines = ["/org/bluez/hci0", "/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB",
+                     "/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/player0"]
+            if self.transport_fd is not None:
+                lines += [f"/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/sep1",
+                          f"/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/sep1/fd{self.transport_fd}"]
+            return 0, "\n".join(lines) + "\n"
+        if argv[:3] == ["busctl", "--system", "set-property"]:
+            if argv[4].endswith(f"/fd{self.transport_fd}"):
+                self.bluez_volume = (argv[4], int(argv[-1]))
+                return 0, ""
+            return 1, "Unknown object"
+        return 127, ""
+
+    def bluez_sets(self):
+        return [c for c in self.calls if c[:3] == ["busctl", "--system", "set-property"]]
+
+
+def _volume_stage(tmp_path, audio, volume=70, saved=None, **kw):
+    st = Stage(tmp_path, extra_lead_s=0.0)
+    st.speaker = Speaker(lambda: st.track, lambda: (st.run, st.duration),
+                         factory=st._factory, tick_s=0.005, track_check_s=0.01,
+                         retry_s=0.2, extra_lead_s=0.0, runner=audio, volume=volume,
+                         save_volume=(saved.append if saved is not None else None),
+                         volume_check_s=kw.get("volume_check_s", 0.05))
+    return st
+
+
+def test_the_volume_goes_to_the_pulse_sink_for_a_usb_speaker(tmp_path):
+    audio = FakeAudio()
+    saved = []
+    st = _volume_stage(tmp_path, audio, volume=70, saved=saved)
+    st.speaker.start()
+    try:
+        assert st.wait_for(lambda: st.speaker.status()["applied"] == "pulse")
+        assert audio.pulse_volumes == {"@DEFAULT_SINK@": "70%"}
+        assert audio.bluez_sets() == []
+        status = st.speaker.status()
+        assert status["volume"] == 70 and status["volume_error"] is None
+        # A change: persisted, applied, answered.
+        answer = st.speaker.set_volume(55)
+        assert answer == {"volume": 55, "applied": "pulse", "error": None}
+        assert saved == [55] and audio.pulse_volumes["@DEFAULT_SINK@"] == "55%"
+        # Clamped and rounded.
+        assert st.speaker.set_volume(140)["volume"] == 100
+        assert st.speaker.set_volume(-3)["volume"] == 0
+        assert st.speaker.set_volume(42.6)["volume"] == 43
+        # Not re-sent every check while nothing changed.
+        n = len([c for c in audio.calls if c[:2] == ["pactl", "set-sink-volume"]])
+        time.sleep(0.3)
+        assert len([c for c in audio.calls if c[:2] == ["pactl", "set-sink-volume"]]) == n
+    finally:
+        st.speaker.stop()
+
+
+def test_the_volume_goes_to_the_bluez_transport_and_follows_a_reconnect(tmp_path):
+    audio = FakeAudio(sink="bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink", transport_fd=None)
+    st = _volume_stage(tmp_path, audio, volume=90)
+    st.speaker.start()
+    try:
+        # The speaker is not connected yet: said, retried, nothing applied.
+        assert st.wait_for(lambda: "not found" in (st.speaker.status()["volume_error"] or ""))
+        assert st.speaker.status()["applied"] is None
+        # It connects: the AVRCP absolute volume, and the pulse sink at 100 %.
+        audio.transport_fd = 3
+        assert st.wait_for(lambda: st.speaker.status()["applied"] == "bluez")
+        assert audio.bluez_volume == ("/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/sep1/fd3", 114)
+        assert audio.pulse_volumes == {"bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink": "100%"}
+        assert st.speaker.status()["volume_error"] is None
+        # A reconnect: a new fdN, found on the next check, applied again.
+        audio.transport_fd = 7
+        assert st.wait_for(lambda: audio.bluez_volume and audio.bluez_volume[0].endswith("/fd7"))
+        assert audio.bluez_volume[1] == 114
+        # A change while connected: 0-100 -> 0-127.
+        answer = st.speaker.set_volume(100)
+        assert answer["applied"] == "bluez" and audio.bluez_volume[1] == 127
+        assert st.speaker.set_volume(0)["volume"] == 0 and audio.bluez_volume[1] == 0
+        # busctl failing is a status, retried.
+        audio.fail_busctl = True
+        st.speaker.set_volume(50)
+        assert st.wait_for(lambda: "busctl tree" in (st.speaker.status()["volume_error"] or ""))
+        audio.fail_busctl = False
+        assert st.wait_for(lambda: st.speaker.status()["volume_error"] is None
+                           and audio.bluez_volume[1] == 64)
+    finally:
+        st.speaker.stop()
+
+
+def test_no_pactl_at_all_is_a_status(tmp_path):
+    def missing(argv, timeout=5.0):
+        return 127, ""
+    st = _volume_stage(tmp_path, missing)
+    st.speaker.start()
+    try:
+        assert st.wait_for(lambda: "pactl info" in (st.speaker.status()["volume_error"] or ""))
+        assert st.speaker.status()["applied"] is None
+        assert st.speaker.status()["error"] is None, "the volume must not fail the speaker"
+    finally:
+        st.speaker.stop()
+
+
+def test_post_speaker_volume_and_the_fleet_report(tmp_path, monkeypatch):
+    import conductor.server as srv
+
+    ws = _workspace(tmp_path / "ws")
+    (ws.root / "fleet.json").write_text('{"speaker_volume": 60}', encoding="utf-8")
+    audio = FakeAudio()
+    fake = FakeMpg123()
+    made = {}
+
+    class Once(srv._Server):
+        def serve_forever(self, poll_interval=0.5):
+            handler = self.RequestHandlerClass
+            made["port"] = self.server_address[1]
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and handler.speaker.status()["applied"] is None:
+                time.sleep(0.01)
+            threading.Thread(target=super().serve_forever, daemon=True).start()
+            made["fleet"] = json.loads(_get(made["port"], "/api/fleet")[1])
+            made["set"] = _post(made["port"], "/api/speaker/volume", {"volume": 35})
+            made["delta"] = _post(made["port"], "/api/speaker/volume", {"delta": -10})
+            made["bad"] = [_post(made["port"], "/api/speaker/volume", b)[0]
+                           for b in ({}, {"volume": 101}, {"volume": "x"}, {"delta": "y"})]
+            made["file"] = json.loads((ws.root / "fleet.json").read_text(encoding="utf-8"))
+            self.shutdown()
+
+    monkeypatch.setattr(srv, "_Server", Once)
+    monkeypatch.setattr(srv, "already_serving", lambda port: False)
+    assert srv.serve(ws.root, port=0, speaker=True, speaker_lead_ms=0,
+                     speaker_factory=lambda argv: fake, speaker_runner=audio) == 0
+    speaker = made["fleet"]["speaker"]
+    assert speaker["volume"] == 60 and speaker["applied"] == "pulse"
+    assert speaker["volume_error"] is None
+    assert made["set"] == (200, {"volume": 35, "applied": "pulse", "error": None})
+    assert made["delta"] == (200, {"volume": 25, "applied": "pulse", "error": None})
+    assert made["bad"] == [400, 400, 400, 400]
+    assert made["file"] == {"speaker_volume": 25}
+    assert audio.pulse_volumes["@DEFAULT_SINK@"] == "25%"
+
+
+def test_volume_without_a_speaker_is_a_400(tmp_path):
+    server = make_server(tmp_path, port=0, fleet=Fleet({}))
+    port = _serve(server)
+    try:
+        status, answer = _post(port, "/api/speaker/volume", {"volume": 50})
+        assert status == 400 and "no speaker" in answer["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_page_has_the_speaker_volume_control():
+    assert 'id="spk-vol"' in PAGE_TEXT and 'id="spk-up"' in PAGE_TEXT and 'id="spk-down"' in PAGE_TEXT
+    assert 'api("/api/speaker/volume", body)' in PAGE_TEXT
+    assert '{ delta: e.target.id === "spk-up" ? 5 : -5 }' in PAGE_TEXT
+    assert '{ volume: Number(e.target.value) }' in PAGE_TEXT
+    # Shown only with a speaker Conductor.
+    assert 'hostvol.style.display = sp ? "" : "none"' in PAGE_TEXT
+
+
+# ---- final gate: adoption is opt-in and keeps the gates honest ----
+
+def test_the_pcs_default_start_never_offers_shows(tmp_path, monkeypatch):
+    import conductor.server as srv
+
+    ws = _workspace(tmp_path / "ws", music=False)
+    seen = {}
+
+    class Once(srv._Server):
+        def serve_forever(self, poll_interval=0.5):
+            seen["offered"] = dict(self.RequestHandlerClass.fleet._offered)
+
+    monkeypatch.setattr(srv, "_Server", Once)
+    monkeypatch.setattr(srv, "already_serving", lambda port: False)
+    assert srv.serve(ws.root, port=0) == 0
+    assert seen["offered"] == {}, "the show PC adopted shows without --adopt"
+    assert srv.serve(ws.root, port=0, adopt=True) == 0
+    assert set(seen["offered"]) == {"radxa-01"}
+    (ws.root / "fleet.json").write_text('{"adopt": true}', encoding="utf-8")
+    assert srv.serve(ws.root, port=0) == 0
+    assert set(seen["offered"]) == {"radxa-01"}
+    # ...and the CLI flag reaches serve().
+    calls = {}
+    monkeypatch.setattr(srv, "serve", lambda *a, **kw: calls.update(kw) or 0)
+    assert cli.main(["serve", "--adopt"]) == 0
+    assert calls["adopt"] is True
+    assert cli.main(["serve"]) == 0
+    assert calls["adopt"] is False
+
+
+def test_an_edit_after_an_adopted_restart_is_refused_with_upload_again(tmp_path):
+    """MED-A: the adopted unit is marked as holding the startup compile's
+    revision, so an edit + START says Upload again instead of running the
+    old pictures."""
+    import conductor.server as srv
+
+    ws = _workspace(tmp_path / "ws", music=False)
+    compiled, _ = ws.compile_show()
+    fleet = Fleet({})
+    fleet.links = {"radxa-01": StubLink("radxa-01", "loaded")}
+    fleet.links["radxa-01"].status["show"].update(id=compiled["radxa-01"]["id"],
+                                                  burn={"state": "burned"})
+    server = make_server(ws.root, port=0, fleet=fleet)
+    port = _serve(server)
+    ws = server.RequestHandlerClass.workspace
+    try:
+        srv.offer_startup_shows(fleet, ws)
+        fleet._supervise(fleet.links["radxa-01"])
+        assert set(fleet.shows) == {"radxa-01"}
+        assert ws.unit_marks["upload"] == {"radxa-01": ws.revision()}
+        assert ws.written_state()["uploaded"] == ws.revision()
+        # Untouched: START runs.
+        status, answer = _post(port, "/api/fleet/start", {"lead_s": 1})
+        assert status == 200 and answer.get("from_s") == 0.0, answer
+        fleet.stop_show()
+        # Edited after the restart: refused, as on a fresh Upload.
+        ws.set_timeline(90, [{"id": "p", "item": "Look23", "at": 0,
+                              "design": "Look23_color_scarlet_grid.csv"}])
+        status, answer = _post(port, "/api/fleet/start", {"lead_s": 1})
+        assert status == 400 and "Upload again" in answer["error"], answer
+        assert fleet.run is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_mid_show_restart_with_a_changed_compile_still_resumes(tmp_path):
+    """MED-B: the units run show X, the restarted conductor compiles Y and
+    adopts nothing - RESUME / NEXT still post show:None (main's behaviour)
+    to the units that report a show, never 'has not taken this show yet'."""
+    clock = Clock()
+    fleet = Fleet({}, clock=clock)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "running"),
+                   "radxa-02": StubLink("radxa-02", "running"),
+                   "radxa-05": StubLink("radxa-05", "loaded")}
+    fleet.links["radxa-05"].status = {"show": None}     # control only
+    for name in ("radxa-01", "radxa-02"):
+        fleet.links[name].status["show"].update(id="X", t0=clock.now + 5.0 - 30.0,
+                                                synced=True, burn={"state": "burned"})
+    fleet.offer_shows({"radxa-01": {"id": "Y", "cues": [], "duration": 100.0},
+                       "radxa-02": {"id": "Y", "cues": [], "duration": 100.0}})
+    for link in fleet.links.values():
+        fleet._supervise(link)
+    assert fleet.shows == {}                            # Y is not what they hold
+    snap = fleet.snapshot()
+    assert snap["run"] and snap["run"]["adopted"]
+    assert sorted(fleet._targets()) == ["radxa-01", "radxa-02"]
+    fleet.hold()
+    assert sorted(n for n, p in _posted(fleet, "/show/hold")) == ["radxa-01", "radxa-02"]
+    results = fleet.resume()
+    assert results == {"radxa-01": {"ok": True}, "radxa-02": {"ok": True}}, results
+    runs = _posted(fleet, "/show/run")
+    assert len(runs) == 2 and all(body["show"] is None for _, body in runs)
+    # A unit reporting NO show at all is still refused by name (it holds
+    # nothing to run), never posted a run naming nothing.
+    fleet.links["radxa-03"] = StubLink("radxa-03", "loaded")
+    fleet.links["radxa-03"].status = {"show": {}}
+    fleet._offered["radxa-03"] = {"id": "Y", "cues": [], "duration": 100.0}
+    results = fleet._send_run(["radxa-03"])
+    assert results == {"radxa-03": {"ok": False, "error": "has not taken this show yet"}}
+
+
+def test_the_started_without_hint_goes_once_the_unit_has_joined():
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.start_show(lead_s=1.0)
+    fleet.links["radxa-02"].online = False
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    clock.now += 60.0
+    fleet._loop_tick()
+    assert fleet.loop_state()["problem"].startswith("started without radxa-02")
+    # Back, and running this show (supervision's "started late"): the hint goes.
+    fleet.links["radxa-02"].online = True
+    fleet.links["radxa-02"].status["show"].update(state="running", id="showA")
+    assert fleet.loop_state() is None
+
+
+def test_the_exhibition_service_files_do_not_gate_the_boot():
+    from pathlib import Path as _P
+    radxa = _P(__file__).resolve().parents[1] / "radxa"
+    net = (radxa / "epaper-exhibition-net.service").read_text(encoding="utf-8")
+    assert "Type=simple" in net
+    assert not any(line.startswith("Type=oneshot") for line in net.splitlines())
+    assert not any(line.startswith("RemainAfterExit") for line in net.splitlines())
+    assert "TimeoutStartSec=infinity" in net
+    assert "Before=" not in net
+    conductor = (radxa / "epaper-conductor.service").read_text(encoding="utf-8")
+    assert "epaper-exhibition-net" not in conductor.split("After=")[1].split("\n")[0]
+    assert "Environment=XDG_RUNTIME_DIR=/run/user/1000" in conductor
+    assert "Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native" in conductor
+    exec_line = conductor.split("ExecStart=")[1].split("\n")[0]
+    assert "--adopt" in exec_line and "--speaker-output pulse" in exec_line
+    script = (radxa / "exhibition-net.sh").read_text(encoding="utf-8")
+    assert "grep -q" not in script and "$SECONDS" in script
+    assert '$4 == "activated"' in script
