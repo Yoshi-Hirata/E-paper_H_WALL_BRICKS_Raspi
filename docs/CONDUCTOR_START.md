@@ -264,6 +264,9 @@ Units タブのタイルにも、その機体の USB の基板(マスタ)が小�
 - 機体のアドレスを変えたいときだけ `showdata/fleet.json` を作る:
   `{"units": {"radxa-01": "192.168.51.101:8787", ...}}`(書いた機体だけ上書き)
 - 別 PC で開発・テストもするなら `pip install pytest` のうえ `python -m pytest -q`(約 3 分)
+- **展示(PC もルータも無い会場)**: Conductor を radxa-05 で動かし、ワークスペースは
+  Units タブの **Send workspace to …** で送る。手順は `radxa/EXHIBITION.md`
+  (Loop、radxa-05 のスピーカー、`serve --host 0.0.0.0 --speaker`)
 
 ## 6. ショー当日の順番(要点)
 

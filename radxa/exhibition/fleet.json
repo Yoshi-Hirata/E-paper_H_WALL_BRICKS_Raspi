@@ -1,0 +1,15 @@
+{
+  "_comment": "EXHIBITION mode: the Conductor runs on radxa-05, which is also the AZ-Epaper hotspot (10.42.0.1). The other units join it with static addresses radxa-NN -> 10.42.0.1NN; radxa-05's own garment is driven through its own agent on localhost. Copy this file to /home/radxa/exhibition/fleet.json on radxa-05 (radxa/EXHIBITION.md). It never travels with the workspace: /api/workspace/import keeps the receiver's copy.",
+  "units": {
+    "radxa-01": "10.42.0.101:8787",
+    "radxa-02": "10.42.0.102:8787",
+    "radxa-03": "10.42.0.103:8787",
+    "radxa-04": "10.42.0.104:8787",
+    "radxa-05": "127.0.0.1:8787",
+    "radxa-06": "10.42.0.106:8787",
+    "radxa-07": "10.42.0.107:8787",
+    "radxa-08": "10.42.0.108:8787",
+    "radxa-09": "10.42.0.109:8787",
+    "radxa-10": "10.42.0.110:8787"
+  }
+}

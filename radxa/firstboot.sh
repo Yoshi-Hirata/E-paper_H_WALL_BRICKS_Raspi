@@ -41,9 +41,16 @@ fi
 unit=$((10#${BASH_REMATCH[1]}))
 want="${SUBNET}.$((BASE + unit))/${PREFIX}"
 
-# The one Wi-Fi profile (system-wide, not MAC-bound, see radxa/README).
+# The router's Wi-Fi profile (system-wide, not MAC-bound, see radxa/README).
+# Never the EXHIBITION hotspot profile (radxa/EXHIBITION.md): that one is
+# AZ-Epaper on every unit - the hotspot itself on radxa-05, a client with a
+# static 10.42.0.1NN on the others - and nmcli lists the ACTIVE profile
+# first, so at the exhibition it would be the one found here and rewritten
+# to 192.168.51.1NN on every boot.
+EXHIBITION_CONN="AZ-Epaper"
 conn="$(nmcli -t -f NAME,TYPE connection show \
-        | awk -F: '$2 == "802-11-wireless" { print $1; exit }')"
+        | awk -F: -v skip="$EXHIBITION_CONN" \
+              '$2 == "802-11-wireless" && $1 != skip { print $1; exit }')"
 if [ -z "$conn" ]; then
     echo "no Wi-Fi connection profile; nothing to configure"
     exit 0

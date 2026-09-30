@@ -93,6 +93,12 @@ CLEAR_AFTER_MOVE_S = 30.0
 # clear never fires on that T0 at all. STOP is how the operator ends such a
 # run, and STOP has its own window above.
 END_REACH_MARGIN_S = 1.0
+# EXHIBITION mode's Loop (2026-09-30): how often the loop thread looks at the
+# run, and how long it waits before trying a restart again when the fleet
+# refused one (a unit offline, its pictures gone) - the same refusal a ③ START
+# press would get, said once in the corrections and retried until STOP.
+LOOP_TICK_S = 0.25
+LOOP_RETRY_S = 5.0
 
 # The PC's reference clock. Not time.monotonic(): on Windows that ticks
 # every 15.6 ms (measured 2026-09-21: round trips of exactly 0, 15 or
@@ -403,6 +409,12 @@ class UnitLink:
                 # those demos ARE is the fleet's cached /demo/list, added
                 # as `demos` by Fleet._unit_snapshot().
                 "demo_count": status.get("demos"),
+                # The unit's Wi-Fi as its agent reports it (EXHIBITION
+                # mode, 2026-09-30): {"ssid", "ip", "signal", "mode",
+                # "profile"} - mode "hotspot" on the unit that IS the
+                # AZ-Epaper hotspot, where signal is null. Absent from an
+                # agent too old to say; passed through as it comes.
+                "wifi": status.get("wifi"),
                 "unit_error": status.get("error"),
                 "log": status.get("log", []),
                 "show": status.get("show"),
@@ -414,9 +426,30 @@ class Fleet:
                  token: "str | None" = None, poll_s: float = POLL_S,
                  clock=pc_clock,
                  clear_after_stop_s: float = CLEAR_AFTER_STOP_S,
-                 clear_after_move_s: float = CLEAR_AFTER_MOVE_S):
+                 clear_after_move_s: float = CLEAR_AFTER_MOVE_S,
+                 loop_settings=None, loop_tick_s: float = LOOP_TICK_S,
+                 loop_retry_s: float = LOOP_RETRY_S):
         self._clock = clock
         self.poll_s = poll_s
+        # EXHIBITION mode's Loop: `loop_settings()` answers (wait_s, lead_s)
+        # while THE SHOW's Loop is on, None while it is off - the server
+        # hands in the workspace's own show.json (loop_wait_s and the
+        # countdown before START), so this class never reads a file. Asked
+        # when a run reaches its end (to arm the wait) and again when the
+        # wait is up (a Loop turned off meanwhile cancels it). See
+        # _loop_tick().
+        self.loop_settings = loop_settings
+        self.loop_tick_s = loop_tick_s
+        self.loop_retry_s = loop_retry_s
+        # When the next run begins on this PC's clock, or None while no loop
+        # restart is pending; the wait and lead it was armed with; how many
+        # times the loop has restarted this show (the START press is 0); and
+        # the last refusal the restart met, said once.
+        self._loop_at: "float | None" = None
+        self._loop_wait: float = 0.0
+        self._loop_lead: float = 0.0
+        self._loop_runs: int = 0
+        self._loop_problem: "str | None" = None
         # The two windows the clear after the show waits out: after a STOP
         # (the director's mid-show abort), and after any T0 move (so a seek
         # in the last seconds cannot delete the show). Knobs so the tests
@@ -510,6 +543,13 @@ class Fleet:
         demos = threading.Thread(target=self._demo_loop, daemon=True)
         demos.start()
         self._threads.append(demos)
+        # The Loop has a thread of its own too: it must notice the end of a
+        # run and fire the restart on time whether or not any unit is
+        # answering polls (the exhibition's units come and go with their
+        # garments), and _supervise() only runs for a unit that answered.
+        looper = threading.Thread(target=self._loop_loop, daemon=True)
+        looper.start()
+        self._threads.append(looper)
 
     def stop(self) -> None:
         self._stop.set()
@@ -524,6 +564,126 @@ class Fleet:
                 except Exception as exc:    # noqa: BLE001 - next poll retries
                     link.error = f"supervise: {exc}"
             self._stop.wait(self.poll_s)
+
+    # ---- EXHIBITION mode's Loop ----
+    # The Conductor runs headless on a unit at the exhibition, and the show
+    # has to play itself all day: when THE SHOW's Loop is on and a run
+    # reaches its end, the Conductor waits `loop_wait_s` and then starts
+    # again exactly as a ③ START press would - the countdown included, so
+    # the 0:00 cue puts the first look back. STOP (and any other move of the
+    # run) cancels the pending restart; the loop arms again the next time a
+    # run plays to its end.
+
+    def _loop_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._loop_tick()
+            except Exception as exc:        # noqa: BLE001 - never ends this
+                self.corrections.append(f"{time.strftime('%H:%M:%S')} "
+                                        f"loop: {exc}")
+                del self.corrections[:-20]
+            self._stop.wait(self.loop_tick_s)
+
+    def _loop_tick(self) -> None:
+        """One look at the run: arm the wait when a run has reached its
+        end, fire the restart when the wait is up.
+
+        "Reached its end" is the same clock reading everything else calls
+        the end of a run - the position on this PC's clock is at or past
+        the show's length (the page's ENDED, the music's stop). A run on
+        HOLD is not over, and a STOP has no run at all: neither arms
+        anything, and both cancel a wait already armed (_t0_moved).
+
+        The restart goes through start_show() with the run's own `force`
+        (a START the operator waved failed boards through stays waved
+        through all day) and the show's countdown as its lead. A refusal
+        - a unit not answering, its pictures cleared - is the same answer
+        a ③ START press would get: written to the corrections once per
+        reason, and tried again every loop_retry_s until it lands or STOP
+        takes the loop back.
+        """
+        with self._run_lock:
+            run = dict(self.run) if self.run else None
+            at = self._loop_at
+            gen = self._run_gen
+        if run is None or run["state"] != "running":
+            return
+        now = self._clock()
+        if at is None:
+            duration = self.show_duration()
+            if duration <= 0 or now - run["t0"] < duration:
+                return
+            settings = self.loop_settings() if self.loop_settings else None
+            if not settings:
+                return                      # Loop off: the run ends as ever
+            wait_s, lead_s = settings
+            with self._run_lock:
+                if self._run_gen != gen or self._loop_at is not None:
+                    return                  # moved meanwhile: read it again
+                self._loop_at = now + float(wait_s)
+                self._loop_wait, self._loop_lead = float(wait_s), float(lead_s)
+                self._loop_problem = None
+            self.corrections.append(
+                f"{time.strftime('%H:%M:%S')} show ended - Loop: next run "
+                f"in {float(wait_s):.0f} s")
+            del self.corrections[:-20]
+            return
+        if now < at:
+            return
+        # Read again at the moment it matters: a Loop turned off during
+        # the wait means no restart, and a countdown changed meanwhile is
+        # the one this run counts down.
+        settings = self.loop_settings() if self.loop_settings else None
+        if not settings:
+            with self._run_lock:
+                self._loop_at = None
+            self.corrections.append(f"{time.strftime('%H:%M:%S')} "
+                                    "Loop turned off - no next run")
+            del self.corrections[:-20]
+            return
+        _wait_s, lead_s = settings
+        try:
+            results = self.start_show(float(lead_s), 0.0,
+                                      force=bool(run.get("force")), loop=True)
+        except ValueError as exc:
+            reason = str(exc)
+            with self._run_lock:
+                if self._run_gen != gen:
+                    return                  # STOP or a move beat us to it
+                self._loop_at = now + self.loop_retry_s
+                said = self._loop_problem == reason
+                self._loop_problem = reason
+            if not said:
+                self.corrections.append(
+                    f"{time.strftime('%H:%M:%S')} Loop: cannot start again "
+                    f"yet ({reason}) - trying every {self.loop_retry_s:.0f} s")
+                del self.corrections[:-20]
+            return
+        failed = sorted(name for name, r in results.items() if not r.get("ok"))
+        self.corrections.append(
+            f"{time.strftime('%H:%M:%S')} Loop: run {self._loop_runs} started"
+            + (f" ({', '.join(failed)} did not take it)" if failed else ""))
+        del self.corrections[:-20]
+
+    def loop_state(self) -> "dict | None":
+        """What /api/fleet says about a pending loop restart: seconds until
+        the next run (`next_in_s`), the wait and lead it was armed with,
+        how many restarts this show has had, and the refusal the restart
+        is waiting out, if any. None while no restart is pending."""
+        with self._run_lock:
+            if self._loop_at is None or self.run is None:
+                return None
+            return {"next_in_s": max(0.0, round(self._loop_at - self._clock(), 2)),
+                    "wait_s": self._loop_wait, "lead_s": self._loop_lead,
+                    "runs": self._loop_runs, "problem": self._loop_problem}
+
+    def run_snapshot(self) -> "tuple[dict | None, float]":
+        """(a copy of the run, the show's length) under the run lock - what
+        the Conductor host's own speaker follows (conductor/speaker.py),
+        from its own thread, without the page's whole snapshot()."""
+        with self._run_lock:
+            run = dict(self.run) if self.run else None
+        return run, self.show_duration()
 
     # ---- what each unit holds in its own menu ----
 
@@ -654,6 +814,9 @@ class Fleet:
                 # or null when none is armed - the page counts it down and
                 # says what takes it back (CLEAR_AFTER_STOP_S).
                 "clear_in_s": self.clear_armed_in_s(),
+                # EXHIBITION mode's Loop: the restart that is pending, or
+                # null - the page's "next run in m:ss" (loop_state()).
+                "loop": self.loop_state(),
                 "burn": {"burned": burned, "total": len(reporting)}}
 
     def _unit_snapshot(self, link, run: "dict | None" = None) -> dict:
@@ -1251,7 +1414,8 @@ class Fleet:
             "phase": link.post("/show/preset", body).get("phase")})
 
     def start_show(self, lead_s: float = DEFAULT_LEAD_S,
-                   at: float = 0.0, force: bool = False) -> "dict[str, dict]":
+                   at: float = 0.0, force: bool = False,
+                   loop: bool = False) -> "dict[str, dict]":
         """Begin the show `lead_s` from now, `at` seconds into it (0.0 for
         the top). The caller resolves `at` itself - normally
         `fleet.start_at`, where a SEEK made before the show started (or
@@ -1268,7 +1432,11 @@ class Fleet:
         kept on the run (`run["force"]`) and posted with every /show/run
         of this run (_send_run, _supervise), so the unit's own gate waves
         the same boards through; the unit still refuses a force over a
-        live board that would not take the write."""
+        live board that would not take the write.
+
+        `loop` is the Loop's own restart (_loop_tick): the same START in
+        every respect, counted on the run as `loops` so the page can say
+        which run of the day this is. A START press starts the count over."""
         # Before the gate: a STOP's clear that is still inside its window
         # has not deleted anything, so dropping it is what lets START run
         # the show again (the director's mid-show abort, taken back).
@@ -1287,12 +1455,15 @@ class Fleet:
             raise ValueError("; ".join(burning))
         with self._run_lock:
             self._may_adopt, self._stopped = False, False
+            self._loop_runs = self._loop_runs + 1 if loop else 0
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",
                         "held_at": None, "force": bool(force),
                         # Mirrored onto the run so the page can see what
                         # THIS run will do when it is over, whatever the
                         # timeline is edited to meanwhile.
-                        "clear_after_show": self.clear_wanted()}
+                        "clear_after_show": self.clear_wanted(),
+                        # Which run of the Loop this is (0: the START press).
+                        "loops": self._loop_runs}
             self.start_at = 0.0
             # A new run: nobody has been asked to clear anything yet, and
             # a unit that was too old last time may have been updated.
@@ -1315,6 +1486,11 @@ class Fleet:
         unit being 30 s out of step and the whole board would go red.
         """
         self._run_gen += 1
+        # Any move of the run is "the show is not simply over": a pending
+        # Loop restart is dropped, and arms again the next time a run
+        # reaches its end (a STOP has no run, so it never does).
+        self._loop_at = None
+        self._loop_problem = None
         if self.run is None:
             self._t0_was, self._t0_seen = {}, {}
             return
@@ -1685,6 +1861,13 @@ class Fleet:
         duration = float(show.get("duration", 0))
         if self._clock() - run["t0"] < duration + CLEAR_AFTER_END_S:
             return False
+        # A Loop restart is pending: the show is not over, it is between
+        # runs, and the pictures are what the next run triggers. With Loop
+        # on, "Clear pictures after the show" happens on STOP (its own
+        # window) and never at an end the Loop is about to play past.
+        with self._run_lock:
+            if self._loop_at is not None:
+                return False
         if not self._reached_end_by_playing(run, duration):
             return False
         self._clear_units([link.name])
@@ -1861,3 +2044,33 @@ class Fleet:
         """cancel / standby / release."""
         return self._each(list(names), lambda link: {
             "phase": link.post(path, {}).get("phase")})
+
+    def wifi_select(self, profile: str, after_s: float,
+                    last: "list[str] | None" = None) -> "dict[str, dict]":
+        """POST /wifi/select {"profile", "after_s"} to every ONLINE unit -
+        the page's "All units -> AZ-Epaper in 20 s" (EXHIBITION mode). The
+        unit schedules the switch and answers {"scheduled": true,
+        "after_s"}, or refuses (409) while a show runs, is held or is
+        restored on its garment; a unit that is offline is reported as such
+        rather than waited out.
+
+        `last` names the units that are this Conductor's own host (radxa-05
+        at the exhibition, reached over 127.0.0.1): they are told AFTER
+        every other unit has answered, because switching the host's Wi-Fi
+        takes the hotspot - and every other unit's connection - with it.
+        """
+        body = {"profile": str(profile), "after_s": float(after_s)}
+
+        def action(link):
+            if not link.online:
+                raise RuntimeError("offline")
+            answer = link.post("/wifi/select", body, learn=False)
+            return {"scheduled": bool(answer.get("scheduled")),
+                    "after_s": answer.get("after_s", after_s)}
+
+        own = [name for name in (last or ()) if name in self.links]
+        first = [name for name in self.links if name not in own]
+        results = self._each(first, action)
+        if own:
+            results.update(self._each(own, action))
+        return results

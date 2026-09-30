@@ -1,0 +1,30 @@
+[Unit]
+Description=H_WALL_BRICKS show Conductor (EXHIBITION mode, headless on this unit)
+# The Conductor drives the other units over the AZ-Epaper hotspot this
+# unit provides (radxa/EXHIBITION.md), so it waits for the network to be
+# up; it does NOT conflict with epaper-ui - this unit's own garment is
+# driven through its own agent at 127.0.0.1:8787 like any other unit's.
+After=network-online.target NetworkManager.service epaper-ui.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radxa
+WorkingDirectory=/home/radxa/E-paper_H_WALL_BRICKS_Raspi
+Environment=PYTHONUNBUFFERED=1
+# The Conductor is standard library only, so the system python3 (Debian
+# 11's 3.9) runs it; the repo's .venv is for the unit's own UI. --host
+# 0.0.0.0 opens the page to the hotspot (10.42.0.1:8765) and to the router
+# network when both are up; --speaker plays the show's music through mpg123
+# on this unit's USB speaker (apt install mpg123). The workspace is its own
+# folder, never ./showdata: an exhibition show must not be confused with a
+# rehearsal's.
+ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --port 8765
+# always, not on-failure: with the Loop on, this process IS the show, and a
+# clean exit would leave the garments on their last look until somebody
+# reached a terminal.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1099,6 +1099,90 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
 1.0 秒の最後の手段が入るので出ず、9.0 秒おき(Timeline が許す下限)が 60 秒を超えて
 続くと出る。
 
+### 4.7 Exhibition mode ― 展示モード(2026-09-30)
+
+会場に PC もルータも置かず、Conductor を **radxa-05 上でヘッドレス**に動かす。radxa-05 は
+Wi-Fi ホットスポット `AZ-Epaper`(10.42.0.1)でもあり、ほかの機体は固定アドレス
+radxa-NN → `10.42.0.1NN:8787` でそこに入る。操作手順は `radxa/EXHIBITION.md`、配備ファイルは
+`radxa/epaper-conductor.service`(`Restart=always`、`After=network-online.target`)と
+`radxa/exhibition/fleet.json`(radxa-05 自身は `127.0.0.1:8787`)。`radxa/firstboot.sh` は
+`AZ-Epaper` という名のプロファイルを飛ばす(有効なプロファイルが一覧の先頭に来るため、
+飛ばさないと会場で 192.168.51.1NN に書き換えてしまう)。
+
+- **`serve --host`**: `python -m conductor serve --host 0.0.0.0`(既定は従来どおり
+  `127.0.0.1`)。起動時に届く URL を全部表示する(`127.0.0.1` とホストの IPv4 それぞれ)。
+  `--port`・`--workspace` は従来どおり
+- **Loop**(THE SHOW の `Loop: next run after [30] s`): `show.json` の `loop_wait_s`(秒、
+  10〜600、0.1 秒単位。**キーが無ければ off**、off にするとキーを消す)。undo / redo、
+  ショーの書き出し(常に入る。off は `null`)・読み込み(**`null` は off にする**、キーの
+  無いファイルは今の値を変えない ― countdown と違い、null に意味があるのは off を
+  radxa-05 へ運べなくてはならないため)。`_REVISION_IGNORES` に入り、機体のショーファイルにも
+  id にも入らない(Upload を求めない)。
+  `POST /api/loop {"on": true|false, "wait_s": 30}`(`wait_s` は on のとき任意。既存値か 30)
+  → `/api/fleet` と同じ `loop` オブジェクト
+  `{"on", "wait_s"(int), "next_in_s"(float|null), "runs", "problem"}`。
+  **効き方**(`Fleet._loop_tick`、専用スレッド 0.25 秒おき): ラン中の位置(PC 時計)が
+  `show_duration` に達したら(= ページの ENDED、音の停止と同じ判定)、`loop_settings()`
+  (ワークスペースの `loop_wait_s` と countdown)を読み、on なら `next_in_s = wait` を
+  アームする。待ちが尽きたらもう一度読み(**待ちの間に off にしたら再開しない**)、
+  `start_show(lead = countdown, at = 0, force = 前のランの force, loop=True)` ― ③ START を
+  押したのと同じ(カウントダウン込み、0:00 のキューが最初の絵を戻す)。ランの `loops` が
+  1, 2, … と増え、③ START を押すと 0 に戻る。**STOP と、どの T0 移動(HOLD / RESUME /
+  SEEK / NEXT / START)も**保留中の再開を取り消す(`_t0_moved`)。再開が断られたとき
+  (機体が落ちている、絵が消えている ― ③ START と同じ拒否)は理由を `problem` と
+  corrections に **1 回**書き、5 秒ごとに再試行。**Loop の待ちの間は END の消去
+  (4.3)を出さない** ― 次のランが同じ絵を使う。消去は STOP のとき(従来の 30 秒窓)。
+  ページ: 大時計 `ENDED · NEXT RUN IN 0:25 (run 2)`、NOW → NEXT ボード(ステージ
+  モニターも)は見出し `NEXT RUN in 25 s` と `0:25`(10 秒で琥珀、3 秒で赤)、注記に
+  理由。STOP の確認文に「Loop も止まる」
+- **`serve --speaker`**(`conductor/speaker.py`): ホストの `mpg123 -R`(remote-control、
+  stdin / stdout のパイプ)でショーの音楽を鳴らす。専用スレッド、HTTP スレッドは
+  `status()` を読むだけ(待ちに使う Condition と status のロックは別)。
+  読み込み: `LOADPAUSED <file>`(= LOAD してすぐ PAUSE の 1 コマンド。`@P 2` を返す
+  ビルドなら `P` で止める)→ **往復遅延の測定**: `V 0` で無音にして `P`(再生)→ `@P 2`
+  までの時間を LATENCY_SAMPLES = 3 回測り(その都度 `P` で戻す)、中央値を 0.5 秒で
+  頭打ち → `V 100`、`J 0s`。**アンパウズ遅延 = 測った往復 + DEVICE_LATENCY_S 0.05**
+  (ALSA バッファぶんの見積もり。`--speaker-lead-ms` で変える)。ランの追従は fleet の
+  `run_snapshot()`(t0, state, held_at)を 50 ms ごとに読み、変化したときだけ動く:
+  t0 が先(カウントダウン)→ `J 0s` で待ち、**t0 − 遅延** に `P`。途中位置・SEEK・NEXT・
+  RESUME → `J <pos + 遅延>s`(止まっていれば `P`)。HOLD → `P`。STOP / ショーの長さに
+  達した(4.4 と同じ、曲が長くても止める)→ `P` と `J 0s`(曲は読み込んだまま、次の
+  ランへ)。音楽ファイルが替わったら 1 秒以内に読み直す。**mpg123 が無い / 死んだ**:
+  1 回ログに書き、ランはそのまま進み、30 秒ごとに再試行。`/api/fleet` の
+  `speaker: {"available", "error", "state", "track", "latency_ms", "playing", "log"}`
+  (`--speaker` 無しは `null`)。ページは `speaker` を見たら **自分のプレイヤーを既定で
+  ミュート**(`show.muted` が未保存のときだけ。Mute / Unmute の選択が保存され、以後は
+  それが勝つ)し、MUSIC 行に `music plays on the Conductor host (USB speaker) — …` を出す。
+  プロセスのファクトリは注入できる(テストは偽 mpg123)
+- **ワークスペースの受け渡し**(2 台の Conductor 間、ssh 不要): `GET /api/workspace/export`
+  = 素の .tar(`show.json`, `history.json`, `files/*.csv`, `music/<file>`。**`fleet.json` は
+  入らない** ― ホストごとの物)。`POST /api/workspace/import`(body が .tar): **ラン中は
+  409**(Loop の待ち中も ― ランは残っている)、**200 MB 超は 413**(Content-Length で
+  先に断る)、fleet.json に `token` があるホストは **`X-Show-Token` 無しは 401**(両
+  エンドポイントとも)。メンバーは名前で全部検査してから書く(上の 4 種以外、`..`、
+  リンク、CSV / 音楽として使えない名前は 400。tar 内の `fleet.json` は読み飛ばす)、
+  ワークスペースの隣の `.import-…` に展開 → ロック下で 4 項目を退避・差し替え(途中で
+  失敗したら戻す)→ `marks` / `compiled` を捨てる(新しいタイムライン: START は
+  「Upload again」と言う ― 正しい)→ コンパイルして返答
+  `{"ok", "files", "music", "show", "history", "cues", "revision", "shows": {unit: id},
+  "problems"}`。ワークスペースのフォルダ以外には何も触れない。id には workspace の
+  フォルダ名が入るので `showdata` と `exhibition` では同じショーでも id が違う(機体は
+  radxa-05 から Upload するので支障なし)。
+  ページ(Units タブ `SEND THIS WORKSPACE TO ANOTHER CONDUCTOR`): 送り先(既定
+  `radxa-05:8765`、ブラウザに記憶)→ `POST /api/workspace/send {"to"}` → **自分の
+  Conductor がサーバ間で送る**(ブラウザは相手に触れない。トークンも付く)→
+  `GET /api/workspace/send?job=…` を 0.4 秒ごとに読み、`packing / sending n of N MB /
+  done` と受け手の返答(CSV 数・キュー数・音楽・機体ごとの id)を出す
+- **機体の Wi-Fi**(radxa-05 の LCD の EXHIBITION 行と対): `/status` の
+  `wifi: {ssid, ip, signal, mode, profile}` をタイルの `Wi-Fi` 行に(signal が null なら
+  `mode`、radxa-05 は `hotspot`)。UNITS カードの `All units → AZ-Epaper in 20 s` /
+  `All units → router in 20 s`(ルータのプロファイル名は欄に。機体が報告している
+  AZ-Epaper 以外の名前が初期値、ブラウザに記憶)→ 確認 → `POST /api/fleet/wifi_select
+  {"profile", "after_s": 20}` → online の全機体に `/wifi/select` を並列で(offline は
+  `offline`、ショー中の機体は 409 の文言がそのまま)、**この Conductor 自身の機体
+  (127.0.0.1 かホスト自身の IP の機体)は最後に**。返答 `{"units", "last", "profile",
+  "after_s"}`、トーストに受けた機体と断った機体
+
 ## 5. 実機検証で確認した制約(メーカー仕様との差異)
 
 | # | 事象 | 対応 |
