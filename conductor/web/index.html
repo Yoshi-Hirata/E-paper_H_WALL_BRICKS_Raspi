@@ -778,9 +778,53 @@ function fmtSize(bytes) {
 }
 const PITCH = 0.78, MARGIN = 1.2;
 
+// The passcode (EXHIBITION mode: `serve --passcode`). A Conductor on the
+// hotspot answers 401 {"error": "passcode required"} to anything that changes
+// the show or hands out its material when the browser is not on the Conductor
+// host itself. The page asks ONCE (its first 401), keeps the answer in this
+// browser and sends it with every request as the X-Passcode header - and as a
+// cookie, because the <audio> element that streams /api/music/file cannot
+// set a header. A wrong answer is asked again on the next 401; Escape leaves
+// the request refused and the page says so.
+const PASSCODE_KEY = "conductor.passcode";
+function loadPasscode() { try { return localStorage.getItem(PASSCODE_KEY) || ""; } catch { return ""; } }
+function savePasscode(code) {
+  try { localStorage.setItem(PASSCODE_KEY, code); } catch {}
+  try { document.cookie = "passcode=" + encodeURIComponent(code) + "; path=/; SameSite=Strict"; } catch {}
+}
+let passcode = loadPasscode();
+if (passcode) savePasscode(passcode);          // the cookie, after a reload
+function passcodeHeaders(headers) {
+  const out = Object.assign({}, headers || {});
+  if (passcode) out["X-Passcode"] = passcode;
+  return out;
+}
+async function askPasscode() {
+  const typed = window.prompt("This Conductor asks for its passcode (set on the Conductor host - see radxa/EXHIBITION.md). Enter it once; it is remembered in this browser.", "");
+  if (typed === null || !typed.trim()) return false;
+  passcode = typed.trim();
+  savePasscode(passcode);
+  return true;
+}
+// fetch() with the passcode, retried once after asking for it - for api()
+// and the few raw uploads (music, show files) that do not go through it.
+async function fetchWithPasscode(path, init) {
+  const send = () => fetch(path, Object.assign({}, init || {}, { headers: passcodeHeaders(init && init.headers) }));
+  let res = await send();
+  // A wrong answer is asked again (a typo must not cost a reload); Escape
+  // leaves the request refused. Three tries, so a Conductor whose passcode
+  // the operator does not know cannot hold the page in a prompt for ever.
+  for (let tries = 0; res.status === 401 && tries < 3; tries++) {
+    let refused = null;
+    try { refused = (await res.clone().json()).error; } catch {}
+    if (refused !== "passcode required" || !await askPasscode()) break;
+    res = await send();
+  }
+  return res;
+}
 async function api(path, body) {
-  const res = await fetch(path, body ? { method: "POST", headers: {"Content-Type": "application/json"},
-                                         body: JSON.stringify(body) } : undefined);
+  const res = await fetchWithPasscode(path, body ? { method: "POST", headers: {"Content-Type": "application/json"},
+                                                     body: JSON.stringify(body) } : undefined);
   return res.json();
 }
 // tone: "" (the usual) or "warn" - amber, for a result the operator has to
@@ -2542,7 +2586,7 @@ async function uploadMusic(file) {
     // A raw header value must be Latin-1; encode it so names outside that
     // range (e.g. non-ASCII show titles) do not throw inside fetch(). The
     // server is expected to decodeURIComponent() it back.
-    const res = await fetch("/api/music", { method: "POST", headers: { "X-File-Name": encodeURIComponent(file.name) }, body: file });
+    const res = await fetchWithPasscode("/api/music", { method: "POST", headers: { "X-File-Name": encodeURIComponent(file.name) }, body: file });
     const result = await res.json();
     toast(result.error ? result.error : `${file.name} loaded`);
   } catch (err) { toast("Upload failed: " + err.message); }
@@ -2581,7 +2625,7 @@ async function downloadSimulator() {
     : "No music is loaded, so this will be the simulator without a built-in track");
   let url = null;
   try {
-    const response = await fetch("/api/simulator?music=1");
+    const response = await fetchWithPasscode("/api/simulator?music=1");
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
       try { detail = (await response.json()).error || detail; } catch {}
@@ -3824,13 +3868,14 @@ function startCountdown() {
 // presses itself, countdown included. Like the countdown it never reaches a
 // unit and asks for no Upload. Off by default: a rehearsal that loops on its
 // own would be a surprise, an exhibition that does not would be a fault.
-const LOOP_WAIT_DEFAULT_S = 30, LOOP_WAIT_MIN_S = 10, LOOP_WAIT_MAX_S = 600;
+const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 40, LOOP_WAIT_MAX_S = 600;
 const LOOP_TITLE = "Loop(展示モード): ショーが終わったら、ここに書いた秒数待って "
   + "③ START をもう一度(カウントダウン込み。0:00 のキューが最初の絵に戻す)。"
   + "STOP で止まる。ショーと一緒に保存、Upload 不要。"
   + "\n\nLoop (EXHIBITION mode): when a run reaches its end the Conductor waits "
   + "this long and presses ③ START again itself - countdown included, so the "
-  + "0:00 cue puts the first look back. STOP cancels the pending run. 10 to 600 s, "
+  + "0:00 cue puts the first look back. STOP cancels the pending run. 40 to 600 s (shorter "
+  + "and the master can go over 60 s without a STOP between two runs), "
   + "stored with the show, no Upload needed. With \"Clear pictures after the show\" "
   + "on, the clear happens on STOP, never between runs.";
 function loopWait() {            // the wait the show holds, or null (off)
@@ -3850,6 +3895,13 @@ async function saveLoop(waitS) {      // null = off; POST /api/loop answers the 
     toast(`Could not save it: ${err.message}`);
   }
   await refresh();                  // re-renders, the two fields included
+}
+// A running run whose position is past the show's length: ENDED on the big
+// clock, and the Loop's wait when there is one. Read off the same carried
+// forward position everything else uses (conductor/fleet.py run_is_over()).
+function runIsOver() {
+  const run = fleet?.run, D = fleetDuration();
+  return !!run && run.state === "running" && D > 0 && fleetShowPos() >= D;
 }
 // Seconds until the Loop's next run, carried forward from the last poll the
 // way the run position is - or null when no run is pending.
@@ -5374,7 +5426,7 @@ function usbBoardLine(u) {
     + `</div>`;
 }
 // The unit's Wi-Fi, as its agent reports it (EXHIBITION mode: `wifi:
-// {ssid, ip, signal, mode, profile}` in /status). The signal in dBm where
+// {ssid, ip, signal, mode, profile}` in /status). The signal (nmcli's percent) where
 // there is one; the MODE where there is not - "hotspot" on the unit that IS
 // AZ-Epaper (radxa-05), which has no signal of its own to report. Nothing at
 // all from an agent too old to say.
@@ -5382,7 +5434,7 @@ function wifiRow(u) {
   const w = u && u.wifi;
   if (!w || typeof w !== "object") return "";
   const where = [w.ssid || w.profile || "—", w.ip || ""].filter(Boolean).join(" · ");
-  const how = typeof w.signal === "number" ? `${w.signal} dBm` : (w.mode || "");
+  const how = typeof w.signal === "number" ? `${w.signal}%` : (w.mode || "");
   const title = `profile ${w.profile || "?"} · mode ${w.mode || "?"}`;
   return `<div class="row"><span>Wi-Fi</span><b title="${esc(title)}">${esc(where)}${how ? ` · ${esc(how)}` : ""}</b></div>`;
 }
@@ -5453,7 +5505,7 @@ async function recoverBuses(names, waitMs) {
       const abort = waitMs ? new AbortController() : null;
       const timer = abort ? setTimeout(() => abort.abort(), waitMs) : null;
       try {
-        const res = await fetch(url, { method: "POST", signal: abort ? abort.signal : undefined,
+        const res = await fetchWithPasscode(url, { method: "POST", signal: abort ? abort.signal : undefined,
                                        headers: { "Content-Type": "application/json" },
                                        body: "{}" });
         return { name, result: await res.json() };
@@ -5788,7 +5840,12 @@ document.addEventListener("click", async e => {
     return;
   }
   if (e.target.id === "show-start") {
-    const again = !!fleet?.run, startAt = fleetStartAt();
+    // A run that has reached its end - ENDED, or the Loop's wait - is not
+    // a running show: START then is simply the next run, asked about like a
+    // first one and sent WITHOUT `force` (the server agrees: run_is_over).
+    // The burn-gate force is the operator's own answer to one question,
+    // never something a restart inherits.
+    const again = !!fleet?.run && !runIsOver(), startAt = fleetStartAt();
     // A unit that failed to burn some boards does not block START outright -
     // the operator may choose to start anyway, missing boards and all - but
     // is asked first, the same way an already-running show asks before it

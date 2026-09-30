@@ -99,6 +99,19 @@ END_REACH_MARGIN_S = 1.0
 # press would get, said once in the corrections and retried until STOP.
 LOOP_TICK_S = 0.25
 LOOP_RETRY_S = 5.0
+# ...and how long past its wait the loop keeps every unit waiting for one
+# that is not ready (offline, still writing). After this it starts with the
+# units that are ready and names the others (PM decision, 2026-09-30): one
+# garment must never freeze the whole exhibition. The others are still
+# polled and supervised, and rejoin at the next restart.
+LOOP_WAIT_READY_S = 60.0
+# The fleet-wide Wi-Fi switch (EXHIBITION mode): the side that must move
+# first gets the short lead, the other side the long one, so the hotspot is
+# up before its clients look for it and down only after they have left.
+WIFI_SWITCH_SOON_S = 5.0
+WIFI_SWITCH_RANGE_S = (3.0, 120.0)      # what the unit's /wifi/select takes
+DEFAULT_HOTSPOT_UNIT = "radxa-05"
+HOTSPOT_PROFILE = "AZ-Epaper"
 
 # The PC's reference clock. Not time.monotonic(): on Windows that ticks
 # every 15.6 ms (measured 2026-09-21: round trips of exactly 0, 15 or
@@ -450,6 +463,18 @@ class Fleet:
         self._loop_lead: float = 0.0
         self._loop_runs: int = 0
         self._loop_problem: "str | None" = None
+        # When the wait first ran out (the LOOP_WAIT_READY_S clock starts
+        # there), and the refusals already written down for this wait.
+        self._loop_due: "float | None" = None
+        self._loop_said: "set[str]" = set()
+        # What THIS conductor's workspace compiles to, offered for adoption:
+        # a conductor restarted (systemd, a power blip) knows nothing about
+        # who holds what, and a unit that reports exactly one of these show
+        # ids with its pictures burned is taken as holding it (see
+        # offer_shows / _adopt_show) - so the Loop and START work again
+        # without an Upload of every picture. Per unit, once per offer.
+        self._offered: "dict[str, dict]" = {}
+        self._offer_said: "set[str]" = set()
         # The two windows the clear after the show waits out: after a STOP
         # (the director's mid-show abort), and after any T0 move (so a seek
         # in the last seconds cannot delete the show). Knobs so the tests
@@ -594,13 +619,19 @@ class Fleet:
         HOLD is not over, and a STOP has no run at all: neither arms
         anything, and both cancel a wait already armed (_t0_moved).
 
-        The restart goes through start_show() with the run's own `force`
-        (a START the operator waved failed boards through stays waved
-        through all day) and the show's countdown as its lead. A refusal
-        - a unit not answering, its pictures cleared - is the same answer
-        a ③ START press would get: written to the corrections once per
-        reason, and tried again every loop_retry_s until it lands or STOP
-        takes the loop back.
+        The restart goes through start_show() with the show's countdown
+        as its lead and NEVER with `force` (a failed board is the
+        operator's call, once, at the START press - a restart at 3 a.m.
+        does not make it again). A refusal - a unit not answering, its
+        pictures cleared - is the same answer a ③ START press would get:
+        written to the corrections once per distinct reason and tried
+        again every loop_retry_s. For LOOP_WAIT_READY_S past the wait,
+        that is; after that the run starts with the units that ARE ready
+        and names the others (`problem`, and once in the corrections) -
+        they stay polled and supervised and rejoin at the next restart.
+        STOP takes the loop back at any point, the restart's own window
+        included (the run generation is checked under the lock inside
+        start_show).
         """
         with self._run_lock:
             run = dict(self.run) if self.run else None
@@ -621,12 +652,11 @@ class Fleet:
                 if self._run_gen != gen or self._loop_at is not None:
                     return                  # moved meanwhile: read it again
                 self._loop_at = now + float(wait_s)
+                self._loop_due = None
                 self._loop_wait, self._loop_lead = float(wait_s), float(lead_s)
                 self._loop_problem = None
-            self.corrections.append(
-                f"{time.strftime('%H:%M:%S')} show ended - Loop: next run "
-                f"in {float(wait_s):.0f} s")
-            del self.corrections[:-20]
+                self._loop_said = set()
+            self._note(f"show ended - Loop: next run in {float(wait_s):.0f} s")
             return
         if now < at:
             return
@@ -637,33 +667,58 @@ class Fleet:
         if not settings:
             with self._run_lock:
                 self._loop_at = None
-            self.corrections.append(f"{time.strftime('%H:%M:%S')} "
-                                    "Loop turned off - no next run")
-            del self.corrections[:-20]
+            self._note("Loop turned off - no next run")
             return
         _wait_s, lead_s = settings
+        with self._run_lock:
+            if self._loop_due is None:
+                self._loop_due = now
+            overdue = now - self._loop_due >= LOOP_WAIT_READY_S
+        skip: "set[str]" = set()
+        if overdue:
+            # The 60 s of grace are up: whoever is not ready is left out
+            # of this run, by name, and the rest go on.
+            skip = set(self._not_ready(self._targets()))
         try:
-            results = self.start_show(float(lead_s), 0.0,
-                                      force=bool(run.get("force")), loop=True)
+            results = self.start_show(float(lead_s), 0.0, loop=True,
+                                      skip=skip, expect_gen=gen)
         except ValueError as exc:
             reason = str(exc)
             with self._run_lock:
                 if self._run_gen != gen:
                     return                  # STOP or a move beat us to it
                 self._loop_at = now + self.loop_retry_s
-                said = self._loop_problem == reason
+                said = reason in self._loop_said
+                self._loop_said.add(reason)
                 self._loop_problem = reason
             if not said:
-                self.corrections.append(
-                    f"{time.strftime('%H:%M:%S')} Loop: cannot start again "
-                    f"yet ({reason}) - trying every {self.loop_retry_s:.0f} s")
-                del self.corrections[:-20]
+                self._note(f"Loop: cannot start again yet ({reason}) - "
+                           f"trying every {self.loop_retry_s:.0f} s")
             return
         failed = sorted(name for name, r in results.items() if not r.get("ok"))
-        self.corrections.append(
-            f"{time.strftime('%H:%M:%S')} Loop: run {self._loop_runs} started"
-            + (f" ({', '.join(failed)} did not take it)" if failed else ""))
+        left_out = sorted(skip)
+        problem = None
+        if left_out:
+            problem = (f"started without {', '.join(left_out)} - not ready "
+                       f"after {LOOP_WAIT_READY_S:.0f} s; rejoins at the next run")
+        with self._run_lock:
+            self._loop_problem = problem
+        self._note(f"Loop: run {self._loop_runs} started"
+                   + (f" without {', '.join(left_out)} (not ready)" if left_out else "")
+                   + (f" ({', '.join(failed)} did not take it)" if failed else ""))
+
+    def _note(self, text: str) -> None:
+        """One line in the corrections, the way every other note is made."""
+        self.corrections.append(f"{time.strftime('%H:%M:%S')} {text}")
         del self.corrections[:-20]
+
+    def _not_ready(self, names) -> "list[str]":
+        """The units of `names` a START would refuse on right now (offline,
+        not holding the show, still writing, pictures cleared) - each
+        message from _burn_problems starts with the unit's name."""
+        problems = self._burn_problems(names, force=False)
+        return [name for name in names
+                if any(p.startswith(f"{name}:") for p in problems)]
 
     def loop_state(self) -> "dict | None":
         """What /api/fleet says about a pending loop restart: seconds until
@@ -671,11 +726,64 @@ class Fleet:
         how many restarts this show has had, and the refusal the restart
         is waiting out, if any. None while no restart is pending."""
         with self._run_lock:
-            if self._loop_at is None or self.run is None:
+            if self.run is None:
                 return None
+            if self._loop_at is None:
+                # Nothing pending - but a run started without somebody
+                # still says so (the page's hint), until the next end.
+                return ({"next_in_s": None, "wait_s": self._loop_wait,
+                         "lead_s": self._loop_lead, "runs": self._loop_runs,
+                         "problem": self._loop_problem}
+                        if self._loop_problem else None)
             return {"next_in_s": max(0.0, round(self._loop_at - self._clock(), 2)),
                     "wait_s": self._loop_wait, "lead_s": self._loop_lead,
                     "runs": self._loop_runs, "problem": self._loop_problem}
+
+    def run_is_over(self) -> bool:
+        """A running run whose position is at or past the show's length -
+        ENDED on the page, a Loop wait in progress or not. A START then is
+        not a restart of a running show (no `force` asked for)."""
+        with self._run_lock:
+            run = dict(self.run) if self.run else None
+        if not run or run["state"] != "running":
+            return False
+        duration = self.show_duration()
+        return duration > 0 and self._clock() - run["t0"] >= duration
+
+    # ---- what the units already hold, after a restart of this conductor ----
+
+    def offer_shows(self, shows: "dict[str, dict]") -> None:
+        """Offer this workspace's compiled shows ({unit: show}) for
+        adoption: a unit that reports one of these ids with its pictures
+        burned is taken as holding it (_adopt_show, from its next poll).
+        Called once at startup, and with {} to withdraw the offer (an
+        import: the workspace is somebody else's show now). A member with
+        no show of its own (radxa-05, control only) is simply not in it."""
+        self._offered = dict(shows)
+        self._offer_said = set()
+
+    def _adopt_show(self, link: UnitLink) -> None:
+        """Take the offered show for this unit if the unit says it holds
+        exactly that - the same id, pictures burned - and say so once;
+        say once, too, when it holds something else (an Upload is needed)."""
+        offered = self._offered.get(link.name)
+        if offered is None or link.name in self.shows:
+            return
+        unit = (link.status or {}).get("show")
+        if not isinstance(unit, dict) or unit.get("id") is None:
+            return
+        burn = unit.get("burn")
+        burned = isinstance(burn, dict) and burn.get("state") == "burned"
+        if unit.get("id") == offered["id"] and burned:
+            self.shows[link.name] = offered
+            self._note(f"{link.name}: holds this show already (adopted "
+                       "after a restart of the conductor)")
+            return
+        if link.name not in self._offer_said:
+            self._offer_said.add(link.name)
+            why = ("another show" if unit.get("id") != offered["id"]
+                   else f"pictures {(burn or {}).get('state') if isinstance(burn, dict) else 'not written'}")
+            self._note(f"{link.name}: {why} - Upload before START")
 
     def run_snapshot(self) -> "tuple[dict | None, float]":
         """(a copy of the run, the show's length) under the run lock - what
@@ -1415,7 +1523,8 @@ class Fleet:
 
     def start_show(self, lead_s: float = DEFAULT_LEAD_S,
                    at: float = 0.0, force: bool = False,
-                   loop: bool = False) -> "dict[str, dict]":
+                   loop: bool = False, skip=(),
+                   expect_gen: "int | None" = None) -> "dict[str, dict]":
         """Begin the show `lead_s` from now, `at` seconds into it (0.0 for
         the top). The caller resolves `at` itself - normally
         `fleet.start_at`, where a SEEK made before the show started (or
@@ -1436,24 +1545,37 @@ class Fleet:
 
         `loop` is the Loop's own restart (_loop_tick): the same START in
         every respect, counted on the run as `loops` so the page can say
-        which run of the day this is. A START press starts the count over."""
+        which run of the day this is. A START press starts the count over.
+        `skip` names units left out of this run (the Loop's grace period
+        ran out on them): not gated on, not sent to - supervision goes on
+        polling them. `expect_gen` is the run generation the caller
+        decided on: a STOP or a move since (a different generation, or
+        `_stopped`) refuses the START under the lock, so the Loop can
+        never start over the top of an operator's STOP."""
         # Before the gate: a STOP's clear that is still inside its window
         # has not deleted anything, so dropping it is what lets START run
         # the show again (the director's mid-show abort, taken back).
-        self._cancel_armed_clear()
+        if expect_gen is None:
+            self._cancel_armed_clear()
         duration = self.show_duration()
         at = self._clamped(at, 0.0, duration)
         if not 0 <= at <= duration:
             raise ValueError(f"The show is {timeline.format_clock(0)} to "
                              f"{timeline.format_clock(duration)}.")
+        targets = [name for name in self._targets() if name not in set(skip)]
+        if not targets:
+            raise ValueError("no unit is ready")
         # Every picture is meant to already be sitting in its slot: START
         # refuses while any unit is still writing them, offline, not yet
         # holding this show, or (unless `force`) failed to write some
         # boards (2026-09-24, the pre-burn design - see timeline.py).
-        burning = self._burn_problems(self._targets(), force=force)
+        burning = self._burn_problems(targets, force=force)
         if burning:
             raise ValueError("; ".join(burning))
         with self._run_lock:
+            if expect_gen is not None and (self._run_gen != expect_gen
+                                           or self._stopped):
+                raise ValueError("stopped or moved meanwhile")
             self._may_adopt, self._stopped = False, False
             self._loop_runs = self._loop_runs + 1 if loop else 0
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",
@@ -1469,7 +1591,7 @@ class Fleet:
             # a unit that was too old last time may have been updated.
             self._clear_told, self._clear_too_old = set(), set()
             self._t0_moved()
-        return self._send_run(self._targets())
+        return self._send_run(targets)
 
     def _t0_moved(self) -> None:
         """One call for "the run just changed" - START, SEEK, HOLD,
@@ -1704,6 +1826,7 @@ class Fleet:
     def _supervise(self, link: UnitLink) -> None:
         """After every poll: is this unit running what it should, on the
         T0 it should? If not, tell it - nobody has to notice first."""
+        self._adopt_show(link)              # a restarted conductor: who holds what
         with self._run_lock:
             run = dict(self.run) if self.run else None
             stopped = self._stopped
@@ -2045,8 +2168,21 @@ class Fleet:
         return self._each(list(names), lambda link: {
             "phase": link.post(path, {}).get("phase")})
 
+    def forget_shows(self) -> None:
+        """This conductor no longer knows what the units hold - the
+        workspace was just replaced by an import. START then says
+        "Upload first" / "Upload again" (the server marks the units it
+        used to know as holding an older upload) instead of running the
+        units' old pictures under the new music."""
+        with self._run_lock:
+            self.shows = {}
+            self.start_at = 0.0
+        self.offer_shows({})
+
     def wifi_select(self, profile: str, after_s: float,
-                    last: "list[str] | None" = None) -> "dict[str, dict]":
+                    last: "list[str] | None" = None,
+                    hotspot: str = DEFAULT_HOTSPOT_UNIT,
+                    hotspot_profile: str = HOTSPOT_PROFILE) -> "dict[str, dict]":
         """POST /wifi/select {"profile", "after_s"} to every ONLINE unit -
         the page's "All units -> AZ-Epaper in 20 s" (EXHIBITION mode). The
         unit schedules the switch and answers {"scheduled": true,
@@ -2054,19 +2190,33 @@ class Fleet:
         restored on its garment; a unit that is offline is reported as such
         rather than waited out.
 
-        `last` names the units that are this Conductor's own host (radxa-05
-        at the exhibition, reached over 127.0.0.1): they are told AFTER
-        every other unit has answered, because switching the host's Wi-Fi
-        takes the hotspot - and every other unit's connection - with it.
+        Two leads, so the two sides of the hotspot move in the right order
+        (PM, 2026-09-30): towards the hotspot profile the HOTSPOT unit
+        (fleet.json's "hotspot", radxa-05) gets the short lead and the
+        clients the long one - the hotspot is up before they look for it;
+        towards the router the clients get the short lead and the hotspot
+        the long one - it goes down only after they have left. `after_s`
+        is the long lead, clamped to what the unit takes.
+
+        `last` names the units that are this Conductor's own host (reached
+        over 127.0.0.1): they are told AFTER every other unit has answered
+        whatever their lead, because switching the host's Wi-Fi takes the
+        page's own connection with it.
         """
-        body = {"profile": str(profile), "after_s": float(after_s)}
+        low, high = WIFI_SWITCH_RANGE_S
+        long_s = min(high, max(low, float(after_s)))
+        soon_s = min(long_s, WIFI_SWITCH_SOON_S)
+        to_hotspot = str(profile) == hotspot_profile
+        leads = {name: (soon_s if (name == hotspot) == to_hotspot else long_s)
+                 for name in self.links}
 
         def action(link):
             if not link.online:
                 raise RuntimeError("offline")
+            body = {"profile": str(profile), "after_s": leads[link.name]}
             answer = link.post("/wifi/select", body, learn=False)
             return {"scheduled": bool(answer.get("scheduled")),
-                    "after_s": answer.get("after_s", after_s)}
+                    "after_s": answer.get("after_s", leads[link.name])}
 
         own = [name for name in (last or ()) if name in self.links]
         first = [name for name in self.links if name not in own]

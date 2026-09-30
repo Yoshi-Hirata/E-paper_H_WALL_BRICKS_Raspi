@@ -142,7 +142,8 @@ def cmd_serve(args) -> int:
 
     return serve(args.workspace, args.port, open_browser=args.open,
                  host=args.host, speaker=args.speaker,
-                 speaker_lead_ms=args.speaker_lead_ms)
+                 speaker_lead_ms=args.speaker_lead_ms,
+                 speaker_output=args.speaker_output, passcode=args.passcode)
 
 
 def main(argv=None) -> int:
@@ -199,7 +200,18 @@ def main(argv=None) -> int:
                    metavar="MS",
                    help="how early the unpause goes out past the measured "
                         "pipe round trip, for the sound card's own buffer "
-                        "(default 50; trim by ear against the panels)")
+                        "(default 50, a guess: measure it once with a click "
+                        "track against the panels)")
+    p.add_argument("--speaker-output", default=None, metavar="MODULE",
+                   help="mpg123's -o output module: 'alsa' under systemd, "
+                        "where there is no PulseAudio session (default: "
+                        "mpg123's own choice)")
+    p.add_argument("--passcode", default=None,
+                   help="required from every other host for anything that "
+                        "changes the show or hands out its material "
+                        "(EXHIBITION mode: the page asks once); this host's "
+                        "own clients need none. fleet.json's \"passcode\" "
+                        "does the same")
     p.add_argument("--open", action="store_true",
                    help="open the page in the default browser")
     p.set_defaults(func=cmd_serve)

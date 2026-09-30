@@ -45,8 +45,8 @@ def test_the_loop_control_sits_with_the_countdown_and_posts_api_loop():
     handler = PAGE[PAGE.index('if (id === "show-loop" || id === "show-loop-wait")'):]
     handler = handler[:handler.index("return;\n  }\n") + 20]
     assert "parseSeconds(field ? field.value : \"\", LOOP_WAIT_MIN_S, LOOP_WAIT_MAX_S)" in handler
-    assert "const LOOP_WAIT_DEFAULT_S = 30, LOOP_WAIT_MIN_S = 10, LOOP_WAIT_MAX_S = 600;" in PAGE
-    for fine in (10, 600, 30):
+    assert "const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 40, LOOP_WAIT_MAX_S = 600;" in PAGE
+    for fine in (40, 600, 45):
         assert check_loop_wait(fine) == fine
     assert "state.show.loop_wait_s" in _function_body("loopWait")
 
@@ -200,6 +200,7 @@ class _Stand:
         self.run = "none"
         self.loop_next = None                # next_in_s the stand-in reports
         self.speaker = None
+        self.passcode = None                 # set: POSTs need X-Passcode
         self.sent = []                       # [command, body] as they arrived
         self.jobs = {}
         stand = self
@@ -228,7 +229,7 @@ class _Stand:
 
             def _loop(self):
                 wait = stand.ws.loop_wait()
-                return {"on": wait is not None, "wait_s": int(wait or 30),
+                return {"on": wait is not None, "wait_s": int(wait or 45),
                         "next_in_s": stand.loop_next, "runs": 0,
                         "problem": None}
 
@@ -237,11 +238,16 @@ class _Stand:
                 raw = self.rfile.read(length) if length > 0 else b"{}"
                 body = json.loads(raw or b"{}")
                 path = self.path.split("?")[0]
+                # The passcode gate, as the real server applies it to a
+                # client from another host: 401 until X-Passcode matches.
+                if stand.passcode and self.headers.get("X-Passcode") != stand.passcode:
+                    stand.sent.append(["refused", {"path": path, "given": self.headers.get("X-Passcode")}])
+                    return self._json({"error": "passcode required"}, 401)
                 if path == "/api/loop":
                     # The real Workspace, so the page talks to the real rule.
                     try:
                         if body.get("on"):
-                            stand.ws.set_loop(body.get("wait_s", 30))
+                            stand.ws.set_loop(body.get("wait_s", 45))
                         else:
                             stand.ws.set_loop(None)
                     except ValueError as exc:
@@ -258,6 +264,9 @@ class _Stand:
                 if path.startswith("/api/fleet/"):
                     command = path[len("/api/fleet/"):]
                     stand.sent.append([command, body])
+                    if command == "start":
+                        return self._json({"units": {"radxa-01": {"ok": True}},
+                                           "lead_s": body.get("lead_s"), "from_s": 0.0})
                     if command == "wifi_select":
                         return self._json({"units": {
                             "radxa-01": {"ok": True, "scheduled": True, "after_s": 20},
@@ -275,7 +284,7 @@ class _Stand:
                 if path == "/api/fleet":
                     return self._json({
                         "units": [unit("radxa-01", {"ssid": "AZ-Epaper", "ip": "10.42.0.101",
-                                                    "signal": -52, "mode": "client",
+                                                    "signal": 72, "mode": "client",
                                                     "profile": "AZ-Epaper"}),
                                   unit("radxa-02", {"ssid": "AZ-Epaper", "ip": "10.42.0.1",
                                                     "signal": None, "mode": "hotspot",
@@ -309,6 +318,8 @@ class _Stand:
                     if "loop_next" in args:
                         stand.loop_next = (None if args["loop_next"] == "null"
                                            else float(args["loop_next"]))
+                    if "passcode" in args:
+                        stand.passcode = None if args["passcode"] == "null" else args["passcode"]
                     if "speaker" in args:
                         stand.speaker = (None if args["speaker"] == "null" else
                                          {"available": True, "error": None,
@@ -377,10 +388,10 @@ _PAGE_PROBE = """
       tick("show-loop", true);
       await wait(1200);
       out.loopOn = { checked: $q("#show-loop").checked, state: state.show.loop_wait_s };
-      type("show-loop-wait", "45");
+      type("show-loop-wait", "60");
       await wait(1200);
       out.loopWait = { field: $q("#show-loop-wait").value, state: state.show.loop_wait_s };
-      type("show-loop-wait", "5");
+      type("show-loop-wait", "30");
       await wait(600);
       out.loopBad = { field: $q("#show-loop-wait").value, toast: $q("#toast").textContent };
       tick("show-loop", false);
@@ -402,10 +413,24 @@ _PAGE_PROBE = """
       $q("#nn-stage-btn").click();
       await wait(400);
       out.stopQuestion = stopQuestion();
+      // (3) START during the wait: the next run, asked about like a first
+      // one, sent WITHOUT force (M5).
+      out.overDuringWait = runIsOver();
+      var confirms = [];
+      window.confirm = function (msg) { confirms.push(msg); return true; };
+      $q("#show-start").click();
+      await wait(1500);
+      window.confirm = function () { return true; };
+      out.startDuringWait = (await sent()).filter(function (s) { return s[0] === "start"; }).pop();
+      out.startConfirms = confirms;
       await fetch("/test/fleet?run=ended&loop_next=null");
       await refreshFleetNow();
       out.endedClock = clockNow();
       out.endedCap = head("[data-cap]");
+      out.overWhenEnded = runIsOver();
+      await fetch("/test/fleet?run=running");
+      await refreshFleetNow();
+      out.overWhenRunning = runIsOver();
 
       // 3. A Conductor with a speaker: the player mutes itself once, unless
       //    this browser has chosen.
@@ -447,6 +472,25 @@ _PAGE_PROBE = """
       out.sendLog = $q("#ws-send-log").textContent;
       out.sendSent = (await sent()).filter(function (s) { return s[0] === "send"; });
       try { out.sendToStored = localStorage.getItem("ws.sendTo"); } catch (e) { out.sendToStored = "n/a"; }
+
+      // 6. The passcode: the first 401 asks once, the answer is stored and
+      //    sent with every request after that; a wrong one asks again.
+      await fetch("/test/fleet?passcode=open-sesame");
+      var prompts = [];
+      var answers = ["wrong", "open-sesame"];
+      window.prompt = function (msg) { prompts.push(msg); return answers.shift() || null; };
+      var before = (await sent()).length;
+      type("show-loop-wait", "50");                    // the Loop is on: a save
+      await wait(1500);
+      out.passcodeSent = (await sent()).slice(before);
+      out.passcodePrompts = prompts.length;
+      try { out.passcodeStored = localStorage.getItem("conductor.passcode"); } catch (e) { out.passcodeStored = "n/a"; }
+      out.passcodeCookie = document.cookie.indexOf("passcode=open-sesame") >= 0;
+      before = (await sent()).length;
+      type("show-loop-wait", "55");
+      await wait(1200);
+      out.passcodeNext = (await sent()).slice(before);
+      out.passcodePromptsAfter = prompts.length;
     } catch (e) { out.error = String((e && e.stack) || e); }
     var pre = document.createElement("pre");
     pre.id = "page-out";
@@ -476,14 +520,14 @@ def page(tmp_path_factory):
 
 
 def test_the_loop_control_talks_to_api_loop(page):
-    assert page["loopOffAtStart"] == {"checked": False, "wait": "30"}
-    assert page["loopOn"] == {"checked": True, "state": 30}
-    assert page["loopWait"] == {"field": "45", "state": 45}
-    assert page["loopBad"]["field"] == "45" and "10 to 600" in page["loopBad"]["toast"]
-    assert page["loopOff"] == {"checked": False, "state": None, "field": "45"}
-    assert page["loopSent"] == [["loop", {"on": True, "wait_s": 30}],
-                                ["loop", {"on": True, "wait_s": 45}],
-                                ["loop", {"on": False}]], page["loopSent"]
+    assert page["loopOffAtStart"] == {"checked": False, "wait": "45"}
+    assert page["loopOn"] == {"checked": True, "state": 45}
+    assert page["loopWait"] == {"field": "60", "state": 60}
+    assert page["loopBad"]["field"] == "60" and "40 to 600" in page["loopBad"]["toast"]
+    assert page["loopOff"] == {"checked": False, "state": None, "field": "60"}
+    assert page["loopSent"][:3] == [["loop", {"on": True, "wait_s": 45}],
+                                    ["loop", {"on": True, "wait_s": 60}],
+                                    ["loop", {"on": False}]], page["loopSent"]
 
 
 def test_the_clock_and_the_board_count_the_next_run_down(page):
@@ -499,6 +543,29 @@ def test_the_clock_and_the_board_count_the_next_run_down(page):
     assert page["endedCap"] == "SHOW ENDED"
 
 
+def test_start_during_the_loop_wait_is_the_next_run_without_force(page):
+    assert page["overDuringWait"] is True and page["overWhenEnded"] is True
+    assert page["overWhenRunning"] is False
+    start = page["startDuringWait"]
+    assert start and start[1]["force"] is False and start[1]["split_ok"] is False, start
+    assert start[1]["lead_s"] == 11
+    # Not "The show is running. Start it again ...?" - the run is over.
+    assert not any("is running" in c for c in page["startConfirms"]), page["startConfirms"]
+
+
+def test_the_passcode_is_asked_once_and_sent_ever_after(page):
+    sent = page["passcodeSent"]
+    # Refused (no passcode), asked, refused (the wrong one), asked, accepted.
+    kinds = [s[0] for s in sent]
+    assert kinds == ["refused", "refused", "loop"], sent
+    assert sent[0][1]["given"] is None and sent[1][1]["given"] == "wrong"
+    assert page["passcodePrompts"] == 2
+    assert page["passcodeStored"] == "open-sesame" and page["passcodeCookie"] is True
+    # The next request carries it without asking.
+    assert [s[0] for s in page["passcodeNext"]] == ["loop"], page["passcodeNext"]
+    assert page["passcodePromptsAfter"] == 2
+
+
 def test_a_speaker_conductor_mutes_the_page_once_and_the_operator_wins(page):
     assert page["mutedBefore"] is False, "a fresh browser starts unmuted without a speaker"
     assert page["mutedWithSpeaker"] is True
@@ -512,7 +579,7 @@ def test_a_speaker_conductor_mutes_the_page_once_and_the_operator_wins(page):
 
 def test_the_tiles_show_the_units_wifi_and_the_buttons_switch_the_fleet(page):
     rows = page["wifiRows"]
-    assert any("AZ-Epaper · 10.42.0.101 · -52 dBm" in r for r in rows), rows
+    assert any("AZ-Epaper · 10.42.0.101 · 72%" in r for r in rows), rows
     assert any("AZ-Epaper · 10.42.0.1 · hotspot" in r for r in rows), rows
     assert "radxa-01 accepted" in page["wifiToast"] and "radxa-02 (a show is running)" in page["wifiToast"]
     assert page["wifiSent"] == [["wifi_select", {"profile": "AZ-Epaper", "after_s": 20}],

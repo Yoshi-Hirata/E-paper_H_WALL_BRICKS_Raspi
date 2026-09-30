@@ -1,5 +1,7 @@
 {
-  "_comment": "EXHIBITION mode: the Conductor runs on radxa-05, which is also the AZ-Epaper hotspot (10.42.0.1). The other units join it with static addresses radxa-NN -> 10.42.0.1NN; radxa-05's own garment is driven through its own agent on localhost. Copy this file to /home/radxa/exhibition/fleet.json on radxa-05 (radxa/EXHIBITION.md). It never travels with the workspace: /api/workspace/import keeps the receiver's copy.",
+  "_comment": "EXHIBITION mode: the Conductor runs on radxa-05, which is also the AZ-Epaper hotspot (10.42.0.1) and is CONTROL ONLY - no garment is assigned to it in the show; its own agent on localhost keeps a tile. The other units join the hotspot with static addresses radxa-NN -> 10.42.0.1NN. Copy this file to /home/radxa/exhibition/fleet.json on radxa-05 (radxa/EXHIBITION.md). It never travels with the workspace: /api/workspace/import keeps the receiver's copy. \"hotspot\" names the unit that IS the hotspot (the fleet-wide Wi-Fi switch tells it first towards AZ-Epaper and last towards the router); \"passcode\" is what every other host must give the page before it may change anything (the same as serve --passcode) - CHANGE IT.",
+  "hotspot": "radxa-05",
+  "passcode": "CHANGE-ME-2026",
   "units": {
     "radxa-01": "10.42.0.101:8787",
     "radxa-02": "10.42.0.102:8787",

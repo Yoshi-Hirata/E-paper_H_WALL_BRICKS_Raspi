@@ -4,9 +4,10 @@ At the exhibition the Conductor runs headless on a unit (radxa-05) with a
 USB speaker and no browser, so the page's own <audio> player - which is
 what plays the music on the show PC - has nobody to play it. This module
 does that job on the host: `python -m conductor serve --speaker` drives
-one `mpg123 -R` (its remote-control mode: commands on stdin, `@P` /
-`@E` replies on stdout) from a thread of its own, following the same run
-the fleet is driving, on the same reference clock (fleet.pc_clock).
+one `mpg123 -R --keep-open` (its remote-control mode: commands on stdin,
+`@P` / `@E` replies on stdout; --keep-open so the process outlives the end
+of a track) from a thread of its own, following the same run the fleet is
+driving, on the same reference clock (fleet.pc_clock).
 
     load    LOADPAUSED <file>   the track sits paused at 0:00 - "LOAD then
                                 PAUSE immediately", in mpg123's own single
@@ -20,15 +21,25 @@ the fleet is driving, on the same reference clock (fleet.pc_clock).
     STOP / the show's end
             P (pause), JUMP 0s  - the track stays loaded for the next run
 
+`P` TOGGLES, so it is only ever sent when mpg123's own play state - the
+last "@P n" it printed, kept as the truth and never guessed - differs from
+the state wanted; a reply that arrives late is matched to its command by a
+sequence count, never mistaken for the answer to the next one. "@P 0" is
+the end of the file (a track shorter than the show, §4.4): the track is
+then loaded again, so the Loop's next run has music.
+
 The unpause latency. Between writing "P" on the pipe and the first sample
 leaving the speaker there is the pipe, mpg123's command loop and the
 ALSA buffer. The command half is MEASURED once at load: with the volume
 at 0 the track is unpaused and paused LATENCY_SAMPLES times and the
-round trip from "P" to mpg123's "@P 2" is timed; the median, bounded to
-LATENCY_MAX_S, is what the unpause is sent early by. The output half
-(the ALSA buffer past the reply) cannot be measured from here, so it is a
-documented allowance, DEVICE_LATENCY_S, that `--speaker-lead-ms` trims by
-ear. After a JUMP the same latency is added to the position aimed at.
+round trip from "P" to mpg123's "@P 2" is timed. Three samples and the
+median, because the first command after a load is regularly slow (the
+decoder is still filling) and one such outlier must not set the lead for
+the whole day; bounded to LATENCY_MAX_S. The output half (the ALSA buffer
+past the reply) cannot be measured from here: DEVICE_LATENCY_S is a GUESS
+of it, to be measured once with a click track against the panels and set
+with `--speaker-lead-ms`. After a JUMP the same latency is added to the
+position aimed at.
 
 Nothing here ever blocks an HTTP thread: the server only reads status(),
 which takes a lock no command ever waits under. A host with no mpg123 (or
@@ -54,11 +65,11 @@ LOAD_TIMEOUT_S = 5.0       # mpg123 has this long to report a loaded track
 REPLY_TIMEOUT_S = 2.0      # ...and to answer any other command
 LATENCY_SAMPLES = 3
 LATENCY_MAX_S = 0.5        # a round trip longer than this is not latency
-DEVICE_LATENCY_S = 0.05    # the ALSA buffer past mpg123's reply (allowance)
+DEVICE_LATENCY_S = 0.05    # the ALSA buffer past mpg123's reply (a guess)
 RETRY_S = 30.0             # mpg123 missing or dead: try again this often
 TRACK_CHECK_S = 1.0        # how often the music file itself is looked at
 
-PAUSED, PLAYING = 1, 2     # mpg123's "@P n" (0 is stopped / nothing loaded)
+STOPPED, PAUSED, PLAYING = 0, 1, 2      # mpg123's "@P n"
 
 
 def default_factory(argv):
@@ -70,10 +81,12 @@ def default_factory(argv):
 class Speaker:
     """One mpg123 following the fleet's run. `track()` answers the path of
     the show's music (or None); `run()` answers (run dict or None, the
-    show's length) - Fleet.run_snapshot()."""
+    show's length) - Fleet.run_snapshot(). `output` names mpg123's -o
+    module ("alsa" under systemd, where there is no PulseAudio session)."""
 
     def __init__(self, track, run, clock=pc_clock, factory=None,
                  binary: str = MPG123, extra_lead_s: float = DEVICE_LATENCY_S,
+                 output: "str | None" = None,
                  tick_s: float = TICK_S, retry_s: float = RETRY_S,
                  track_check_s: float = TRACK_CHECK_S):
         self._track = track
@@ -81,6 +94,7 @@ class Speaker:
         self._clock = clock
         self._factory = factory or default_factory
         self._binary = binary
+        self._output = output
         self._extra_lead = max(0.0, float(extra_lead_s))
         self._tick_s = tick_s
         self._retry_s = retry_s
@@ -93,15 +107,20 @@ class Speaker:
         self._lock = threading.Lock()
         self._reply = threading.Condition()
         self._proc = None
-        self._pstate: "int | None" = None       # the last @P n
-        self._error_line: "str | None" = None   # the last @E
+        # mpg123's play state as IT last said it ("@P n"), and how many @P
+        # lines have arrived - a command waits for a line newer than the
+        # count it saw when it was sent. Never reset to a guess.
+        self._pstate = STOPPED
+        self._pseq = 0
+        self._error_line: "str | None" = None
+        self._error_seq = 0
         self._next_try = 0.0
         # What is known about the track and the run being followed.
         self._loaded: "tuple[str, int] | None" = None    # (path, mtime_ns)
         self._latency = 0.0
-        self._playing = False
         self._key = None                  # (t0, state, held_at) last acted on
         self._due: "float | None" = None  # when to unpause, this PC's clock
+        self._eof = False                 # the track ran out under this run
         self._track_checked = -1e9
         self.state = "idle"    # idle | loaded | armed | playing | paused | ended
         self.error: "str | None" = None
@@ -127,7 +146,12 @@ class Speaker:
                     "state": self.state,
                     "track": Path(loaded[0]).name if loaded else None,
                     "latency_ms": round(self._latency * 1000, 1),
-                    "playing": self._playing, "log": list(self.log[-5:])}
+                    "playing": self._pstate == PLAYING, "log": list(self.log[-5:])}
+
+    @property
+    def playing(self) -> bool:
+        with self._reply:
+            return self._pstate == PLAYING
 
     # ---- the thread ----
 
@@ -156,10 +180,9 @@ class Speaker:
             if left > 0:
                 return left
             self._due = None
-            self._command("P", want=PLAYING)      # unpause: the show's 0:00
-            self._set_playing(True)
+            self._play(True)                       # the show's 0:00
             self._set_state("playing")
-        elif self._playing and run is not None and duration > 0 \
+        elif self.playing and run is not None and duration > 0 \
                 and now - run["t0"] >= duration:
             # The show is over; the track may be longer (§4.4). Silence,
             # and back to the top for the next run.
@@ -174,9 +197,7 @@ class Speaker:
             self._set_state("loaded")
             return
         if run["state"] != "running":               # HOLD keeps the position
-            if self._playing:
-                self._command("P", want=PAUSED)
-                self._set_playing(False)
+            self._play(False)
             self._set_state("paused")
             return
         pos = now - run["t0"]
@@ -194,15 +215,23 @@ class Speaker:
         # A START from a mark, a SEEK, a RESUME, a NEXT: land at the
         # position the show will be at once the sound is out.
         self._command(f"J {max(0.0, pos + self._latency):.3f}s")
-        if not self._playing:
-            self._command("P", want=PLAYING)
-            self._set_playing(True)
+        self._play(True)
         self._set_state("playing")
 
+    def _play(self, on: bool) -> None:
+        """Bring mpg123 to playing / paused - P only when it is not there
+        already (P toggles, and a doubled one would undo itself)."""
+        want = PLAYING if on else PAUSED
+        with self._reply:
+            state = self._pstate
+        if state == want:
+            return
+        if state == STOPPED:
+            return                          # nothing loaded: _ensure_track's job
+        self._command("P", want=want)
+
     def _pause_at_zero(self) -> None:
-        if self._playing:
-            self._command("P", want=PAUSED)
-            self._set_playing(False)
+        self._play(False)
         self._command("J 0s")
 
     # ---- the process and the track ----
@@ -216,6 +245,17 @@ class Speaker:
                 self._proc, self._loaded = None, None
             self._fail(f"mpg123 exited (code {code})")
             self._next_try = now + self._retry_s
+        with self._reply:
+            ended = self._pstate == STOPPED
+        if ended and self._loaded is not None and self._proc is not None:
+            # "@P 0": the track ran out (shorter than the show). Loaded
+            # again below, from the top, so the NEXT run has music - this
+            # run keeps its silence (the run key stays, so nothing follows
+            # it back to a position past the end of the track).
+            with self._lock:
+                self._loaded = None
+            self._eof = True
+            self._say("track ended before the show did - loading it again")
         if now - self._track_checked < self._track_check_s:
             return self._loaded is not None
         self._track_checked = now
@@ -247,23 +287,30 @@ class Speaker:
         with self._lock:
             self._loaded = (str(path), mtime)
             self.error = None
-        self._set_playing(False)
-        self._key, self._due = None, None
-        self._set_state("loaded")
+        self._due = None
+        if self._eof:
+            self._eof = False
+            self._set_state("ended")        # the run goes on without music
+        else:
+            self._key = None                # a fresh track follows the run
+            self._set_state("loaded")
         self._say(f"loaded {path.name}, unpause latency "
                   f"{self._latency * 1000:.0f} ms")
         return True
 
     def _spawn(self, now: float) -> bool:
+        argv = [self._binary, "-R", "--keep-open", "--quiet"]
+        if self._output:
+            argv += ["-o", self._output]
         try:
-            proc = self._factory([self._binary, "-R", "--quiet"])
+            proc = self._factory(argv)
         except OSError as exc:
             self._fail(f"{self._binary} not found ({exc.__class__.__name__}) "
                        "- apt install mpg123")
             self._next_try = now + self._retry_s
             return False
         with self._reply:
-            self._pstate, self._error_line = None, None
+            self._pstate, self._error_line = STOPPED, None
         with self._lock:
             self._proc = proc
             self.error = None
@@ -281,16 +328,17 @@ class Speaker:
                         try:
                             self._pstate = int(line[3:].split()[0])
                         except ValueError:
-                            pass
+                            continue
+                        self._pseq += 1
                     elif line.startswith("@E"):
                         self._error_line = line[2:].strip() or "error"
+                        self._error_seq += 1
                     self._reply.notify_all()
         except (OSError, ValueError):
             pass
 
     def _load(self, path: Path) -> None:
         """LOADPAUSED, then the latency measurement (see the module doc)."""
-        self._set_playing(False)
         state = self._command(f"LP {path}", want=(PAUSED, PLAYING),
                               timeout=LOAD_TIMEOUT_S,
                               what=f"could not load {path.name}")
@@ -312,15 +360,15 @@ class Speaker:
     def _command(self, text: str, want=None, timeout: float = REPLY_TIMEOUT_S,
                  what: str = "") -> "int | None":
         """One line to mpg123. With `want` (an @P state, or a tuple of
-        acceptable ones) wait for it and return the state reached; an @E
-        or no answer in `timeout` is a RuntimeError."""
+        acceptable ones) wait for an @P line NEWER than the ones already
+        seen and return the state it reached; an @E newer than that or no
+        answer in `timeout` is a RuntimeError."""
         proc = self._proc
         if proc is None:
             return None
         wanted = (want,) if isinstance(want, int) else want
         with self._reply:
-            if wanted is not None:
-                self._pstate, self._error_line = None, None
+            seen, errors = self._pseq, self._error_seq
             try:
                 proc.stdin.write((text + "\n").encode("utf-8"))
                 proc.stdin.flush()
@@ -329,15 +377,16 @@ class Speaker:
             if wanted is None:
                 return None
             deadline = time.monotonic() + timeout
-            while self._pstate not in wanted and self._error_line is None:
+            while True:
+                if self._error_seq != errors:
+                    raise RuntimeError(f"mpg123 {what or text}: {self._error_line}")
+                if self._pseq != seen and self._pstate in wanted:
+                    return self._pstate
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise RuntimeError(f"mpg123 {what or text}: no answer "
                                        f"in {timeout:.0f} s")
                 self._reply.wait(left)
-            if self._pstate not in wanted:
-                raise RuntimeError(f"mpg123 {what or text}: {self._error_line}")
-            return self._pstate
 
     def _quit(self) -> None:
         with self._lock:
@@ -362,10 +411,6 @@ class Speaker:
     def _set_state(self, state: str) -> None:
         with self._lock:
             self.state = state
-
-    def _set_playing(self, playing: bool) -> None:
-        with self._lock:
-            self._playing = playing
 
     def _fail(self, message: str) -> None:
         with self._lock:

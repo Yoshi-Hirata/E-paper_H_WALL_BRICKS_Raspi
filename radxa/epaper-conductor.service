@@ -2,9 +2,10 @@
 Description=H_WALL_BRICKS show Conductor (EXHIBITION mode, headless on this unit)
 # The Conductor drives the other units over the AZ-Epaper hotspot this
 # unit provides (radxa/EXHIBITION.md), so it waits for the network to be
-# up; it does NOT conflict with epaper-ui - this unit's own garment is
-# driven through its own agent at 127.0.0.1:8787 like any other unit's.
-After=network-online.target NetworkManager.service epaper-ui.service
+# up - and for epaper-exhibition-net.service, which decides between the
+# router and the hotspot; it does NOT conflict with epaper-ui - this unit
+# is control only (no garment), its agent at 127.0.0.1:8787 keeps a tile.
+After=network-online.target NetworkManager.service epaper-exhibition-net.service epaper-ui.service
 Wants=network-online.target
 
 [Service]
@@ -16,10 +17,13 @@ Environment=PYTHONUNBUFFERED=1
 # 11's 3.9) runs it; the repo's .venv is for the unit's own UI. --host
 # 0.0.0.0 opens the page to the hotspot (10.42.0.1:8765) and to the router
 # network when both are up; --speaker plays the show's music through mpg123
-# on this unit's USB speaker (apt install mpg123). The workspace is its own
-# folder, never ./showdata: an exhibition show must not be confused with a
+# on this unit's USB speaker (apt install mpg123), -o alsa because a service
+# has no PulseAudio session; --passcode is what every OTHER host has to give
+# the page before it may change anything (CHANGE IT - this is the example in
+# git; fleet.json's "passcode" works too). The workspace is its own folder,
+# never ./showdata: an exhibition show must not be confused with a
 # rehearsal's.
-ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --port 8765
+ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --speaker-output alsa --passcode CHANGE-ME-2026 --port 8765
 # always, not on-failure: with the Loop on, this process IS the show, and a
 # clean exit would leave the garments on their last look until somebody
 # reached a terminal.
