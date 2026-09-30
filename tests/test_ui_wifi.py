@@ -60,6 +60,8 @@ class FakeNmcli:
         self.keep_on_fail = keep_on_fail
         self.signal = signal
         self.broken = None          # a message: every read fails with it
+        self.break_reads_after_up = 0   # ...or this many reads after a con up
+        self._broken_left = 0
         self.calls = []
         self.release = threading.Event()
         self.release.set()
@@ -78,6 +80,9 @@ class FakeNmcli:
         self.hold_reads.wait(5.0)
         if self.broken:
             return 8, self.broken
+        if self._broken_left > 0:
+            self._broken_left -= 1
+            return 8, "Error: NetworkManager is not running."
         if args[-2:] == ["con", "show"]:
             rows = [f"{name}:802-11-wireless:{'yes' if name == self.active else 'no'}:yes"
                     for name in self.profiles]
@@ -112,6 +117,8 @@ class FakeNmcli:
         assert args[:7] == ["sudo", "-n", "nmcli", "--wait", "45", "con", "up"]
         name = args[-1]
         self.release.wait(5.0)
+        self._broken_left = self.break_reads_after_up     # one-shot
+        self.break_reads_after_up = 0
         if name in self.hang:
             raise subprocess.TimeoutExpired(args[0], timeout)
         if name in self.fail:
@@ -130,13 +137,15 @@ def make_wifi(**kwargs):
 class FakePlayer:
     """Just what App._pc_show_wins() reads off a ShowPlayer."""
 
-    def __init__(self, state=RUNNING, burn="burned", is_demo=False):
+    def __init__(self, state=RUNNING, burn="burned", is_demo=False,
+                 loaded_here=True):
         self.show = {"id": "pc-show"}
         self.is_demo = is_demo
         self.state = state
         self.restored_running = False
         self.restored_id = None
         self.burn = burn
+        self.loaded_here = loaded_here      # False: restore() brought it back
 
     def status(self):
         return {"state": self.state, "burn": {"state": self.burn}}
@@ -376,6 +385,28 @@ def test_a_failure_networkmanager_recovered_by_itself_is_not_reconnected():
     assert wifi.status_text().startswith(f"ERROR back on {ROUTER}: ")
 
 
+def test_a_stale_cache_after_a_refusal_never_passes_for_a_restore():
+    """Review round 2 (MED-1): the poll right after a refused `con up`
+    may itself fail (NetworkManager busy re-settling the device); the
+    cache then still names the previous profile from before the switch
+    while the device sits disconnected. That must not read as "still on
+    it" - the previous profile is brought up regardless."""
+    wifi, fake = make_wifi(fail=(HOTSPOT,))
+    wifi.poll()
+    # Enough failing reads to cover the whole poll after the refused up
+    # (the list, one per profile, the device, the scan).
+    fake.break_reads_after_up = 8
+    wifi.select(+1)
+    wifi.switch()
+    assert wait_until(lambda: wifi.phase == FAILED)
+    assert fake.ups == [HOTSPOT, ROUTER]        # not skipped on a stale cache
+    assert fake.active == ROUTER
+    assert wifi.restored is True
+    assert wifi.status_text().startswith(f"ERROR back on {ROUTER}: ")
+    # The poll after the restore read again once nmcli answered.
+    assert wifi.read_state == "read" and wifi.snapshot()["profile"] == ROUTER
+
+
 def test_a_hung_nmcli_is_a_failure_and_a_failed_restore_is_said():
     wifi, fake = make_wifi(hang=(HOTSPOT,))
     wifi.up_timeout = 1.0
@@ -481,7 +512,7 @@ def test_refused_while_the_pc_show_runs_holds_or_writes_pictures():
     assert wifi.status_text() == "PC show loaded - WIFI locked"
     # ...while a show restore() put back on the garment locks it as
     # "running" (the same as a demo row)...
-    restored = FakePlayer(state=LOADED, burn="none")
+    restored = FakePlayer(state=LOADED, burn="burned", loaded_here=False)
     restored.restored_running = True
     restored.restored_id = "pc-show"
     wifi, fake = make_wifi()
@@ -493,10 +524,12 @@ def test_refused_while_the_pc_show_runs_holds_or_writes_pictures():
     wifi.join(0.2)
     assert fake.ups == [] and wifi.phase == LOCKED
     assert wifi.status_text() == LOCKED_NOTE
-    # ...and a LOADED show whose burn reads "none" (a restart's restore()
-    # of a demo, radxa-05 2026-09-26), an ENDED or a STOPPED one, and a
+    # ...and a LOADED show restore() read back from disk (burn "burned"
+    # from the record, nothing uploaded since this boot - review round
+    # 2), one whose burn reads "none", an ENDED or a STOPPED one, and a
     # demo's own LOADED+burned, do not lock the row.
-    for player in (FakePlayer(state=LOADED, burn="none"),
+    for player in (FakePlayer(state=LOADED, burn="burned", loaded_here=False),
+                   FakePlayer(state=LOADED, burn="none"),
                    FakePlayer(state=ENDED), FakePlayer(state="stopped"),
                    FakePlayer(state=LOADED, burn="burned", is_demo=True)):
         wifi, fake = make_wifi()
@@ -507,6 +540,87 @@ def test_refused_while_the_pc_show_runs_holds_or_writes_pictures():
         app.handle("key1_hold")
         assert wait_until(lambda: wifi.phase == DONE)
         assert fake.ups == [HOTSPOT]
+
+
+def _real_player(tmp_path):
+    from tests.test_ui_demos import make_session
+    from ui.showplay import ShowPlayer
+
+    session, runner, _ = make_session()
+    player = ShowPlayer(session, store=tmp_path / "player", save_s=0.01,
+                        margin_s=0.1, grace_s=0.1, tick_s=0.02,
+                        setup_s=0.05, setup_board_s=0.0)
+    session.on_release = player.stop
+    return session, runner, player
+
+
+def test_the_loaded_lock_is_for_a_show_uploaded_since_this_boot_only(tmp_path):
+    """Review round 2 (HIGH-1): restore() brings every PC show a unit ever
+    played back LOADED with its burn read from disk as "burned" - so the
+    lock on LOADED+burned must only count a show load()ed in THIS
+    process, or a power cycle would lock WIFI on every unit for good."""
+    from tests.test_ui_demos import REFRESH, make_show, wait_burned
+    from ui.showplay import STOPPED
+
+    pc_show = make_show(sents=(-REFRESH, 5.0), duration=30)
+    session, runner, player = _real_player(tmp_path)
+    try:
+        wifi, fake = make_wifi()
+        wifi.poll()
+        app = App(NullDisplay(), ScriptedInput(()), runner, remote=session,
+                  player=player, wifi=wifi, host="radxa-03")
+        app.show_status = player.status
+        # Uploaded, waiting for START: locked.
+        player.load(pc_show)
+        assert wait_burned(player)
+        assert player.state == LOADED and player.loaded_here
+        assert app._wifi_locked() == "PC show loaded - WIFI locked"
+        enter(app)
+        app.handle("down")
+        app.handle("key1_hold")
+        wifi.join(0.2)
+        assert fake.ups == [] and wifi.phase == LOCKED
+        # Running: locked as "running"; stopped by the PC: free.
+        player.run(time.monotonic() + 5)
+        assert app._wifi_locked() == "PC show running - WIFI locked"
+        player.stop()
+        assert player.state == STOPPED
+        assert app._wifi_locked() is None
+    finally:
+        player.close()
+        runner.stop()
+
+    # The unit restarts: a new player on the same store, restore() before
+    # the App exists (ui/main.py's order). The show comes back LOADED and
+    # its burn reads "burned" from the record - but nobody uploaded
+    # anything since this boot, so WIFI is not locked and a switch goes
+    # through.
+    session2, runner2, player2 = _real_player(tmp_path)
+    try:
+        player2.restore()
+        assert player2.show is not None and player2.show["id"] == pc_show["id"]
+        assert player2.state == LOADED and not player2.is_demo
+        assert (player2.status() or {})["burn"]["state"] == "burned"
+        assert not player2.loaded_here
+        wifi2, fake2 = make_wifi()
+        wifi2.poll()
+        app2 = App(NullDisplay(), ScriptedInput(()), runner2, remote=session2,
+                   player=player2, wifi=wifi2, host="radxa-03")
+        app2.show_status = player2.status
+        assert app2._wifi_locked() is None
+        enter(app2)
+        app2.handle("down")
+        app2.handle("key1_hold")
+        assert wait_until(lambda: wifi2.phase == DONE)
+        assert fake2.ups == [HOTSPOT]
+        # A fresh upload on this boot locks it again.
+        player2.load(make_show(sents=(-REFRESH, 5.0), duration=30))
+        assert wait_burned(player2)
+        assert player2.loaded_here
+        assert app2._wifi_locked() == "PC show loaded - WIFI locked"
+    finally:
+        player2.close()
+        runner2.stop()
 
 
 def test_a_failure_after_leaving_mid_switch_waits_on_the_screen():

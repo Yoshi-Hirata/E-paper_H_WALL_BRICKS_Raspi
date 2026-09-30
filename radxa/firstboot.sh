@@ -50,8 +50,8 @@ want="${SUBNET}.$((BASE + unit))/${PREFIX}"
 # shared), the client profile by this name or SSID.
 EXPO_SSID="AZ-Epaper"
 
-field() {   # <profile> <setting> -> its value, "" when nmcli cannot say
-    nmcli -t -f "$2" connection show "$1" 2>/dev/null | cut -d: -f2- || true
+field() {   # <profile> <setting> -> its value; fails when nmcli cannot say
+    nmcli -t -f "$2" connection show "$1" 2>/dev/null | cut -d: -f2-
 }
 
 # The router's Wi-Fi profile (system-wide, not MAC-bound, see
@@ -63,12 +63,20 @@ field() {   # <profile> <setting> -> its value, "" when nmcli cannot say
 conn=""
 first=""
 active_wifi=""
+# Listed first, on its own: an nmcli that fails here fails the script
+# (set -e), instead of reading as "no Wi-Fi profile" and exiting 0.
+list="$(nmcli -t -f NAME,TYPE,ACTIVE connection show)"
 while IFS=: read -r name type active; do
     [ "$type" = "802-11-wireless" ] || continue
     [ "$active" = "yes" ] && active_wifi="${active_wifi:-$name}"
-    mode="$(field "$name" 802-11-wireless.mode)"
-    method="$(field "$name" ipv4.method)"
-    ssid="$(field "$name" 802-11-wireless.ssid)"
+    # A profile nmcli cannot describe is skipped, not taken for the
+    # router's: an unreadable answer must never pass the expo check.
+    if ! mode="$(field "$name" 802-11-wireless.mode)" \
+            || ! method="$(field "$name" ipv4.method)" \
+            || ! ssid="$(field "$name" 802-11-wireless.ssid)"; then
+        echo "skipping $name (nmcli could not read it)"
+        continue
+    fi
     if [ "$mode" = "ap" ] || [ "$method" = "shared" ] \
             || [ "$name" = "$EXPO_SSID" ] || [ "$ssid" = "$EXPO_SSID" ]; then
         echo "skipping $name (expo profile: mode '${mode:-infrastructure}', ipv4 '$method', ssid '$ssid')"
@@ -78,7 +86,7 @@ while IFS=: read -r name type active; do
         conn="$name"
     fi
     first="${first:-$name}"
-done < <(nmcli -t -f NAME,TYPE,ACTIVE connection show)
+done <<< "$list"
 conn="${conn:-$first}"
 if [ -z "$conn" ]; then
     echo "no Wi-Fi connection profile; nothing to configure"

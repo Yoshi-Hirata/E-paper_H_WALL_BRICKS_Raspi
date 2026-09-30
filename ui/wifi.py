@@ -330,13 +330,15 @@ class Wifi:
             raise WifiError(_first_line(output) or f"{args[0]} exit {code}")
         return output
 
-    def poll(self) -> None:
+    def poll(self) -> bool:
         """One refresh of the cache, on the caller's thread (the reader's,
         normally; a test's). Never raises. A read nmcli refuses (a busy
         D-Bus, a restart of NetworkManager) keeps the last good answer
         and notes the error for the screen; only a read that went
         through replaces the cache - so /status does not flicker to
-        nulls on a hiccup, and a first read that fails leaves nulls."""
+        nulls on a hiccup, and a first read that fails leaves nulls.
+        Returns whether everything was read - a caller about to act on
+        the cache (the switch's restore) must not act on a stale one."""
         with self._poll_lock:
             error = None
             profiles = state = None
@@ -358,6 +360,7 @@ class Wifi:
                     self.state = state
                 self.read_error = error
                 self.read_state = "error" if error else "read"
+            return error is None
 
     def _read_profiles(self) -> "list[Profile]":
         found = []
@@ -527,13 +530,16 @@ class Wifi:
             return
         self.error = _first_line(output) or f"nmcli exit {code}"
         self.emit(self.error, error=True)
-        self.poll()
+        fresh = self.poll()
         if previous and previous != target.name:
             # A wrong choice must not strand the unit: the profile it
             # was on comes back. NetworkManager's own autoconnect may
             # have done that already - then `con up` again would only
-            # drop and re-raise a link that is fine.
-            if self.snapshot()["profile"] == previous:
+            # drop and re-raise a link that is fine. Only a poll that
+            # actually read says so: a failed read keeps the cache from
+            # before the switch, which names `previous` while the device
+            # may sit disconnected (review round 2, 2026-09-30).
+            if fresh and self.snapshot()["profile"] == previous:
                 self.restored = True
                 self.emit(f"wifi: still on {previous}")
             else:

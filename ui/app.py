@@ -482,10 +482,13 @@ class App:
         LOADED with its pictures burned, i.e. uploaded and waiting for
         START. A demo may supersede that (the PC uploads again), but a
         network switch does not supersede anything: it takes the unit
-        out of the PC's reach with the show's pictures on it. A LOADED
-        show whose burn reads "none" is the other thing that looks like
-        this - a restart's restore() of a demo (radxa-05, 2026-09-26) -
-        and that one does not lock the row."""
+        out of the PC's reach with the show's pictures on it. Only a
+        show load()ed since this boot counts (ShowPlayer.loaded_here):
+        restore() brings every PC show a unit ever played back LOADED
+        with its burn read from disk as "burned", and that must not
+        lock every unit for good after a power cycle (review round 2,
+        2026-09-30); a restored show the PC is still driving is
+        _pc_show_wins()'s restored_running case above."""
         player = self.player
         if player is None:
             return None
@@ -493,7 +496,7 @@ class App:
         if note is not None:
             return WIFI_LOCKED
         if (player.show is not None and not player.is_demo
-                and player.state == LOADED):
+                and player.state == LOADED and player.loaded_here):
             burn = (player.status() or {}).get("burn") or {}
             if burn.get("state") == "burned":
                 return WIFI_LOCKED_LOADED
