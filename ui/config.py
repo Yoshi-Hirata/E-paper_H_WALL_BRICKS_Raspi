@@ -39,9 +39,12 @@ BUTTON_PINS = {
 
 # Holding KEY1 this long resets the demo instead of pausing it. The hold
 # is reported as its own event and suppresses the short press, so one
-# press never does both.
+# press never does both. KEY3 reports a hold the same way (EXHIBITION's
+# LOOP toggle, 2026-09-30); its short press - blank the screen - is
+# therefore reported on release rather than on the press.
 KEY1_HOLD_S = 1.0
-EVENTS = tuple(BUTTON_PINS) + ("key1_hold",)
+HOLD_EVENTS = {"key1": KEY1_HOLD_S, "key3": KEY1_HOLD_S}
+EVENTS = tuple(BUTTON_PINS) + ("key1_hold", "key3_hold")
 
 # --- UI behaviour ---
 # Input poll interval. Redraws are separate and only happen when the
@@ -73,3 +76,6 @@ WATCHDOG_PERIOD_S = 5.0
 # /status's "wifi" (ui/wifi.py fills it, ui/agent.py serves it): the
 # keys, so the agent can answer all-null without importing the worker.
 WIFI_FIELDS = ("ssid", "ip", "signal", "mode", "profile")
+# POST /wifi/select's longest deferral (seconds) - the same reason: the
+# agent validates the body without importing ui/wifi.py.
+WIFI_MAX_AFTER_S = 120.0

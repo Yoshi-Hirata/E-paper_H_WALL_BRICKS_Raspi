@@ -701,14 +701,15 @@ def test_status_serves_the_wifi_cache_and_never_asks_nmcli():
     try:
         code, status = call(agent, "/status")
         assert code == 200
-        assert status["wifi"] == WIFI_BLANK     # nothing read yet: nulls
+        # nothing read yet: nulls (and no deferred switch pending)
+        assert status["wifi"] == dict(WIFI_BLANK, pending=None)
         assert fake.calls == []                 # /status asked nothing
         wifi.poll()
         before = len(fake.calls)
         code, status = call(agent, "/status")
         assert status["wifi"] == {"ssid": ROUTER, "ip": "192.168.51.103",
                                   "signal": 72, "mode": "client",
-                                  "profile": ROUTER}
+                                  "profile": ROUTER, "pending": None}
         assert len(fake.calls) == before
     finally:
         agent.stop()
@@ -725,7 +726,8 @@ def test_status_without_a_wifi_worker_still_has_the_field():
         code, status = call(agent, "/status")
         assert code == 200
         assert status["wifi"] == {"ssid": None, "ip": None, "signal": None,
-                                  "mode": None, "profile": None}
+                                  "mode": None, "profile": None,
+                                  "pending": None}
     finally:
         agent.stop()
         runner.stop()

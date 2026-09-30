@@ -1220,7 +1220,105 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
 - nmcli の呼び出しは全て 1 つの差し替え可能なランナー(`Rebooter` と同じ
   `run_command(args, timeout)`)を通る。テストは偽の nmcli で走り、本物の nmcli も
   sudo も呼ばない(`tests/test_ui_wifi.py`)。`python -m ui.main --preview DIR` が
-  `wifi_list.png` / `wifi_connecting.png` / `wifi_hotspot.png` / `wifi_failed.png` を出す
+  `wifi_list.png` / `wifi_connecting.png` / `wifi_hotspot.png` / `wifi_failed.png` /
+  `wifi_pending.png` を出す
+- **エージェントからの切り替え: `POST /wifi/select`**(`ui/agent.py`、2026-09-30)
+  `{"profile": "<NetworkManager 接続名>", "after_s": 0〜120(省略時 0)}`。長押し KEY1 と
+  同じ `Wifi.switch()`(同じ argv `sudo -n nmcli --wait 45 con up <名前>`、別スレッド)。
+  `after_s` > 0 なら**タイマーに載せて即答** `{"scheduled": true, "after_s": N,
+  "profile": …}` ―― この命令を送る Conductor(radxa-05)は自分もこの直後にネットワークを
+  離れてホットスポットになるので、遅い返事は受け取れない。保留中は WIFI 画面に
+  `switching to <名前> in N s` と出て、UP/DOWN と長押し KEY1 は `switch pending` で断る。
+  **KEY2 は保留を取り消さない**(メニューへ戻るだけ)―― **保留の取り消しは HTTP からだけ**
+  (`POST /wifi/select {"cancel": true}` → `{"cancelled": bool}`)で、LCD にはそのボタンが
+  無い(送った Conductor だけが、送った理由を知っている)。保留中に新しい select が
+  来れば置き換え(タイマーは自分の世代番号を持ち、置き換え後に切れた古いタイマーは
+  何もしない)。`/status` の `wifi` に `pending: {"profile", "in_s"} | null` が加わる。
+  断り方: WIFI 行の長押しと**同じ判定・同じ文言**(`App._wifi_locked()` ―― 409
+  `{"error": "PC show running - WIFI locked"}` / `"PC show loaded - WIFI locked"`)、
+  切り替え実行中は 409 `a switch is in flight`、一覧に無いプロファイルは 404、
+  一覧をまだ読めていなければ 409、body 不正は 400。**タイマーが切れた瞬間にも錠を
+  問い直す**: それまでに PC が機体を取っていれば切り替えは行わず、ログと画面に
+  `<理由> - switch to <名前> skipped` と残す(`tests/test_ui_wifi_select.py`)
+
+### EXHIBITION(Conductor を動かす機体の LCD からショーを走らせる、2026-09-30)
+
+- PC の無い展示では radxa-05 が `AZ-Epaper` のホットスポットであると同時に **Conductor
+  そのもの**(`python3 -m conductor serve --host 0.0.0.0 --port 8765`、systemd サービス)
+  で、他機はそのホットスポットに乗って Conductor に駆動される ―― PC からのショーと
+  同じ経路で。ただし START を押すブラウザが無い。**EXHIBITION** 行(WIFI の次、
+  BOARD INFO の前 ―― 行順は UPDATE FW、FW VERSION、GIT PULL、REBOOT、WIFI、EXHIBITION、
+  BOARD INFO)がそのボタン(`ui/exhibition.py`)。Conductor の HTTP API のクライアントで
+  しかなく、この機体自身も Conductor 経由で駆動される(`/api/fleet` の units の 1 台)。
+  行は自分でキューを撃たず、基板にも触れず、ショーの所有者はあくまで Conductor
+- **行の出し方**: `127.0.0.1:8765` に Conductor が応答する(`GET /api/fleet` が 1 秒以内に
+  200)機体でだけ `EXHIBITION`、応答しない機体では `EXHIBITION  (no conductor)` と読め、
+  入ってもその旨(と最後のエラー)を出すだけで何も送れない。問い合わせるのは
+  デーモンスレッド(`Exhibition.start_reader()`、画面を開いている間は約 5 秒ごと、
+  それ以外は約 30 秒ごと、開いた瞬間に 1 回)で、**HAT のループでも HTTP スレッドでも
+  HTTP は呼ばない** ―― メニューの行名も画面もキャッシュを読むだけ(WIFI と同じ作り)
+- **画面**: 上にタイムラインの名前(`GET /api/show/export` の `workspace`、画面を開く
+  たびに 1 回だけ読む)と `18 cues · 10:54`(`/api/fleet` の `show_duration`。何も Upload
+  されていなければ `· not uploaded`)。Conductor のタイムラインは**常に 1 本**なので
+  「ショーを選ぶ」という概念は無く、UP/DOWN は判定文を消すだけ。その下に走行状態
+  ―― `idle` / `countdown -0:11`(`run.now` が負) / `3:20 / 10:54 running` /
+  `hold 3:20 / 10:54` / `ended 10:54 / 10:54` / LOOP 待ちなら `next run in 0:25`
+  (`loop.next_in_s` は **`run` が何であれ先に見る** ―― Conductor は LOOP の待ち時間中も
+  終わった run をそのまま置いておく。ポーリングの間は `now` と `next_in_s` を機体の
+  時計で進める)、`units 7/7 online`、
+  `LOOP on / off`(Conductor が `loop` を返さない古い版なら `loop ?`)、`speaker ok` /
+  `no speaker - <理由>`(同じく `speaker ?`)
+- **操作**: **KEY1 を 1 秒長押し**(REBOOT・WIFI と同じ判定、短押しは何もしない ―― 10 台に
+  ショーを始めうる画面だから)= `run` が無ければ **START**(`POST /api/fleet/start {}`。
+  lead を渡さないので Conductor がショー自身の「START 前のカウントダウン」を使う)、
+  `run` があれば(カウントダウン中も、`ended` のままでも)**STOP**(`POST /api/fleet/stop
+  {}`)。LOOP の待ち時間中(`next run in 0:25`)もヒントは `hold KEY1 = STOP (no next
+  run)` ―― STOP は Conductor 側で予約された次の run も取り消す。`ended` で押す STOP は
+  ふつうの STOP と同じで、タイムラインの clear_after_show が入っていれば絵の消去を
+  アーム(STOP のあと CLEAR_AFTER_STOP_S の窓、START で取り消せる)しうる。**KEY3 を 1 秒長押し** = LOOP の切り替え(`POST
+  /api/loop {"on": bool}`、返ってきた loop オブジェクトで即座に表示が変わる。不明なら
+  on にする)。KEY2 でメニューへ ―― **ショーは走り続ける**(Conductor のもの)。命令は
+  全てワーカースレッドで 3 秒タイムアウト、画面は `sending…` → Conductor の返事
+  (`START in 11 s · 7/7 units`、断った機体があれば `… · 6/7 units - radxa-04:
+  offline`)か、その**断りの 1 行目をそのまま**(`note` 付きの 200 ―― `Nothing uploaded
+  yet - Upload first.` / `The show is already running.` ―― も、400/409 の `error` も
+  `ERROR …` で赤く。接続できなければ urllib の包みを剥いた素の理由 `ERROR Connection
+  refused` / `no conductor: Connection refused`)。返事のあとに `/api/fleet` を読み直して
+  から DONE を出すので、DONE の画面にはもうカウントダウンが載っている。送信中は KEY2
+  だけが効く(命令は完了する)
+- **radxa-05 は自分自身も駆動される**(fleet.json の radxa-05 → 127.0.0.1:8787。PM の
+  決定では radxa-05 は制御専用で服を持たないが、割り当てられても安全でなければ
+  ならない): START を押した瞬間にこの機体の RemoteSession が armed になる。そこで
+  `App._follow_remote()` は、Conductor がこの機体で応答している間、**EXHIBITION 画面を
+  決して離れず**、REMOTE の代わりに EXHIBITION を出し(最初のプローブが返る前に armed
+  されて REMOTE に居ても、Conductor が分かった瞬間に EXHIBITION へ移す)、REMOTE /
+  EXHIBITION の KEY2 は `release()`(= この機体の player.stop、自分のショーから脱落)を
+  **呼ばず**メニューへ戻るだけ ―― 判定は Conductor が**居るか**であって、最大 30 秒
+  古いキャッシュの run ではない。セッションが本当に解放されるか、Conductor のサービスが
+  止まるまで follow はメニューを動かさない。そのメニューでは**ポートを取る行を断る**:
+  STANDBY・各パターン・FW VERSION・UPDATE FW の KEY1(長押しも)は `conductor holds this
+  unit - see EXHIBITION`(Conductor の無い機体で PC が握っていれば `PC holds this unit -
+  release it on the PC`)の 5 秒の注記だけで何もしない(デモ行の断り方と同じ。WIFI・
+  EXHIBITION・BOARD INFO・GIT PULL・REBOOT はそのまま)。Conductor の無い機体では
+  follow も KEY2 も従来どおり(REMOTE、KEY2 で release)
+- **KEY3 の長押し**はこの画面でだけ意味を持つ。入力層(`ui/gpio.py` / `ui/inputs.py`)は
+  KEY1 と同じ仕組みで `key3_hold` を出し、短押し(画面消灯)は**離したとき**に出る
+  ようになる(長押しが出たら短押しは出ない)。他の画面での `key3_hold` は短押しと同じく
+  消灯 ―― 長く押しすぎても消えないことのないように。キーボード入力では `#`。
+  長押しを出す直前に**ピンをもう一度読む**: デバウンス(50 ms)より短いタップは離す
+  エッジが落ちるので、1 秒後にピンが上がっていればそれを「離した」として短押しを出し、
+  長押しにはしない(LOOP が知らぬ間に反転したり REBOOT が走ったりしないように。
+  `tests/test_ui_gpio.py`)
+- 頼れる Conductor API(`conductor/server.py`。`loop` / `speaker` / `/api/loop` は
+  Coder Z が追加中で、無ければ `?` と出す): `GET /api/fleet` → `run`(待機中 null、
+  それ以外は `state` running/holding と `now`)、`show_duration`、`units[].online`、
+  `shows`、`loop {"on", "wait_s", "next_in_s"}`、`speaker {"available", "error"}`;
+  `POST /api/fleet/start {}` / `POST /api/fleet/stop {}` / `POST /api/loop {"on"}`;
+  `GET /api/show/export`(名前・cue 数・長さ)。HTTP は 1 つの差し替え可能な関数
+  (`http(method, url, body, timeout)`)を通り、テストは偽の Conductor で走って
+  ソケットを開かない(`tests/test_ui_exhibition.py`)。`python -m ui.main --preview DIR` が
+  `exhibition_idle.png` / `exhibition_running.png` / `exhibition_loop.png` /
+  `exhibition_countdown.png` / `exhibition_refused.png` / `exhibition_none.png` を出す
 
 ## 6. ソフトウェア構成
 

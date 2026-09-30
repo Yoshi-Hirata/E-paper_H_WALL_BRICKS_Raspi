@@ -719,6 +719,125 @@ def wifi_screen(ssid: str, info: str, rows: "list[tuple[str, str, bool]]",
     return image
 
 
+_EXHIBITION_STATUS = {
+    "idle": ("READY", ACCENT),
+    "sending": ("SENDING", OK),
+    "done": ("DONE", OK),
+    "failed": ("FAILED", ERR),
+}
+
+
+def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
+                      run: str, fleet: str, loop: str, speaker: str,
+                      phase: str, status: str = "", active: bool = False,
+                      locked: bool = False,
+                      host: str | None = None) -> Image.Image:
+    """EXHIBITION: the Conductor on this unit, run from the HAT
+    (ui/exhibition.py).
+
+    `available` is whether a Conductor answers on 127.0.0.1 (None: not
+    asked yet); `show` is Exhibition.show_lines() - the timeline's name
+    and `N cues · m:ss`; `run`, `fleet`, `loop`, `speaker` are the four
+    state lines (run_text() and friends); `phase` is IDLE/SENDING/DONE/
+    FAILED and `status` the line under them (status_text(), red when it
+    starts with ERROR). `active` picks the KEY1 hint: STOP while a run
+    or its countdown exists, START otherwise.
+    """
+    image, draw = _blank()
+    if available is False:
+        word, color = "MISSING", ERR
+    elif available is None:
+        word, color = "CHECKING", DIM
+    else:
+        word, color = _EXHIBITION_STATUS.get(phase, (phase.upper(), DIM))
+    _header(draw, "EXHIBITION", status=word, status_color=color, host=host)
+
+    if not available:
+        # Without a Conductor here there is nothing to run: say so and
+        # offer the way back. (The row still reads "(no conductor)" on
+        # the menu, so this is only reached on purpose.)
+        title = ("checking for a conductor…" if available is None
+                 else "no conductor on this unit")
+        draw.text((8, 40), _ellipsize(title, FONT_M, WIDTH - 16),
+                  font=FONT_M, fill=DIM if available is None else WARN)
+        y = 66
+        for line in _wrap("EXHIBITION needs the Conductor service running "
+                          "here (127.0.0.1:8765). On radxa-05 it starts "
+                          "with the unit; elsewhere run the show from "
+                          "the PC.", FONT_S, WIDTH - 16)[:5]:
+            draw.text((8, y), line, font=FONT_S, fill=DIM)
+            y += 14
+        if status:
+            y += 6
+            for line in _wrap(status, FONT_S, WIDTH - 16)[:2]:
+                draw.text((8, y), line, font=FONT_S, fill=ERR)
+                y += 14
+        _hint(draw, "buttons locked" if locked else "KEY2 back")
+        return image
+
+    name, detail = show
+    draw.text((8, 30), _ellipsize(name or "show", FONT_M, WIDTH - 16),
+              font=FONT_M, fill=FG)
+    draw.text((8, 50), _ellipsize(detail, FONT_S, WIDTH - 16), font=FONT_S,
+              fill=WARN if "not uploaded" in detail else DIM)
+    draw.line((8, 68, WIDTH - 8, 68), fill=BAR, width=1)
+
+    # The run: bright while something is happening, quiet when idle.
+    if run.startswith("countdown") or run.startswith("hold"):
+        tint = WARN
+    elif run.endswith("running") or run.startswith("next run"):
+        tint = OK
+    elif run.startswith("ended"):
+        tint = ACCENT
+    else:
+        tint = DIM
+    draw.text((8, 76), _ellipsize(run or "…", FONT_L, WIDTH - 16),
+              font=FONT_L, fill=tint)
+
+    online = fleet.split()[1] if fleet.startswith("units ") else ""
+    seen, _, total = online.partition("/")
+    if seen and total and seen == total and seen != "0":
+        fleet_tint = DIM
+    elif seen == "0":
+        fleet_tint = ERR
+    else:
+        fleet_tint = WARN
+    draw.text((8, 104), _ellipsize(fleet, FONT_S, WIDTH - 16), font=FONT_S,
+              fill=fleet_tint)
+    draw.text((8, 120), _ellipsize(loop, FONT_S, WIDTH - 16), font=FONT_S,
+              fill=OK if loop == "LOOP on" else DIM)
+    draw.text((8, 136), _ellipsize(speaker, FONT_S, WIDTH - 16), font=FONT_S,
+              fill=WARN if speaker.startswith("no speaker") else DIM)
+
+    if status:
+        if status.startswith("ERROR"):
+            tint = ERR
+        elif phase == "done":
+            tint = OK
+        else:
+            tint = DIM
+        y = 158
+        for line in _wrap(status, FONT_S, WIDTH - 16)[:3]:
+            draw.text((8, y), line, font=FONT_S, fill=tint)
+            y += 14
+
+    draw.text((8, 204), "hold KEY3 = LOOP on/off", font=FONT_S, fill=DIM)
+    if locked:
+        hint = "buttons locked"
+    elif phase == "sending":
+        hint = "sending - KEY2 menu"
+    elif run.startswith("next run"):
+        # LOOP between runs: STOP cancels the restart the Conductor
+        # has pending, which is the thing the operator must know.
+        hint = "hold KEY1 = STOP (no next run)"
+    elif active:
+        hint = "hold KEY1 = STOP  KEY2 back"
+    else:
+        hint = "hold KEY1 = START  KEY2 back"
+    _hint(draw, hint)
+    return image
+
+
 def message_screen(title: str, body: str = "", color=FG,
                    host: str | None = None) -> Image.Image:
     """Splash / fatal error screen."""

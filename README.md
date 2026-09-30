@@ -143,6 +143,7 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
 | `GIT PULL` | `git pull --ff-only`。更新があれば KEY1 で UI を再起動 |
 | **`REBOOT`** | **機体(OS)を再起動**。確認画面で **KEY1 を 1 秒長押し**したときだけ実行(短押しでは何も起きない)。KEY2 で中止 |
 | **`WIFI`** | **機体の Wi-Fi を選ぶ**(会場のルータ `yoshihirock.net_5G` ⇔ radxa-05 のホットスポット `AZ-Epaper`)。今の SSID・IP・電波・client/hotspot と機体の無線プロファイル一覧。UP/DOWN で選び **KEY1 を 1 秒長押し**で切り替え(短押しは何もしない)。nmcli が断った切り替えは元のプロファイルに戻す(受け付けられた切り替えはそのまま ―― ホットスポットが落ちれば機体はその LCD からしか届かない)。**選択は次の再起動まで**: 電源を入れ直せばルータに戻る(`AZ-Epaper` は autoconnect=no)ので、展示では radxa-05 を先にホットスポットにしてから他機を乗せる。PC のショーが機体を握っている間(再生中・保留中・Upload 済みで START 待ち)は `… - WIFI locked`(docs/SPECIFICATION.md「Wi-Fi の切り替え」) |
+| **`EXHIBITION`** | **PC 無しの展示で、Conductor を動かしている機体(radxa-05)の LCD からショーを START / STOP する**。この機体の 127.0.0.1:8765 に Conductor が応答するときだけ使え、応答しない機体では行が `EXHIBITION  (no conductor)` と読める(入ってもその旨だけ)。画面にはタイムラインの名前と長さ、走行状態(`idle` / `countdown -0:11` / `0:00 / 10:54 running` / `next run in 0:25`)、`units 7/7 online`、`LOOP on/off`、`speaker ok / no speaker`。**KEY1 を 1 秒長押し** = 待機中なら START、走行中(カウントダウン中も)なら STOP(短押しは何もしない)。**KEY3 を 1 秒長押し** = LOOP の切り替え。KEY2 でメニューへ(ショーは Conductor のものなので走り続ける)。Conductor の断り(「Nothing uploaded yet - Upload first.」など)はそのまま画面に出る(docs/SPECIFICATION.md「EXHIBITION」) |
 | `BOARD INFO` | USB 直結基板のシリアル・TYPE・FW・書き込み記録(docs/SPECIFICATION.md「基板の識別」) |
 
 `REBOOT` は `sudo -n systemctl reboot` を呼ぶので、パスワード不要の sudo が

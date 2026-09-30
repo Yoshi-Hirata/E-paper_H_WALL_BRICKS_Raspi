@@ -56,7 +56,43 @@ and with "PC show loaded - WIFI locked" for a PC show uploaded and
 waiting for START (_wifi_locked()). The choice lasts until the next
 reboot - autoconnect is never touched. The runner, the port and the
 boards are never touched either; the row order is UPDATE FW, FW
-VERSION, GIT PULL, REBOOT, WIFI, BOARD INFO.
+VERSION, GIT PULL, REBOOT, WIFI, EXHIBITION, BOARD INFO. The show PC
+(or the Conductor on radxa-05, before it leaves the network to become
+the hotspot) can also ask for a switch over the agent - POST
+/wifi/select, with a delay, under the same _wifi_locked() rule - and
+while that deferral is pending the WIFI screen counts it down
+("switching to AZ-Epaper in 25 s"); UP/DOWN and a held KEY1 are then
+refused with "switch pending", and KEY2 goes back without cancelling
+it (only /wifi/select {"cancel": true} does).
+
+EXHIBITION (ui/exhibition.py, the row after WIFI) runs the show from
+the unit that IS the Conductor - radxa-05 at an exhibition without a
+PC. The row reads `EXHIBITION  (no conductor)` on a unit where nothing
+answers on 127.0.0.1:8765 (a reader thread asks every ~30 s, ~5 s while
+the screen is open - the HAT loop never waits on HTTP), and its screen
+then only says so. With a Conductor: the timeline's name and length,
+the run (`idle`, `countdown -0:11`, `0:00 / 10:54 running`, `hold`,
+`ended`, `next run in 0:25` while LOOP waits), `units 7/7 online`,
+`LOOP on/off`, `speaker ok / no speaker`. KEY1 *held* is START when
+idle and STOP while a run or its countdown exists (the REBOOT gesture;
+a plain press does nothing), KEY3 *held* toggles LOOP, UP/DOWN only
+read a verdict away (the Conductor has one timeline; there is nothing
+to choose), and KEY2 goes back to the menu - the show keeps running,
+the Conductor owns it. Every command goes on a worker thread; the
+screen reads `sending…` and then the Conductor's answer or its
+refusal, verbatim. A held KEY3 anywhere else blanks the screen, as a
+plain KEY3 does. On radxa-05 the local Conductor drives radxa-05's own
+player too (fleet.json -> 127.0.0.1:8787), so a START from this screen
+arms this unit's own session: wherever a Conductor answers locally,
+_follow_remote() never leaves the EXHIBITION screen, shows EXHIBITION
+instead of REMOTE (also moving over from a REMOTE reached before the
+first probe answered), and KEY2 on REMOTE or EXHIBITION does not
+release() the session (that would be player.stop - radxa-05 dropping
+out of its own show; the Conductor's presence decides, not its up to
+30 s old run); the operator is left on the menu until the session is
+really let go of or the Conductor service stops, and on that menu the
+rows that take the port (STANDBY, a pattern, FW VERSION, UPDATE FW)
+are refused with a note (_remote_holds), as demo rows are.
 
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
@@ -151,6 +187,7 @@ class Screen(Enum):
     PULL = "pull"
     REBOOT = "reboot"
     WIFI = "wifi"
+    EXHIBITION = "exhibition"
     REMOTE = "remote"
     DEMO = "demo"
 
@@ -174,7 +211,7 @@ class App:
                  clock=time.monotonic, updater=None, puller=None,
                  host: str | None = None, versions=None, rebooter=None,
                  remote=None, player=None, demos=None, boardinfo=None,
-                 wifi=None):
+                 wifi=None, exhibition=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -200,6 +237,11 @@ class App:
         self.wifi = wifi
         if wifi is not None:
             self.patterns.append(wifi.menu_entry)
+        # EXHIBITION (ui/exhibition.py) follows WIFI: a client of the
+        # Conductor on this unit, nothing on the port or the boards.
+        self.exhibition = exhibition
+        if exhibition is not None:
+            self.patterns.append(exhibition.menu_entry)
         # BOARD INFO is the last row, so GIT PULL and REBOOT keep theirs.
         # It reads FW through `versions` (the same worker, so its scan
         # already counts in remote.busy below).
@@ -210,6 +252,10 @@ class App:
         # while something that must not be interrupted holds the unit.
         self.remote = remote
         self.show_status = None        # set by main: the show player's status
+        # KEY2 left REMOTE/EXHIBITION on a unit whose own Conductor has
+        # this session armed: the follow leaves the menu alone until the
+        # session is really released (_follow_remote).
+        self._remote_dismissed = False
         if remote is not None:
             remote.busy = lambda: any(
                 worker is not None and worker.busy
@@ -314,6 +360,15 @@ class App:
         if event == "key3":
             self._blank()
             return
+        if event == "key3_hold":
+            # Only EXHIBITION gives the hold a meaning (LOOP on/off).
+            # Anywhere else a KEY3 held too long still blanks the
+            # screen - the short press was suppressed by the hold.
+            if self.screen is Screen.EXHIBITION:
+                self._handle_exhibition(event)
+            else:
+                self._blank()
+            return
 
         if self.screen is Screen.UPDATE:
             self._handle_update(event)
@@ -333,9 +388,22 @@ class App:
         if self.screen is Screen.WIFI:
             self._handle_wifi(event)
             return
+        if self.screen is Screen.EXHIBITION:
+            self._handle_exhibition(event)
+            return
         if self.screen is Screen.REMOTE:
             if event == "key2":
-                self.remote.release()
+                if self._local_conductor():
+                    # The session is the local Conductor's and this unit
+                    # may be in its run (the cache can be up to 30 s
+                    # old, so the Conductor's presence decides, not its
+                    # last reported run): KEY2 only leaves the screen -
+                    # release() would be player.stop, radxa-05 dropping
+                    # out of its own show. The follow does not bring it
+                    # back until the session is really let go of.
+                    self._remote_dismissed = True
+                else:
+                    self.remote.release()
                 self._standby = False
                 self.screen = Screen.MENU
                 self._dirty = True
@@ -454,6 +522,18 @@ class App:
                 self.screen = Screen.MENU
                 self._dirty = True
             return
+        if wifi.pending is not None:
+            # A switch the Conductor (or the PC) asked for over
+            # /wifi/select is counting down: the list is not for
+            # choosing now, and KEY2 leaves it pending - only another
+            # /wifi/select {"cancel": true} takes it back.
+            if event in ("up", "down", "left", "right", "key1_hold"):
+                wifi.refuse(wifi.PENDING_NOTE)
+            elif event == "key2":
+                wifi.reset()
+                self.screen = Screen.MENU
+            self._dirty = True
+            return
         if event in ("up", "left"):
             wifi.select(-1)
         elif event in ("down", "right"):
@@ -473,8 +553,59 @@ class App:
             self.screen = Screen.MENU
         self._dirty = True
 
+    def _handle_exhibition(self, event: str) -> None:
+        exhibition = self.exhibition
+        if not exhibition.available:
+            # No Conductor here: the screen is a note, KEY2 the way out.
+            if event == "key2":
+                self._leave_exhibition()
+            return
+        if exhibition.busy:
+            # The command completes on its thread; only KEY2 is heard.
+            if event == "key2":
+                self._leave_exhibition()
+            return
+        if event in ("up", "down", "left", "right"):
+            # The Conductor has one timeline - nothing to choose between.
+            # Moving reads a verdict away, as on the WIFI list.
+            exhibition.reset()
+        elif event == "key1_hold":
+            # The hold is START while idle and STOP while a run or its
+            # countdown exists - the REBOOT gesture: a plain press does
+            # nothing on a screen that can start a show on ten units.
+            if exhibition.active:
+                exhibition.stop()
+            else:
+                exhibition.start()
+        elif event == "key3_hold":
+            exhibition.toggle_loop()
+        elif event == "key2":
+            self._leave_exhibition()
+        self._dirty = True
+
+    def _leave_exhibition(self) -> None:
+        """KEY2: back to the menu. The run is the Conductor's and goes
+        on - nothing is released, and where the Conductor is local and
+        has this unit's session armed, the follow is told not to bring
+        the screen straight back (until the session is let go of)."""
+        self.exhibition.close()
+        if (self.remote is not None and self.remote.active
+                and self._local_conductor()):
+            self._remote_dismissed = True
+        self.screen = Screen.MENU
+        self._dirty = True
+
     def _wifi_locked(self) -> "str | None":
-        """Why the WIFI switch is refused right now, or None.
+        """Why the WIFI switch is refused right now, or None
+        (wifi_lock_note, for this App's player)."""
+        return self.wifi_lock_note(self.player)
+
+    @staticmethod
+    def wifi_lock_note(player) -> "str | None":
+        """Why a Wi-Fi switch must be refused for `player`'s unit, or None.
+        One rule for the WIFI row's held KEY1 and the agent's POST
+        /wifi/select (ui/agent.py asks this, now and again when a
+        deferred switch fires).
 
         Everything that refuses a demo row's KEY1 (_pc_show_wins: the
         PC's show running or holding, restored onto the garment, its
@@ -489,10 +620,9 @@ class App:
         lock every unit for good after a power cycle (review round 2,
         2026-09-30); a restored show the PC is still driving is
         _pc_show_wins()'s restored_running case above."""
-        player = self.player
         if player is None:
             return None
-        note = self._pc_show_wins(player)
+        note = App._pc_show_wins(player)
         if note is not None:
             return WIFI_LOCKED
         if (player.show is not None and not player.is_demo
@@ -586,6 +716,14 @@ class App:
         self.wifi.refresh()
         self.wifi.select_active()
         self.screen = Screen.WIFI
+        self._dirty = True
+
+    def _enter_exhibition(self) -> None:
+        # Nothing on the port either: the Conductor drives the units over
+        # HTTP, this unit's own included. open() polls right away (on the
+        # reader's thread) and reads the show's name once.
+        self.exhibition.open()
+        self.screen = Screen.EXHIBITION
         self._dirty = True
 
     def _enter_pull(self) -> None:
@@ -925,8 +1063,37 @@ class App:
                       detail=detail, slug=entry["slug"],
                       loop=bool(entry.get("loop")))
 
+    def _remote_holds(self) -> "str | None":
+        """Why a row that takes the serial port (STANDBY, a pattern, FW
+        VERSION, UPDATE FW) must be refused right now, in the operator's
+        words - or None. Somebody else drives this unit through its
+        session: the show PC, or on radxa-05 the local Conductor, whose
+        session stays armed after a START (the menu is reachable then,
+        _remote_dismissed) - a standby would white the garment, a
+        pattern would paint over the show, a stopped runner would fail
+        the next arm() (review of 13c8dcc, HIGH-2). Demo rows have their
+        own gate (_pc_show_wins)."""
+        remote = self.remote
+        if remote is None or not (remote.active or self._pc_driving()):
+            return None
+        note = (self._pc_show_wins(self.player) if self.player is not None
+                else None)
+        if note is not None:
+            return note
+        if self._local_conductor():
+            return "conductor holds this unit - see EXHIBITION"
+        return "PC holds this unit - release it on the PC"
+
     def _restart(self) -> None:
-        if self.patterns[self.selected].key == "update":
+        key = self.patterns[self.selected].key
+        if key in ("update", "versions", "standby") or (
+                key not in ("pull", "boardinfo", "reboot", "wifi", "exhibition")
+                and not isinstance(self.patterns[self.selected], DemoRow)):
+            note = self._remote_holds()
+            if note is not None:
+                self._note_on_menu(note)
+                return
+        if key == "update":
             self._enter_update()
             return
         if self.patterns[self.selected].key == "pull":
@@ -943,6 +1110,9 @@ class App:
             return
         if self.patterns[self.selected].key == "wifi":
             self._enter_wifi()
+            return
+        if self.patterns[self.selected].key == "exhibition":
+            self._enter_exhibition()
             return
         if self.patterns[self.selected].key == "standby":
             # The top menu entry is not a looping demo. One shot of the
@@ -1057,6 +1227,13 @@ class App:
             return render.wifi_screen(
                 ssid, info, wifi.rows(), wifi.choice, wifi.phase,
                 status=wifi.status_text(), locked=self.locked, host=self.host)
+        if self.screen is Screen.EXHIBITION:
+            ex = self.exhibition
+            return render.exhibition_screen(
+                ex.available, ex.show_lines(), ex.run_text(), ex.fleet_text(),
+                ex.loop_text(), ex.speaker_text(), ex.phase,
+                status=ex.status_text(), active=ex.active,
+                locked=self.locked, host=self.host)
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",
@@ -1150,7 +1327,13 @@ class App:
                         self.locked)
             if self.screen is Screen.WIFI:
                 return ("wifi", self.wifi.key(), self.locked)
-            return ("menu", self._standby_status())
+            if self.screen is Screen.EXHIBITION:
+                return ("exhibition", self.exhibition.key(), self.locked)
+            # The EXHIBITION row's label follows its cache ("(no
+            # conductor)" or not), so the menu repaints when that flips.
+            return ("menu", self._standby_status(),
+                    None if self.exhibition is None
+                    else self.exhibition.available)
         return (int(self.runner.elapsed), self.runner.cycle,
                 self.runner.caption,
                 tuple(self.runner.recent(LOG_LINES)),
@@ -1204,13 +1387,47 @@ class App:
             # /show/load turns it False - this stops overriding at once,
             # instead of waiting for _track_demo()'s own next tick.
             return
-        if remote.active and self.screen is not Screen.REMOTE:
+        local = self._local_conductor()
+        if self.screen is Screen.EXHIBITION and local:
+            # Never left by the follow. On radxa-05 the local Conductor
+            # drives this very unit (fleet.json: radxa-05 -> 127.0.0.1),
+            # so the START just pressed here arms this session and the
+            # screen would otherwise flip to REMOTE the next tick - where
+            # a held KEY1 cannot STOP and KEY2 would release() the unit
+            # out of its own run (review of 951e0b7, HIGH-1). KEY2 is
+            # the only way out. (A garment unit sitting on the "(no
+            # conductor)" note is followed as any other screen.)
+            return
+        if not remote.active or not local:
+            # Released - or the Conductor service here is gone: REMOTE
+            # and its release() come back (review of 13c8dcc, LOW-1).
+            self._remote_dismissed = False
+        if not remote.active:
+            if self.screen is Screen.REMOTE:
+                self.screen = Screen.MENU
+                self._dirty = True
+            return
+        if local:
+            # The Conductor is on this unit: EXHIBITION is where its run
+            # is read and stopped; REMOTE would only offer a KEY2 that
+            # drops this unit out of it. REMOTE is still reached when
+            # the session was armed before the first probe answered (a
+            # UI restart, a timed-out probe): moved over as soon as the
+            # Conductor is known (review of 13c8dcc, MED-1).
+            if self.screen is Screen.REMOTE or (
+                    self.screen is not Screen.EXHIBITION
+                    and not self._remote_dismissed):
+                self._enter_exhibition()
+                self._standby = False
+            return
+        if self.screen is not Screen.REMOTE:
             self.screen = Screen.REMOTE
             self._standby = False
             self._dirty = True
-        elif not remote.active and self.screen is Screen.REMOTE:
-            self.screen = Screen.MENU
-            self._dirty = True
+
+    def _local_conductor(self) -> bool:
+        """A Conductor answers on this unit (the EXHIBITION cache)."""
+        return self.exhibition is not None and bool(self.exhibition.available)
 
     def _idle_tasks(self) -> None:
         self._follow_remote()

@@ -98,9 +98,33 @@ a show.
     since those are how the PC takes the unit back
 
     /status also carries "wifi": {"ssid", "ip", "signal", "mode",
-    "profile"} - which network the unit is on (ui/wifi.py), nulls when
-    unknown. It is a cache the unit's own reader thread fills every
-    ~10 s; nothing is asked of nmcli on this thread
+    "profile", "pending"} - which network the unit is on (ui/wifi.py),
+    nulls when unknown. It is a cache the unit's own reader thread
+    fills every ~10 s; nothing is asked of nmcli on this thread.
+    "pending" is {"profile", "in_s"} while a deferred switch (below)
+    counts down, else null
+
+    POST /wifi/select  {"profile": <NetworkManager connection name>,
+                        "after_s": 0-120 (default 0)}
+                       switch this unit's Wi-Fi - Wifi.switch() exactly
+                       as a held KEY1 on the WIFI row would, `sudo -n
+                       nmcli con up <profile>` on its own thread. With
+                       after_s > 0 the switch is put on a timer and the
+                       answer is immediate: {"scheduled": true,
+                       "after_s", "profile"} - the deferral exists
+                       because the Conductor that sends it is itself
+                       about to leave the network to become the
+                       AZ-Epaper hotspot, and would never see a later
+                       answer. A pending deferral is replaced by a new
+                       one; {"cancel": true} takes it back
+                       ({"cancelled": bool}). Refused 409 with the WIFI
+                       row's own words ("PC show running - WIFI locked",
+                       "PC show loaded - WIFI locked") exactly when its
+                       held KEY1 is (App._wifi_locked) - asked again
+                       when the timer fires, and a switch refused then
+                       is skipped and logged, never run; 409 while a
+                       switch is in flight; 404 for a profile not in
+                       the unit's list; 400 for a bad body
 
 The PC polls; the unit never calls out. A unit that walks out of Wi-Fi
 range simply stops answering for a while, and nothing here minds.
@@ -126,7 +150,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .config import WIFI_FIELDS
+from .config import WIFI_FIELDS, WIFI_MAX_AFTER_S
 from .remote import DEV_NUMBER_BRAND, RemoteError, RemoteSession
 from .showplay import HOLDING, LOADED, RUNNING
 
@@ -214,6 +238,10 @@ class _Handler(BaseHTTPRequestHandler):
             session = self.agent.session
             player = self.agent.player
             demos = self.agent.demos
+            if self.path == "/wifi/select":
+                # Nothing of the serial side is involved: answered
+                # before the show gates below are even looked at.
+                return self._wifi_select(body)
             if self.path.startswith("/demo/"):
                 if demos is None:
                     raise RemoteError("this unit has no demo store")
@@ -300,6 +328,54 @@ class _Handler(BaseHTTPRequestHandler):
                                                f"{exc}"})
         self._answer(200, self.agent.status())
 
+    def _wifi_select(self, body: dict) -> None:
+        """POST /wifi/select - see the module docstring. Every refusal
+        is an answer with the reason; nothing here touches nmcli on this
+        thread (the switch runs on Wifi's own thread, now or later)."""
+        wifi = self.agent.wifi
+        if wifi is None:
+            return self._answer(404, {"error": "this unit has no wifi worker"})
+        if body.get("cancel"):
+            cancelled = wifi.cancel_pending()
+            return self._answer(200, {"cancelled": cancelled,
+                                      "wifi": self.agent._wifi()})
+        profile = body.get("profile")
+        if not isinstance(profile, str) or not profile.strip():
+            return self._answer(400, {"error": "bad request: profile - a "
+                                               "NetworkManager connection name"})
+        after = body.get("after_s", 0)
+        if (isinstance(after, bool) or not isinstance(after, (int, float))
+                or not 0 <= float(after) <= WIFI_MAX_AFTER_S):
+            return self._answer(400, {"error": f"bad request: after_s - "
+                                               f"0 to {WIFI_MAX_AFTER_S:g} seconds"})
+        after = float(after)
+        # The same lock as the WIFI row's held KEY1 (App._wifi_locked):
+        # the PC would lose this unit. Its own words ("PC show running -
+        # WIFI locked" / "PC show loaded - WIFI locked"), and asked
+        # again at fire time.
+        note = self.agent.wifi_refusal()
+        if note is not None:
+            return self._answer(409, {"error": note})
+        if wifi.busy:
+            return self._answer(409, {"error": "a switch is in flight"})
+        if profile not in wifi.names():
+            if wifi.read_state == "none":
+                return self._answer(409, {"error": "the wifi profiles have "
+                                                   "not been read yet"})
+            return self._answer(404, {"error": f"unknown profile: {profile}"})
+        if after > 0:
+            wifi.schedule(profile, after, allowed=self.agent.wifi_refusal)
+            return self._answer(200, {"scheduled": True, "after_s": after,
+                                      "profile": profile})
+        wifi.cancel_pending()
+        if not wifi.switch_to(profile):
+            # The name is known (checked above), so False is a switch
+            # that started between the busy check and this claim.
+            return self._answer(409, {"error": "a switch is in flight"})
+        return self._answer(200, {"scheduled": False, "profile": profile,
+                                  "phase": wifi.phase,
+                                  "wifi": self.agent._wifi()})
+
 
 class Agent:
     def __init__(self, session: RemoteSession, port: int = DEFAULT_PORT,
@@ -343,11 +419,26 @@ class Agent:
         # The reader's cache, copied - never a question to nmcli here,
         # and never an exception out of /status.
         if self.wifi is None:
-            return dict.fromkeys(WIFI_FIELDS)
+            return dict.fromkeys(WIFI_FIELDS + ("pending",))
         try:
-            return self.wifi.snapshot()
+            return dict(self.wifi.snapshot(), pending=self.wifi.pending_info())
         except Exception:               # noqa: BLE001 - nulls are an answer
-            return dict.fromkeys(WIFI_FIELDS)
+            return dict.fromkeys(WIFI_FIELDS + ("pending",))
+
+    def wifi_refusal(self) -> "str | None":
+        """Why a Wi-Fi switch must not happen right now - the WIFI row's
+        own rule (App.wifi_lock_note: the PC's show running or holding,
+        restored onto the garment, being written, or uploaded and
+        waiting for START) - or None. ui.app is imported here, when
+        asked, not at module level: it draws (PIL), this server must
+        stay standard-library-light and free of that import cycle."""
+        if self.player is None:
+            return None
+        from .app import App
+        try:
+            return App.wifi_lock_note(self.player)
+        except Exception as exc:        # noqa: BLE001 - a doubt is a no
+            return str(exc) or exc.__class__.__name__
 
     def start(self) -> int:
         """Serve in a daemon thread; returns the port actually bound."""

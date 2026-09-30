@@ -66,7 +66,7 @@ class ButtonWatcher:
 
     def __init__(self, lines: "dict[str, Line]", on_event,
                  hold_events: "dict[str, float]" | None = None,
-                 bounce_s: float = 0.05):
+                 bounce_s: float = 0.05, start: bool = True):
         self._on_event = on_event
         self._hold = dict(hold_events or {})
         self._bounce_s = bounce_s
@@ -78,7 +78,8 @@ class ButtonWatcher:
             self._gpios[name] = _open(line, "in", edge="both", bias="pull_up")
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+        if start:                   # tests drive _edge/_check_holds themselves
+            self._thread.start()
 
     # Buttons pull the line low, so "pressed" is a zero reading.
     @staticmethod
@@ -126,13 +127,28 @@ class ButtonWatcher:
             started = self._pressed_at.get(name)
             if started is None or self._hold_fired.get(name):
                 continue
-            if now - started >= threshold:
-                self._hold_fired[name] = True
-                self._on_event(f"{name}_hold")
+            if now - started < threshold:
+                continue
+            # The line itself decides, not the edge log: a tap shorter
+            # than the debounce (<50 ms) loses its release edge, and
+            # this would otherwise report a HOLD a second later - LOOP
+            # flipped unseen on EXHIBITION, a reboot on REBOOT (review
+            # of 951e0b7, LOW-4). Not pressed now is the release that
+            # was missed: the short press it was.
+            try:
+                pressed = self._is_pressed(self._gpios[name])
+            except Exception:
+                pressed = True          # unreadable: trust the edges
+            if not pressed:
+                self._edge(name, False, now)
+                continue
+            self._hold_fired[name] = True
+            self._on_event(f"{name}_hold")
 
     def close(self) -> None:
         self._stop.set()
-        self._thread.join(timeout=1.0)
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
         for gpio in self._gpios.values():
             try:
                 gpio.close()

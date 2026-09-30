@@ -1,7 +1,9 @@
 """Input backends: the HAT's buttons, or a keyboard/script stand-in.
 
 All backends expose the same event names as the HAT controls:
-up, down, left, right, press, key1, key2, key3.
+up, down, left, right, press, key1, key2, key3 - and key1_hold /
+key3_hold for those two buttons held past KEY1_HOLD_S (the short press
+is then not reported: one press, one meaning).
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import queue
 import sys
 import threading
 
-from .config import BUTTON_PINS, EVENTS, KEY1_HOLD_S
+from .config import BUTTON_PINS, EVENTS, HOLD_EVENTS, KEY1_HOLD_S
 
 
 class InputSource:
@@ -64,7 +66,8 @@ class PeripheryInput(QueueInput):
 
         profile = board or BOARD
         self._watcher = ButtonWatcher(profile.buttons, self.post,
-                                      hold_events={"key1": hold_s},
+                                      hold_events={name: hold_s
+                                                   for name in HOLD_EVENTS},
                                       bounce_s=bounce_s)
 
     def close(self) -> None:
@@ -74,9 +77,9 @@ class PeripheryInput(QueueInput):
 class GpioInput(QueueInput):
     """Waveshare LCD HAT joystick + KEY1..3 (active low, pull-up).
 
-    KEY1 also reports a hold. The hold fires while the button is still
-    down and marks the press as consumed, so releasing afterwards does
-    not also send the short event - one press, one meaning.
+    KEY1 and KEY3 also report a hold. The hold fires while the button is
+    still down and marks the press as consumed, so releasing afterwards
+    does not also send the short event - one press, one meaning.
     """
 
     def __init__(self, bounce_s: float = 0.05, hold_s: float = KEY1_HOLD_S):
@@ -84,29 +87,29 @@ class GpioInput(QueueInput):
         from gpiozero import Button
 
         self._buttons = []
-        self._key1_was_held = False
+        self._was_held: "dict[str, bool]" = {}
         for event, pin in BUTTON_PINS.items():
-            if event == "key1":
+            if event in HOLD_EVENTS:
                 button = Button(pin, pull_up=True, bounce_time=bounce_s,
                                 hold_time=hold_s)
-                button.when_pressed = self._key1_pressed
-                button.when_held = self._key1_held
-                button.when_released = self._key1_released
+                button.when_pressed = (lambda e=event: self._pressed(e))
+                button.when_held = (lambda e=event: self._held(e))
+                button.when_released = (lambda e=event: self._released(e))
             else:
                 button = Button(pin, pull_up=True, bounce_time=bounce_s)
                 button.when_pressed = (lambda e=event: self.post(e))
             self._buttons.append(button)
 
-    def _key1_pressed(self) -> None:
-        self._key1_was_held = False
+    def _pressed(self, event: str) -> None:
+        self._was_held[event] = False
 
-    def _key1_held(self) -> None:
-        self._key1_was_held = True
-        self.post("key1_hold")
+    def _held(self, event: str) -> None:
+        self._was_held[event] = True
+        self.post(f"{event}_hold")
 
-    def _key1_released(self) -> None:
-        if not self._key1_was_held:
-            self.post("key1")
+    def _released(self, event: str) -> None:
+        if not self._was_held.get(event):
+            self.post(event)
 
     def close(self) -> None:
         for button in self._buttons:
@@ -118,7 +121,7 @@ class KeyboardInput(QueueInput):
     """Line-based stdin fallback so the UI is usable over plain SSH.
 
     Type a key and press Enter: w/s/a/d move, Enter alone = press,
-    1/2/3 = KEY1..3, q = quit (posts key3).
+    1/2/3 = KEY1..3, q = quit (posts key3), ! = KEY1 held, # = KEY3 held.
     """
 
     KEYMAP = {
@@ -129,6 +132,7 @@ class KeyboardInput(QueueInput):
         "": "press", "p": "press",
         "1": "key1", "2": "key2", "3": "key3", "q": "key3",
         "!": "key1_hold",          # shift-1: the KEY1 hold (reset)
+        "#": "key3_hold",          # shift-3: the KEY3 hold (LOOP)
     }
 
     def __init__(self, stream=None):
