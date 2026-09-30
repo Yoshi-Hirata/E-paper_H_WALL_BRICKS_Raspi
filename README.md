@@ -142,6 +142,8 @@ Pi Zero 2 W ──USB OTG(micro-B "USB"ポート)── 基板 ID:1 ──4芯�
 | `FW VERSION` | 応答した基板の FW を一覧。V1.4(FW_260923 以降)は `V1.4 16-color`、それ以前は `V1.1` と出る(USB 直結の 1 枚に 0x25 で判別) |
 | `GIT PULL` | `git pull --ff-only`。更新があれば KEY1 で UI を再起動 |
 | **`REBOOT`** | **機体(OS)を再起動**。確認画面で **KEY1 を 1 秒長押し**したときだけ実行(短押しでは何も起きない)。KEY2 で中止 |
+| **`WIFI`** | **機体の Wi-Fi を選ぶ**(会場のルータ `yoshihirock.net_5G` ⇔ radxa-05 のホットスポット `AZ-Epaper`)。今の SSID・IP・電波・client/hotspot と機体の無線プロファイル一覧。UP/DOWN で選び **KEY1 を 1 秒長押し**で切り替え(短押しは何もしない)。失敗すれば元のプロファイルに戻す。PC のショーが機体を握っている間は `PC show running - WIFI locked`(docs/SPECIFICATION.md「Wi-Fi の切り替え」) |
+| `BOARD INFO` | USB 直結基板のシリアル・TYPE・FW・書き込み記録(docs/SPECIFICATION.md「基板の識別」) |
 
 `REBOOT` は `sudo -n systemctl reboot` を呼ぶので、パスワード不要の sudo が
 前提(Radxa は `radxa/README.md` のセットアップ手順 3、Pi OS は既定で可)。

@@ -641,6 +641,84 @@ def boardinfo_screen(lines: "list[tuple[str, str, str]]", reading: bool,
     return image
 
 
+_WIFI_STATUS = {
+    "idle": ("READY", ACCENT),
+    "connecting": ("CONNECTING", OK),
+    "done": ("DONE", OK),
+    "failed": ("FAILED", ERR),
+    "locked": ("LOCKED", WARN),
+}
+WIFI_ROWS = 5                # profile rows that fit between now and status
+
+
+def wifi_screen(ssid: str, info: str, rows: "list[tuple[str, str, bool]]",
+                choice: int, phase: str, status: str = "",
+                locked: bool = False, host: str | None = None) -> Image.Image:
+    """WIFI: the network now, the unit's wireless profiles (ui/wifi.py).
+
+    `ssid`/`info` are Wifi.current() - what the unit is on and 'IP ...
+    72%  client'; `rows` is Wifi.rows(): (name, mode, active), the active
+    one marked and `choice` highlighted like a menu row; `phase` is one of
+    ui.wifi's IDLE/CONNECTING/DONE/FAILED/LOCKED and `status` the line
+    under the list (Wifi.status_text()), red when it starts with ERROR.
+    """
+    image, draw = _blank()
+    word, color = _WIFI_STATUS.get(phase, (phase.upper(), DIM))
+    _header(draw, "WIFI", status=word, status_color=color, host=host)
+
+    connected = ssid not in ("not connected", "reading...")
+    draw.text((8, 30), _ellipsize(ssid, FONT_M, WIDTH - 16), font=FONT_M,
+              fill=FG if connected else DIM)
+    draw.text((8, 50), _ellipsize(info, FONT_S, WIDTH - 16), font=FONT_S,
+              fill=ERR if info.startswith("nmcli:") else DIM)
+    draw.line((8, 68, WIDTH - 8, 68), fill=BAR, width=1)
+
+    # The profiles, scrolled so the cursor stays on the screen.
+    row_h = 20
+    first = max(0, min(choice - WIFI_ROWS // 2, len(rows) - WIFI_ROWS))
+    if not rows:
+        draw.text((8, 76), "no wireless profiles", font=FONT_S, fill=DIM)
+    for row, index in enumerate(range(first, min(first + WIFI_ROWS, len(rows)))):
+        y = 74 + row * row_h
+        name, mode, active = rows[index]
+        chosen = index == choice
+        if chosen:
+            draw.rectangle((4, y - 2, WIDTH - 4, y + row_h - 4), fill=SELECT)
+            draw.rectangle((4, y - 2, 7, y + row_h - 4), fill=ACCENT)
+        draw.text((14, y), "●" if active else "", font=FONT_S,
+                  fill=OK if active else DIM)
+        tag = f"  {mode}" if mode and mode != "client" else ""
+        tag_w = int(FONT_S.getlength(tag)) if tag else 0
+        draw.text((28, y), _ellipsize(name, FONT_M, WIDTH - 28 - 8 - tag_w),
+                  font=FONT_M, fill=FG if chosen else DIM)
+        if tag:
+            draw.text((WIDTH - 8 - tag_w, y + 2), tag, font=FONT_S,
+                      fill=WARN if mode == "hotspot" else DIM)
+
+    if status:
+        if status.startswith("ERROR"):
+            tint = ERR
+        elif phase == "locked":
+            tint = WARN
+        elif phase == "done":
+            tint = OK
+        else:
+            tint = DIM
+        y = 176
+        for line in _wrap(status, FONT_S, WIDTH - 16)[:3]:
+            draw.text((8, y), line, font=FONT_S, fill=tint)
+            y += 14
+
+    if locked:
+        hint = "buttons locked"
+    elif phase == "connecting":
+        hint = "connecting - KEY2 menu"
+    else:
+        hint = "hold KEY1 = switch  KEY2 back"
+    _hint(draw, hint)
+    return image
+
+
 def message_screen(title: str, body: str = "", color=FG,
                    host: str | None = None) -> Image.Image:
     """Splash / fatal error screen."""
