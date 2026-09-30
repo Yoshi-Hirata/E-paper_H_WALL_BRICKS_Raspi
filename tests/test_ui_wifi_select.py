@@ -221,6 +221,67 @@ def test_the_lock_is_asked_again_when_the_timer_fires():
         runner.stop()
 
 
+def test_an_older_timer_expiring_after_a_replacement_does_nothing():
+    # schedule A (short), then B (long): A's timer must find itself stale
+    # when it expires, not run B's switch ahead of B's delay (review of
+    # 951e0b7, MED-3 - the fire used to compare the CURRENT generation
+    # with itself).
+    wifi, fake = make_wifi()
+    wifi.poll()
+    wifi.schedule(ROUTER, 0.05)
+    first_timer = wifi._timer
+    wifi.schedule(HOTSPOT, 60.0)
+    assert wifi.pending_info()["profile"] == HOTSPOT
+    first_gen = wifi._pending_gen - 1
+    first_timer.cancel()                          # replaced: cancelled...
+    wifi._fire_scheduled(first_gen)               # ...but say it fired anyway
+    time.sleep(0.2)
+    assert fake.ups == []                         # B did not run early
+    assert wifi.pending_info()["profile"] == HOTSPOT
+    assert wifi.phase == IDLE
+    assert wifi.cancel_pending() is True
+    time.sleep(0.1)
+    assert fake.ups == []
+
+
+def test_switch_takes_the_profile_itself_and_only_one_switch_starts():
+    wifi, fake = make_wifi()
+    wifi.poll()
+    fake.release.clear()
+    hotspot = next(p for p in wifi.profiles if p.name == HOTSPOT)
+    wifi.select(0)                                # the cursor on the router
+    assert wifi.chosen().name == ROUTER
+    wifi.switch(hotspot)                          # the target, not the cursor
+    assert wifi.busy and wifi.target.name == HOTSPOT
+    assert wifi.switch_to(ROUTER) is False        # known name, but busy...
+    wifi.switch()
+    assert wifi.target.name == HOTSPOT            # ...nothing piled on
+    assert wifi.chosen().name == ROUTER           # and the cursor not moved
+    fake.release.set()
+    assert wait_until(lambda: wifi.phase == DONE)
+    assert fake.ups == [HOTSPOT]
+
+
+def test_a_timer_that_cannot_start_leaves_nothing_pending():
+    import threading
+
+    wifi, fake = make_wifi()
+    wifi.poll()
+    original = threading.Timer.start
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+    threading.Timer.start = refuse
+    try:
+        wifi.schedule(HOTSPOT, 5.0)
+    finally:
+        threading.Timer.start = original
+    assert wifi.pending is None and wifi.pending_info() is None
+    assert wifi.phase == LOCKED
+    assert wifi.status_text().startswith("could not schedule:")
+    assert fake.ups == []
+
+
 def test_a_profile_gone_by_fire_time_is_a_failure_not_a_crash():
     wifi, fake = make_wifi()
     wifi.poll()

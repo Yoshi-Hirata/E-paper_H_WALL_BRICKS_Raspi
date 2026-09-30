@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -39,12 +40,18 @@ class FakeConductor:
     `down` refuses every connection; `old` leaves out the loop and
     speaker keys (a Conductor from before Coder Z); `refuse` makes START
     a 400 with that error; `release` holds every request so a test can
-    look at the screen while one is in flight."""
+    look at the screen while one is in flight. `remote`, when given, is
+    the unit's own FakeRemote: a START arms it (the Conductor drives
+    this very unit), as on radxa-05.
 
-    def __init__(self, uploaded=True, offline=()):
+    Like Coder Z's Conductor, the ENDED run stays in place while LOOP
+    waits for the next one (`wait()`), and STOP clears both."""
+
+    def __init__(self, uploaded=True, offline=(), remote=None):
         self.run = None
         self.uploaded = uploaded
         self.offline = set(offline)
+        self.remote = remote
         self.loop = {"on": False, "wait_s": 30.0, "next_in_s": None}
         self.speaker = {"available": True, "error": None}
         self.down = False
@@ -53,6 +60,13 @@ class FakeConductor:
         self.calls = []
         self.release = threading.Event()
         self.release.set()
+
+    def wait(self, next_in_s=25.0):
+        """LOOP between runs: the run ended, the next one is pending."""
+        self.loop["on"] = True
+        self.loop["next_in_s"] = next_in_s
+        self.run = {"t0": 0.0, "state": "running", "held_at": None,
+                    "now": DURATION + 3.0, "force": False}
 
     def posts(self):
         return [(path, body) for method, path, body, _ in self.calls
@@ -78,7 +92,9 @@ class FakeConductor:
         self.calls.append((method, path, body, timeout))
         self.release.wait(5.0)
         if self.down:
-            raise OSError("[Errno 111] Connection refused")
+            # What urllib really raises for a port nobody listens on.
+            raise urllib.error.URLError(
+                ConnectionRefusedError(111, "Connection refused"))
         if method == "GET" and path == "/api/fleet":
             assert timeout <= 1.0                  # the 1 s probe
             return 200, self.fleet()
@@ -97,12 +113,15 @@ class FakeConductor:
                 return 400, {"error": self.refuse}
             self.run = {"t0": 0.0, "state": "running", "held_at": None,
                         "now": -COUNTDOWN, "force": False}
+            if self.remote is not None:
+                self.remote.active = True       # /show/run armed this unit
             units = {u: ({"ok": True} if u not in self.offline
                          else {"ok": False, "error": "offline"}) for u in UNITS}
             return 200, {"units": units, "lead_s": COUNTDOWN, "from_s": 0.0}
         if method == "POST" and path == "/api/fleet/stop":
             assert body == {}
             self.run = None
+            self.loop["next_in_s"] = None       # ...and the pending restart
             return 200, {"units": {u: {"ok": True} for u in UNITS}}
         if method == "POST" and path == "/api/loop":
             assert isinstance(body.get("on"), bool)
@@ -112,6 +131,33 @@ class FakeConductor:
         return 404, "not found"
 
 
+class FakeRemote:
+    """The unit's own RemoteSession, as App reads it: `active` while a
+    Conductor (the PC's, or the one on this unit) has it armed;
+    release() is what KEY2 on REMOTE does - player.stop on the unit."""
+
+    def __init__(self, active=False):
+        self.active = active
+        self.busy = None
+        self.released = 0
+
+    def owned(self):
+        return self.active
+
+    def release(self):
+        self.released += 1
+        self.active = False
+
+    def status(self):
+        return {"active": self.active, "phase": "armed" if self.active else "local",
+                "cue": None, "label": "", "error": None, "saved": [],
+                "failed": [], "prepare_s": None, "fire_at": None,
+                "fired_at": None, "late_ms": None, "verify": None,
+                "boards": [1], "live": [1], "boards_source": "cli",
+                "absent": [], "group_count": 1, "no_sweep": [],
+                "standby_ready": False}
+
+
 def make_exhibition(**kwargs):
     fake = FakeConductor(**kwargs)
     ex = Exhibition(http=fake, poll_open_s=60.0, poll_idle_s=60.0,
@@ -119,10 +165,10 @@ def make_exhibition(**kwargs):
     return ex, fake
 
 
-def make_app(ex, locked=False):
+def make_app(ex, locked=False, remote=None):
     runner = FakeRunner()
     app = App(NullDisplay(), ScriptedInput(()), runner, port_label="/dev/fake",
-              exhibition=ex, host="radxa-05", locked=locked)
+              exhibition=ex, host="radxa-05", locked=locked, remote=remote)
     return app, runner
 
 
@@ -229,18 +275,28 @@ def test_the_texts_for_every_state():
     ex.poll()
     assert ex.run_text() == "ended 10:54 / 10:54"
 
-    fake.run = None
-    fake.loop = {"on": True, "wait_s": 30.0, "next_in_s": 25.0}
+    # LOOP between runs: the Conductor keeps the ended run in place and
+    # says when the next one starts - the wait wins over "ended".
+    fake.wait(25.0)
     fake.speaker = {"available": False, "error": "no ALSA playback device\n"
                                                  "second line"}
     ex.poll()
+    assert fake.run is not None
     assert ex.run_text() == "next run in 0:25"
+    assert ex.active is True and ex.waiting is True
     assert ex.loop_text() == "LOOP on"
     assert ex.speaker_text() == "no speaker - no ALSA playback device"
+    fake.run = None                              # ...and with no run at all
+    ex.poll()
+    assert ex.run_text() == "next run in 0:25" and ex.active is True
+    fake.loop["next_in_s"] = None
+    ex.poll()
+    assert ex.run_text() == "idle" and ex.active is False and not ex.waiting
 
     # A Conductor from before loop and speaker existed.
     fake.old = True
     fake.loop["on"] = True
+    fake.loop["next_in_s"] = 25.0
     ex.poll()
     assert ex.loop_text() == "loop ?" and ex.loop_on() is None
     assert ex.speaker_text() == "speaker ?"
@@ -265,8 +321,7 @@ def test_a_running_clock_moves_between_polls():
     ex.poll()
     clock[0] += 4.0
     assert ex.run_text() == "hold 0:10 / 10:54"     # held: stands still
-    fake.run = None
-    fake.loop = {"on": True, "wait_s": 30.0, "next_in_s": 5.0}
+    fake.wait(5.0)
     ex.poll()
     clock[0] += 3.0
     assert ex.run_text() == "next run in 0:02"
@@ -394,9 +449,12 @@ def test_refusals_show_the_conductors_words_first_line_only():
     app.handle("up")
     app.handle("key1_hold")                      # STOP, to a dead Conductor
     assert wait_until(lambda: ex.phase == FAILED)
-    assert ex.note == "ERROR [Errno 111] Connection refused"
+    # urllib's wrapper unwrapped: the socket's own words, nothing else.
+    assert ex.note == "ERROR Connection refused"
     assert fake.posts()[-1] == ("/api/fleet/stop", {})
     assert ex.available is False                 # the poll after it saw that
+    assert ex.status_text() == ex.note
+    assert ex.fleet_error == "Connection refused"
 
     # A unit that refused the START is named.
     fake.down = False
@@ -434,6 +492,144 @@ def test_key2_goes_back_and_leaves_the_run_to_the_conductor():
     fake.release.set()
     assert wait_until(lambda: ex.phase == DONE)
     assert fake.run is None
+
+
+def test_a_held_key1_stops_the_loops_pending_restart_too():
+    ex, fake = make_exhibition()
+    fake.wait(25.0)
+    ex.poll()
+    app, _ = make_app(ex)
+    enter(app)
+    assert ex.run_text() == "next run in 0:25" and ex.active
+    app.draw()                                   # the STOP hint renders
+    app.handle("key1_hold")
+    assert wait_until(lambda: ex.phase == DONE)
+    assert fake.posts() == [("/api/fleet/stop", {})]
+    assert fake.run is None and fake.loop["next_in_s"] is None
+    assert ex.run_text() == "idle" and not ex.active
+
+
+# ---- the unit that IS the Conductor (HIGH-1) ----
+
+def test_start_arms_this_units_own_session_and_the_screen_stays_exhibition():
+    # radxa-05: fleet.json points the local Conductor at 127.0.0.1:8787,
+    # so START arms this unit's own RemoteSession. The follow used to
+    # flip every screen to REMOTE - where KEY1 held cannot STOP and KEY2
+    # is release() = player.stop, this unit dropping out of its own run.
+    remote = FakeRemote()
+    ex, fake = make_exhibition(remote=remote)
+    ex.poll()
+    app, _ = make_app(ex, remote=remote)
+    enter(app)
+    app.handle("key1_hold")                      # START
+    assert wait_until(lambda: ex.phase == DONE)
+    assert remote.active is True
+    for _ in range(3):
+        app.tick(wait=0.0)
+    assert app.screen is Screen.EXHIBITION       # never left by the follow
+    assert ex.active and ex.run_text() == "countdown -0:11"
+    app.handle("key1_hold")                      # ...so STOP is possible
+    assert wait_until(lambda: fake.run is None)
+    assert wait_until(lambda: ex.phase == DONE)
+    assert remote.released == 0
+    # KEY2 leaves the run alone (the session stays armed all day on the
+    # real unit) and the follow does not drag the menu back.
+    fake.run = {"t0": 0.0, "state": "running", "now": 12.0}
+    ex.poll()
+    app.handle("key2")
+    assert app.screen is Screen.MENU and remote.released == 0
+    for _ in range(3):
+        app.tick(wait=0.0)
+    assert app.screen is Screen.MENU
+    assert remote.active is True
+    # The row is still there and opens again...
+    enter(app)
+    assert app.screen is Screen.EXHIBITION
+    app.handle("key2")
+    # ...and once the session is really let go of, the follow is back
+    # to normal (nothing to follow, the menu stays).
+    remote.active = False
+    app.tick(wait=0.0)
+    assert app.screen is Screen.MENU
+    assert app._remote_dismissed is False
+
+
+def test_the_follow_shows_exhibition_not_remote_where_the_conductor_is_local():
+    remote = FakeRemote()
+    ex, fake = make_exhibition(remote=remote)
+    ex.poll()
+    app, _ = make_app(ex, remote=remote)
+    assert app.screen is Screen.MENU
+    fake.run = {"t0": 0.0, "state": "running", "now": 12.0}
+    ex.poll()
+    remote.active = True                         # the local Conductor armed it
+    app.tick(wait=0.0)
+    assert app.screen is Screen.EXHIBITION and ex.is_open
+    assert remote.released == 0
+    # A REMOTE screen reached before the Conductor was known (or with
+    # the PC driving): KEY2 must not release() while the local run is on.
+    app.screen = Screen.REMOTE
+    app.handle("key2")
+    assert app.screen is Screen.MENU and remote.released == 0
+    app.tick(wait=0.0)
+    assert app.screen is Screen.MENU             # dismissed, not bounced
+    # No local run any more: KEY2 on REMOTE releases, as it always did.
+    app._remote_dismissed = False
+    fake.run = None
+    ex.poll()
+    app.screen = Screen.REMOTE
+    app.handle("key2")
+    assert remote.released == 1 and remote.active is False
+
+
+def test_without_a_local_conductor_the_follow_is_unchanged():
+    remote = FakeRemote()
+    ex, fake = make_exhibition()
+    fake.down = True
+    ex.poll()
+    app, _ = make_app(ex, remote=remote)
+    remote.active = True                         # the show PC took the unit
+    app.tick(wait=0.0)
+    assert app.screen is Screen.REMOTE
+    app.handle("key2")
+    assert app.screen is Screen.MENU and remote.released == 1
+    # The "(no conductor)" note itself is not left by the follow either.
+    remote.active = True
+    enter(app)
+    assert app.screen is Screen.EXHIBITION
+    app.tick(wait=0.0)
+    assert app.screen is Screen.EXHIBITION
+    app.handle("key2")
+    app.tick(wait=0.0)
+    assert app.screen is Screen.REMOTE           # no local conductor: REMOTE
+
+
+def test_a_command_thread_that_cannot_start_is_a_verdict():
+    ex, fake = make_exhibition()
+    ex.poll()
+    original = threading.Thread.start
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+    threading.Thread.start = refuse
+    try:
+        ex.start()
+    finally:
+        threading.Thread.start = original
+    assert ex.phase == FAILED and not ex.busy
+    assert ex.note == "ERROR could not start: can't start new thread"
+    assert fake.posts() == []
+
+
+def test_urllib_errors_read_as_their_reason():
+    from ui.exhibition import _why
+
+    assert _why(urllib.error.URLError(
+        ConnectionRefusedError(111, "Connection refused"))) == "Connection refused"
+    assert _why(urllib.error.URLError("timed out")) == "timed out"
+    assert _why(TimeoutError("timed out")) == "timed out"
+    assert _why(OSError(113, "No route to host")) == "No route to host"
+    assert _why(ValueError()) == "ValueError"
 
 
 def test_the_hat_loop_never_waits_on_http():
@@ -488,7 +684,7 @@ def test_the_screen_renders_every_state():
          "ERROR every unit holds an older upload than the timeline on "
          "screen - Upload again before the show", False),
         (False, ("", ""), "", "", "", "", IDLE,
-         "no conductor: [Errno 111] Connection refused", False),
+         "no conductor: Connection refused", False),
         (None, ("", ""), "", "", "", "", IDLE, "", False),
     ]
     for available, lines, run, fleet, loop, speaker, phase, status, active in cases:

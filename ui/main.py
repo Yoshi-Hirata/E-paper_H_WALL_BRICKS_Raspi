@@ -206,9 +206,8 @@ def preview(directory: str) -> int:
                                     "first.", host="radxa-05"
                              ).save(out / "exhibition_refused.png")
     render.exhibition_screen(False, ("", ""), "", "", "", "", "idle",
-                             status="no conductor: [Errno 111] Connection "
-                                    "refused", host="radxa-03"
-                             ).save(out / "exhibition_none.png")
+                             status="no conductor: Connection refused",
+                             host="radxa-03").save(out / "exhibition_none.png")
     print(f"wrote preview screens to {out}")
     return 0
 

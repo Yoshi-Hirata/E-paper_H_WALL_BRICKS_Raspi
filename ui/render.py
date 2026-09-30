@@ -826,6 +826,10 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
         hint = "buttons locked"
     elif phase == "sending":
         hint = "sending - KEY2 menu"
+    elif run.startswith("next run"):
+        # LOOP between runs: STOP cancels the restart the Conductor
+        # has pending, which is the thing the operator must know.
+        hint = "hold KEY1 = STOP (no next run)"
     elif active:
         hint = "hold KEY1 = STOP  KEY2 back"
     else:

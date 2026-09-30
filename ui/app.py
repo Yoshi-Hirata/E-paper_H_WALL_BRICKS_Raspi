@@ -81,7 +81,14 @@ to choose), and KEY2 goes back to the menu - the show keeps running,
 the Conductor owns it. Every command goes on a worker thread; the
 screen reads `sending…` and then the Conductor's answer or its
 refusal, verbatim. A held KEY3 anywhere else blanks the screen, as a
-plain KEY3 does.
+plain KEY3 does. On radxa-05 the local Conductor drives radxa-05's own
+player too (fleet.json -> 127.0.0.1:8787), so a START from this screen
+arms this unit's own session: _follow_remote() never leaves the
+EXHIBITION screen, shows EXHIBITION instead of REMOTE wherever a
+Conductor answers locally, and KEY2 on REMOTE or EXHIBITION does not
+release() the session while that Conductor reports a run (that would
+be player.stop - radxa-05 dropping out of its own show); the operator
+is left on the menu until the session is really let go of.
 
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
@@ -241,6 +248,10 @@ class App:
         # while something that must not be interrupted holds the unit.
         self.remote = remote
         self.show_status = None        # set by main: the show player's status
+        # KEY2 left REMOTE/EXHIBITION on a unit whose own Conductor has
+        # this session armed: the follow leaves the menu alone until the
+        # session is really released (_follow_remote).
+        self._remote_dismissed = False
         if remote is not None:
             remote.busy = lambda: any(
                 worker is not None and worker.busy
@@ -378,7 +389,15 @@ class App:
             return
         if self.screen is Screen.REMOTE:
             if event == "key2":
-                self.remote.release()
+                if self._local_run():
+                    # The run is the local Conductor's and this unit is
+                    # in it: KEY2 only leaves the screen (release() would
+                    # be player.stop - radxa-05 dropping out of its own
+                    # show). The follow does not bring it back until the
+                    # session is really let go of.
+                    self._remote_dismissed = True
+                else:
+                    self.remote.release()
                 self._standby = False
                 self.screen = Screen.MENU
                 self._dirty = True
@@ -533,16 +552,12 @@ class App:
         if not exhibition.available:
             # No Conductor here: the screen is a note, KEY2 the way out.
             if event == "key2":
-                exhibition.close()
-                self.screen = Screen.MENU
-                self._dirty = True
+                self._leave_exhibition()
             return
         if exhibition.busy:
             # The command completes on its thread; only KEY2 is heard.
             if event == "key2":
-                exhibition.close()
-                self.screen = Screen.MENU
-                self._dirty = True
+                self._leave_exhibition()
             return
         if event in ("up", "down", "left", "right"):
             # The Conductor has one timeline - nothing to choose between.
@@ -559,9 +574,19 @@ class App:
         elif event == "key3_hold":
             exhibition.toggle_loop()
         elif event == "key2":
-            # Back to the menu; the run is the Conductor's and goes on.
-            exhibition.close()
-            self.screen = Screen.MENU
+            self._leave_exhibition()
+        self._dirty = True
+
+    def _leave_exhibition(self) -> None:
+        """KEY2: back to the menu. The run is the Conductor's and goes
+        on - nothing is released, and where the Conductor is local and
+        has this unit's session armed, the follow is told not to bring
+        the screen straight back (until the session is let go of)."""
+        self.exhibition.close()
+        if (self.remote is not None and self.remote.active
+                and self._local_conductor()):
+            self._remote_dismissed = True
+        self.screen = Screen.MENU
         self._dirty = True
 
     def _wifi_locked(self) -> "str | None":
@@ -1327,13 +1352,41 @@ class App:
             # /show/load turns it False - this stops overriding at once,
             # instead of waiting for _track_demo()'s own next tick.
             return
-        if remote.active and self.screen is not Screen.REMOTE:
+        if self.screen is Screen.EXHIBITION:
+            # Never left by the follow. On radxa-05 the local Conductor
+            # drives this very unit (fleet.json: radxa-05 -> 127.0.0.1),
+            # so the START just pressed here arms this session and the
+            # screen would otherwise flip to REMOTE the next tick - where
+            # a held KEY1 cannot STOP and KEY2 would release() the unit
+            # out of its own run (review of 951e0b7, HIGH-1). KEY2 is
+            # the only way out.
+            return
+        if not remote.active:
+            self._remote_dismissed = False
+            if self.screen is Screen.REMOTE:
+                self.screen = Screen.MENU
+                self._dirty = True
+            return
+        if self.screen is Screen.REMOTE or self._remote_dismissed:
+            return
+        if self._local_conductor():
+            # The Conductor is on this unit: EXHIBITION is where its run
+            # is read and stopped; REMOTE would only offer a KEY2 that
+            # drops this unit out of it.
+            self._enter_exhibition()
+        else:
             self.screen = Screen.REMOTE
-            self._standby = False
             self._dirty = True
-        elif not remote.active and self.screen is Screen.REMOTE:
-            self.screen = Screen.MENU
-            self._dirty = True
+        self._standby = False
+
+    def _local_conductor(self) -> bool:
+        """A Conductor answers on this unit (the EXHIBITION cache)."""
+        return self.exhibition is not None and bool(self.exhibition.available)
+
+    def _local_run(self) -> bool:
+        """...and it reports a run (or its countdown / loop wait): this
+        unit is in it, and releasing the session would drop it out."""
+        return self._local_conductor() and self.exhibition.active
 
     def _idle_tasks(self) -> None:
         self._follow_remote()

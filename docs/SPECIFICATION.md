@@ -1229,9 +1229,11 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
   "profile": …}` ―― この命令を送る Conductor(radxa-05)は自分もこの直後にネットワークを
   離れてホットスポットになるので、遅い返事は受け取れない。保留中は WIFI 画面に
   `switching to <名前> in N s` と出て、UP/DOWN と長押し KEY1 は `switch pending` で断る。
-  **KEY2 は保留を取り消さない**(メニューへ戻るだけ)。取り消しは
-  `POST /wifi/select {"cancel": true}` → `{"cancelled": bool}`。保留中に新しい select が
-  来れば置き換え。`/status` の `wifi` に `pending: {"profile", "in_s"} | null` が加わる。
+  **KEY2 は保留を取り消さない**(メニューへ戻るだけ)―― **保留の取り消しは HTTP からだけ**
+  (`POST /wifi/select {"cancel": true}` → `{"cancelled": bool}`)で、LCD にはそのボタンが
+  無い(送った Conductor だけが、送った理由を知っている)。保留中に新しい select が
+  来れば置き換え(タイマーは自分の世代番号を持ち、置き換え後に切れた古いタイマーは
+  何もしない)。`/status` の `wifi` に `pending: {"profile", "in_s"} | null` が加わる。
   断り方: WIFI 行の長押しと**同じ判定・同じ文言**(`App._wifi_locked()` ―― 409
   `{"error": "PC show running - WIFI locked"}` / `"PC show loaded - WIFI locked"`)、
   切り替え実行中は 409 `a switch is in flight`、一覧に無いプロファイルは 404、
@@ -1261,26 +1263,45 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
   「ショーを選ぶ」という概念は無く、UP/DOWN は判定文を消すだけ。その下に走行状態
   ―― `idle` / `countdown -0:11`(`run.now` が負) / `3:20 / 10:54 running` /
   `hold 3:20 / 10:54` / `ended 10:54 / 10:54` / LOOP 待ちなら `next run in 0:25`
-  (ポーリングの間は `now` と `next_in_s` を機体の時計で進める)、`units 7/7 online`、
+  (`loop.next_in_s` は **`run` が何であれ先に見る** ―― Conductor は LOOP の待ち時間中も
+  終わった run をそのまま置いておく。ポーリングの間は `now` と `next_in_s` を機体の
+  時計で進める)、`units 7/7 online`、
   `LOOP on / off`(Conductor が `loop` を返さない古い版なら `loop ?`)、`speaker ok` /
   `no speaker - <理由>`(同じく `speaker ?`)
 - **操作**: **KEY1 を 1 秒長押し**(REBOOT・WIFI と同じ判定、短押しは何もしない ―― 10 台に
   ショーを始めうる画面だから)= `run` が無ければ **START**(`POST /api/fleet/start {}`。
   lead を渡さないので Conductor がショー自身の「START 前のカウントダウン」を使う)、
-  `run` があれば(カウントダウン中も)**STOP**(`POST /api/fleet/stop {}`)。**KEY3 を
-  1 秒長押し** = LOOP の切り替え(`POST /api/loop {"on": bool}`、返ってきた loop
-  オブジェクトで即座に表示が変わる。不明なら on にする)。KEY2 でメニューへ ――
-  **ショーは走り続ける**(Conductor のもの)。命令は全てワーカースレッドで 3 秒
-  タイムアウト、画面は `sending…` → Conductor の返事(`START in 11 s · 7/7 units`、
-  断った機体があれば `… · 6/7 units - radxa-04: offline`)か、その**断りの 1 行目を
-  そのまま**(`note` 付きの 200 ―― `Nothing uploaded yet - Upload first.` /
-  `The show is already running.` ―― も、400/409 の `error` も、接続拒否も `ERROR …`
-  で赤く)。返事のあとに `/api/fleet` を読み直してから DONE を出すので、DONE の画面には
-  もうカウントダウンが載っている。送信中は KEY2 だけが効く(命令は完了する)
+  `run` があれば(カウントダウン中も、`ended` のままでも)**STOP**(`POST /api/fleet/stop
+  {}`)。LOOP の待ち時間中(`next run in 0:25`)もヒントは `hold KEY1 = STOP (no next
+  run)` ―― STOP は Conductor 側で予約された次の run も取り消す。`ended` で押す STOP は
+  ふつうの STOP と同じで、タイムラインの clear_after_show が入っていれば絵の消去を
+  アーム(STOP のあと CLEAR_AFTER_STOP_S の窓、START で取り消せる)しうる。**KEY3 を 1 秒長押し** = LOOP の切り替え(`POST
+  /api/loop {"on": bool}`、返ってきた loop オブジェクトで即座に表示が変わる。不明なら
+  on にする)。KEY2 でメニューへ ―― **ショーは走り続ける**(Conductor のもの)。命令は
+  全てワーカースレッドで 3 秒タイムアウト、画面は `sending…` → Conductor の返事
+  (`START in 11 s · 7/7 units`、断った機体があれば `… · 6/7 units - radxa-04:
+  offline`)か、その**断りの 1 行目をそのまま**(`note` 付きの 200 ―― `Nothing uploaded
+  yet - Upload first.` / `The show is already running.` ―― も、400/409 の `error` も
+  `ERROR …` で赤く。接続できなければ urllib の包みを剥いた素の理由 `ERROR Connection
+  refused` / `no conductor: Connection refused`)。返事のあとに `/api/fleet` を読み直して
+  から DONE を出すので、DONE の画面にはもうカウントダウンが載っている。送信中は KEY2
+  だけが効く(命令は完了する)
+- **radxa-05 は自分自身も駆動される**(fleet.json の radxa-05 → 127.0.0.1:8787。PM の
+  決定では radxa-05 は制御専用で服を持たないが、割り当てられても安全でなければ
+  ならない): START を押した瞬間にこの機体の RemoteSession が armed になる。そこで
+  `App._follow_remote()` は **EXHIBITION 画面を決して離れず**、Conductor がこの機体で
+  応答している間は REMOTE の代わりに EXHIBITION を出し、REMOTE / EXHIBITION の KEY2 は
+  その Conductor が run を報告している間 `release()`(= この機体の player.stop、自分の
+  ショーから脱落)を**呼ばず**メニューへ戻るだけ ―― セッションが本当に解放されるまで
+  follow はメニューを動かさない。Conductor の無い機体では従来どおり REMOTE
 - **KEY3 の長押し**はこの画面でだけ意味を持つ。入力層(`ui/gpio.py` / `ui/inputs.py`)は
   KEY1 と同じ仕組みで `key3_hold` を出し、短押し(画面消灯)は**離したとき**に出る
   ようになる(長押しが出たら短押しは出ない)。他の画面での `key3_hold` は短押しと同じく
-  消灯 ―― 長く押しすぎても消えないことのないように。キーボード入力では `#`
+  消灯 ―― 長く押しすぎても消えないことのないように。キーボード入力では `#`。
+  長押しを出す直前に**ピンをもう一度読む**: デバウンス(50 ms)より短いタップは離す
+  エッジが落ちるので、1 秒後にピンが上がっていればそれを「離した」として短押しを出し、
+  長押しにはしない(LOOP が知らぬ間に反転したり REBOOT が走ったりしないように。
+  `tests/test_ui_gpio.py`)
 - 頼れる Conductor API(`conductor/server.py`。`loop` / `speaker` / `/api/loop` は
   Coder Z が追加中で、無ければ `?` と出す): `GET /api/fleet` → `run`(待機中 null、
   それ以外は `state` running/holding と `now`)、`show_duration`、`units[].online`、

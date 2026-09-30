@@ -111,6 +111,20 @@ def _first_line(text) -> str:
     return ""
 
 
+def _why(exc: BaseException) -> str:
+    """An exception as the screen's one line. urllib wraps the socket's
+    own error (`<urlopen error [Errno 111] Connection refused>`): the
+    inner reason is what the operator can read - `Connection refused`,
+    `timed out`."""
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, BaseException):
+        return _why(reason)
+    if reason:
+        return _first_line(str(reason))
+    text = getattr(exc, "strerror", None) or str(exc)
+    return _first_line(text) or exc.__class__.__name__
+
+
 def format_clock(seconds: float) -> str:
     """m:ss (the Conductor's page format), never negative."""
     total = max(0, int(seconds))
@@ -194,10 +208,31 @@ class Exhibition:
 
     @property
     def active(self) -> bool:
-        """A run (or its countdown) exists on the Conductor: hold KEY1 is
-        STOP rather than START."""
+        """A run (or its countdown, or the loop's wait for the next one)
+        exists on the Conductor: hold KEY1 is STOP rather than START."""
         fleet = self.fleet
-        return bool(fleet) and fleet.get("run") is not None
+        if not fleet:
+            return False
+        return fleet.get("run") is not None or self.next_in_s() is not None
+
+    @property
+    def waiting(self) -> bool:
+        """LOOP is between runs: the Conductor will start the next one by
+        itself, and STOP is what cancels that."""
+        return self.next_in_s() is not None
+
+    def next_in_s(self) -> "float | None":
+        """Seconds until the loop's next run, moved on by the time since
+        the poll - or None when the loop is not waiting. Read whatever
+        `run` is: the Conductor keeps the ENDED run in place during the
+        wait (review of 951e0b7, MED-1)."""
+        loop = (self.fleet or {}).get("loop")
+        if not isinstance(loop, dict) or not loop.get("on"):
+            return None
+        left = loop.get("next_in_s")
+        if not isinstance(left, (int, float)) or isinstance(left, bool):
+            return None
+        return max(0.0, float(left) - (self._clock() - self.fleet_at))
 
     def recent(self, count: int) -> "list[str]":
         with self._lock:
@@ -258,15 +293,12 @@ class Exhibition:
         fleet = self.fleet
         if not fleet:
             return ""
+        left = self.next_in_s()
+        if left is not None:
+            return f"next run in {format_clock(math.ceil(left))}"
         run = fleet.get("run")
         duration = self._duration()
         if run is None:
-            loop = fleet.get("loop")
-            if isinstance(loop, dict) and loop.get("on"):
-                left = loop.get("next_in_s")
-                if isinstance(left, (int, float)):
-                    left = max(0.0, float(left) - (self._clock() - self.fleet_at))
-                    return f"next run in {format_clock(math.ceil(left))}"
             return "idle"
         now = self._run_now(run)
         if now is None:
@@ -402,7 +434,7 @@ class Exhibition:
             try:
                 fleet = self._get(FLEET_PATH, self.probe_timeout)
             except Exception as exc:        # noqa: BLE001 - shown, not raised
-                reason = _first_line(str(exc)) or exc.__class__.__name__
+                reason = _why(exc)
                 with self._lock:
                     was = self.available
                     self.available = False
@@ -427,7 +459,7 @@ class Exhibition:
         try:
             export = self._get(SHOW_PATH, self.command_timeout)
         except Exception as exc:            # noqa: BLE001 - the name is a nicety
-            self.emit(f"exhibition: show name unread ({_first_line(str(exc))})")
+            self.emit(f"exhibition: show name unread ({_why(exc)})")
             return
         cues = export.get("cues")
         with self._lock:
@@ -455,10 +487,15 @@ class Exhibition:
         self.phase = SENDING
         self.command = command
         self.note = ""
-        self._thread = threading.Thread(target=self._command,
-                                        args=(command, path, body),
-                                        daemon=True, name="exhibition-cmd")
-        self._thread.start()
+        try:
+            self._thread = threading.Thread(target=self._command,
+                                            args=(command, path, body),
+                                            daemon=True, name="exhibition-cmd")
+            self._thread.start()
+        except Exception as exc:            # noqa: BLE001 - never stuck SENDING
+            self.note = f"ERROR could not start: {_first_line(str(exc))}"
+            self.emit(self.note, error=True)
+            self.phase = FAILED
 
     def join(self, timeout: "float | None" = None) -> None:
         thread = self._thread
@@ -471,8 +508,7 @@ class Exhibition:
             code, payload = self._http("POST", self.base + path, body,
                                        self.command_timeout)
         except Exception as exc:            # noqa: BLE001 - a verdict, not a crash
-            reason = _first_line(str(exc)) or exc.__class__.__name__
-            self._verdict(FAILED, f"ERROR {reason}")
+            self._verdict(FAILED, f"ERROR {_why(exc)}")
             return
         if code >= 400:
             # The Conductor's refusal, verbatim (its first line).

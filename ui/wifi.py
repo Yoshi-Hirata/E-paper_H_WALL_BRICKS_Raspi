@@ -314,16 +314,21 @@ class Wifi:
 
     def switch_to(self, name: str) -> bool:
         """Bring the named profile up (the agent's path into switch()):
-        the cursor moves onto it first, so the screen shows what is
-        happening. False when no such profile is in the list."""
+        the profile itself is handed over, and the cursor follows it so
+        the screen shows what is happening. False when no such profile
+        is in the list, or a switch is already in flight (nothing is
+        moved then either)."""
         with self._lock:
+            if self.phase == CONNECTING:
+                return False
             for index, profile in enumerate(self.profiles):
                 if profile.name == name:
                     self.choice = index
+                    target = profile
                     break
             else:
                 return False
-        self.switch()
+        self.switch(target)
         return True
 
     def schedule(self, name: str, after_s: float, allowed=None) -> None:
@@ -332,19 +337,31 @@ class Wifi:
         None) is asked again when the timer fires - the PC may have
         taken the unit meanwhile - and a refused switch is skipped and
         logged, never run."""
-        timer = threading.Timer(after_s, self._fire_scheduled)
-        timer.daemon = True
         with self._lock:
             old = self._timer
             self._pending_gen += 1
             gen = self._pending_gen
+            # The timer carries ITS OWN generation: an older timer that
+            # expires after a replacement must find itself stale, not
+            # run the replacement's switch ahead of time (review of
+            # 951e0b7, MED-3).
+            timer = threading.Timer(after_s, self._fire_scheduled, args=(gen,))
+            timer.daemon = True
             self.pending = (name, time.monotonic() + after_s)
             self._timer = timer
             self._pending_args = (gen, name, allowed)
         if old is not None:
             old.cancel()
         self.emit(f"wifi: switch to {name} in {after_s:g} s")
-        timer.start()
+        try:
+            timer.start()
+        except Exception as exc:            # noqa: BLE001 - never stuck pending
+            with self._lock:
+                if self._timer is timer:
+                    self.pending = None
+                    self._timer = None
+            self.emit(f"wifi: switch to {name} not scheduled: {exc}", error=True)
+            self.refuse(f"could not schedule: {_first_line(str(exc))}")
 
     def cancel_pending(self) -> bool:
         """Take a deferred switch back; True when there was one."""
@@ -360,10 +377,11 @@ class Wifi:
                 self.reset()
         return pending is not None
 
-    def _fire_scheduled(self) -> None:
+    def _fire_scheduled(self, fired_gen: int) -> None:
         with self._lock:
             gen, name, allowed = self._pending_args
-            if gen != self._pending_gen or self.pending is None:
+            if (fired_gen != gen or gen != self._pending_gen
+                    or self.pending is None):
                 return                      # cancelled or replaced meanwhile
             self.pending = None
             self._timer = None
@@ -593,24 +611,32 @@ class Wifi:
         self.target = None
         self.restored = None
 
-    def switch(self) -> None:
-        """Bring the chosen profile up on a thread of its own."""
-        if self.busy:
-            return
-        target = self.chosen()
-        if target is None:
-            return
-        self.target = target
-        self.error = None
-        self.restored = None
+    def switch(self, target: "Profile | None" = None) -> None:
+        """Bring `target` - by default the chosen profile - up on a thread
+        of its own. The busy check and the claim (phase CONNECTING) are
+        one step under the lock: the HAT's held KEY1, the agent's
+        /wifi/select and a deferral's timer can all arrive at once, and
+        only one of them may start nmcli (review of 951e0b7, LOW-7)."""
+        with self._lock:
+            if self.phase == CONNECTING:
+                return
+            if target is None and self.profiles:
+                target = self.profiles[self.choice % len(self.profiles)]
+            if target is None:
+                return
+            self.target = target
+            self.error = None
+            self.restored = None
+            if target.active:
+                # `con up` on the active profile would drop and re-raise
+                # it for nothing - say so instead.
+                self.phase = DONE
+            else:
+                self.previous = self.state["profile"]
+                self.phase = CONNECTING
         if target.active:
-            # `con up` on the active profile would drop and re-raise it
-            # for nothing - say so instead.
             self.emit(f"wifi: already on {target.name}")
-            self.phase = DONE
             return
-        self.previous = self.snapshot()["profile"]
-        self.phase = CONNECTING
         try:
             self._thread = threading.Thread(target=self._switch,
                                             args=(target, self.previous),
