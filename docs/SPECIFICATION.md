@@ -1156,6 +1156,72 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
   boards (…324C). Two such boards behaved differently (colours) on 2026-09-28. Only
   the board on the USB cable can be identified.)
 
+### Wi-Fi の切り替え(WIFI と `/status` の `wifi`、2026-09-30)
+
+- 会場では各機はルータの SSID `yoshihirock.net_5G` に乗る。ルータも PC も無い展示では
+  radxa-05 が**ホットスポット**(SSID `AZ-Epaper`)になり、他機はそれに乗る。
+  NetworkManager のプロファイル名も `AZ-Epaper`(radxa-05 ではホットスポットそのもの、
+  他機では固定 IP のクライアント接続)。機体を両者の間で移すのを、ssh も PC も無しに
+  **機体の LCD から**行う(`ui/wifi.py`)
+- **機体の LCD: WIFI**(REBOOT の次、BOARD INFO の前の行 ―― 行順は UPDATE FW、
+  FW VERSION、GIT PULL、REBOOT、WIFI、BOARD INFO): 上に今の SSID(無ければ
+  `not connected`)と `IP 192.168.51.103  72%  client`(IPv4、電波強度、`client` /
+  `hotspot`)、下にこの機体の無線プロファイル一覧(`nmcli -t -f
+  NAME,TYPE,ACTIVE,AUTOCONNECT con show` の `802-11-wireless` 行だけ。有効なものに ●、
+  AP モードのものに `hotspot`)。UP/DOWN で選び、**KEY1 を 1 秒長押し**(REBOOT と
+  同じ操作・同じ判定)で `sudo -n nmcli --wait 45 con up <名前>` を別スレッドで実行
+  (こちら側のタイムアウトは 60 秒)。**短押しは何もしない** ―― 触れただけで機体が
+  ネットワークから外れてはならない。KEY2 でメニューへ(切り替え中でも戻れる。
+  切り替えは続く)。すでに有効なプロファイルへの長押しは何もせず `on <ssid>`
+- 実行中は `connecting to <ssid>…`、成功すれば新しい SSID と IP、失敗すれば
+  **元のプロファイルを `nmcli con up <元>` で戻し**、その結果を先頭に nmcli の 1 行目を
+  赤で出す(`ERROR back on <元>: <理由>` / `ERROR <元> NOT restored: <理由>` /
+  元が不明なら `ERROR no previous network to go back to: <理由>`。NetworkManager が自分で
+  戻していれば `con up` はせず `back on` ―― ただしそう判断するのは失敗直後の読みが
+  実際に通ったときだけで、読みも失敗したら(キャッシュは切り替え前の元の名前のまま
+  なので)信用せず `con up <元>` を打つ)。切り替え中に KEY2 で離れても、失敗の判定は
+  次に WIFI を開いたときまで残る(UP/DOWN で消える)。
+  **守れるのは nmcli が断った選択だけ**: 圏内に無い SSID、機体に合わないプロファイルなら
+  機体は元の場所に残る。nmcli が受け付けた選択はそのまま ―― ホットスポットに乗せた
+  機体は、そのホットスポットが落ちれば自分の LCD(か再起動)からしか届かない。だから
+  展示では **radxa-05 を先に**ホットスポットにし、他機を後から乗せる。
+  **選択は次の再起動まで**: autoconnect は触らないので、電源を入れ直せばどの機体も
+  autoconnect の決めた先(= ルータ。`AZ-Epaper` は radxa-05 でも他機でも autoconnect=no)
+  に戻る。radxa-05 も**クライアントとして**上がってくるので、停電のあとは radxa-05 を
+  ホットスポットに切り替え直してから他機を乗せ直す。プロファイルの作成・変更・削除も、
+  `/etc` への書き込みもしない ―― セットアップが残したものから選ぶだけ
+- スタンドアロンデモの KEY1 が断られる状態(PC のショーが再生中・保留中、再起動で絵が
+  戻ったまま待機中、絵を書き込み中 ―― 同じ `App._pc_show_wins()`)では
+  `PC show running - WIFI locked`、加えて **この起動中に PC が Upload したショーが
+  LOADED で絵が書き込み済み(START 待ち)**なら `PC show loaded - WIFI locked` と出して
+  何もしない(`App._wifi_locked()`。デモはそのショーを上書きしてよいが、切り替えは
+  何も上書きせず、絵を載せたまま機体を PC の手の届かない所へ移すだけ)。**再起動で
+  `restore()` が戻したショー**は、LOADED で burn が記録から `burned` と読めても錠に
+  ならない(`ShowPlayer.loaded_here` が偽 ―― でなければ一度でも PC のショーを流した
+  機体が電源を入れ直すたびに WIFI を永久に失う。レビュー第 2 回、2026-09-30)。
+  切り替えはランナー・シリアルポート・基板に一切触れない(ランナーは止めない。
+  実行中のデモはそのまま続く)
+- **`radxa/firstboot.sh`**(毎起動)はルータ用プロファイルにだけ機体番号の IPv4 を
+  入れる。`AZ-Epaper`(mode ap / ipv4.method shared、または名前・SSID が
+  `EXPO_SSID`)は対象外で、`connection up` は選んだプロファイルがいま有効なときだけ
+  ―― 起動スクリプトが機体を別のネットワークへ動かすことはない(radxa/README.md)
+- **`/status` の `wifi`**: `{"ssid", "ip", "signal", "mode", "profile"}`(不明は `null`。
+  `mode` は `client` / `hotspot`、`profile` は有効な NetworkManager プロファイル名)。
+  **キャッシュを返すだけ**。埋めるのは `ui/wifi.py` のデーモンスレッド(`Wifi.start_reader()`、
+  WIFI 画面を開くと即時に 1 回)で、約 10 秒ごとに `nmcli -t -f ACTIVE,SSID,SIGNAL dev wifi
+  list --rescan no`(**スキャンはしない** ―― ショー中に電波がチャネルを離れないため)、
+  `nmcli -t -f GENERAL.DEVICE,GENERAL.TYPE,GENERAL.CONNECTION,IP4.ADDRESS dev show`
+  (TYPE が `wifi` のブロック。インタフェース名に依らない)、各無線プロファイルの
+  `802-11-wireless.mode` / `.ssid` を読む(D-Bus への安い問い合わせ。USB には触れない)。
+  HTTP スレッドでも LCD のループでも nmcli は呼ばない。ホットスポット中の `signal` は
+  常に `null`。nmcli が無い・失敗・タイムアウトしたときは**最後に読めた値を保ち**
+  (一度も読めていなければ `null`)、画面に `nmcli: <理由>` を出す。`/status` から
+  例外は出ない
+- nmcli の呼び出しは全て 1 つの差し替え可能なランナー(`Rebooter` と同じ
+  `run_command(args, timeout)`)を通る。テストは偽の nmcli で走り、本物の nmcli も
+  sudo も呼ばない(`tests/test_ui_wifi.py`)。`python -m ui.main --preview DIR` が
+  `wifi_list.png` / `wifi_connecting.png` / `wifi_hotspot.png` / `wifi_failed.png` を出す
+
 ## 6. ソフトウェア構成
 
 ### 6.1 PC ホスト(`host/`、Python 3.11 + pyserial)

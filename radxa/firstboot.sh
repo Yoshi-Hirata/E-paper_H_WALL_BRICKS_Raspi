@@ -41,9 +41,53 @@ fi
 unit=$((10#${BASH_REMATCH[1]}))
 want="${SUBNET}.$((BASE + unit))/${PREFIX}"
 
-# The one Wi-Fi profile (system-wide, not MAC-bound, see radxa/README).
-conn="$(nmcli -t -f NAME,TYPE connection show \
-        | awk -F: '$2 == "802-11-wireless" { print $1; exit }')"
+# The exhibition network (2026-09-30): without router or PC, radxa-05
+# is a hotspot with this SSID and every other unit carries a client
+# profile of the same name (a 10.42.0.x address of its own). Neither is
+# the router profile this script gives the per-unit address to - the
+# LCD's WIFI row (ui/wifi.py) switches between them - so both are
+# skipped below: the hotspot by what it is (mode ap / ipv4.method
+# shared), the client profile by this name or SSID.
+EXPO_SSID="AZ-Epaper"
+
+field() {   # <profile> <setting> -> its value; fails when nmcli cannot say
+    nmcli -t -f "$2" connection show "$1" 2>/dev/null | cut -d: -f2-
+}
+
+# The router's Wi-Fi profile (system-wide, not MAC-bound, see
+# radxa/README). A unit now has more than one wireless profile, and
+# before Wi-Fi is up `connection show` lists them alphabetically - so
+# "the first" would be the hotspot on radxa-05 and the expo client
+# profile everywhere else. Among the profiles that are not the expo
+# ones, the active one wins, else the first listed.
+conn=""
+first=""
+active_wifi=""
+# Listed first, on its own: an nmcli that fails here fails the script
+# (set -e), instead of reading as "no Wi-Fi profile" and exiting 0.
+list="$(nmcli -t -f NAME,TYPE,ACTIVE connection show)"
+while IFS=: read -r name type active; do
+    [ "$type" = "802-11-wireless" ] || continue
+    [ "$active" = "yes" ] && active_wifi="${active_wifi:-$name}"
+    # A profile nmcli cannot describe is skipped, not taken for the
+    # router's: an unreadable answer must never pass the expo check.
+    if ! mode="$(field "$name" 802-11-wireless.mode)" \
+            || ! method="$(field "$name" ipv4.method)" \
+            || ! ssid="$(field "$name" 802-11-wireless.ssid)"; then
+        echo "skipping $name (nmcli could not read it)"
+        continue
+    fi
+    if [ "$mode" = "ap" ] || [ "$method" = "shared" ] \
+            || [ "$name" = "$EXPO_SSID" ] || [ "$ssid" = "$EXPO_SSID" ]; then
+        echo "skipping $name (expo profile: mode '${mode:-infrastructure}', ipv4 '$method', ssid '$ssid')"
+        continue
+    fi
+    if [ "$active" = "yes" ]; then
+        conn="$name"
+    fi
+    first="${first:-$name}"
+done <<< "$list"
+conn="${conn:-$first}"
 if [ -z "$conn" ]; then
     echo "no Wi-Fi connection profile; nothing to configure"
     exit 0
@@ -62,5 +106,11 @@ nmcli connection modify "$conn" \
     ipv4.gateway "$GATEWAY" ipv4.dns "$DNS"
 # Re-activate so the address is live now, not after the next reboot.
 # A failure here is not fatal: the profile is saved and the next boot
-# comes up on the new address anyway.
-nmcli connection up "$conn" || true
+# comes up on the new address anyway. Never done over another wireless
+# profile that is up (the hotspot, or the expo client network): that
+# would move the unit off the network it was put on.
+if [ -z "$active_wifi" ] || [ "$active_wifi" = "$conn" ]; then
+    nmcli connection up "$conn" || true
+else
+    echo "$host: $active_wifi is up; $conn gets $want when it is next activated"
+fi

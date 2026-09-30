@@ -7,7 +7,8 @@ Controls (Waveshare 1.3inch LCD HAT):
   KEY2                        - back to the menu (stops a running demo)
   KEY3                        - blank the screen now
 
-The last menu row, UPDATE FW, is a mode rather than a demo: it stops
+UPDATE FW (the first of the unit's own rows, after every demo) is a
+mode rather than a demo: it stops
 the runner to free the port, scans for the USB-attached board's address
 (UP/DOWN override it), and KEY1 flashes the bundled image
 (ui/updater.py). While the
@@ -30,15 +31,32 @@ line is FW VERSION's scan (the runner is stopped for it, the same way),
 and is not read at all while the PC drives the unit. KEY1 reads again,
 KEY2 goes back to the menu.
 
-GIT PULL, the last row, updates the checkout itself: `git pull
---ff-only` in the repo the service runs from (ui/puller.py), and when
-the commit moved KEY1 exits the process - the service is Restart=always,
-so systemd brings the UI back on the new code. Ten identical units
-tell apart by the hostname in the top strip of every screen.
+GIT PULL updates the checkout itself: `git pull --ff-only` in the repo
+the service runs from (ui/puller.py), and when the commit moved KEY1
+exits the process - the service is Restart=always, so systemd brings
+the UI back on the new code. Ten identical units tell apart by the
+hostname in the top strip of every screen.
 
 REBOOT restarts the whole unit (ui/rebooter.py). Its row only opens a
 confirm screen, and the reboot needs KEY1 *held* - a plain press does
 nothing there - so a double-tap on the menu cannot take a unit down.
+
+WIFI (ui/wifi.py, the row before BOARD INFO) chooses which Wi-Fi
+network the unit is on: the router's SSID at the venue, radxa-05's
+AZ-Epaper hotspot at an exhibition without router or PC. The screen
+shows the SSID, address, signal and mode now and lists the unit's
+wireless NetworkManager profiles, the active one marked; UP/DOWN pick
+one and KEY1 *held* - the REBOOT gesture, a plain press does nothing -
+brings it up (`sudo -n nmcli con up`) on a thread of its own; a
+refusal brings the previous profile back. KEY2 goes back to the menu,
+also while a switch is in flight (it keeps running; a FAILED verdict
+waits on the screen until it is read). Refused with "PC show running -
+WIFI locked" whenever a demo row's KEY1 is refused (_pc_show_wins())
+and with "PC show loaded - WIFI locked" for a PC show uploaded and
+waiting for START (_wifi_locked()). The choice lasts until the next
+reboot - autoconnect is never touched. The runner, the port and the
+boards are never touched either; the row order is UPDATE FW, FW
+VERSION, GIT PULL, REBOOT, WIFI, BOARD INFO.
 
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
@@ -108,7 +126,11 @@ from .config import (BLANK_AFTER_S, FRAME_INTERVAL_S, LOG_LINES,
 from .patterns import PATTERNS
 from .remote import RemoteError
 from .runner import DemoRunner
-from .showplay import ENDED, HOLDING, RUNNING, STOPPED
+from .showplay import ENDED, HOLDING, LOADED, RUNNING, STOPPED
+
+# The WIFI row's refusals (ui/wifi.py shows whichever it is given).
+WIFI_LOCKED = "PC show running - WIFI locked"
+WIFI_LOCKED_LOADED = "PC show loaded - WIFI locked"
 
 # Standalone demos poll the store rather than being pushed a change from
 # the agent's HTTP thread - the two run in the same process but talking
@@ -128,6 +150,7 @@ class Screen(Enum):
     BOARDINFO = "boardinfo"
     PULL = "pull"
     REBOOT = "reboot"
+    WIFI = "wifi"
     REMOTE = "remote"
     DEMO = "demo"
 
@@ -150,7 +173,8 @@ class App:
                  relock_after: float = RELOCK_AFTER_S,
                  clock=time.monotonic, updater=None, puller=None,
                  host: str | None = None, versions=None, rebooter=None,
-                 remote=None, player=None, demos=None, boardinfo=None):
+                 remote=None, player=None, demos=None, boardinfo=None,
+                 wifi=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -170,6 +194,12 @@ class App:
         self.rebooter = rebooter
         if rebooter is not None:
             self.patterns.append(rebooter.menu_entry)
+        # WIFI (ui/wifi.py) sits between REBOOT and BOARD INFO: a switch
+        # of network holds no port and no board, so it is not in
+        # remote.busy below either.
+        self.wifi = wifi
+        if wifi is not None:
+            self.patterns.append(wifi.menu_entry)
         # BOARD INFO is the last row, so GIT PULL and REBOOT keep theirs.
         # It reads FW through `versions` (the same worker, so its scan
         # already counts in remote.busy below).
@@ -300,6 +330,9 @@ class App:
         if self.screen is Screen.REBOOT:
             self._handle_reboot(event)
             return
+        if self.screen is Screen.WIFI:
+            self._handle_wifi(event)
+            return
         if self.screen is Screen.REMOTE:
             if event == "key2":
                 self.remote.release()
@@ -412,6 +445,63 @@ class App:
             self.screen = Screen.MENU
         self._dirty = True
 
+    def _handle_wifi(self, event: str) -> None:
+        wifi = self.wifi
+        if wifi.busy:
+            # The switch keeps running on its thread; only KEY2 (back to
+            # the menu) is heard while it does.
+            if event == "key2":
+                self.screen = Screen.MENU
+                self._dirty = True
+            return
+        if event in ("up", "left"):
+            wifi.select(-1)
+        elif event in ("down", "right"):
+            wifi.select(+1)
+        elif event == "key1_hold":
+            # Only the hold switches - a plain KEY1 does nothing here, a
+            # knock must never move a unit off its network. Refused in
+            # the states a demo row's KEY1 is refused, and one more
+            # (_wifi_locked): the PC would lose this unit.
+            note = self._wifi_locked()
+            if note is not None:
+                wifi.refuse(note)
+            else:
+                wifi.switch()
+        elif event == "key2":
+            wifi.reset()
+            self.screen = Screen.MENU
+        self._dirty = True
+
+    def _wifi_locked(self) -> "str | None":
+        """Why the WIFI switch is refused right now, or None.
+
+        Everything that refuses a demo row's KEY1 (_pc_show_wins: the
+        PC's show running or holding, restored onto the garment, its
+        pictures being written) - and one case more: a PC show that is
+        LOADED with its pictures burned, i.e. uploaded and waiting for
+        START. A demo may supersede that (the PC uploads again), but a
+        network switch does not supersede anything: it takes the unit
+        out of the PC's reach with the show's pictures on it. Only a
+        show load()ed since this boot counts (ShowPlayer.loaded_here):
+        restore() brings every PC show a unit ever played back LOADED
+        with its burn read from disk as "burned", and that must not
+        lock every unit for good after a power cycle (review round 2,
+        2026-09-30); a restored show the PC is still driving is
+        _pc_show_wins()'s restored_running case above."""
+        player = self.player
+        if player is None:
+            return None
+        note = self._pc_show_wins(player)
+        if note is not None:
+            return WIFI_LOCKED
+        if (player.show is not None and not player.is_demo
+                and player.state == LOADED and player.loaded_here):
+            burn = (player.status() or {}).get("burn") or {}
+            if burn.get("state") == "burned":
+                return WIFI_LOCKED_LOADED
+        return None
+
     def _handle_versions(self, event: str) -> None:
         versions = self.versions
         if versions.busy:
@@ -484,6 +574,18 @@ class App:
         # must leave a running demo exactly as it was.
         self.rebooter.reset()
         self.screen = Screen.REBOOT
+        self._dirty = True
+
+    def _enter_wifi(self) -> None:
+        # The runner keeps the port too: a network switch touches nothing
+        # on the serial side, and a running demo carries on through it.
+        # The cache is asked to refresh (the reader's thread does the
+        # reading) and the cursor starts on the profile in use. A FAILED
+        # verdict from a switch the operator left mid-way is kept.
+        self.wifi.reopen()
+        self.wifi.refresh()
+        self.wifi.select_active()
+        self.screen = Screen.WIFI
         self._dirty = True
 
     def _enter_pull(self) -> None:
@@ -839,6 +941,9 @@ class App:
         if self.patterns[self.selected].key == "reboot":
             self._enter_reboot()
             return
+        if self.patterns[self.selected].key == "wifi":
+            self._enter_wifi()
+            return
         if self.patterns[self.selected].key == "standby":
             # The top menu entry is not a looping demo. One shot of the
             # boot standby - every sector white, every board probed -
@@ -946,6 +1051,12 @@ class App:
             return render.reboot_screen(
                 rebooter.phase, rebooter.recent(LOG_LINES),
                 error=rebooter.error, locked=self.locked, host=self.host)
+        if self.screen is Screen.WIFI:
+            wifi = self.wifi
+            ssid, info = wifi.current()
+            return render.wifi_screen(
+                ssid, info, wifi.rows(), wifi.choice, wifi.phase,
+                status=wifi.status_text(), locked=self.locked, host=self.host)
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",
@@ -1037,6 +1148,8 @@ class App:
                 return ("reboot", rebooter.phase,
                         tuple(rebooter.recent(LOG_LINES)), rebooter.error,
                         self.locked)
+            if self.screen is Screen.WIFI:
+                return ("wifi", self.wifi.key(), self.locked)
             return ("menu", self._standby_status())
         return (int(self.runner.elapsed), self.runner.cycle,
                 self.runner.caption,
