@@ -75,9 +75,11 @@ the run (`idle`, `countdown -0:11`, `0:00 / 10:54 running`, `hold`,
 `ended`, `next run in 0:25` while LOOP waits), `units 7/7 online`,
 `LOOP on/off`, `speaker ok / no speaker`. KEY1 *held* is START when
 idle and STOP while a run or its countdown exists (the REBOOT gesture;
-a plain press does nothing), KEY3 *held* toggles LOOP, UP/DOWN only
-read a verdict away (the Conductor has one timeline; there is nothing
-to choose), and KEY2 goes back to the menu - the show keeps running,
+a plain press does nothing), KEY3 *held* toggles LOOP, LEFT/RIGHT are
+the speaker's volume -5/+5 (plain presses; one request in flight,
+presses meanwhile add up), UP/DOWN only read a verdict away (the
+Conductor has one timeline; there is nothing to choose), and KEY2 goes
+back to the menu - the show keeps running,
 the Conductor owns it. Every command goes on a worker thread; the
 screen reads `sending…` and then the Conductor's answer or its
 refusal, verbatim. A held KEY3 anywhere else blanks the screen, as a
@@ -159,6 +161,7 @@ from . import notify, render
 from .config import (BLANK_AFTER_S, FRAME_INTERVAL_S, LOG_LINES,
                      RELOCK_AFTER_S, UNLOCK_SEQUENCE, UNLOCK_WINDOW_S,
                      WATCHDOG_PERIOD_S)
+from .exhibition import VOLUME_STEP
 from .patterns import PATTERNS
 from .remote import RemoteError
 from .runner import DemoRunner
@@ -565,10 +568,15 @@ class App:
             if event == "key2":
                 self._leave_exhibition()
             return
-        if event in ("up", "down", "left", "right"):
+        if event in ("up", "down"):
             # The Conductor has one timeline - nothing to choose between.
             # Moving reads a verdict away, as on the WIFI list.
             exhibition.reset()
+        elif event in ("left", "right"):
+            # The speaker's volume, 5 % a press - plain presses, as many
+            # as wanted; presses during a request add up into the next.
+            exhibition.adjust_volume(-VOLUME_STEP if event == "left"
+                                     else VOLUME_STEP)
         elif event == "key1_hold":
             # The hold is START while idle and STOP while a run or its
             # countdown exists - the REBOOT gesture: a plain press does

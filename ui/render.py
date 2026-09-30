@@ -821,7 +821,11 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
             draw.text((8, y), line, font=FONT_S, fill=tint)
             y += 14
 
-    draw.text((8, 204), "hold KEY3 = LOOP on/off", font=FONT_S, fill=DIM)
+    keys = "hold KEY3 = LOOP on/off"
+    if speaker.startswith("speaker ok"):
+        keys = "hold KEY3 = LOOP   < > volume"
+    draw.text((8, 204), _ellipsize(keys, FONT_S, WIDTH - 16), font=FONT_S,
+              fill=DIM)
     if locked:
         hint = "buttons locked"
     elif phase == "sending":

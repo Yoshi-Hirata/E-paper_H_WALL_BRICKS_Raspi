@@ -53,9 +53,11 @@ class FakeConductor:
         self.offline = set(offline)
         self.remote = remote
         self.loop = {"on": False, "wait_s": 30.0, "next_in_s": None}
-        self.speaker = {"available": True, "error": None}
+        self.speaker = {"available": True, "error": None, "volume": 70,
+                        "applied": "bluez"}
         self.down = False
         self.old = False
+        self.no_volume = False          # a Conductor without /api/speaker/volume
         self.refuse = None
         self.calls = []
         self.release = threading.Event()
@@ -84,6 +86,9 @@ class FakeConductor:
         if not self.old:
             snap["loop"] = dict(self.loop)
             snap["speaker"] = dict(self.speaker)
+            if self.no_volume:
+                snap["speaker"].pop("volume", None)
+                snap["speaker"].pop("applied", None)
         return snap
 
     def __call__(self, method, url, body, timeout):
@@ -128,6 +133,16 @@ class FakeConductor:
             self.loop["on"] = body["on"]
             self.loop["next_in_s"] = None
             return 200, dict(self.loop)
+        if method == "POST" and path == "/api/speaker/volume":
+            if self.no_volume:
+                return 404, "not found"
+            if "delta" in body:
+                volume = self.speaker["volume"] + int(body["delta"])
+            else:
+                volume = int(body["volume"])
+            self.speaker["volume"] = max(0, min(100, volume))
+            return 200, {"volume": self.speaker["volume"],
+                         "applied": self.speaker["applied"], "error": None}
         return 404, "not found"
 
 
@@ -256,7 +271,8 @@ def test_the_texts_for_every_state():
     assert ex.run_text() == "idle"
     assert ex.fleet_text() == "units 7/7 online"
     assert ex.loop_text() == "LOOP off" and ex.loop_on() is False
-    assert ex.speaker_text() == "speaker ok"
+    assert ex.speaker_text() == "speaker ok · vol 70% (bluez)"
+    assert ex.speaker_available() and ex.volume_supported()
     assert ex.active is False and ex.status_text() == ""
 
     fake.run = {"t0": 0.0, "state": "running", "now": -10.6}
@@ -338,7 +354,7 @@ def test_only_a_held_key1_starts_and_the_answer_is_shown():
     enter(app)
     assert app.screen is Screen.EXHIBITION and ex.is_open
     assert runner.stops == 0                    # the runner keeps the port
-    for event in ("key1", "press", "up", "down", "left", "right", "key3"):
+    for event in ("key1", "press", "up", "down", "key3"):
         app.handle(event)
     app.blanked = False
     ex.join(0.2)
@@ -749,6 +765,87 @@ def test_urllib_errors_read_as_their_reason():
     assert _why(ValueError()) == "ValueError"
 
 
+# ---- the speaker's volume (LEFT / RIGHT) ----
+
+def test_left_and_right_send_volume_deltas_and_the_line_follows():
+    ex, fake = make_exhibition()
+    ex.poll()
+    app, _ = make_app(ex)
+    enter(app)
+    app.handle("right")
+    assert wait_until(lambda: not ex._volume_inflight)
+    assert fake.posts() == [("/api/speaker/volume", {"delta": 5})]
+    assert ex.speaker_text() == "speaker ok · vol 75% (bluez)"
+    assert ex.phase == DONE and ex.note == "vol 75%"
+    assert not ex.busy                           # not a SENDING command
+    app.handle("left")
+    assert wait_until(lambda: not ex._volume_inflight)
+    app.handle("left")
+    assert wait_until(lambda: not ex._volume_inflight)
+    assert [b["delta"] for p, b in fake.posts()[1:]] == [-5, -5]
+    assert fake.speaker["volume"] == 65
+    assert ex.speaker_text() == "speaker ok · vol 65% (bluez)"
+    # A plain press, repeatable - and never a START.
+    assert all(p == "/api/speaker/volume" for p, _ in fake.posts())
+    assert fake.run is None
+
+
+def test_presses_during_a_volume_request_add_up_into_one_more():
+    ex, fake = make_exhibition()
+    ex.poll()
+    app, _ = make_app(ex)
+    enter(app)
+    fake.release.clear()                         # the first request hangs
+    app.handle("right")
+    assert wait_until(lambda: ex._volume_inflight)
+    for event in ("right", "right", "left", "right"):
+        app.handle(event)                        # +5 +5 -5 +5 = +10, waiting
+    assert len(fake.posts()) == 1                # nothing queued behind it
+    assert ex._volume_wanted == 10
+    app.handle("key1_hold")                      # other keys still live
+    fake.release.set()
+    assert wait_until(lambda: not ex._volume_inflight)
+    ex.join_volume(2.0)
+    volume_posts = [b for p, b in fake.posts() if p == "/api/speaker/volume"]
+    assert volume_posts == [{"delta": 5}, {"delta": 10}]
+    assert fake.speaker["volume"] == 85
+    assert wait_until(lambda: ex.phase == DONE and fake.run is not None)
+    assert ex.speaker_text() == "speaker ok · vol 85% (bluez)"
+
+
+def test_an_older_conductor_without_volume_only_says_so():
+    ex, fake = make_exhibition()
+    fake.no_volume = True
+    ex.poll()
+    assert ex.speaker_text() == "speaker ok · vol ?"
+    assert ex.speaker_available() and not ex.volume_supported()
+    app, _ = make_app(ex)
+    enter(app)
+    app.handle("right")
+    app.handle("left")
+    ex.join_volume(0.2)
+    assert fake.posts() == []
+    assert ex.status_text() == "volume: not supported by this conductor"
+    app.handle("up")                             # read away like any verdict
+    assert ex.status_text() == ""
+    # No speaker at all: nothing is sent, nothing is said.
+    fake.no_volume = False
+    fake.speaker = {"available": False, "error": "no ALSA playback device"}
+    ex.poll()
+    app.handle("right")
+    ex.join_volume(0.2)
+    assert fake.posts() == [] and ex.status_text() == ""
+    # A refused request is a verdict, not a crash.
+    fake.speaker = {"available": True, "error": None, "volume": 50,
+                    "applied": None}
+    ex.poll()
+    assert ex.speaker_text() == "speaker ok · vol 50%"
+    fake.down = True
+    app.handle("right")
+    assert wait_until(lambda: not ex._volume_inflight)
+    assert ex.note == "ERROR volume: Connection refused"
+
+
 def test_the_hat_loop_never_waits_on_http():
     ex, fake = make_exhibition()
     ex.poll()
@@ -787,6 +884,11 @@ def test_the_screen_renders_every_state():
     cases = [
         (True, show, "idle", "units 7/7 online", "LOOP off", "speaker ok",
          IDLE, "", False),
+        (True, show, "idle", "units 7/7 online", "LOOP off",
+         "speaker ok · vol 70% (bluez)", DONE, "vol 70%", False),
+        (True, show, "idle", "units 7/7 online", "LOOP off",
+         "speaker ok · vol ?", DONE, "volume: not supported by this conductor",
+         False),
         (True, show, "countdown -0:11", "units 7/7 online", "LOOP off",
          "speaker ok", SENDING, "sending…", True),
         (True, show, "3:20 / 10:54 running", "units 6/7 online", "LOOP on",

@@ -182,10 +182,11 @@ def preview(directory: str) -> int:
                        host="radxa-03").save(out / "wifi_pending.png")
     show = ("AZ_show_2026", "18 cues · 10:54")
     render.exhibition_screen(True, show, "idle", "units 7/7 online",
-                             "LOOP off", "speaker ok", "idle", host="radxa-05"
-                             ).save(out / "exhibition_idle.png")
+                             "LOOP off", "speaker ok · vol 70% (bluez)", "idle",
+                             host="radxa-05").save(out / "exhibition_idle.png")
     render.exhibition_screen(True, show, "3:20 / 10:54 running",
-                             "units 7/7 online", "LOOP off", "speaker ok",
+                             "units 7/7 online", "LOOP off",
+                             "speaker ok · vol 70% (bluez)",
                              "done", status="START in 11 s · 7/7 units",
                              active=True, host="radxa-05"
                              ).save(out / "exhibition_running.png")
