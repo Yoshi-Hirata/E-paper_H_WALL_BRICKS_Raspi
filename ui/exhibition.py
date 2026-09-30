@@ -35,6 +35,16 @@ to the menu leaves a run running. What it calls:
                               and is shown verbatim, as is a 400's error
     POST /api/fleet/stop  {}  STOP - the run and its countdown
     POST /api/loop {"on": b}  the loop flag; answers the loop object
+    POST /api/speaker/volume {"delta": -5 | +5}
+                              joystick LEFT / RIGHT, plain presses;
+                              answers {"volume", "applied", "error"} and
+                              the speaker line follows (`speaker ok ·
+                              vol 70% (bluez)`). One request in flight
+                              at a time: presses meanwhile add up and go
+                              out as one delta once it has answered. A
+                              Conductor whose speaker object has no
+                              `volume` shows `vol ?`, and LEFT / RIGHT
+                              only say so
 
 The row is only useful where a Conductor answers, and the question is
 asked by a daemon thread (every POLL_OPEN_S while the screen is open,
@@ -71,6 +81,9 @@ SHOW_PATH = "/api/show/export"
 START_PATH = "/api/fleet/start"
 STOP_PATH = "/api/fleet/stop"
 LOOP_PATH = "/api/loop"
+VOLUME_PATH = "/api/speaker/volume"
+VOLUME_STEP = 5              # joystick LEFT / RIGHT, per press
+VOLUME_UNSUPPORTED = "volume: not supported by this conductor"
 
 PROBE_TIMEOUT_S = 1.0        # /api/fleet must answer within this
 COMMAND_TIMEOUT_S = 3.0      # START / STOP / loop, and the show's name
@@ -123,6 +136,17 @@ def _why(exc: BaseException) -> str:
         return _first_line(str(reason))
     text = getattr(exc, "strerror", None) or str(exc)
     return _first_line(text) or exc.__class__.__name__
+
+
+def _percent(value) -> "int | None":
+    """A volume as the screen shows it: an int 0-100, or None for
+    anything that is not a finite number (a bool, a string, NaN - the
+    HAT loop must never raise on what a Conductor sent)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    return max(0, min(100, int(value)))
 
 
 def format_clock(seconds: float) -> str:
@@ -193,6 +217,10 @@ class Exhibition:
         self._stop = threading.Event()
         self._reader: "threading.Thread | None" = None
         self._thread: "threading.Thread | None" = None
+        # Volume: one request in flight, presses meanwhile summed up.
+        self._volume_inflight = False
+        self._volume_wanted = 0
+        self._volume_thread: "threading.Thread | None" = None
 
     # ---- facts for the screen ----
 
@@ -338,9 +366,26 @@ class Exhibition:
         if not isinstance(speaker, dict) or "available" not in speaker:
             return "speaker ?"
         if speaker.get("available"):
-            return "speaker ok"
+            volume = _percent(speaker.get("volume"))
+            if volume is None:
+                return "speaker ok · vol ?"
+            text = f"speaker ok · vol {volume}%"
+            applied = speaker.get("applied")
+            if isinstance(applied, str) and applied:
+                text += f" ({_first_line(applied)})"
+            return text
         error = _first_line(speaker.get("error") or "")
         return f"no speaker - {error}" if error else "no speaker"
+
+    def speaker_available(self) -> bool:
+        speaker = (self.fleet or {}).get("speaker")
+        return isinstance(speaker, dict) and bool(speaker.get("available"))
+
+    def volume_supported(self) -> bool:
+        """The Conductor's speaker object carries `volume` (Coder Z's
+        /api/speaker/volume exists there)."""
+        speaker = (self.fleet or {}).get("speaker")
+        return isinstance(speaker, dict) and "volume" in speaker
 
     def status_text(self) -> str:
         """The line under the state: what a command is doing or did."""
@@ -379,11 +424,12 @@ class Exhibition:
 
     def reset(self) -> None:
         """A verdict was read (UP/DOWN, or the screen re-opened)."""
-        if self.busy:
-            return
-        self.phase = IDLE
-        self.command = None
-        self.note = ""
+        with self._lock:
+            if self.phase == SENDING:
+                return
+            self.phase = IDLE
+            self.command = None
+            self.note = ""
 
     # ---- the reader ----
 
@@ -481,21 +527,114 @@ class Exhibition:
         """LOOP on <-> off (an unknown flag is turned on)."""
         self._send("loop", LOOP_PATH, {"on": not self.loop_on()})
 
-    def _send(self, command: str, path: str, body: dict) -> None:
-        if self.busy:
+    def adjust_volume(self, delta: int) -> None:
+        """Joystick LEFT / RIGHT: the speaker's volume by `delta`. Not a
+        SENDING command - the keys stay live, and presses that land
+        while a request is out add up into the next one (one request
+        in flight, ever)."""
+        if not self.available or not self.speaker_available():
             return
-        self.phase = SENDING
-        self.command = command
-        self.note = ""
+        if not self.volume_supported():
+            with self._lock:
+                if self.phase != SENDING:
+                    self.phase = DONE
+                    self.note = VOLUME_UNSUPPORTED
+            return
+        with self._lock:
+            if self._volume_inflight:
+                self._volume_wanted += delta
+                return
+            self._volume_inflight = True
+        try:
+            self._volume_thread = threading.Thread(
+                target=self._volume_worker, args=(delta,), daemon=True,
+                name="exhibition-volume")
+            self._volume_thread.start()
+        except Exception as exc:            # noqa: BLE001 - never stuck in flight
+            with self._lock:
+                self._volume_inflight = False
+                self._volume_wanted = 0
+            self._volume_verdict(f"ERROR could not start: {_first_line(str(exc))}",
+                                 error=True)
+
+    def join_volume(self, timeout: "float | None" = None) -> None:
+        thread = self._volume_thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def _volume_worker(self, delta: int) -> None:
+        try:
+            while True:
+                self._volume_once(delta)
+                with self._lock:
+                    delta, self._volume_wanted = self._volume_wanted, 0
+                    if delta == 0:
+                        self._volume_inflight = False
+                        return
+        except BaseException:
+            with self._lock:
+                self._volume_inflight = False
+                self._volume_wanted = 0
+            raise
+
+    def _volume_once(self, delta: int) -> None:
+        body = {"delta": int(delta)}
+        self.emit(f"exhibition: volume -> {VOLUME_PATH} {json.dumps(body)}")
+        try:
+            code, payload = self._http("POST", self.base + VOLUME_PATH, body,
+                                       self.command_timeout)
+        except Exception as exc:            # noqa: BLE001 - a verdict, not a crash
+            self._volume_verdict(f"ERROR volume: {_why(exc)}", error=True)
+            return
+        if code >= 400 or not isinstance(payload, dict):
+            self._volume_verdict(f"ERROR volume: {self._reason(code, payload)}",
+                                 error=True)
+            return
+        with self._lock:
+            if self.fleet is not None:
+                speaker = dict(self.fleet.get("speaker") or {})
+                for key in ("volume", "applied"):
+                    if key in payload:
+                        speaker[key] = payload[key]
+                self.fleet = dict(self.fleet, speaker=speaker)
+        if payload.get("error"):
+            self._volume_verdict(f"ERROR volume: {_first_line(payload['error'])}",
+                                 error=True)
+            return
+        volume = _percent(payload.get("volume"))
+        self._volume_verdict("volume set" if volume is None else f"vol {volume}%")
+
+    def _volume_verdict(self, note: str, error: bool = False) -> None:
+        # The speaker line is what really shows the result. The note and
+        # the phase are written only while no START/STOP/LOOP command is
+        # in flight - checked and written under the lock, so a volume
+        # answer landing mid-START can never turn SENDING into DONE and
+        # reopen the key gate (review of 7c68f87, MED-1).
+        self.emit(note, error=error)
+        with self._lock:
+            if self.phase == SENDING:
+                return
+            self.note = note
+            self.phase = FAILED if error else DONE
+
+    def _send(self, command: str, path: str, body: dict) -> None:
+        with self._lock:
+            if self.phase == SENDING:
+                return
+            self.phase = SENDING
+            self.command = command
+            self.note = ""
         try:
             self._thread = threading.Thread(target=self._command,
                                             args=(command, path, body),
                                             daemon=True, name="exhibition-cmd")
             self._thread.start()
         except Exception as exc:            # noqa: BLE001 - never stuck SENDING
-            self.note = f"ERROR could not start: {_first_line(str(exc))}"
-            self.emit(self.note, error=True)
-            self.phase = FAILED
+            note = f"ERROR could not start: {_first_line(str(exc))}"
+            self.emit(note, error=True)
+            with self._lock:
+                self.note = note
+                self.phase = FAILED
 
     def join(self, timeout: "float | None" = None) -> None:
         thread = self._thread
@@ -521,9 +660,10 @@ class Exhibition:
         # screen that says DONE already shows the countdown (or, after
         # a failure, that the Conductor is gone).
         self.poll()
-        self.note = note
         self.emit(note, error=phase == FAILED)
-        self.phase = phase
+        with self._lock:
+            self.note = note
+            self.phase = phase
 
     def _describe(self, command: str, payload) -> str:
         if not isinstance(payload, dict):

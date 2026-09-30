@@ -1266,8 +1266,12 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
   (`loop.next_in_s` は **`run` が何であれ先に見る** ―― Conductor は LOOP の待ち時間中も
   終わった run をそのまま置いておく。ポーリングの間は `now` と `next_in_s` を機体の
   時計で進める)、`units 7/7 online`、
-  `LOOP on / off`(Conductor が `loop` を返さない古い版なら `loop ?`)、`speaker ok` /
-  `no speaker - <理由>`(同じく `speaker ?`)
+  `LOOP on / off`(Conductor が `loop` を返さない古い版なら `loop ?`)、`speaker ok · vol
+  70% (bluez)` / `no speaker - <理由>`(同じく `speaker ?`)。**ジョイスティック LEFT /
+  RIGHT = 音量 −5 / +5**(短押し、何度でも。`POST /api/speaker/volume {"delta": ±5}`、
+  返事の `volume` / `applied` でスピーカー行が変わる。要求は同時に 1 つだけ ―― 返事を
+  待つ間の押下は合算して次の 1 回で送る。`speaker` に `volume` の無い古い Conductor では
+  `vol ?` と出て LEFT / RIGHT は `volume: not supported by this conductor` と言うだけ)
 - **操作**: **KEY1 を 1 秒長押し**(REBOOT・WIFI と同じ判定、短押しは何もしない ―― 10 台に
   ショーを始めうる画面だから)= `run` が無ければ **START**(`POST /api/fleet/start {}`。
   lead を渡さないので Conductor がショー自身の「START 前のカウントダウン」を使う)、
