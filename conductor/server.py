@@ -2846,6 +2846,8 @@ class Handler(BaseHTTPRequestHandler):
     hotspot: str = DEFAULT_HOTSPOT_UNIT    # fleet.json's "hotspot" (wifi_select)
     adopt: bool = False                    # the exhibition's Conductor (serve --adopt)
     label: "str | None" = None             # serve --label: the page's amber badge
+    port: "int | None" = None              # the port this Conductor answers on
+    other_conductor: "dict | None" = None  # OtherConductorWatch: the other launcher's, when it is up
     prepared: "dict[str, str]" = {}        # unit -> the cue it was last sent
     prepared_lock = threading.Lock()       # request threads share the dict
     send_jobs: "dict[str, SendJob]" = {}   # id -> a workspace transfer
@@ -2854,6 +2856,13 @@ class Handler(BaseHTTPRequestHandler):
     def _client_local(self) -> bool:
         host = str(self.client_address[0]).lower()
         return host in self.local_hosts
+
+    def _identity(self) -> dict:
+        """/api/conductor's document - see the GET for what each key is."""
+        other = self.other_conductor
+        return {"label": self.label, "workspace_name": self.workspace.root.name,
+                "workspace": str(self.workspace.root.resolve()), "port": self.port,
+                "other_conductor": dict(other) if other else None}
 
     def _passcode_ok(self) -> bool:
         """The passcode, when this host has one and the client is not this
@@ -3013,14 +3022,27 @@ class Handler(BaseHTTPRequestHandler):
                 query = urllib.parse.parse_qs(self.path.partition("?")[2])
                 return self._simulator(query.get("music", ["0"])[0] == "1")
             if path == "/api/state":
-                # `label` is this Conductor's name when it is a SEPARATE
-                # one (serve --label EXHIBITION): the page wears it as an
-                # amber badge and puts it first in the window title. null
-                # on the show PC's own Conductor, whose page is unchanged.
-                # `workspace_name` is the folder's own name (showdata /
-                # exhibition-data) next to `workspace`, the full path.
-                return self._json(dict(self.workspace.state(), label=self.label,
-                                       workspace_name=self.workspace.root.name))
+                # The identity keys (see /api/conductor) ride on the state
+                # too, so the page's first paint has them.
+                return self._json(dict(self.workspace.state(), **self._identity()))
+            if path == "/api/conductor":
+                # Which Conductor this is, and whether the OTHER launcher's
+                # is up. `label` is this Conductor's name when it is a
+                # SEPARATE one (serve --label EXHIBITION): the page wears
+                # it as an amber badge and puts it first in the window
+                # title; null on the show PC's own Conductor, whose page
+                # is unchanged. `workspace_name` is the folder's own name
+                # (showdata / exhibition-data) next to `workspace`, the
+                # full path; `port` is this Conductor's. `other_conductor` is the other launcher's
+                # Conductor when it answers ({"port", "label",
+                # "workspace_name"}, OtherConductorWatch), else null - the
+                # page shows it in red in the top bar, because an OPEN
+                # idle Conductor still acts on the units (its supervision
+                # sends STOP to a unit it did not start, fires its armed
+                # clears): the other window has to be CLOSED before
+                # Upload / START here, not merely left alone. Cheap: the
+                # page polls it every few seconds on every tab.
+                return self._json(self._identity())
             if path == "/api/fleet":
                 # `timeline` is about the workspace, not the units: what
                 # the timeline is now, and what it was when it was last
@@ -3931,7 +3953,9 @@ def make_server(workspace, port: int = 8765, host: str = "127.0.0.1",
                     "speaker": speaker, "token": token, "passcode": passcode,
                     "hotspot": hotspot, "adopt": adopt, "label": label,
                     "prepared": {}, "send_jobs": {}})
-    return _Server((host, port), handler)
+    server = _Server((host, port), handler)
+    handler.port = server.server_address[1]     # the real one when port was 0
+    return server
 
 
 # `serve --label`: the name of a Conductor that is a SEPARATE application
@@ -3950,8 +3974,9 @@ def clean_label(label) -> "str | None":
 
 
 # The fleet.json a labelled Conductor (Start Exhibition Conductor.bat on the
-# PC) writes into its EMPTY workspace, once: the default units (192.168.51.10x,
-# the router's addresses, default_units()) with radxa-05 named as the hotspot
+# PC) writes into its workspace whenever there is none - the first start, or
+# after the operator deleted it: the default units (192.168.51.10x, the
+# router's addresses, default_units()) with radxa-05 named as the hotspot
 # unit - which is what the fleet-wide Wi-Fi switch and "Send workspace to"
 # default to. Never a passcode, never "adopt", never a speaker: those are
 # radxa-05's own (radxa/exhibition/fleet.json), and the PC's copy is for
@@ -3970,28 +3995,124 @@ PC_FLEET_TEMPLATE = {
 
 def write_fleet_template(root: Path, template: dict = PC_FLEET_TEMPLATE) -> bool:
     """Put `template` at <root>/fleet.json when there is none - True when
-    written, False when a fleet.json (any content, even a broken one)
-    was already there. Whole or not at all, like set_fleet_option()."""
+    written, False when a fleet.json (any content, even a broken one) is
+    already there. Exclusive create (open "x"): a file that appears
+    between the look and the write is kept too, never overwritten. Any
+    other failure (a read-only folder, say) is the caller's OSError - the
+    Conductor serves without the template, it does not stop."""
     path = Path(root) / "fleet.json"
-    if path.exists():
+    text = json.dumps(template, indent=1, ensure_ascii=False) + "\n"
+    try:
+        with open(path, "x", encoding="utf-8") as handle:
+            handle.write(text)
+    except FileExistsError:
         return False
-    scratch = path.with_name(path.name + ".tmp")
-    scratch.write_text(json.dumps(template, indent=1, ensure_ascii=False) + "\n",
-                       encoding="utf-8")
-    os.replace(scratch, path)
     return True
+
+
+def conductor_info(port: int, timeout: float = 2.0) -> "dict | None":
+    """Who answers on 127.0.0.1:<port>: {"port", "label", "workspace_name",
+    "workspace"} for a Conductor, None for nothing or something else. Asks
+    /api/conductor; a Conductor from before it (404) is asked /api/state
+    and comes back with what that has (label None, no folder name)."""
+    import urllib.error
+    import urllib.request
+
+    for path in ("/api/conductor", "/api/state"):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}",
+                                        timeout=timeout) as response:
+                reply = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404 and path == "/api/conductor":
+                continue
+            return None
+        except (OSError, ValueError):
+            return None
+        if not isinstance(reply, dict) or not (
+                "workspace_name" in reply or "workspace" in reply):
+            return None
+        return {"port": port, "label": reply.get("label"),
+                "workspace_name": reply.get("workspace_name"),
+                "workspace": reply.get("workspace")}
+    return None
 
 
 def already_serving(port: int) -> bool:
     """Is a conductor answering on this port already?"""
-    import urllib.request
+    return conductor_info(port) is not None
 
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state",
-                                    timeout=2) as response:
-            return "workspace" in json.loads(response.read())
-    except (OSError, ValueError):
-        return False
+
+# The two launchers' ports: Start Conductor.bat (the show's, no label) on
+# 8765 and Start Exhibition Conductor.bat (--label EXHIBITION) on 8766. Each
+# watches the OTHER, because an open idle Conductor still acts on the units:
+# Fleet._supervise tells a running unit "stopped (missed STOP)" once its own
+# STOP flag is set and fires its armed clears - so the other window has to be
+# closed before Upload / START here, and the page says so while it is up.
+SHOW_CONDUCTOR_PORT = 8765
+EXHIBITION_CONDUCTOR_PORT = 8766
+OTHER_CONDUCTOR_EVERY_S = 5.0
+
+
+def other_conductor_port(port: int, label: "str | None") -> "int | None":
+    """The port the OTHER launcher's Conductor would answer on: a labelled
+    Conductor watches the show's 8765, an unlabelled one the exhibition's
+    8766 - never its own port (a labelled one started on 8765 watches
+    8766, and the other way round)."""
+    other = SHOW_CONDUCTOR_PORT if label else EXHIBITION_CONDUCTOR_PORT
+    if other == port:
+        other = EXHIBITION_CONDUCTOR_PORT if label else SHOW_CONDUCTOR_PORT
+    return None if other == port else other
+
+
+def other_conductor_warning(info: dict) -> str:
+    """The one sentence, for the console and the page's top bar."""
+    where = f"port {info.get('port')}"
+    if info.get("workspace_name"):
+        where += f" (workspace {info['workspace_name']})"
+    if info.get("label"):
+        where += f" [{info['label']}]"
+    return (f"another Conductor is running on {where} - close its black window "
+            "(Ctrl+C) before Upload or START here: an open Conductor still acts "
+            "on the units")
+
+
+class OtherConductorWatch(threading.Thread):
+    """Probes the other launcher's port every OTHER_CONDUCTOR_EVERY_S and
+    keeps `handler.other_conductor` current: the probe's dict while it
+    answers (with `warning`, the sentence), None once it is gone - so the
+    page's red note appears and disappears on its own. The probe is
+    conductor_info() unless a test hands in another."""
+
+    def __init__(self, handler, port: "int | None", probe=None,
+                 every_s: float = OTHER_CONDUCTOR_EVERY_S):
+        super().__init__(name="other-conductor", daemon=True)
+        self.handler = handler
+        self.port = port
+        self.probe = probe or conductor_info
+        self.every_s = every_s
+        self._stop = threading.Event()
+
+    def check(self) -> "dict | None":
+        """One probe, applied. Returns what the page will see."""
+        info = self.probe(self.port) if self.port else None
+        seen = None
+        if info:
+            seen = {"port": info.get("port", self.port), "label": info.get("label"),
+                    "workspace_name": info.get("workspace_name")}
+            seen["warning"] = other_conductor_warning(seen)
+        self.handler.other_conductor = seen
+        return seen
+
+    def run(self) -> None:
+        while not self._stop.wait(self.every_s):
+            try:
+                self.check()
+            except Exception:           # noqa: BLE001 - a probe must never end the watch
+                self.handler.other_conductor = None
+
+    def stop(self) -> None:
+        self._stop.set()
 
 
 def reachable_urls(host: str, port: int) -> "list[str]":
@@ -4096,20 +4217,43 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
     `speaker_output` is mpg123's -o module ("alsa" under systemd);
     `passcode` (or fleet.json's) gates the page from other hosts; `label`
     names a SEPARATE Conductor (the PC's exhibition one: its page wears
-    the badge, and its empty workspace gets PC_FLEET_TEMPLATE once)."""
+    the badge, and its workspace gets PC_FLEET_TEMPLATE whenever it has
+    no fleet.json)."""
     import webbrowser
 
     label = clean_label(label)
+    folder = Path(workspace).name
     url = f"http://127.0.0.1:{port}"
     # Double-clicking the launcher twice must not be an error, and must
-    # not start a second server: it just brings the page up again.
-    if port and already_serving(port):
+    # not start a second server: it just brings the page up again. But
+    # only when it IS this Conductor: the show's launcher finding the
+    # exhibition's Conductor on its port (or the other way round, or any
+    # `serve` with another folder) must say so, not open the wrong page.
+    running = conductor_info(port) if port else None
+    if running:
+        same = ("workspace_name" not in running       # older: cannot tell
+                or (running.get("label") == label
+                    and running.get("workspace_name") == folder))
+        if not same:
+            print(f"a different Conductor is on port {port} (label "
+                  f"{running.get('label') or 'none'}, workspace "
+                  f"{running.get('workspace_name') or '?'}) - close it (its "
+                  "black window, Ctrl+C) before starting this one (label "
+                  f"{label or 'none'}, workspace {folder})", flush=True)
+            return 2
         print(f"conductor UI is already running: {url}", flush=True)
         if open_browser:
             webbrowser.open(url)
         return 0
     config = Workspace(workspace)             # makes the folder (and files/)
-    templated = bool(label) and write_fleet_template(config.root)
+    templated = False
+    if label:
+        try:
+            templated = write_fleet_template(config.root)
+        except OSError as exc:
+            print(f"warning: could not write {config.root / 'fleet.json'} "
+                  f"({exc}) - serving without it; the units are the defaults",
+                  flush=True)
     units, token = config.fleet_config()
     stored = config.fleet_option("passcode")
     if passcode and stored and str(passcode) != str(stored):
@@ -4182,11 +4326,23 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
               "holding it is adopted on its first poll", flush=True)
     for problem in problems[:5]:
         print(f"  timeline: {problem}", flush=True)
+    # The other launcher's Conductor (the show's 8765 from the exhibition's
+    # 8766, and the other way round): said once here when it is up at
+    # start, and kept current for the page's red note - an open Conductor,
+    # idle or not, still acts on the units (Fleet._supervise), so it has to
+    # be closed before Upload / START here.
+    watch = OtherConductorWatch(server.RequestHandlerClass,
+                                other_conductor_port(port, label))
+    other = watch.check()
+    if other:
+        print(f"WARNING: {other['warning']}", flush=True)
+    watch.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        watch.stop()
         if player is not None:
             player.stop()
         fleet.stop()

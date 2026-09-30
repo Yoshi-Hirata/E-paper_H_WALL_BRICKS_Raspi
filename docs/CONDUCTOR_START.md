@@ -45,10 +45,17 @@ UI 本体の使い方は README の「Conductor」の節を参照。
 | バックアップ | `Backup showdata.bat` | `Backup exhibition-data.bat` |
 
 展示の Conductor で何をしても本番のショー(`showdata/`)は変わらない。逆も同じ。
-**ただし機体は共通**なので、**2 つを同時に機体へ向けない**(片方だけで Upload / START する。
-両方が同じ機体を見ると互いの T0 を補正し合って喧嘩する)。PC の展示 Conductor はショーを
-作って radxa-05 に送るまでが役目で、会場では radxa-05 自身の Conductor がショーを回す
-(`radxa/EXHIBITION.md` 4 章)。
+**ただし機体は共通**なので、**こちらで Upload / START する前に、もう一方の黒いウィンドウを
+閉じる(Ctrl+C)**。「もう一方のボタンを押さなければよい」では**足りない**: 開いているだけの
+Conductor も機体に手を出す(自分が始めていないランに `stopped (missed STOP)` で STOP を送る、
+予約済みの消去を実行する。両方が同じ機体を見ると互いの T0 も補正し合う)。
+もう一方が動いていると、起動時の黒いウィンドウに `WARNING: another Conductor is running on
+port …` と出て、ページの上部に赤い 1 行(`⚠ another Conductor is running on port 8766
+(workspace exhibition-data) [EXHIBITION] - close its black window (Ctrl+C) before Upload or
+START here …`)が出続ける ― もう一方を閉じれば数秒で消える。同じポートに別の Conductor
+(別フォルダ・別ラベル)がいるときは起動そのものを断る(`a different Conductor is on port …
+close it`)。PC の展示 Conductor はショーを作って radxa-05 に送るまでが役目で、会場では
+radxa-05 自身の Conductor がショーを回す(`radxa/EXHIBITION.md` 4 章)。
 
 ## 2. 停止する
 
@@ -68,6 +75,8 @@ UI 本体の使い方は README の「Conductor」の節を参照。
 | ブラウザが「接続できません」 | UI が起動していない。`Start Conductor.bat` をダブルクリック |
 | ダブルクリックしても黒いウィンドウがすぐ消える | 起動に失敗している。ウィンドウが消える前のメッセージを見る。残るときは `pause` で止まるので読める。多いのは Python 未検出(`Python 3.9 or newer was not found`)と、ポート 8765 を別のものが使っている(`cannot listen on port 8765`) |
 | 黒いウィンドウに `already running` と出る | すでに起動している。ページが開くだけで正常 |
+| 黒いウィンドウに `a different Conductor is on port …` と出てすぐ終わる | 同じポートに別の Conductor(別のフォルダ・別のラベル、例: `--workspace` を変えて手で起動したもの)がいる。その黒いウィンドウを閉じてからやり直す |
+| 黒いウィンドウに `WARNING: another Conductor is running on port …`、ページ上部に赤い 1 行 | もう一方の Conductor(本番 8765 / 展示 8766 ― 1b 節)が開いている。**そちらの黒いウィンドウを閉じてから** Upload / START する。閉じれば赤い行は数秒で消える |
 | Units タブが全部 offline | UI は正常。PC が機体と同じネットワーク(専用ルータ)にいない。つなぎ直せば自動で online に戻る。Designs / Timeline の編集はオフラインのままでできる |
 | PC を再起動した・スリープから戻った | UI は起動し直す(`Start Conductor.bat`)。データは消えていない |
 

@@ -1126,11 +1126,21 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   ラベルがあるときだけ `applyLabel()` で見出しの隣に琥珀色バッジ(`#app-label`、`--warn` 地に
   `--warn-ink`)、`document.title` を `EXHIBITION · Conductor`、琥珀色の SVG favicon を付ける
   (ラベル無し = 本番のページは DOM も題名も従来のまま)。ラベルは 1 行・24 文字まで
-  (`clean_label`)。**ラベル付きの `serve()` は空のワークスペースに `fleet.json`
-  (`PC_FLEET_TEMPLATE` = `"hotspot": "radxa-05"` とコメントだけ。パスコード・adopt・
-  スピーカーは無し)を一度だけ書く**(`write_fleet_template`: 既にあれば壊れていても触らない)。
-  本番(8765、`showdata/`)と展示(8766、`exhibition-data/`)を同時に機体へ向けない決まりは
-  `radxa/EXHIBITION.md` 4 章
+  (`clean_label`)。**ラベル付きの `serve()` はワークスペースに `fleet.json` が無いときはいつでも
+  `PC_FLEET_TEMPLATE`(`"hotspot": "radxa-05"` とコメントだけ。パスコード・adopt・スピーカーは
+  無し)を書く**(`write_fleet_template`: `open(path, "x")` ― 既にあれば壊れていても、競合で
+  現れても触らない。書けなければ警告して起動は続ける)。
+  **もう一方の Conductor の監視**(`OtherConductorWatch`、5 秒ごと): ラベル付きは 8765、無しは
+  8766(自分のポートは除く、`other_conductor_port`)に `conductor_info()`(`GET /api/conductor`、
+  古い Conductor には `/api/state`)。答えがあれば起動時に `WARNING: another Conductor is running
+  on port …` を 1 行、`/api/conductor` と `/api/state` の `other_conductor`
+  (`{port, label, workspace_name, warning}`、無ければ null)に載り、ページは `paintOtherConductor()`
+  で上部に赤い 1 行(`#other-conductor`、`role=alert`)を出し、`/api/conductor` を 5 秒ごとに
+  引いて消す。理由: 開いているだけの Conductor も `Fleet._supervise` で機体に手を出す
+  (`stopped (missed STOP)`、予約済みの消去)ので、**もう一方の黒い窓を閉じてから Upload / START**
+  が決まり。同じポートに**別の** Conductor(ラベルかフォルダ名が違う)がいれば `serve()` は
+  `a different Conductor is on port …` と言って 2 で終わる(同じものなら従来どおり
+  `already running` でページを開くだけ)。`radxa/EXHIBITION.md` 4 章
 - **パスコード**(fleet.json の `"passcode"`(chmod 600)、または `serve --passcode`; 両方あって
   違えば警告して CLI 優先。**ループバック以外に bind するときは必須** ― 無い、または例の値
   `CHANGE-ME-2026` のままなら `serve` は起動を拒否して理由を出す): 設定されていると、

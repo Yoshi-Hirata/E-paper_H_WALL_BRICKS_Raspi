@@ -226,8 +226,10 @@ def main(argv=None) -> int:
                         "wears the text as an amber badge and puts it first "
                         "in the window title (\"EXHIBITION · Conductor\"), "
                         "so its window is never mistaken for the show's; a "
-                        "labelled Conductor's empty workspace gets a "
-                        "fleet.json naming radxa-05 as the hotspot. Start "
+                        "labelled Conductor's workspace gets a fleet.json "
+                        "naming radxa-05 as the hotspot whenever it has none. "
+                        "Each watches the other launcher's port (8765 / 8766) "
+                        "and says so while that Conductor is up. Start "
                         "Exhibition Conductor.bat: --workspace "
                         "exhibition-data --port 8766 --label EXHIBITION")
     p.add_argument("--open", action="store_true",
