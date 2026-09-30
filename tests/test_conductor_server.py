@@ -2406,7 +2406,12 @@ def test_the_fleet_snapshot_carries_the_start_position_and_the_show_length(tmp_p
         timeline = snap.pop("timeline")
         assert snap == {"units": [], "last_fire": None, "run": None,
                         "shows": {}, "corrections": [], "prepared": {},
-                        "start_at": 0.0, "show_duration": None}
+                        "start_at": 0.0, "show_duration": None,
+                        # EXHIBITION mode: the Loop is always an object,
+                        # the speaker is null without --speaker.
+                        "loop": {"on": False, "wait_s": 45, "next_in_s": None,
+                                 "runs": 0, "problem": None},
+                        "speaker": None}
         # Nothing to drive, but the page still asks the same question of
         # the workspace: what is the timeline now, and what was written.
         assert timeline["uploaded"] is None and timeline["demos"] == {}

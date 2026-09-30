@@ -1,0 +1,50 @@
+[Unit]
+Description=H_WALL_BRICKS show Conductor (EXHIBITION mode, headless on this unit)
+# The Conductor drives the other units over the AZ-Epaper hotspot this
+# unit provides (radxa/EXHIBITION.md), so it waits for the network to be
+# up - but NOT for epaper-exhibition-net.service, which may wait minutes
+# for a slow router: the page binds 0.0.0.0 and the LCD's own row at
+# 127.0.0.1 needs it whatever the Wi-Fi does. It does not conflict with
+# epaper-ui - this unit is control only (no garment), its agent at
+# 127.0.0.1:8787 keeps a tile.
+# ...and after radxa's user manager (uid 1000), which is what keeps the
+# persistent PulseAudio the speaker plays through (enable-linger).
+After=network-online.target NetworkManager.service epaper-ui.service user@1000.service
+Wants=network-online.target user@1000.service
+
+[Service]
+Type=simple
+User=radxa
+WorkingDirectory=/home/radxa/E-paper_H_WALL_BRICKS_Raspi
+Environment=PYTHONUNBUFFERED=1
+# A system service has no login session, so `mpg123 -o pulse` would find
+# no server: point it at radxa's (uid 1000) persistent PulseAudio - the
+# one `loginctl enable-linger radxa` keeps running (radxa/EXHIBITION.md).
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+# The Conductor is standard library only, so the system python3 (Debian
+# 11's 3.9) runs it; the repo's .venv is for the unit's own UI. --host
+# 0.0.0.0 opens the page to the hotspot (10.42.0.1:8765) and to the router
+# network when both are up; --speaker plays the show's music through mpg123
+# on this unit's speaker (apt install mpg123). `-o pulse`: the Conductor
+# runs as radxa, whose PulseAudio is persistent (loginctl enable-linger,
+# exit-idle-time = -1 - radxa/EXHIBITION.md) and routes to a Bluetooth
+# speaker (Bose SoundLink Flex, A2DP - its USB is HID only) or a USB speaker
+# alike. `--speaker-output alsa` is the fallback for a plain USB speaker if
+# PulseAudio misbehaves. The passcode every OTHER host has to give the
+# page lives in /home/radxa/exhibition/fleet.json ("passcode", chmod 600) -
+# never here, where `systemctl show` would print it; with --host 0.0.0.0 the
+# Conductor refuses to start without one, or with the example value. The
+# workspace is its own folder, never ./showdata: an exhibition show must
+# not be confused with a rehearsal's.
+# --adopt: a restart of THIS conductor takes the units that still hold its
+# show as holding it (EXHIBITION mode only - never on the show PC).
+ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --speaker-output pulse --adopt --port 8765
+# always, not on-failure: with the Loop on, this process IS the show, and a
+# clean exit would leave the garments on their last look until somebody
+# reached a terminal.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

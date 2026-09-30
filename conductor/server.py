@@ -3,7 +3,11 @@
     python -m conductor serve            # http://127.0.0.1:8765
 
 Standard library only, bound to localhost: this runs on the show PC and
-nothing else should reach it. The page (conductor/web/index.html) reads
+nothing else should reach it. The one exception is EXHIBITION mode
+(docs/SPECIFICATION.md "Exhibition mode", radxa/EXHIBITION.md), where the
+Conductor runs headless on a unit that is also the Wi-Fi hotspot: `serve
+--host 0.0.0.0 --speaker` opens it to the hotspot and plays the show's
+music through mpg123 on that host. The page (conductor/web/index.html) reads
 one JSON document, /api/state, rebuilt from the workspace folder on
 every request - a dozen small CSVs parse in milliseconds, and it means
 a file edited or dropped in by hand shows up on the next refresh.
@@ -28,12 +32,18 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import hmac
+import http.client
 import importlib.util
 import json
+import math
 import os
 import shutil
+import socket
 from dataclasses import replace
 import re
+import tarfile
+import tempfile
 import threading
 import time
 import unicodedata
@@ -42,7 +52,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import sequence, showfile, timeline
-from .fleet import DEFAULT_LEAD_S, Fleet, default_units
+from .fleet import (DEFAULT_HOTSPOT_UNIT, DEFAULT_LEAD_S, WIFI_SWITCH_RANGE_S,
+                    Fleet, default_units)
 from .look import (MAX_BOARD_ID, PALETTE, UNRELIABLE_DIP_NOTE, Design,
                    LookError, LookMap, check, compile_design, default_shift,
                    resolve_dips, unit_board_ids, unreliable_dip)
@@ -111,7 +122,12 @@ _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # SHOW's ③ START gives the fleet (fleet.start_show(lead_s=...)), so it is
 # not in any unit's show file, not in the show id, and changing it must never
 # ask for an Upload.
-_REVISION_IGNORES = {"music", "labels", "clear_after_show", "start_countdown_s"}
+#
+# `loop_wait_s` (EXHIBITION mode's Loop, 2026-09-30) is the same kind of
+# thing as the countdown: how THIS Conductor runs the evening, never part of
+# a unit's show file.
+_REVISION_IGNORES = {"music", "labels", "clear_after_show", "start_countdown_s",
+                     "loop_wait_s"}
 # THE SHOW's "Countdown before START" (show.json's `start_countdown_s`): how
 # long ③ START counts down, -0:11 ... -0:01, before the show's 0:00. The
 # owner's request (2026-09-29): 「ショー開始までのカウントダウン時間を設定
@@ -152,6 +168,63 @@ def start_countdown_of(show: dict) -> float:
                                               START_COUNTDOWN_S))
     except ValueError:
         return START_COUNTDOWN_S
+
+
+# THE SHOW's `Loop` (show.json's `loop_wait_s`, EXHIBITION mode, 2026-09-30):
+# when a run reaches its end the Conductor waits this long and starts again
+# exactly as ③ START would, countdown included. Off is NO key (the default:
+# every show written before it existed is off); on is the wait in seconds.
+# Like the countdown it never reaches a unit (_REVISION_IGNORES).
+#
+# Not shorter than 40 s (PM, 2026-09-30): after its last cue L a unit sends
+# its idle STOP at max(L + 15, the guard floor L + 30..41) and needs 5 s clear
+# before the next trigger; a shorter seam between two runs can leave the
+# master without a STOP for over 60 s (§4.6), which is what brings its
+# autoplay back.
+LOOP_WAIT_S = 45.0
+LOOP_WAIT_RANGE_S = (40.0, 600.0)
+WORKSPACE_TAR_MEMBERS = 5000
+# The exhibition workspace travels between two Conductors as one .tar
+# (GET /api/workspace/export -> POST /api/workspace/import): show.json,
+# history.json, files/*.csv and the music - never fleet.json, which says
+# where THIS host's units are. 200 MB is three times the biggest music file
+# allowed plus every CSV a show could hold.
+WORKSPACE_TAR_MAX = 200 * 1024 * 1024
+WORKSPACE_TAR_CHUNK = 256 * 1024
+_TAR_TOP = ("show.json", "history.json")
+_TAR_DIRS = ("files", "music")
+
+
+def check_loop_wait(value) -> "float | None":
+    """The Loop's wait in seconds (40 to 600, to a tenth), None for off,
+    or ValueError naming the range. Read exactly as the countdown is
+    (check_start_countdown): NFKC, a plain decimal, no bool."""
+    if value is None:
+        return None
+    low, high = LOOP_WAIT_RANGE_S
+    message = f"loop_wait_s: {low:.0f} to {high:.0f} seconds, or null for off"
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(message)
+    if isinstance(value, str):
+        value = unicodedata.normalize("NFKC", value).strip()
+        if not _PLAIN_DECIMAL.match(value):
+            raise ValueError(message)
+    try:
+        seconds = round(float(value), 1)
+    except (TypeError, ValueError):
+        raise ValueError(message)
+    if not low <= seconds <= high:          # NaN fails this too
+        raise ValueError(message)
+    return seconds
+
+
+def loop_wait_of(show: dict) -> "float | None":
+    """show.json's Loop wait, or None when the Loop is off (no key, or a
+    key nothing can read)."""
+    try:
+        return check_loop_wait(show.get("loop_wait_s"))
+    except ValueError:
+        return None
 # A CSV's name is conductor/look.py's business now (normalize_name /
 # name_problem, the same rule the designers' simulator applies): this one
 # is only for the MUSIC blob, which is a file on disk and nothing else -
@@ -531,6 +604,9 @@ class Workspace:
         # file says only what somebody changed (review of 3f67087, LOW-5).
         if after.get("start_countdown_s") == START_COUNTDOWN_S:
             after = {k: v for k, v in after.items() if k != "start_countdown_s"}
+        # ...and a Loop that is off is no key at all, the same way.
+        if "loop_wait_s" in after and after["loop_wait_s"] is None:
+            after = {k: v for k, v in after.items() if k != "loop_wait_s"}
         if after == before:
             return
         history = self._load_history()
@@ -969,6 +1045,35 @@ class Workspace:
         with self._lock:
             return start_countdown_of(self._load_show())
 
+    def set_loop(self, wait_s) -> None:
+        """THE SHOW's `Loop` (show.json's `loop_wait_s`, undoable): the
+        seconds between the end of a run and the next START, or None for
+        off - which is stored as no key, so a show.json says only what
+        somebody chose. Stored with the show for the same reason as the
+        countdown: it is how this exhibition runs, and it has to survive a
+        reload and the trip to the Conductor on radxa-05. Never part of
+        what reaches a unit (_REVISION_IGNORES)."""
+        wait_s = check_loop_wait(wait_s)
+        with self._lock:
+            before = self._load_show()
+            # _commit() drops the key again when it is None, and makes no
+            # step when nothing changed.
+            self._commit(before, dict(before, loop_wait_s=wait_s))
+
+    def loop_wait(self) -> "float | None":
+        """The Loop's wait, or None while it is off (see set_loop)."""
+        with self._lock:
+            return loop_wait_of(self._load_show())
+
+    def loop_settings(self) -> "tuple[float, float] | None":
+        """What the fleet asks when a run reaches its end (Fleet's
+        `loop_settings`): (the wait, the countdown the next run counts
+        down), or None while the Loop is off."""
+        with self._lock:
+            show = self._load_show()
+        wait = loop_wait_of(show)
+        return None if wait is None else (wait, start_countdown_of(show))
+
     def set_transition(self, design: str, sequence_id, span_s) -> None:
         """A design's own transition (show.json, undoable): every cue that
         wears it and is not itself "custom" sweeps this way. Natural, or
@@ -1103,6 +1208,9 @@ class Workspace:
             # ...and so does the countdown before ③ START (11 s unless
             # somebody chose otherwise - Workspace.set_start_countdown).
             "start_countdown_s": start_countdown_of(show),
+            # ...and the Loop (null = off), because the show file is how an
+            # exhibition workspace gets from the PC to radxa-05 by hand.
+            "loop_wait_s": loop_wait_of(show),
             "transitions": show.get("transitions") or {},
             "labels": show.get("labels") or {},
             "units": show.get("units") or {},
@@ -1160,6 +1268,12 @@ class Workspace:
         if payload.get("start_countdown_s") is not None:
             changes["start_countdown_s"] = check_start_countdown(
                 payload["start_countdown_s"])
+        # The Loop is the one key where null MEANS something - off - because
+        # the show file has to be able to carry "no loop" to a Conductor
+        # that has one on. A file without the key (older exports, the
+        # designers' bundles) leaves the Loop as it is here.
+        if "loop_wait_s" in payload:
+            changes["loop_wait_s"] = check_loop_wait(payload["loop_wait_s"])
         if "transitions" in payload:
             if not isinstance(payload["transitions"], dict):
                 raise ValueError("transitions: must be an object")
@@ -1445,6 +1559,202 @@ class Workspace:
                 "boards_kept": boards_kept, "dips_kept": dips_kept,
                 "music": music.get("name") if isinstance(music, dict) else None}
 
+    # ---- the whole workspace, between two Conductors ----
+    # EXHIBITION mode (2026-09-30): the show is authored on the PC and has to
+    # reach the Conductor on radxa-05 without ssh. One plain .tar carries
+    # what the folder holds - show.json, history.json, files/*.csv and the
+    # music file - and nothing else: fleet.json says where THIS host's units
+    # are and stays with the host.
+
+    def export_tar(self, out) -> dict:
+        """Write the workspace as a .tar to the file object `out`. Under
+        the lock, so the show.json and the CSVs in it are one moment's.
+        Returns what went in ({files, music, show, history})."""
+        counts = {"files": 0, "music": None, "show": False, "history": False}
+
+        def add(tar, path: Path, arcname: str) -> None:
+            info = tar.gettarinfo(str(path), arcname)
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            with open(path, "rb") as handle:
+                tar.addfile(info, handle)
+
+        with self._lock:
+            music = self._load_show().get("music")
+            with tarfile.open(fileobj=out, mode="w") as tar:
+                for name in _TAR_TOP:
+                    path = self.root / name
+                    if path.is_file():
+                        add(tar, path, name)
+                        counts["show" if name == "show.json" else "history"] = True
+                for path in sorted(self.files.glob("*.csv")):
+                    if path.is_file():
+                        add(tar, path, f"files/{path.name}")
+                        counts["files"] += 1
+                if isinstance(music, dict) and music.get("name"):
+                    path = self.music / Path(music["name"]).name
+                    if path.is_file():
+                        add(tar, path, f"music/{path.name}")
+                        counts["music"] = path.name
+        return counts
+
+    @staticmethod
+    def _tar_member_ok(member) -> "str | None":
+        """Where this member lands, relative to the root - or None for one
+        that is skipped (a directory entry; a fleet.json, which is per host).
+        ValueError for anything the workspace may not hold: a path outside
+        the four names above, a link, a device, a name a CSV or the music
+        could not have."""
+        name = member.name.replace("\\", "/")
+        while name.startswith("./"):
+            name = name[2:]
+        parts = [p for p in name.split("/") if p not in ("", ".")]
+        if not parts or ".." in parts:
+            raise ValueError(f"{member.name}: not a workspace path")
+        if member.isdir():
+            if len(parts) == 1 and parts[0] in _TAR_DIRS:
+                return None
+            raise ValueError(f"{member.name}: not a workspace folder")
+        if not member.isfile():
+            raise ValueError(f"{member.name}: only plain files travel")
+        if len(parts) == 1:
+            if parts[0] == "fleet.json":
+                return None                 # the receiver's own stays
+            if parts[0] not in _TAR_TOP:
+                raise ValueError(f"{member.name}: not part of a workspace")
+            return parts[0]
+        if len(parts) != 2 or parts[0] not in _TAR_DIRS:
+            raise ValueError(f"{member.name}: not part of a workspace")
+        folder, leaf = parts
+        if folder == "files":
+            problem = look_name_problem(leaf)
+            if problem or file_kind(leaf) is None or look_normalize(leaf) != leaf:
+                raise ValueError(f"{member.name}: {problem or NOT_A_CSV_NAME}")
+        else:
+            if (safe_music_name(leaf) != leaf
+                    or Path(leaf).suffix.lower() not in _MUSIC_TYPES):
+                raise ValueError(f"{member.name}: not a music file name")
+        return f"{folder}/{leaf}"
+
+    def import_tar(self, source) -> dict:
+        """Replace the workspace with the .tar at `source` (a path).
+
+        Whole or not at all, and nothing outside this folder: each member
+        is checked by name as it is read (_tar_member_ok) and written into
+        a staging folder BESIDE the workspace's own files - a member that
+        fails the check aborts the import with the staging folder removed
+        and the workspace untouched - and only then, under the lock, with
+        nothing running (the caller's 409), are the four entries swapped:
+        the old ones move aside, the new ones move in, the old ones are
+        deleted. A failure half way through moves the old ones back and
+        removes only what this import had placed. fleet.json is
+        never touched (a fleet.json inside the tar is skipped), the
+        receiver's marks of what its units hold are forgotten (the
+        timeline is new: START says "Upload again", which is right), and
+        the caller's compile is the reload - the workspace is read from
+        disk on every request anyway.
+
+        Returns {files, music, show, history}: what landed."""
+        source = Path(source)
+        if source.stat().st_size > WORKSPACE_TAR_MAX:
+            raise ValueError(f"the workspace is at most "
+                             f"{WORKSPACE_TAR_MAX // (1024 * 1024)} MB")
+        tag = f"{os.getpid()}-{threading.get_ident()}"
+        stage = self.root / f".import-{tag}"
+        aside = self.root / f".import-old-{tag}"
+        counts = {"files": 0, "music": None, "show": False, "history": False}
+        try:
+            shutil.rmtree(stage, ignore_errors=True)
+            (stage / "files").mkdir(parents=True)
+            # A plain tar only ("r:", never "r:*": a compressed one could
+            # hold anything behind a small Content-Length), one member at
+            # a time as it is read - never getmembers() up front, which
+            # would walk an unbounded index - and at most
+            # WORKSPACE_TAR_MEMBERS of them. A member that fails the name
+            # check aborts the whole import before anything is swapped.
+            with tarfile.open(str(source), mode="r:") as tar:
+                total = 0
+                count = 0
+                for member in tar:
+                    count += 1
+                    if count > WORKSPACE_TAR_MEMBERS:
+                        raise ValueError(f"more than {WORKSPACE_TAR_MEMBERS} "
+                                         "entries in the tar")
+                    where = self._tar_member_ok(member)
+                    if where is None:
+                        continue
+                    total += max(0, int(member.size))
+                    if total > WORKSPACE_TAR_MAX:
+                        raise ValueError(f"the workspace is at most "
+                                         f"{WORKSPACE_TAR_MAX // (1024 * 1024)} MB")
+                    target = stage / where
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    handle = tar.extractfile(member)
+                    if handle is None:
+                        raise ValueError(f"{member.name}: unreadable")
+                    with handle, open(target, "wb") as out:
+                        shutil.copyfileobj(handle, out, WORKSPACE_TAR_CHUNK)
+                    if where == "show.json":
+                        counts["show"] = True
+                    elif where == "history.json":
+                        counts["history"] = True
+                    elif where.startswith("files/"):
+                        counts["files"] += 1
+                    else:
+                        counts["music"] = Path(where).name
+            # The two JSON files have to parse, or the workspace they make
+            # would open on an empty show and say nothing about why.
+            for name in _TAR_TOP:
+                path = stage / name
+                if path.is_file():
+                    try:
+                        json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError) as exc:
+                        raise ValueError(f"{name}: not JSON ({exc})")
+            with self._lock:
+                self._swap_in(stage, aside)
+                self.marks.clear()
+                self.unit_marks.clear()
+                self.compiled = None
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
+            shutil.rmtree(aside, ignore_errors=True)
+        return counts
+
+    def _swap_in(self, stage: Path, aside: Path) -> None:
+        """The swap itself (lock held): the workspace's four entries move
+        into `aside`, the staged ones move in. A failure moves back what
+        had already moved, so the workspace is never half of each."""
+        names = list(_TAR_DIRS) + list(_TAR_TOP)
+        aside.mkdir(parents=True, exist_ok=True)
+        moved: "list[str]" = []           # originals now in `aside`
+        placed: "list[str]" = []          # staged entries now in the root
+        try:
+            for name in names:
+                here = self.root / name
+                if here.exists():
+                    os.replace(str(here), str(aside / name))
+                    moved.append(name)
+            for name in names:
+                fresh = stage / name
+                if fresh.exists():
+                    os.replace(str(fresh), str(self.root / name))
+                    placed.append(name)
+        except OSError:
+            # Only what THIS import put there goes; an original that was
+            # never moved aside (the failure came before its turn) is left
+            # exactly where it is, and the ones moved aside come back.
+            for name in placed:
+                landed = self.root / name
+                if landed.is_dir():
+                    shutil.rmtree(landed, ignore_errors=True)
+                elif landed.exists():
+                    landed.unlink(missing_ok=True)
+            for name in moved:
+                os.replace(str(aside / name), str(self.root / name))
+            raise
+        self.files.mkdir(parents=True, exist_ok=True)
+
     # ---- files ----
 
     # One grammar for both sides of the wire: conductor/look.py's
@@ -1684,15 +1994,65 @@ class Workspace:
 
     # ---- what goes to the units ----
 
-    def fleet_config(self) -> "tuple[dict, str | None]":
+    def _fleet_json(self) -> dict:
         try:
             config = json.loads((self.root / "fleet.json")
                                 .read_text(encoding="utf-8"))
         except (OSError, ValueError):
             config = {}
+        return config if isinstance(config, dict) else {}
+
+    def fleet_config(self) -> "tuple[dict, str | None]":
+        config = self._fleet_json()
         units = dict(default_units())
         units.update(config.get("units") or {})
         return units, config.get("token") or None
+
+    def fleet_option(self, key: str, default=None):
+        """One more key of fleet.json (EXHIBITION mode): "passcode" (the
+        page's, see PASSCODE_HEADER), "hotspot" (the unit that is the
+        AZ-Epaper hotspot, radxa-05 unless said otherwise) or
+        "speaker_volume" (the host's loudness, conductor/speaker.py)."""
+        value = self._fleet_json().get(key)
+        return default if value in (None, "") else value
+
+    def set_fleet_option(self, key: str, value) -> None:
+        """Write one key of fleet.json, keeping the rest - the per-host
+        settings the page changes (the speaker's volume). Whole or not at
+        all, like show.json; the file's mode is kept (a chmod 600 with the
+        passcode in it stays 600); a fleet.json that does not PARSE is
+        never overwritten - RuntimeError, the caller's 500."""
+        path = self.root / "fleet.json"
+        with self._lock:
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                raw = None
+            if raw is None:
+                config: dict = {}
+            else:
+                try:
+                    config = json.loads(raw)
+                except ValueError as exc:
+                    raise RuntimeError(f"fleet.json does not parse ({exc}) - "
+                                       "not overwriting it; fix it by hand")
+                if not isinstance(config, dict):
+                    raise RuntimeError("fleet.json is not an object - not "
+                                       "overwriting it; fix it by hand")
+            config[key] = value
+            mode = None
+            try:
+                mode = os.stat(path).st_mode & 0o777
+            except OSError:
+                pass
+            scratch = path.with_name(path.name + ".tmp")
+            scratch.write_text(json.dumps(config, indent=1), encoding="utf-8")
+            if mode is not None:
+                try:
+                    os.chmod(scratch, mode)
+                except OSError:
+                    pass
+            os.replace(scratch, path)
 
     def compile_units(self, choices: "dict[str, str]", cue: str
                       ) -> "tuple[dict[str, dict], list[str]]":
@@ -2186,6 +2546,10 @@ class Workspace:
                          # gives the fleet, counted down -0:11 ... 0:00
                          # (Workspace.set_start_countdown).
                          "start_countdown_s": start_countdown_of(show),
+                         # THE SHOW's Loop: seconds between runs, or null
+                         # for off (Workspace.set_loop).
+                         "loop_wait_s": loop_wait_of(show),
+                         "loop_default_s": LOOP_WAIT_S,
                          # The current default, so the page never has a
                          # refresh number of its own: it labels the "show
                          # default" choice with refresh_s and offers the
@@ -2310,12 +2674,209 @@ def build_simulator(music: "tuple | None") -> bytes:
         return body
 
 
+# ---- sending the workspace to another Conductor ----
+#
+# The page asks ITS OWN Conductor to send (POST /api/workspace/send {"to":
+# "radxa-05:8765"}) and the two Conductors talk server to server: the
+# browser never has to reach the other host (no CORS, no second page), the
+# fleet token travels with the request, and the page polls the job for
+# progress - the tar is packed to a temp file first, so the bytes sent are
+# counted against a known total.
+
+# Generous: the receiver compiles every unit's show before it answers
+# (seconds for ten units of eighteen cues on a Radxa).
+SEND_TIMEOUT_S = 300.0
+SEND_PROBE_TIMEOUT_S = 10.0
+_SEND_JOBS_KEPT = 8
+_HOST_PORT = re.compile(r"^(?:https?://)?\[?([^\[\]/:\s]+|[0-9a-fA-F:]+)\]?(?::([0-9]{1,5}))?/?$")
+
+
+def parse_conductor_address(raw) -> "tuple[str, int]":
+    """"radxa-05:8765" / "10.42.0.105" / "http://radxa-05:8765/" -> (host,
+    port); the port defaults to 8765. ValueError for anything else."""
+    text = unicodedata.normalize("NFKC", str(raw or "")).strip()
+    match = _HOST_PORT.match(text)
+    if not match:
+        raise ValueError("where to send to: host:port, e.g. radxa-05:8765")
+    host, port = match.group(1), int(match.group(2) or 8765)
+    if not 1 <= port <= 65535:
+        raise ValueError("port: 1 to 65535")
+    return host, port
+
+
+class _Counting:
+    """A file object whose reads are counted - the POST's body."""
+
+    def __init__(self, handle, job):
+        self._handle, self._job = handle, job
+
+    def read(self, size=-1):
+        chunk = self._handle.read(size)
+        self._job.sent += len(chunk)
+        return chunk
+
+
+class SendJob:
+    """One transfer of this workspace to another Conductor, on its own
+    thread: pack, then POST, then the receiver's reply. The page reads
+    status() until `done`."""
+
+    def __init__(self, workspace: Workspace, host: str, port: int,
+                 token: "str | None", passcode: "str | None" = None):
+        self.workspace, self.host, self.port, self.token = workspace, host, port, token
+        self.passcode = passcode
+        self.id = f"{int(time.time() * 1000) % 10 ** 9:09d}"
+        self.state = "packing"          # packing | sending | done | failed
+        self.total = 0
+        self.sent = 0
+        self.reply: "dict | None" = None
+        self.error: "str | None" = None
+        self.counts: "dict | None" = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> "SendJob":
+        self._thread.start()
+        return self
+
+    def status(self) -> dict:
+        return {"job": self.id, "state": self.state, "to": f"{self.host}:{self.port}",
+                "total": self.total, "sent": min(self.sent, self.total),
+                "counts": self.counts, "reply": self.reply, "error": self.error}
+
+    def _probe(self) -> None:
+        """The target has to BE a Conductor - one that answers /api/fleet
+        with a fleet - before a whole workspace is posted at it (a typo
+        in the address must not push 20 MB at a unit's agent or a phone)."""
+        conn = http.client.HTTPConnection(self.host, self.port,
+                                          timeout=SEND_PROBE_TIMEOUT_S)
+        try:
+            conn.request("GET", "/api/fleet")
+            response = conn.getresponse()
+            raw = response.read()
+        except OSError as exc:
+            raise RuntimeError(f"{self.host}:{self.port} does not answer "
+                               f"({exc})")
+        finally:
+            conn.close()
+        try:
+            answer = json.loads(raw or b"")
+        except ValueError:
+            answer = None
+        if (response.status != 200 or not isinstance(answer, dict)
+                or "units" not in answer or "shows" not in answer):
+            raise RuntimeError(f"{self.host}:{self.port} is not a Conductor "
+                               f"(HTTP {response.status} on /api/fleet)")
+
+    def _run(self) -> None:
+        try:
+            self._probe()
+            with tempfile.TemporaryFile() as pack:
+                self.counts = self.workspace.export_tar(pack)
+                self.total = pack.tell()
+                if self.total > WORKSPACE_TAR_MAX:
+                    raise ValueError(f"the workspace is {self.total // (1024 * 1024)} "
+                                     f"MB; the receiver takes at most "
+                                     f"{WORKSPACE_TAR_MAX // (1024 * 1024)} MB")
+                pack.seek(0)
+                self.state = "sending"
+                headers = {"Content-Type": "application/x-tar",
+                           "Content-Length": str(self.total)}
+                if self.token:
+                    headers["X-Show-Token"] = self.token
+                if self.passcode:
+                    headers[PASSCODE_HEADER] = self.passcode
+                conn = http.client.HTTPConnection(self.host, self.port,
+                                                  timeout=SEND_TIMEOUT_S)
+                try:
+                    conn.request("POST", "/api/workspace/import",
+                                 body=_Counting(pack, self), headers=headers)
+                    response = conn.getresponse()
+                    raw = response.read()
+                finally:
+                    conn.close()
+                try:
+                    reply = json.loads(raw or b"{}")
+                except ValueError:
+                    reply = {"error": f"HTTP {response.status}: not a Conductor "
+                                      f"({raw[:80]!r})"}
+                if response.status != 200 or not isinstance(reply, dict):
+                    error = reply.get("error") if isinstance(reply, dict) else None
+                    raise RuntimeError(error or f"HTTP {response.status}")
+                self.reply = reply
+                self.state = "done"
+        except Exception as exc:            # noqa: BLE001 - reported to the page
+            self.error = str(exc) or exc.__class__.__name__
+            self.state = "failed"
+
+
+# The passcode (EXHIBITION mode, `serve --passcode` or fleet.json's
+# "passcode"): on the hotspot anybody who knows the Wi-Fi password can reach
+# the page, so when a passcode is set every request that CHANGES something
+# (every POST) and every one that hands out the show's material (the two
+# exports, the music, the simulator) needs it from a client that is not this
+# host itself - the unit's own LCD row talks to 127.0.0.1 and stays free.
+# The page asks for it once (its first 401), keeps it in localStorage and
+# sends it as the X-Passcode header; the <audio> element cannot set a header,
+# so the same value in a `passcode` cookie is accepted too.
+PASSCODE_HEADER = "X-Passcode"
+PASSCODE_COOKIE = "passcode"
+# The example value in radxa/exhibition/fleet.json: a Conductor open to other
+# hosts refuses to start with it, or with no passcode at all (serve()).
+PASSCODE_EXAMPLE = "CHANGE-ME-2026"
+_PASSCODE_GETS = {"/api/workspace/export", "/api/music/file", "/api/show/export",
+                  "/api/simulator"}
+_PASSCODE_COOKIE_PATHS = {"/api/music/file"}      # the <audio> element's route
+_LOCAL_HOSTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
 class Handler(BaseHTTPRequestHandler):
     workspace: Workspace = None            # set by make_server()
     fleet: "Fleet | None" = None
+    speaker = None                         # conductor/speaker.py, with --speaker
+    token: "str | None" = None             # fleet.json's, for the two workspace endpoints
+    passcode: "str | None" = None          # see PASSCODE_HEADER
+    local_hosts = _LOCAL_HOSTS             # clients the passcode never applies to
+    hotspot: str = DEFAULT_HOTSPOT_UNIT    # fleet.json's "hotspot" (wifi_select)
+    adopt: bool = False                    # the exhibition's Conductor (serve --adopt)
     prepared: "dict[str, str]" = {}        # unit -> the cue it was last sent
     prepared_lock = threading.Lock()       # request threads share the dict
+    send_jobs: "dict[str, SendJob]" = {}   # id -> a workspace transfer
     server_version = "conductor"
+
+    def _client_local(self) -> bool:
+        host = str(self.client_address[0]).lower()
+        return host in self.local_hosts
+
+    def _passcode_ok(self) -> bool:
+        """The passcode, when this host has one and the client is not this
+        host: the header, or the cookie the page sets for its <audio>."""
+        code = self.passcode
+        if not code or self._client_local():
+            return True
+        given = self.headers.get(PASSCODE_HEADER) or ""
+        # The cookie counts only where a header cannot be set - the music
+        # file the <audio> element streams. Everything else, every POST
+        # above all, is the page's own fetch() and carries the header.
+        if not given and self.path.split("?", 1)[0] in _PASSCODE_COOKIE_PATHS:
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                name, _, value = part.strip().partition("=")
+                if name == PASSCODE_COOKIE:
+                    given = urllib.parse.unquote(value)
+                    break
+        return hmac.compare_digest(given.encode("utf-8", "replace"),
+                                   str(code).encode("utf-8", "replace"))
+
+    def _refuse_passcode(self, drain: bool = True) -> None:
+        if drain:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if 0 < length <= 1024 * 1024:
+                self._drain(length)
+            elif length > 0:
+                self.close_connection = True
+        return self._json({"error": "passcode required"}, status=401)
 
     def log_message(self, fmt, *args):     # keep the console for errors
         pass
@@ -2338,13 +2899,104 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("upload too large")
         return json.loads(self.rfile.read(length) or b"{}")
 
+    def _drop_imported_loop(self) -> "str | None":
+        """A show that arrived by import (a show file, a workspace tar) may
+        carry a Loop - and only the exhibition's Conductor (`--adopt`) may
+        take it: on the show PC the Loop is turned off again, said in the
+        corrections and in the reply, so an export from radxa-05 can never
+        make the PC restart shows on its own. Returns the note, or None."""
+        if self.adopt or self.workspace.loop_wait() is None:
+            return None
+        self.workspace.set_loop(None)
+        note = ("the imported show had Loop on - turned off here (only the "
+                "exhibition's Conductor keeps it)")
+        if self.fleet is not None:
+            self.fleet._note(note)
+        return note
+
+    def _loop_object(self, pending: "dict | None") -> dict:
+        """THE SHOW's Loop as /api/fleet and POST /api/loop report it - one
+        shape whether or not a restart is pending, because the unit's own
+        LCD (its EXHIBITION row) reads it too:
+
+            {"on": bool,            show.json's loop_wait_s is set
+             "wait_s": int,         the wait (the default while off)
+             "next_in_s": float|null,  seconds to the next run, when one is pending
+             "runs": int,           the Loop's restarts so far this show
+             "problem": str|null}   why the pending restart has not gone out
+
+        `pending` is Fleet.loop_state() - None when nothing is pending."""
+        wait = self.workspace.loop_wait()
+        pending = pending or {}
+        return {"on": wait is not None,
+                "wait_s": int(round(wait if wait is not None else LOOP_WAIT_S)),
+                "next_in_s": pending.get("next_in_s"),
+                "runs": int(pending.get("runs") or 0),
+                "problem": pending.get("problem")}
+
+    def _set_loop(self, body: dict) -> None:
+        """POST /api/loop {"on": true|false, "wait_s": 30} - the wait is
+        optional with on=true (the show's own, or 30 s, is kept), ignored
+        with on=false. Answers the same `loop` object /api/fleet carries."""
+        on = body.get("on")
+        if not isinstance(on, bool):
+            raise ValueError("on must be true or false")
+        if not on:
+            self.workspace.set_loop(None)
+        else:
+            wait = body.get("wait_s")
+            if wait is None:
+                wait = self.workspace.loop_wait()
+            self.workspace.set_loop(LOOP_WAIT_S if wait is None else wait)
+        pending = self.fleet.loop_state() if self.fleet is not None else None
+        return self._json(self._loop_object(pending))
+
+    def _own_units(self) -> "list[str]":
+        """The units that are THIS host - reached at a loopback address, or
+        at one of this host's own - which a fleet-wide Wi-Fi switch must
+        tell last (Fleet.wifi_select)."""
+        fleet = self.fleet
+        if fleet is None:
+            return []
+        mine = {"127.0.0.1", "localhost", "::1"}
+        mine.update(local_ipv4s())          # no DNS on a request thread
+        own = []
+        for name, link in fleet.links.items():
+            host = getattr(link, "address", "").rsplit(":", 1)[0].strip("[]")
+            if host in mine:
+                own.append(name)
+        return own
+
+    def _token_ok(self) -> bool:
+        """The fleet token (fleet.json's), when this host has one, gates
+        the two workspace endpoints: a Conductor that may drive these
+        units may also hand them a workspace. Compared in constant time."""
+        token = self.token
+        if not token:
+            return True
+        given = self.headers.get("X-Show-Token") or ""
+        # Bytes, not str: compare_digest() on str insists on ASCII, and a
+        # token is whatever somebody typed into fleet.json.
+        return hmac.compare_digest(given.encode("utf-8", "replace"),
+                                   str(token).encode("utf-8", "replace"))
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path in _PASSCODE_GETS and not self._passcode_ok():
+            return self._refuse_passcode(drain=False)
         if path == "/api/music/file":
             return self._music_file(head=False)
         if path == "/api/show/export":
             return self._export_show()
+        if path == "/api/workspace/export":
+            return self._export_workspace()
         try:
+            if path == "/api/workspace/send":
+                query = urllib.parse.parse_qs(self.path.partition("?")[2])
+                job = self.send_jobs.get(query.get("job", [""])[0])
+                if job is None:
+                    return self._json({"error": "no such transfer"}, status=404)
+                return self._json(job.status())
             if path == "/api/simulator":
                 # Inside the try, so anything unexpected on the way to the
                 # build (a show.json that will not parse, say) comes back
@@ -2360,16 +3012,25 @@ class Handler(BaseHTTPRequestHandler):
                 # written to them (Workspace.written_state) - the page's
                 # "up to date" / "changed since" needs both, and an id
                 # comparison alone cannot see an edit made since.
+                # `speaker` is the Conductor host's own music player
+                # (serve --speaker): null when there is none, otherwise
+                # its state - the page then mutes its own player by
+                # default and says where the sound comes from. `loop` is
+                # THE SHOW's Loop, always present (see _loop_object).
+                speaker = None if self.speaker is None else self.speaker.status()
                 if self.fleet is None:
                     return self._json({"units": [], "last_fire": None,
                                        "run": None, "shows": {},
                                        "corrections": [], "prepared": {},
                                        "start_at": 0.0, "show_duration": None,
+                                       "loop": self._loop_object(None),
+                                       "speaker": speaker,
                                        "timeline": self.workspace.written_state()})
                 with self.prepared_lock:
                     prepared = dict(self.prepared)
-                return self._json(dict(self.fleet.snapshot(),
-                                       prepared=prepared,
+                snap = self.fleet.snapshot()
+                return self._json(dict(snap, prepared=prepared, speaker=speaker,
+                                       loop=self._loop_object(snap.get("loop")),
                                        timeline=self.workspace.written_state()))
             if path == "/api/fleet/demos":
                 # list_demos() skips an unreachable unit rather than wait
@@ -2421,6 +3082,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         path = self.path.split("?", 1)[0]
         if path == "/api/music/file":
+            if not self._passcode_ok():
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             return self._music_file(head=True)
         self.send_response(404)
         self.send_header("Content-Length", "0")
@@ -2439,6 +3105,141 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _export_workspace(self) -> None:
+        """GET /api/workspace/export - the workspace as one .tar (see
+        Workspace.export_tar). Packed to a temp file first so the reply
+        carries its length; behind the fleet token when this host has one."""
+        if not self._token_ok():
+            return self._json({"error": "fleet token required"}, status=401)
+        stamp = time.strftime("%Y%m%d-%H%M")
+        filename = f"{self.workspace.root.name}-workspace-{stamp}.tar"
+        try:
+            with tempfile.TemporaryFile() as pack:
+                self.workspace.export_tar(pack)
+                size = pack.tell()
+                pack.seek(0)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-tar")
+                self.send_header("Content-Disposition",
+                                 f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    shutil.copyfileobj(pack, self.wfile, WORKSPACE_TAR_CHUNK)
+                except (BrokenPipeError, ConnectionError, OSError):
+                    pass          # a cancelled download is not an error
+        except OSError as exc:
+            return self._json({"error": f"{exc.__class__.__name__}: {exc}"},
+                              status=500)
+
+    def _drain(self, length: int) -> None:
+        """Read and drop a request body before answering: answering with
+        the body unread makes Windows reset the connection under the
+        client, which then sees ConnectionAborted instead of the answer
+        (see _upload_music)."""
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(WORKSPACE_TAR_CHUNK, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
+    def _import_workspace(self) -> None:
+        """POST /api/workspace/import - the body is the .tar. 401 without
+        the fleet token (when this host has one), 409 while a run is
+        active (a Loop between runs included: the run is still there),
+        413 over WORKSPACE_TAR_MAX - and none of them reads more than it
+        has to. The swap itself is Workspace.import_tar; the reply is what
+        landed plus the show as it now compiles (per-unit ids), which is
+        also what makes the new workspace's first compile happen here and
+        not on the next poll."""
+        if not self._token_ok():
+            self.close_connection = True
+            return self._json({"error": "fleet token required"}, status=401)
+        try:
+            length = int(self.headers.get("Content-Length") or -1)
+        except ValueError:
+            length = -1
+        if length < 0:
+            return self._json({"error": "Content-Length required"}, status=400)
+        if length > WORKSPACE_TAR_MAX:
+            self.close_connection = True
+            return self._json({"error": f"the workspace is at most "
+                               f"{WORKSPACE_TAR_MAX // (1024 * 1024)} MB"},
+                              status=413)
+        if self.fleet is not None and self.fleet.run is not None:
+            self._drain(length)
+            return self._json({"error": "a run is active on this Conductor - "
+                                        "STOP it first"}, status=409)
+        # To a temp file beside the workspace (the same disk the swap
+        # renames on), streamed in chunks: never the whole tar in memory.
+        # The spool is named BEFORE the body is read and removed in the one
+        # finally below, so a truncated or stalled upload leaves no
+        # .import-*.tar behind.
+        try:
+            spool = tempfile.NamedTemporaryFile(dir=str(self.workspace.root),
+                                                prefix=".import-", suffix=".tar",
+                                                delete=False)
+        except OSError as exc:
+            return self._json({"error": str(exc)}, status=500)
+        spool_path = Path(spool.name)
+        try:
+            try:
+                with spool:
+                    remaining = length
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(WORKSPACE_TAR_CHUNK, remaining))
+                        if not chunk:
+                            raise ValueError("the upload ended early")
+                        spool.write(chunk)
+                        remaining -= len(chunk)
+            except (OSError, ValueError) as exc:
+                return self._json({"error": str(exc)}, status=400)
+            # Checked again with the tar in hand: a START may have landed
+            # while the body was on its way.
+            if self.fleet is not None and self.fleet.run is not None:
+                return self._json({"error": "a run is active on this Conductor "
+                                            "- STOP it first"}, status=409)
+            try:
+                counts = self.workspace.import_tar(spool_path)
+            except (tarfile.TarError, ValueError, OSError) as exc:
+                return self._json({"error": f"not a workspace tar: {exc}"},
+                                  status=400)
+        finally:
+            spool_path.unlink(missing_ok=True)
+        if self.fleet is not None:
+            # What the units hold is the OLD show now. The fleet forgets it
+            # (and the startup offer), and the units it knew are marked as
+            # holding an upload older than this timeline, so a START right
+            # after the import is refused with "Upload again" rather than
+            # running yesterday's pictures under today's music.
+            held = sorted(self.fleet.shows)
+            self.fleet.forget_shows()
+            if held:
+                self.workspace.unit_marks["upload"] = {u: "before-import" for u in held}
+        dropped = self._drop_imported_loop()
+        shows, problems = self.workspace.compile_show()
+        with self.prepared_lock:
+            self.prepared.clear()           # manual cues of the old workspace
+        return self._json({"ok": True, **counts,
+                           "cues": len(self.workspace.state()["show"]["cues"]),
+                           "revision": self.workspace.revision(),
+                           "shows": {unit: show["id"] for unit, show in shows.items()},
+                           "problems": problems + ([dropped] if dropped else [])})
+
+    def _send_workspace(self, body: dict) -> None:
+        """POST /api/workspace/send {"to": "radxa-05:8765"} -> {"job": id};
+        the page then polls GET /api/workspace/send?job=id (SendJob)."""
+        host, port = parse_conductor_address(body.get("to"))
+        job = SendJob(self.workspace, host, port, self.token,
+                      self.passcode).start()
+        jobs = self.send_jobs
+        jobs[job.id] = job
+        for old in list(jobs)[:-_SEND_JOBS_KEPT]:
+            jobs.pop(old, None)
+        return self._json(dict(job.status(), ok=True))
 
     def _simulator(self, with_music: bool) -> None:
         """GET /api/simulator[?music=1] - the designers' single-file
@@ -2599,10 +3400,39 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"ok": True, "music": self.workspace.music_info()})
 
     def do_POST(self):
+        # Every POST changes something: all of them are behind the passcode
+        # for a client that is not this host (see PASSCODE_HEADER).
+        if not self._passcode_ok():
+            return self._refuse_passcode()
         if self.path == "/api/music":
             return self._upload_music()
+        if self.path == "/api/workspace/import":
+            return self._import_workspace()      # a tar, not JSON
         try:
             body = self._body()
+            if self.path == "/api/workspace/send":
+                return self._send_workspace(body)
+            if self.path == "/api/loop":
+                return self._set_loop(body)
+            if self.path == "/api/speaker/volume":
+                # The Conductor host's own loudness (conductor/speaker.py):
+                # {"volume": 0-100} or {"delta": +-n} on the stored value.
+                if self.speaker is None:
+                    return self._json({"error": "no speaker on this Conductor "
+                                                "(serve --speaker)"}, status=400)
+                if "delta" in body:
+                    if not _is_number(body["delta"]) or not math.isfinite(body["delta"]):
+                        raise ValueError("delta: a number of percent")
+                    wanted = self.speaker.status()["volume"] + float(body["delta"])
+                else:
+                    wanted = body.get("volume")
+                    if (not _is_number(wanted) or not math.isfinite(wanted)
+                            or not 0 <= float(wanted) <= 100):
+                        raise ValueError("volume: 0 to 100")
+                try:
+                    return self._json(self.speaker.set_volume(wanted))
+                except RuntimeError as exc:         # fleet.json unreadable: kept
+                    return self._json({"error": str(exc)}, status=500)
             if self.path == "/api/files":
                 # A malformed body is the caller's mistake, not a 500:
                 # `files` as a list of bare strings used to reach
@@ -2659,8 +3489,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if self.path == "/api/show/import":
                 cues, warnings = self.workspace.import_show(body)
+                dropped = self._drop_imported_loop()
                 return self._json({"ok": True, "cues": cues,
-                                   "warnings": warnings})
+                                   "warnings": warnings + ([dropped] if dropped else [])})
             if self.path == "/api/bundle/import":
                 return self._json(self.workspace.import_bundle(body))
             if self.path == "/api/transition":
@@ -2968,7 +3799,11 @@ class Handler(BaseHTTPRequestHandler):
                                        "Nothing uploaded yet - Upload first."})
                 # A second click on START must not move a running show's
                 # clock; starting over is said out loud (the page asks).
-                if fleet.run is not None and not body.get("force"):
+                # A run that has reached its end (ENDED, a Loop wait) is
+                # not running: START then is the next run, no `force`
+                # asked for and none implied.
+                if (fleet.run is not None and not body.get("force")
+                        and not fleet.run_is_over()):
                     return self._json({"units": {}, "note":
                                        "The show is already running."})
                 # Every unit of the timeline has to hold the SAME upload,
@@ -3029,6 +3864,26 @@ class Handler(BaseHTTPRequestHandler):
                                "" if results else "The show is not on hold."})
         if command == "stop":
             return self._json({"units": fleet.stop_show()})
+        if command == "wifi_select":
+            # EXHIBITION mode: move every online unit to a Wi-Fi profile
+            # (AZ-Epaper, or the router's), `after_s` from now, so they
+            # all switch together after the last one has been told. The
+            # unit refuses (409) while a show runs or is held on it, and
+            # the answer here is per unit. This host's own unit is told
+            # last (see _own_units): its switch takes the hotspot down.
+            profile = str(body.get("profile") or "").strip()
+            if not profile or len(profile) > 64:
+                raise ValueError("profile: the Wi-Fi profile's name")
+            after = body.get("after_s", 20)
+            low, high = WIFI_SWITCH_RANGE_S
+            if not _is_number(after) or not low <= float(after) <= high:
+                raise ValueError(f"after_s: {low:.0f} to {high:.0f} seconds")
+            own = self._own_units()
+            return self._json({"units": fleet.wifi_select(profile, float(after),
+                                                          last=own,
+                                                          hotspot=self.hotspot),
+                               "last": own, "hotspot": self.hotspot,
+                               "profile": profile, "after_s": float(after)})
         if command in ("cancel", "standby", "release"):
             units = body.get("units") or list(fleet.links)
             if command == "standby":
@@ -3051,10 +3906,15 @@ class _Server(ThreadingHTTPServer):
 
 
 def make_server(workspace, port: int = 8765, host: str = "127.0.0.1",
-                fleet: "Fleet | None" = None) -> ThreadingHTTPServer:
+                fleet: "Fleet | None" = None, speaker=None,
+                token: "str | None" = None, passcode: "str | None" = None,
+                hotspot: str = DEFAULT_HOTSPOT_UNIT,
+                adopt: bool = False) -> ThreadingHTTPServer:
     handler = type("BoundHandler", (Handler,),
                    {"workspace": Workspace(workspace), "fleet": fleet,
-                    "prepared": {}})
+                    "speaker": speaker, "token": token, "passcode": passcode,
+                    "hotspot": hotspot, "adopt": adopt, "prepared": {},
+                    "send_jobs": {}})
     return _Server((host, port), handler)
 
 
@@ -3070,7 +3930,107 @@ def already_serving(port: int) -> bool:
         return False
 
 
-def serve(workspace, port: int = 8765, open_browser: bool = False) -> int:
+def reachable_urls(host: str, port: int) -> "list[str]":
+    """The URLs the page answers on, for the console: the one address
+    when bound to one, otherwise localhost and every IPv4 this host has
+    (an `--host 0.0.0.0` on radxa-05 is reached as 10.42.0.1 from the
+    hotspot and as 192.168.51.105 from the router - both are printed)."""
+    if host not in ("0.0.0.0", "", "::"):
+        return [f"http://{host}:{port}"]
+    urls = [f"http://127.0.0.1:{port}"]
+    for address in local_ipv4s():
+        url = f"http://{address}:{port}"
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def offer_startup_shows(fleet: "Fleet", ws: Workspace
+                        ) -> "tuple[dict[str, dict], list[str]]":
+    """EXHIBITION mode's startup adoption (`serve --adopt`): compile the
+    workspace and offer the per-unit shows to the fleet. A unit adopted
+    (it reports that id, pictures burned) is marked as holding the
+    compile's REVISION, exactly as an Upload would mark it - so the page's
+    "changed since" and START's one-timeline gate work over an adopted
+    show, and an edit made after the restart is refused with "Upload
+    again" instead of running the old pictures under the new timeline.
+    A timeline with problems compiles to nothing and offers nothing."""
+    rev = ws.revision()
+    try:
+        compiled, problems = ws.compile_show()
+    except Exception as exc:                # noqa: BLE001 - a bad workspace still serves
+        compiled, problems = {}, [f"{exc.__class__.__name__}: {exc}"]
+    if compiled and not problems:
+        def mark(unit: str) -> None:
+            ws.mark_written("upload", rev, units=[unit],
+                            all_units=sorted(set(compiled) | ws.timeline_units()))
+        fleet.offer_shows(compiled, on_adopt=mark)
+    return compiled, problems
+
+
+def passcode_problem(host: str, passcode) -> "str | None":
+    """Why a Conductor bound to other hosts may not start with this
+    passcode - none at all, or the example value still in fleet.json - or
+    None when it may. Loopback needs none: nothing but this host reaches
+    it."""
+    if host in _LOCAL_HOSTS or host == "localhost":
+        return None
+    if not passcode:
+        return ("no passcode - put \"passcode\": \"<your own>\" into the "
+                "workspace's fleet.json (chmod 600) or pass --passcode; every "
+                "other host then needs it before it may change the show")
+    if str(passcode) == PASSCODE_EXAMPLE:
+        return (f"the passcode is still the example value {PASSCODE_EXAMPLE!r} "
+                "from radxa/exhibition/fleet.json - choose your own")
+    return None
+
+
+def local_ipv4s() -> "list[str]":
+    """This host's own IPv4 addresses, without a DNS lookup: the UDP
+    "connect" trick (no packet is sent) against the two networks the
+    fleet lives on and the public one, which yields the address the
+    kernel would route each from, plus `ip -4 -o addr` where there is
+    one (Linux) - never gethostbyname_ex(), which resolves the hostname
+    and hangs a thread while the resolver waits on a hotspot with no
+    upstream."""
+    found: "list[str]" = []
+
+    def add(address: str) -> None:
+        if address and not address.startswith("127.") and address not in found:
+            found.append(address)
+
+    for probe in ("10.42.0.1", "192.168.51.1", "8.8.8.8"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect((probe, 9))
+                add(sock.getsockname()[0])
+        except OSError:
+            continue
+    try:
+        import subprocess
+        out = subprocess.run(["ip", "-4", "-o", "addr"], capture_output=True,
+                             text=True, timeout=2).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if "inet" in parts:
+                add(parts[parts.index("inet") + 1].split("/")[0])
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return found
+
+
+def serve(workspace, port: int = 8765, open_browser: bool = False,
+          host: str = "127.0.0.1", speaker: bool = False,
+          speaker_lead_ms: "float | None" = None,
+          speaker_output: "str | None" = None, speaker_factory=None,
+          speaker_runner=None, passcode: "str | None" = None,
+          adopt: bool = False) -> int:
+    """`python -m conductor serve`. `host` is 127.0.0.1 unless asked
+    (EXHIBITION mode: 0.0.0.0 on the unit that is also the hotspot);
+    `speaker` plays the show's music through mpg123 on this host
+    (conductor/speaker.py), `speaker_lead_ms` trims its output allowance,
+    `speaker_output` is mpg123's -o module ("alsa" under systemd);
+    `passcode` (or fleet.json's) gates the page from other hosts."""
     import webbrowser
 
     url = f"http://127.0.0.1:{port}"
@@ -3081,24 +4041,80 @@ def serve(workspace, port: int = 8765, open_browser: bool = False) -> int:
         if open_browser:
             webbrowser.open(url)
         return 0
+    config = Workspace(workspace)
+    units, token = config.fleet_config()
+    stored = config.fleet_option("passcode")
+    if passcode and stored and str(passcode) != str(stored):
+        print(f"warning: --passcode and {Path(workspace) / 'fleet.json'}'s "
+              "\"passcode\" differ - the command line's is used", flush=True)
+    passcode = passcode or stored
+    problem = passcode_problem(host, passcode)
+    if problem:
+        # Open to other hosts with no real passcode is open to the room:
+        # refused before anything listens (review of 53b9b6b, MED-6).
+        print(f"refusing to serve on {host}: {problem}", flush=True)
+        return 2
+    hotspot = str(config.fleet_option("hotspot", DEFAULT_HOTSPOT_UNIT))
+    adopt = bool(adopt or config.fleet_option("adopt", False))
     try:
-        server = make_server(workspace, port)
+        server = make_server(workspace, port, host, token=token,
+                             passcode=passcode, hotspot=hotspot, adopt=adopt)
     except OSError as exc:
-        print(f"cannot listen on port {port}: {exc}", flush=True)
+        print(f"cannot listen on {host}:{port}: {exc}", flush=True)
         return 1
-    units, token = Workspace(workspace).fleet_config()
-    fleet = Fleet(units, token)
+    ws = server.RequestHandlerClass.workspace
+    # The Loop's settings come from THIS workspace's show.json, read when a
+    # run reaches its end - never cached on the fleet.
+    fleet = Fleet(units, token, loop_settings=ws.loop_settings)
+    # EXHIBITION mode only (`--adopt`, or fleet.json "adopt": true): what
+    # this workspace compiles to is offered to the units, so a restart of
+    # the headless conductor does not cost an Upload of every picture
+    # before the Loop or START work again. The show PC never offers - a
+    # restart there costs an Upload exactly as it always has (review of
+    # d79681a: an adopted show with no marks let an edit + START run the
+    # old pictures).
+    compiled, problems = {}, []
+    if adopt:
+        compiled, problems = offer_startup_shows(fleet, ws)
     fleet.start()
     server.RequestHandlerClass.fleet = fleet
+    player = None
+    if speaker:
+        from .speaker import DEVICE_LATENCY_S, Speaker
+
+        def track():
+            info = ws.music_info()
+            return None if info is None else ws.music / Path(info["name"]).name
+        extra = (DEVICE_LATENCY_S if speaker_lead_ms is None
+                 else float(speaker_lead_ms) / 1000.0)
+        player = Speaker(track, fleet.run_snapshot, factory=speaker_factory,
+                         extra_lead_s=extra, output=speaker_output,
+                         runner=speaker_runner,
+                         # The host's loudness lives in fleet.json (per host,
+                         # never in the show), and a change goes back there.
+                         volume=config.fleet_option("speaker_volume", 70),
+                         save_volume=lambda v: ws.set_fleet_option("speaker_volume", v))
+        player.start()
+        server.RequestHandlerClass.speaker = player
     if open_browser:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
-    print(f"conductor UI: http://127.0.0.1:{port}  (workspace "
-          f"{Path(workspace).resolve()})", flush=True)
+    for reachable in reachable_urls(host, port):
+        print(f"conductor UI: {reachable}", flush=True)
+    print(f"  workspace {Path(workspace).resolve()}"
+          + ("  speaker: mpg123 on this host" if speaker else "")
+          + ("  passcode: set" if passcode else ""), flush=True)
+    if compiled:
+        print(f"  show compiles for {', '.join(sorted(compiled))} - a unit "
+              "holding it is adopted on its first poll", flush=True)
+    for problem in problems[:5]:
+        print(f"  timeline: {problem}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if player is not None:
+            player.stop()
         fleet.stop()
         server.server_close()
     return 0

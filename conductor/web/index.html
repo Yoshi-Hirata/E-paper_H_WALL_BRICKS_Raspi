@@ -718,7 +718,14 @@ const ui = { tab: "items", item: null, design: null, mode: "design", view: "outs
              // nextLeadUntil is when a NEXT the operator just pressed
              // actually fires (performance.now() + the lead), which is what
              // the header counts down during the lead.
-             bagsOpen: false, stage: false, nextLeadUntil: 0 };
+             bagsOpen: false, stage: false, nextLeadUntil: 0,
+             // "Send workspace to …" (EXHIBITION mode): the address typed
+             // (null until then: the remembered one shows) and the last
+             // transfer's report.
+             sendTo: null, sendLog: "",
+             // The router's Wi-Fi profile name typed for "All units -> router"
+             // (null: the remembered or the units' own).
+             routerProfile: null };
 let fleet = null;
 let state = null;
 // The last GET /api/fleet/demos answer ({units: {unit: [demo,...]}, offline: [unit,...]}),
@@ -771,9 +778,53 @@ function fmtSize(bytes) {
 }
 const PITCH = 0.78, MARGIN = 1.2;
 
+// The passcode (EXHIBITION mode: `serve --passcode`). A Conductor on the
+// hotspot answers 401 {"error": "passcode required"} to anything that changes
+// the show or hands out its material when the browser is not on the Conductor
+// host itself. The page asks ONCE (its first 401), keeps the answer in this
+// browser and sends it with every request as the X-Passcode header - and as a
+// cookie, because the <audio> element that streams /api/music/file cannot
+// set a header. A wrong answer is asked again on the next 401; Escape leaves
+// the request refused and the page says so.
+const PASSCODE_KEY = "conductor.passcode";
+function loadPasscode() { try { return localStorage.getItem(PASSCODE_KEY) || ""; } catch { return ""; } }
+function savePasscode(code) {
+  try { localStorage.setItem(PASSCODE_KEY, code); } catch {}
+  try { document.cookie = "passcode=" + encodeURIComponent(code) + "; path=/; SameSite=Strict"; } catch {}
+}
+let passcode = loadPasscode();
+if (passcode) savePasscode(passcode);          // the cookie, after a reload
+function passcodeHeaders(headers) {
+  const out = Object.assign({}, headers || {});
+  if (passcode) out["X-Passcode"] = passcode;
+  return out;
+}
+async function askPasscode() {
+  const typed = window.prompt("This Conductor asks for its passcode (set on the Conductor host - see radxa/EXHIBITION.md). Enter it once; it is remembered in this browser.", "");
+  if (typed === null || !typed.trim()) return false;
+  passcode = typed.trim();
+  savePasscode(passcode);
+  return true;
+}
+// fetch() with the passcode, retried once after asking for it - for api()
+// and the few raw uploads (music, show files) that do not go through it.
+async function fetchWithPasscode(path, init) {
+  const send = () => fetch(path, Object.assign({}, init || {}, { headers: passcodeHeaders(init && init.headers) }));
+  let res = await send();
+  // A wrong answer is asked again (a typo must not cost a reload); Escape
+  // leaves the request refused. Three tries, so a Conductor whose passcode
+  // the operator does not know cannot hold the page in a prompt for ever.
+  for (let tries = 0; res.status === 401 && tries < 3; tries++) {
+    let refused = null;
+    try { refused = (await res.clone().json()).error; } catch {}
+    if (refused !== "passcode required" || !await askPasscode()) break;
+    res = await send();
+  }
+  return res;
+}
 async function api(path, body) {
-  const res = await fetch(path, body ? { method: "POST", headers: {"Content-Type": "application/json"},
-                                         body: JSON.stringify(body) } : undefined);
+  const res = await fetchWithPasscode(path, body ? { method: "POST", headers: {"Content-Type": "application/json"},
+                                                     body: JSON.stringify(body) } : undefined);
   return res.json();
 }
 // tone: "" (the usual) or "warn" - amber, for a result the operator has to
@@ -2471,7 +2522,59 @@ function musicBlockHtml() {
     <button id="show-music-mute" title="Mute / unmute (the Timeline's preview uses the same audio)">Mute</button>
     <label title="Volume for both THE SHOW and the Timeline's preview - it is one audio player">Volume
       <input type="range" id="show-music-vol" min="0" max="100" step="1" value="${Math.round(player.volume * 100)}"></label>
+    <span class="meta" id="show-music-host" style="display:none" title="${esc(SPEAKER_TITLE)}"></span>
+    <span id="show-music-hostvol" style="display:none" title="${esc(SPEAKER_VOLUME_TITLE)}">
+      <button class="small" id="spk-down">−</button>
+      <input type="range" id="spk-vol" min="0" max="100" step="1" value="70">
+      <button class="small" id="spk-up">+</button>
+      <span class="meta" id="spk-vol-text"></span></span>
   </div>`;
+}
+// The Conductor host's own loudness (conductor/speaker.py): stored in that
+// host's fleet.json, applied to the bluez transport (a Bluetooth speaker -
+// whose own buttons do nothing in this setup) or the PulseAudio sink.
+const SPEAKER_VOLUME_TITLE = "Loudness of the Conductor host's speaker (0-100). A Bluetooth speaker's "
+  + "own +/- buttons do nothing here: the source sets the volume. Stored on the Conductor host.";
+let speakerVolumeInFlight = false;
+async function setSpeakerVolume(body) {
+  if (speakerVolumeInFlight) return;
+  speakerVolumeInFlight = true;
+  try {
+    const answer = await api("/api/speaker/volume", body);
+    if (answer && answer.error) toast(`Speaker volume: ${answer.error}`, "warn");
+    if (fleet && fleet.speaker && answer && typeof answer.volume === "number") {
+      fleet.speaker.volume = answer.volume; fleet.speaker.applied = answer.applied;
+      fleet.speaker.volume_error = answer.error || null;
+    }
+  } catch (err) { toast(`Speaker volume: ${err.message}`, "warn"); }
+  finally { speakerVolumeInFlight = false; paintShowMusic(); }
+}
+// EXHIBITION mode: the Conductor was started with --speaker, so the music
+// plays through mpg123 on the Conductor host itself (a USB speaker on
+// radxa-05) and this page's own player would be a second copy a tenth of a
+// second off. The page therefore starts MUTED on such a Conductor - once,
+// and only in a browser that has never chosen for itself (no show.muted
+// stored): the Mute / Unmute button stores the choice, and that choice wins
+// on every later load (loadMusicMutedPref).
+const SPEAKER_NOTE = "music plays on the Conductor host (USB speaker)";
+const SPEAKER_TITLE = "This Conductor runs with --speaker: the show's music comes out of "
+  + "the Conductor host's own speaker, in step with the fleet's clock. This page's "
+  + "player starts muted here so the room does not hear it twice; Unmute to hear it "
+  + "in this browser as well (remembered in this browser).";
+let speakerDefaulted = false;
+function applySpeakerDefault() {
+  if (speakerDefaulted || !fleet || !fleet.speaker) return;
+  speakerDefaulted = true;
+  let stored = null;
+  try { stored = localStorage.getItem("show.muted"); } catch {}
+  if (stored === null || stored === "") { player.muted = true; paintShowMusic(); }
+}
+function speakerNote(sp) {
+  if (!sp) return "";
+  if (sp.error) return `${SPEAKER_NOTE} — ${sp.error}`;
+  if (!sp.available) return `${SPEAKER_NOTE} — no track loaded there yet`;
+  return `${SPEAKER_NOTE} — ${sp.state}${sp.track ? ", " + sp.track : ""}`
+    + (sp.latency_ms ? `, unpause ${Math.round(sp.latency_ms)} ms early` : "");
 }
 function paintShowMusic() {
   const box = $("#show-music-state");
@@ -2491,6 +2594,17 @@ function paintShowMusic() {
   if (mute) { mute.textContent = player.muted ? "Unmute" : "Mute"; mute.classList.toggle("muted", player.muted); }
   const vol = $("#show-music-vol");
   if (vol && document.activeElement !== vol) vol.value = Math.round(player.volume * 100);
+  const host = $("#show-music-host");
+  if (host) {
+    const sp = fleet && fleet.speaker;
+    host.style.display = sp ? "" : "none";
+    if (sp) host.textContent = speakerNote(sp);
+    const hostvol = $("#show-music-hostvol"), slider = $("#spk-vol"), text = $("#spk-vol-text");
+    if (hostvol) hostvol.style.display = sp ? "" : "none";
+    if (sp && slider && document.activeElement !== slider && typeof sp.volume === "number") slider.value = sp.volume;
+    if (sp && text) text.textContent = (typeof sp.volume === "number" ? sp.volume + "%" : "")
+      + (sp.applied ? ` (${sp.applied})` : "") + (sp.volume_error ? ` — ${sp.volume_error}` : "");
+  }
 }
 const MAX_MUSIC = 64 * 1024 * 1024;
 async function uploadMusic(file) {
@@ -2501,7 +2615,7 @@ async function uploadMusic(file) {
     // A raw header value must be Latin-1; encode it so names outside that
     // range (e.g. non-ASCII show titles) do not throw inside fetch(). The
     // server is expected to decodeURIComponent() it back.
-    const res = await fetch("/api/music", { method: "POST", headers: { "X-File-Name": encodeURIComponent(file.name) }, body: file });
+    const res = await fetchWithPasscode("/api/music", { method: "POST", headers: { "X-File-Name": encodeURIComponent(file.name) }, body: file });
     const result = await res.json();
     toast(result.error ? result.error : `${file.name} loaded`);
   } catch (err) { toast("Upload failed: " + err.message); }
@@ -2540,7 +2654,7 @@ async function downloadSimulator() {
     : "No music is loaded, so this will be the simulator without a built-in track");
   let url = null;
   try {
-    const response = await fetch("/api/simulator?music=1");
+    const response = await fetchWithPasscode("/api/simulator?music=1");
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
       try { detail = (await response.json()).error || detail; } catch {}
@@ -3229,7 +3343,10 @@ const CLEAR_AFTER_STOP_S = 30;
 // the ordinary reason to press it (review, 2026-09-27). So the confirm says
 // what is about to happen and how to take it back.
 function stopQuestion() {
-  const base = "Stop the show? The panels keep what they are showing.";
+  let base = "Stop the show? The panels keep what they are showing.";
+  // The Loop between runs (or with a run still going): STOP is also the
+  // end of the loop, and the operator should know that is what they end.
+  if (loopNextIn() !== null || (fleet?.run && loopWait() !== null)) base += " The Loop stops too — no next run until ③ START.";
   if (!fleet?.run?.clear_after_show) return base;
   return base + ` Pictures will be cleared ${CLEAR_AFTER_STOP_S} s after STOP`
     + " unless you START again — clearing cannot be undone (Upload again).";
@@ -3528,6 +3645,54 @@ async function writeDemo() {
   renderWriteDialog();
   await refreshDemos();
 }
+// ---- "Send workspace to …" (EXHIBITION mode, 2026-09-30) -----------------
+// The page asks its own Conductor to send (POST /api/workspace/send) and the
+// two Conductors talk server to server; the page polls the job for progress
+// and shows the receiver's reply. The address is remembered per browser
+// (localStorage "ws.sendTo"); radxa-05:8765 is the exhibition's Conductor.
+const SEND_TO_DEFAULT = "radxa-05:8765";
+function loadSendToPref() { try { return localStorage.getItem("ws.sendTo") || SEND_TO_DEFAULT; } catch { return SEND_TO_DEFAULT; } }
+function saveSendToPref(to) { try { localStorage.setItem("ws.sendTo", to); } catch {} }
+function sendToShown() { return ui.sendTo ?? loadSendToPref(); }
+function sendLog(text) {
+  ui.sendLog = text;
+  const box = $("#ws-send-log");
+  if (box) box.textContent = text;
+}
+let sendInFlight = false;
+async function sendWorkspace() {
+  if (sendInFlight) return;                    // a double click must not send it twice
+  const field = $("#ws-send-to");
+  const to = (field ? field.value : sendToShown()).trim();
+  if (!to) { toast("Where to? host:port, e.g. radxa-05:8765"); return; }
+  ui.sendTo = to; saveSendToPref(to);
+  if (!confirm(`Send this whole workspace to the Conductor at ${to}?\n\nIts current workspace (CSVs, timeline, music, history) is replaced. Its fleet.json stays.`)) return;
+  sendInFlight = true;
+  const at = new Date().toLocaleTimeString();
+  try {
+    const started = await api("/api/workspace/send", { to });
+    if (!started || started.error) { sendLog(`Send to ${to}: ${started?.error || "no answer from this Conductor"}`); return; }
+    let job = started;
+    while (job.state === "packing" || job.state === "sending") {
+      const total = job.total || 0, sent = Math.min(job.sent || 0, total);
+      sendLog(job.state === "packing" ? `Packing the workspace…`
+        : `Sending to ${to}: ${fmtSize(sent)} of ${fmtSize(total)} (${total ? Math.round(100 * sent / total) : 0} %)`);
+      await new Promise(r => setTimeout(r, 400));
+      const next = await api(`/api/workspace/send?job=${encodeURIComponent(started.job)}`);
+      if (!next || next.error) { job = { state: "failed", error: next?.error || "lost the transfer" }; break; }
+      job = next;
+    }
+    if (job.state !== "done") { sendLog(`Send to ${to} FAILED (${at}): ${job.error || "unknown"}`); return; }
+    const r = job.reply || {};
+    const shows = Object.entries(r.shows || {}).sort().map(([u, id]) => `${u} ${id}`).join(", ");
+    sendLog(`Sent to ${to} (${at}): ${fmtSize(job.total || 0)}.\n`
+      + `Received there: ${r.files ?? 0} CSV file(s), ${r.cues ?? 0} cue(s), music ${r.music || "none"}, history ${r.history ? "yes" : "no"}.\n`
+      + (shows ? `Show ids on ${to}: ${shows}` : "No unit compiles there yet.")
+      + (r.problems && r.problems.length ? `\nProblems there: ${r.problems.join(" · ")}` : ""));
+  } catch (err) {
+    sendLog(`Send to ${to}: ${err.message}`);
+  } finally { sendInFlight = false; }
+}
 // `show_duration`/`start_at` are new fields (round 3 §2.1); fall back gracefully
 // so the page works unmodified against an older conductor server.
 function fleetDuration() {
@@ -3725,6 +3890,54 @@ function startCountdown() {
   const s = Number(state && state.show && state.show.start_countdown_s);
   return Number.isFinite(s) && s >= START_COUNTDOWN_MIN_S && s <= START_COUNTDOWN_MAX_S
     ? s : START_COUNTDOWN_DEFAULT_S;
+}
+// THE SHOW's Loop (EXHIBITION mode, 2026-09-30): stored with the show as
+// show.json's loop_wait_s - null (no key) is off, a number is the seconds
+// between the end of a run and the next START, which the Conductor then
+// presses itself, countdown included. Like the countdown it never reaches a
+// unit and asks for no Upload. Off by default: a rehearsal that loops on its
+// own would be a surprise, an exhibition that does not would be a fault.
+const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 40, LOOP_WAIT_MAX_S = 600;
+const LOOP_TITLE = "Loop(展示モード): ショーが終わったら、ここに書いた秒数待って "
+  + "③ START をもう一度(カウントダウン込み。0:00 のキューが最初の絵に戻す)。"
+  + "STOP で止まる。ショーと一緒に保存、Upload 不要。"
+  + "\n\nLoop (EXHIBITION mode): when a run reaches its end the Conductor waits "
+  + "this long and presses ③ START again itself - countdown included, so the "
+  + "0:00 cue puts the first look back. STOP cancels the pending run. 40 to 600 s (shorter "
+  + "and the master can go over 60 s without a STOP between two runs), "
+  + "stored with the show, no Upload needed. With \"Clear pictures after the show\" "
+  + "on, the clear happens on STOP, never between runs.";
+function loopWait() {            // the wait the show holds, or null (off)
+  const s = Number(state && state.show && state.show.loop_wait_s);
+  return state && state.show && state.show.loop_wait_s !== null && state.show.loop_wait_s !== undefined
+    && Number.isFinite(s) && s >= LOOP_WAIT_MIN_S && s <= LOOP_WAIT_MAX_S ? s : null;
+}
+// What the wait field shows: the show's wait while the Loop is on, else the
+// last value typed in this page (so unticking and ticking again keeps it), else 30.
+let loopWaitTyped = null;
+function loopWaitShown() { return loopWait() ?? loopWaitTyped ?? LOOP_WAIT_DEFAULT_S; }
+async function saveLoop(waitS) {      // null = off; POST /api/loop answers the fleet's `loop` object
+  try {
+    const answer = await api("/api/loop", waitS === null ? { on: false } : { on: true, wait_s: waitS });
+    if (answer && answer.error) toast(`Could not save it: ${answer.error}`);
+  } catch (err) {
+    toast(`Could not save it: ${err.message}`);
+  }
+  await refresh();                  // re-renders, the two fields included
+}
+// A running run whose position is past the show's length: ENDED on the big
+// clock, and the Loop's wait when there is one. Read off the same carried
+// forward position everything else uses (conductor/fleet.py run_is_over()).
+function runIsOver() {
+  const run = fleet?.run, D = fleetDuration();
+  return !!run && run.state === "running" && D > 0 && fleetShowPos() >= D;
+}
+// Seconds until the Loop's next run, carried forward from the last poll the
+// way the run position is - or null when no run is pending.
+function loopNextIn() {
+  const loop = fleet && fleet.loop;
+  if (!loop || typeof loop.next_in_s !== "number") return null;
+  return Math.max(0, loop.next_in_s - (performance.now() - fleet.at) / 1000);
 }
 const NEXT_NOT_YET = "The show has not started yet";
 // A typed number of seconds, read the way the server reads it: NFKC first (so
@@ -3979,6 +4192,12 @@ const SHOWBOARD = (() => {
   //             "clearing", "cleared", or "partly" - some unit's slots
   //             are not empty. Only the ENDED note says it: it is the
   //             answer to "may I unplug this garment now?".
+  //   loopIn    seconds until the Loop starts the show again (EXHIBITION
+  //             mode), or null/absent when no next run is pending. Only
+  //             read once the show has ended: the header then counts the
+  //             next run down instead of saying SHOW ENDED.
+  //   loopProblem  why that next run has not gone out yet (a unit not
+  //             answering), or null - said in the note.
   function clearedNote(cleared) {
     if (cleared === "clearing") return "show ended — clearing the pictures";
     if (cleared === "cleared") return "show ended — pictures cleared";
@@ -4025,6 +4244,19 @@ const SHOWBOARD = (() => {
       return out;
     }
     if (now.phase === "ended") {
+      if (now.loopIn !== null && now.loopIn !== undefined) {
+        // The Loop: the next run is what comes next, counted down in the
+        // slot the countdown before START uses, in the same colours.
+        const n = secs(now.loopIn);
+        out.cap = "NEXT RUN in " + n + " s";
+        out.count = n;
+        out.countText = mmss(n);
+        out.tone = tone(n);
+        out.note = out.note || (now.loopProblem
+          ? "Loop: waiting to start again — " + now.loopProblem
+          : "Loop: the show starts again from 0:00, countdown included. STOP ends it.");
+        return out;
+      }
       out.cap = "SHOW ENDED";
       out.note = out.note || clearedNote(now.cleared) || "show ended";
       return out;
@@ -4512,7 +4744,9 @@ function paintBoard() {
                                groups: SHOWBOARD.ahead(all, t), names,
                                agoS: SHOWBOARD.firedAgo(all, t),
                                leadLeft: leadMs > 0 ? leadMs / 1000 : null,
-                               cleared: clearedPhase() });
+                               cleared: clearedPhase(),
+                               loopIn: loopNextIn(),
+                               loopProblem: fleet?.loop?.problem || null });
   const H = BOARD.head;
   if (H) {
     H.cap.textContent = h.cap;
@@ -4652,6 +4886,10 @@ function renderFleet() {
         <button class="big fire" id="show-start">③ START</button>
         <label class="meta" title="${esc(COUNTDOWN_TITLE)}">Countdown before START <input type="text"
           id="show-countdown" value="${startCountdown()}" style="width:46px"> s</label>
+        <label class="meta" title="${esc(LOOP_TITLE)}"><input type="checkbox"
+          id="show-loop" ${loopWait() !== null ? "checked" : ""}>
+          Loop: next run after <input type="text" id="show-loop-wait"
+          value="${loopWaitShown()}" style="width:46px"> s</label>
         <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
           id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
           Clear pictures after the show
@@ -4689,6 +4927,14 @@ function renderFleet() {
       </div>
       <div id="demo-table" style="margin-top:6px">${demoTableHtml()}</div>
     </div>
+    <div class="card"><h2>SEND THIS WORKSPACE TO ANOTHER CONDUCTOR (EXHIBITION)</h2>
+      <div class="meta sub">The exhibition's Conductor runs on radxa-05 with no PC: author the show here, then send the whole workspace over — the CSVs, the timeline, the music and the history (never that host's own fleet.json). The receiver refuses while a run is active there; the fleet token, if any, travels with it.</div>
+      <div class="go">
+        <label class="meta">Conductor <input type="text" id="ws-send-to" value="${esc(sendToShown())}" style="width:150px" placeholder="radxa-05:8765"></label>
+        <button class="big" id="ws-send">Send workspace to …</button>
+      </div>
+      <div class="meta" id="ws-send-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.sendLog || "")}</div>
+    </div>
     <div class="card"><h2>MANUAL CUE</h2>
       <div class="meta sub">For checking the sync outside a show: write a design to the boards, then fire every unit at the same instant.</div>
       <div class="meta sub">Prepare sweeps each design with <b>the design's own transition</b> (Designs tab) — never a timeline cue's override, which belongs to that cue alone.</div>
@@ -4709,7 +4955,13 @@ function renderFleet() {
       <div class="meta" id="go-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.goLog)}</div>
     </div>
     <div class="card"><h2>UNITS</h2>
-      <div class="meta sub">Every unit is polled every 2 s, and each round trip also measures its clock offset.</div><div class="tiles" id="tiles"></div></div>`;
+      <div class="meta sub">Every unit is polled every 2 s, and each round trip also measures its clock offset.</div><div class="tiles" id="tiles"></div>
+      <div class="go" style="margin-top:8px">
+        <span class="meta">Wi-Fi of every online unit (EXHIBITION): </span>
+        <button id="wifi-hotspot" title="Every online unit switches to the AZ-Epaper hotspot (radxa-05) 20 s after the last one is told; the Conductor's own unit goes last. A unit running or holding a show refuses.">All units → ${WIFI_HOTSPOT} in ${WIFI_SWITCH_AFTER_S} s</button>
+        <label class="meta">router profile <input type="text" id="wifi-router-name" value="${esc(routerProfileGuess())}" style="width:120px" placeholder="as nmcli names it"></label>
+        <button id="wifi-router" title="Every online unit switches back to the router's Wi-Fi profile (the name as nmcli has it on the units) 20 s after the last one is told.">All units → router in ${WIFI_SWITCH_AFTER_S} s</button>
+      </div></div>`;
   renderThumbs(THUMBS.fleet, fleetShowPos());
   placeBoard();                // the board moves back into its slot, cache and all
   paintBoard();                // ...and fills in now, not in 250 ms
@@ -4750,6 +5002,15 @@ function showClockText() {
     // have changed since (the clock must never read RUNNING after the units
     // have ended, review 2026-09-28).
     if (run.state === "running" && now > fleetDuration()) word = "ENDED";
+    // The Loop between runs: the next START is the one thing worth saying,
+    // and the number is the wait, not the position (the show is over).
+    const loopIn = loopNextIn();
+    if (run.state === "running" && loopIn !== null) {
+      // `runs` counts the Loop's own restarts so far; the START press was
+      // run 1, so the one coming is runs + 2.
+      word = "ENDED · NEXT RUN IN " + clock(loopIn)
+        + (fleet.loop && typeof fleet.loop.runs === "number" ? ` (run ${fleet.loop.runs + 2})` : "");
+    }
   }
   box.className = "showclock " + (run ? run.state : "") + (tone ? " cd-" + tone : "");
   box.innerHTML = `<small>${esc(word)}</small>${big !== null ? big : now === null ? "0:00" : clock(now)}${musicEndClockHtml()}`;
@@ -4821,6 +5082,12 @@ function showClockText() {
       ? `Pictures will be cleared on every unit in ${Math.ceil(clearIn)} s`
         + " — press ③ START (or ② Show preset) to keep them. Clearing cannot"
         + " be undone: the show has to be uploaded again."
+    // The Loop's restart was refused (the same answer a ③ START press would
+    // get) and is being retried: say why, so an unplugged garment between
+    // runs is found rather than wondered about.
+    : fleet.loop && fleet.loop.problem
+      ? `Loop: the next run could not start yet — ${fleet.loop.problem}. `
+        + "Trying again every few seconds; STOP ends the loop."
     // A HOLD or a RESUME in the final second cannot be played past, so the
     // end of THIS run will not clear anything. Said out loud: otherwise the
     // pictures simply stay and nothing on the page explains why.
@@ -5187,6 +5454,47 @@ function usbBoardLine(u) {
     + (m.odd ? `<span class="vf re" title="${esc(m.title)}">${esc(m.mark)}</span>` : "")
     + `</div>`;
 }
+// The unit's Wi-Fi, as its agent reports it (EXHIBITION mode: `wifi:
+// {ssid, ip, signal, mode, profile}` in /status). The signal (nmcli's percent) where
+// there is one; the MODE where there is not - "hotspot" on the unit that IS
+// AZ-Epaper (radxa-05), which has no signal of its own to report. Nothing at
+// all from an agent too old to say.
+function wifiRow(u) {
+  const w = u && u.wifi;
+  if (!w || typeof w !== "object") return "";
+  const where = [w.ssid || w.profile || "—", w.ip || ""].filter(Boolean).join(" · ");
+  const how = typeof w.signal === "number" ? `${w.signal}%` : (w.mode || "");
+  const title = `profile ${w.profile || "?"} · mode ${w.mode || "?"}`;
+  return `<div class="row"><span>Wi-Fi</span><b title="${esc(title)}">${esc(where)}${how ? ` · ${esc(how)}` : ""}</b></div>`;
+}
+// "All units -> <profile> in 20 s": the router profile's name is whatever the
+// units themselves report being on when it is not AZ-Epaper, remembered per
+// browser once typed.
+const WIFI_HOTSPOT = "AZ-Epaper", WIFI_SWITCH_AFTER_S = 20;
+function loadRouterProfilePref() { try { return localStorage.getItem("wifi.router") || ""; } catch { return ""; } }
+function saveRouterProfilePref(name) { try { localStorage.setItem("wifi.router", name); } catch {} }
+function routerProfileGuess() {
+  const seen = (fleet?.units || []).map(u => u.wifi && u.wifi.profile).filter(p => p && p !== WIFI_HOTSPOT);
+  return ui.routerProfile || loadRouterProfilePref() || seen[0] || "";
+}
+async function switchFleetWifi(profile) {
+  const name = (profile || "").trim();
+  if (!name) { toast("Type the router profile's name first (as nmcli names it on the units)"); return; }
+  if (name !== WIFI_HOTSPOT) { ui.routerProfile = name; saveRouterProfilePref(name); }
+  const online = (fleet?.units || []).filter(u => u.online).map(u => u.name);
+  if (!online.length) { toast("No unit is online"); return; }
+  if (!confirm(`Tell every online unit (${online.join(", ")}) to switch its Wi-Fi to "${name}" in ${WIFI_SWITCH_AFTER_S} s?\n\n`
+               + "A unit running or holding a show refuses. The Conductor's own unit is told last. "
+               + "This page loses the units (and, on a hotspot switch, maybe itself) until they are back on the other network.")) return;
+  const result = await fleetCommand("wifi_select", { profile: name, after_s: WIFI_SWITCH_AFTER_S },
+                                    `All units → ${name} in ${WIFI_SWITCH_AFTER_S} s`, "show");
+  if (!result || result.error) return;
+  const took = Object.entries(result.units || {}).filter(([, r]) => r.ok && r.scheduled).map(([u]) => u).sort();
+  const refused = Object.entries(result.units || {}).filter(([, r]) => !(r.ok && r.scheduled)).map(([u, r]) => `${u} (${r.error || "not scheduled"})`).sort();
+  toast(`Wi-Fi → ${name}: ${took.length ? took.join(", ") + " accepted" : "nobody accepted"}`
+        + (refused.length ? ` · refused: ${refused.join(", ")}` : "")
+        + (result.last && result.last.length ? ` · told last: ${result.last.join(", ")}` : ""), refused.length ? "warn" : "");
+}
 function recoverButton(u) {
   if (!u || !u.online || showMidRun() || !SHOWBOARD.owned(u)) return "";
   return ` <button class="small" data-recover-bus="${esc(u.name)}" `
@@ -5226,7 +5534,7 @@ async function recoverBuses(names, waitMs) {
       const abort = waitMs ? new AbortController() : null;
       const timer = abort ? setTimeout(() => abort.abort(), waitMs) : null;
       try {
-        const res = await fetch(url, { method: "POST", signal: abort ? abort.signal : undefined,
+        const res = await fetchWithPasscode(url, { method: "POST", signal: abort ? abort.signal : undefined,
                                        headers: { "Content-Type": "application/json" },
                                        body: "{}" });
         return { name, result: await res.json() };
@@ -5333,6 +5641,7 @@ function renderTiles() {
       <div class="row"><span>Pictures</span><b>${picturesText(u)}${restartMark(u)}${clearText(u)}</b></div>
       <div class="row"><span>On unit</span><b>${demosOnUnitHtml(u)}</b></div>
       <div class="row"><span>Commit</span><b>${esc(u.commit || "?")}</b></div>
+      ${wifiRow(u)}
       ${usbBoardLine(u)}
       ${u.failed.length ? `<div class="e">Boards not written: ${esc(u.failed.join(", "))}</div>` : ""}
       ${u.unit_error ? `<div class="e">${esc(u.unit_error)}</div>` : ""}
@@ -5342,7 +5651,7 @@ function renderTiles() {
     </div>`; }).join("");
 }
 async function fetchFleet() {
-  try { fleet = await api("/api/fleet"); fleet.at = performance.now(); }
+  try { fleet = await api("/api/fleet"); fleet.at = performance.now(); applySpeakerDefault(); }
   catch (err) { /* the server is restarting */ }
 }
 // Once a second on the Units tab (and while the dialog is open anywhere,
@@ -5497,6 +5806,10 @@ document.addEventListener("click", async e => {
     paintShowMusic();
     return;
   }
+  if (e.target.id === "spk-down" || e.target.id === "spk-up") {
+    await setSpeakerVolume({ delta: e.target.id === "spk-up" ? 5 : -5 });
+    return;
+  }
   if (e.target.id === "tl-simulator") { e.preventDefault(); downloadSimulator(); return; }
   if (e.target.id === "refresh-hint-hide") { dismissRefreshHint(); renderTimeline(); return; }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }
@@ -5560,7 +5873,12 @@ document.addEventListener("click", async e => {
     return;
   }
   if (e.target.id === "show-start") {
-    const again = !!fleet?.run, startAt = fleetStartAt();
+    // A run that has reached its end - ENDED, or the Loop's wait - is not
+    // a running show: START then is simply the next run, asked about like a
+    // first one and sent WITHOUT `force` (the server agrees: run_is_over).
+    // The burn-gate force is the operator's own answer to one question,
+    // never something a restart inherits.
+    const again = !!fleet?.run && !runIsOver(), startAt = fleetStartAt();
     // A unit that failed to burn some boards does not block START outright -
     // the operator may choose to start anyway, missing boards and all - but
     // is asked first, the same way an already-running show asks before it
@@ -5701,6 +6019,9 @@ document.addEventListener("click", async e => {
   if (e.target.id === "write-demo") { await writeDemo(); return; }
   if (e.target.id === "write-clear-now") { await writeClearNow(); return; }
   if (e.target.id === "demo-refresh") { await refreshDemos(); return; }
+  if (e.target.id === "ws-send") { await sendWorkspace(); return; }
+  if (e.target.id === "wifi-hotspot") { await switchFleetWifi(WIFI_HOTSPOT); return; }
+  if (e.target.id === "wifi-router") { await switchFleetWifi(($("#wifi-router-name") || {}).value || ""); return; }
   const recover = e.target.closest("[data-recover-bus]");
   if (recover) {
     await recoverBuses([recover.dataset.recoverBus]);
@@ -5842,7 +6163,31 @@ document.addEventListener("change", async e => {
     await saveCountdown(seconds);
     return;
   }
+  // THE SHOW's Loop: the box turns it on with the seconds in the field (or
+  // off); typing a new wait while it is on saves it; typing while it is off
+  // only remembers the number for the next tick of the box. Stored with the
+  // show (show.json's loop_wait_s), like the countdown.
+  if (id === "show-loop" || id === "show-loop-wait") {
+    const field = $("#show-loop-wait");
+    const seconds = parseSeconds(field ? field.value : "", LOOP_WAIT_MIN_S, LOOP_WAIT_MAX_S);
+    if (seconds === null) {
+      toast(`Enter ${LOOP_WAIT_MIN_S} to ${LOOP_WAIT_MAX_S} seconds`);
+      if (field) field.value = loopWaitShown();
+      if (id === "show-loop") e.target.checked = loopWait() !== null;
+      return;
+    }
+    loopWaitTyped = seconds;
+    const on = id === "show-loop" ? e.target.checked : loopWait() !== null;
+    if (!on) { if (loopWait() !== null) await saveLoop(null); return; }
+    if (seconds !== loopWait()) await saveLoop(seconds);
+    return;
+  }
   if (id === "write-loop") { ui.demoLoop = e.target.checked; return; }
+  // Where "Send workspace to …" goes: kept in memory across re-renders and
+  // remembered per browser once a send is made (sendWorkspace).
+  if (id === "ws-send-to") { ui.sendTo = e.target.value.trim(); return; }
+  if (id === "wifi-router-name") { ui.routerProfile = e.target.value.trim(); return; }
+  if (id === "spk-vol") { await setSpeakerVolume({ volume: Number(e.target.value) }); return; }
   // "Which LOOKs": the rows are left exactly as they are (the radio the
   // arrow keys just moved to keeps the focus) - only what hangs off the
   // choice is repainted.

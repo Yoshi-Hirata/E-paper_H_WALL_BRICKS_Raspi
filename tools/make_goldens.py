@@ -994,6 +994,10 @@ def build_reference_state(project: dict) -> dict:
     # The countdown before ③ START (2026-09-29) is the same kind of thing:
     # the lead the fleet's START is given. No fleet in the simulator.
     state["show"].pop("start_countdown_s", None)
+    # ...and so is THE SHOW's Loop (EXHIBITION mode, 2026-09-30): how the
+    # Conductor restarts the fleet's run. No fleet, no run in the simulator.
+    state["show"].pop("loop_wait_s", None)
+    state["show"].pop("loop_default_s", None)
     music = show.get("music")
     state["music"] = {"name": music.get("name") if isinstance(music, dict) else None, "url": None}
     return state

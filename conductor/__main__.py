@@ -1,6 +1,7 @@
 """Check, preview and bench-send a look's CSVs.
 
     python -m conductor serve                # the web UI, http://127.0.0.1:8765
+    python -m conductor serve --host 0.0.0.0 --speaker   # EXHIBITION mode (radxa/EXHIBITION.md)
     python -m conductor check  Look22_map.csv Look22_color_pattern01_grid.csv
     python -m conductor check  Look22_map.csv                 # the map alone
     python -m conductor preview Look22_map.csv GRID.csv -o look22_p01.png
@@ -139,7 +140,11 @@ def cmd_send(args) -> int:
 def cmd_serve(args) -> int:
     from .server import serve
 
-    return serve(args.workspace, args.port, open_browser=args.open)
+    return serve(args.workspace, args.port, open_browser=args.open,
+                 host=args.host, speaker=args.speaker,
+                 speaker_lead_ms=args.speaker_lead_ms,
+                 speaker_output=args.speaker_output, passcode=args.passcode,
+                 adopt=args.adopt)
 
 
 def main(argv=None) -> int:
@@ -178,11 +183,42 @@ def main(argv=None) -> int:
     p.add_argument("--port", help="serial port (default: auto-detect)")
     p.add_argument("--only", nargs="+", type=int, metavar="ID",
                    help="send to these bus addresses only")
-    p = sub.add_parser("serve", help="the web UI on this PC (localhost only)")
+    p = sub.add_parser("serve", help="the web UI on this PC (localhost only "
+                                     "unless --host says otherwise)")
     p.add_argument("--workspace", default="showdata",
                    help="folder holding the CSVs and show.json "
                         "(default ./showdata)")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--host", default="127.0.0.1",
+                   help="address to listen on (default 127.0.0.1: this PC "
+                        "only; 0.0.0.0 for EXHIBITION mode on the hotspot "
+                        "unit - the reachable URLs are printed)")
+    p.add_argument("--speaker", action="store_true",
+                   help="play the show's music through mpg123 on THIS host "
+                        "(EXHIBITION mode: a USB speaker on the Conductor "
+                        "unit); the page's own player then starts muted")
+    p.add_argument("--speaker-lead-ms", type=float, default=None,
+                   metavar="MS",
+                   help="how early the unpause goes out past the measured "
+                        "pipe round trip, for the sound card's own buffer "
+                        "(default 50, a guess: measure it once with a click "
+                        "track against the panels)")
+    p.add_argument("--speaker-output", default=None, metavar="MODULE",
+                   help="mpg123's -o output module: 'alsa' under systemd, "
+                        "where there is no PulseAudio session (default: "
+                        "mpg123's own choice)")
+    p.add_argument("--adopt", action="store_true",
+                   help="EXHIBITION mode: at startup, take a unit that still "
+                        "holds this workspace's show (same id, pictures "
+                        "written) as holding it, so a restart of this "
+                        "headless Conductor needs no Upload. Never on the "
+                        "show PC. fleet.json's \"adopt\": true does the same")
+    p.add_argument("--passcode", default=None,
+                   help="required from every other host for anything that "
+                        "changes the show or hands out its material "
+                        "(EXHIBITION mode: the page asks once); this host's "
+                        "own clients need none. fleet.json's \"passcode\" "
+                        "does the same")
     p.add_argument("--open", action="store_true",
                    help="open the page in the default browser")
     p.set_defaults(func=cmd_serve)
