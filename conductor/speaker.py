@@ -24,9 +24,19 @@ driving, on the same reference clock (fleet.pc_clock).
 `P` TOGGLES, so it is only ever sent when mpg123's own play state - the
 last "@P n" it printed, kept as the truth and never guessed - differs from
 the state wanted; a reply that arrives late is matched to its command by a
-sequence count, never mistaken for the answer to the next one. "@P 0" is
-the end of the file (a track shorter than the show, §4.4): the track is
-then loaded again, so the Loop's next run has music.
+sequence count, never mistaken for the answer to the next one.
+
+The end of the file (a track shorter than the show, §4.4). Measured on
+radxa-05 (mpg123 1.26.4, `-R --keep-open`, 2026-09-30): at EOF mpg123
+prints an UNSOLICITED "@P 1" (paused) - not "@P 0" - after a last frame
+line "@F <n> 0 ..." with 0 frames left. Sitting there, a `P` answers
+"@P 2" and at once "@P 1" again (nothing to play), and a `JUMP 0s` does
+NOT make it playable again: only a second LOADPAUSED does. So a "@P 1"
+this side did not ask for, while the state was playing, is the end of the
+file (as is a "@P 0", for a build that says so): the track is dropped and
+loaded again with LP for the NEXT run, never jumped, and THIS run stays
+silent - the `_eof` guard keeps the run key, so nothing sends a P every
+tick against a file that has run out.
 
 The unpause latency. Between writing "P" on the pipe and the first sample
 leaving the speaker there is the pipe, mpg123's command loop and the
@@ -114,6 +124,14 @@ class Speaker:
         self._pseq = 0
         self._error_line: "str | None" = None
         self._error_seq = 0
+        # Whether a command of ours is waiting for its @P right now (so the
+        # reader can tell an answer from a line mpg123 volunteered), and the
+        # reader's verdict "the file ran out" (see the module doc).
+        self._awaiting = 0
+        self._await_want = None
+        self._phist: "list[tuple[int, int]]" = []    # the last few (seq, state)
+        self._eof_seen = False
+        self._frames_left: "int | None" = None
         self._next_try = 0.0
         # What is known about the track and the run being followed.
         self._loaded: "tuple[str, int] | None" = None    # (path, mtime_ns)
@@ -246,12 +264,14 @@ class Speaker:
             self._fail(f"mpg123 exited (code {code})")
             self._next_try = now + self._retry_s
         with self._reply:
-            ended = self._pstate == STOPPED
+            ended = self._eof_seen
+            self._eof_seen = False
         if ended and self._loaded is not None and self._proc is not None:
-            # "@P 0": the track ran out (shorter than the show). Loaded
-            # again below, from the top, so the NEXT run has music - this
-            # run keeps its silence (the run key stays, so nothing follows
-            # it back to a position past the end of the track).
+            # The track ran out (shorter than the show): the unsolicited
+            # "@P 1" - or a "@P 0" - the reader saw. Loaded again below,
+            # from the top, so the NEXT run has music - this run keeps its
+            # silence (the run key stays, so nothing follows it back into
+            # a file that cannot be played on without a reload).
             with self._lock:
                 self._loaded = None
             self._eof = True
@@ -311,6 +331,7 @@ class Speaker:
             return False
         with self._reply:
             self._pstate, self._error_line = STOPPED, None
+            self._phist, self._eof_seen = [], False
         with self._lock:
             self._proc = proc
             self.error = None
@@ -326,10 +347,35 @@ class Speaker:
                 with self._reply:
                     if line.startswith("@P "):
                         try:
-                            self._pstate = int(line[3:].split()[0])
+                            state = int(line[3:].split()[0])
                         except ValueError:
                             continue
+                        # A "paused" nobody asked for, while it was playing:
+                        # the file ran out (mpg123 1.26.4 says it this way;
+                        # "@P 0" is the same news from a build that says so).
+                        # "Nobody asked" = no P of ours that wanted a pause
+                        # is in flight - a P that wanted PLAYING and got
+                        # "@P 2" then "@P 1" is exactly the EOF case.
+                        asked_pause = self._awaiting and PAUSED in (self._await_want or ())
+                        if state == PAUSED and self._pstate == PLAYING and not asked_pause:
+                            self._eof_seen = True
+                        elif state == STOPPED and self._pstate != STOPPED:
+                            self._eof_seen = True
+                        self._pstate = state
                         self._pseq += 1
+                        self._phist.append((self._pseq, state))
+                        del self._phist[:-8]
+                    elif line.startswith("@F "):
+                        # "@F <frame> <frames left> <s> <s left>": frames
+                        # left 0 confirms the end of the file (only seen
+                        # without SILENCE; kept as the confirmation it is).
+                        try:
+                            self._frames_left = int(line.split()[2])
+                        except (IndexError, ValueError):
+                            pass
+                        if self._frames_left == 0 and self._pstate == PLAYING \
+                                and self._awaiting == 0:
+                            self._eof_seen = True
                     elif line.startswith("@E"):
                         self._error_line = line[2:].strip() or "error"
                         self._error_seq += 1
@@ -339,6 +385,9 @@ class Speaker:
 
     def _load(self, path: Path) -> None:
         """LOADPAUSED, then the latency measurement (see the module doc)."""
+        with self._reply:
+            self._eof_seen = False          # a fresh file: nothing has run out
+            self._frames_left = None
         state = self._command(f"LP {path}", want=(PAUSED, PLAYING),
                               timeout=LOAD_TIMEOUT_S,
                               what=f"could not load {path.name}")
@@ -356,6 +405,8 @@ class Speaker:
         measured = min(LATENCY_MAX_S, max(0.0, statistics.median(samples)))
         with self._lock:
             self._latency = measured + self._extra_lead
+        with self._reply:
+            self._eof_seen = False          # the P/P toggles above are not an EOF
 
     def _command(self, text: str, want=None, timeout: float = REPLY_TIMEOUT_S,
                  what: str = "") -> "int | None":
@@ -369,24 +420,39 @@ class Speaker:
         wanted = (want,) if isinstance(want, int) else want
         with self._reply:
             seen, errors = self._pseq, self._error_seq
+            if wanted is not None:
+                self._awaiting += 1
+                self._await_want = wanted
             try:
                 proc.stdin.write((text + "\n").encode("utf-8"))
                 proc.stdin.flush()
             except (OSError, ValueError) as exc:
+                if wanted is not None:
+                    self._awaiting -= 1
                 raise RuntimeError(f"mpg123 pipe: {exc}")
             if wanted is None:
                 return None
             deadline = time.monotonic() + timeout
-            while True:
-                if self._error_seq != errors:
-                    raise RuntimeError(f"mpg123 {what or text}: {self._error_line}")
-                if self._pseq != seen and self._pstate in wanted:
-                    return self._pstate
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise RuntimeError(f"mpg123 {what or text}: no answer "
-                                       f"in {timeout:.0f} s")
-                self._reply.wait(left)
+            try:
+                while True:
+                    if self._error_seq != errors:
+                        raise RuntimeError(f"mpg123 {what or text}: {self._error_line}")
+                    # Any @P newer than the ones seen at send time that is
+                    # a wanted state answers - even when a later line has
+                    # already moved the state on ("@P 2" then "@P 1" at the
+                    # end of the file), which the reader reads as EOF.
+                    for seq, state in self._phist:
+                        if seq > seen and state in wanted:
+                            return state
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise RuntimeError(f"mpg123 {what or text}: no answer "
+                                           f"in {timeout:.0f} s")
+                    self._reply.wait(left)
+            finally:
+                self._awaiting -= 1
+                if self._awaiting == 0:
+                    self._await_want = None
 
     def _quit(self) -> None:
         with self._lock:

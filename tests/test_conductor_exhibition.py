@@ -479,6 +479,7 @@ class FakeMpg123:
         self.state = 0
         self.loaded = None
         self.loads = 0                                     # how many LP/L so far
+        self.at_eof = False                                # the file ran out
         self.volume = 100
         self.position = 0.0
         self.alive = True
@@ -518,6 +519,7 @@ class FakeMpg123:
             self.loaded = arg
             self.loads += 1
             self.position = 0.0
+            self.at_eof = False
             self.state = 2 if (word in ("L", "LOAD") or self.plays_on_load) else 1
             self._say("@I ID3:fake")
             self._say(f"@P {self.state}")
@@ -527,6 +529,14 @@ class FakeMpg123:
                 return
             if self.delay_s:
                 time.sleep(self.delay_s)
+            if self.at_eof:
+                # Nothing left to play: "@P 2" and at once "@P 1" again.
+                self.p_at_eof = getattr(self, "p_at_eof", 0) + 1
+                self.state = 1
+                self._say("@P 2")
+                self._say("@F 323 1 7.75 0.00")
+                self._say("@P 1")
+                return
             self.state = 1 if self.state == 2 else 2
             self._say(f"@P {self.state}")
         elif word == "V":
@@ -570,12 +580,22 @@ class FakeMpg123:
     def since(self, index=0):
         return [text for _, text in self.commands[index:]]
 
-    def end_of_track(self):
-        """What mpg123 --keep-open prints when the file runs out: "@P 0",
-        and nothing is loaded any more (a P then is an error)."""
-        self.state = 0
-        self.loaded = None
-        self._say("@P 0")
+    def end_of_track(self, style="p1"):
+        """What mpg123 prints when the file runs out. Measured on radxa-05
+        (1.26.4, `-R --keep-open`, 2026-09-30): the last frame line with 0
+        frames left, then an UNSOLICITED "@P 1"; the file stays loaded but
+        cannot be played on - a P answers "@P 2" and at once "@P 1", a
+        JUMP 0s answers "@J 0" and changes nothing; only a new LOADPAUSED
+        plays again. `style="p0"` is a build that says "@P 0" instead."""
+        if style == "p0":
+            self.state = 0
+            self.loaded = None
+            self._say("@P 0")
+            return
+        self.at_eof = True
+        self.state = 1
+        self._say("@F 323 0 7.75 0.00")
+        self._say("@P 1")
 
     def late_state_line(self, state):
         """A stray "@P n" that arrives on its own (mpg123 prints one after a
@@ -1169,29 +1189,29 @@ def test_the_speaker_keeps_mpg123s_own_play_state_and_never_doubles_a_p(tmp_path
         assert st.wait_for(lambda: any(t.startswith("J 20") for t in fake.since(mark)))
         time.sleep(0.1)
         assert "P" not in fake.since(mark)
-        # mpg123 says on its own that it is paused (a stray line): the next
-        # move sees the truth and sends exactly one P to get back to playing.
-        fake.late_state_line(1)
-        assert st.wait_for(lambda: not st.speaker.playing)
-        mark = len(fake.commands)
-        st.run = {"t0": clock() - 30.0, "state": "running", "held_at": None}
-        assert st.wait_for(lambda: fake.since(mark).count("P") == 1 and fake.state == 2)
-        # HOLD when it already reads paused: nothing is sent but the hold.
-        fake.late_state_line(1)
-        assert st.wait_for(lambda: not st.speaker.playing)
-        mark = len(fake.commands)
+        # HOLD: one P. Then mpg123 says on its own that it is PLAYING (a
+        # stray line): the truth is taken, and the RESUME sends no P at all.
         st.run = {"t0": st.run["t0"], "state": "holding", "held_at": clock()}
         st.wait_state("paused")
+        assert fake.since(mark).count("P") == 1
+        fake.late_state_line(2)
+        assert st.wait_for(lambda: st.speaker.playing)
+        mark = len(fake.commands)
+        st.run = {"t0": clock() - 30.0, "state": "running", "held_at": None}
+        st.wait_state("playing")
         time.sleep(0.05)
-        assert fake.since(mark) == []
+        assert "P" not in fake.since(mark) and fake.since(mark)[0].startswith("J 30")
     finally:
         st.speaker.stop()
 
 
-def test_a_track_shorter_than_the_show_is_reloaded_for_the_next_run(tmp_path):
-    """H1: "@P 0" (end of file under --keep-open) drops the loaded track;
-    it is loaded again from the top, THIS run stays silent, and the next
-    run - the Loop's - has music."""
+@pytest.mark.parametrize("style", ["p1", "p0"])
+def test_a_track_shorter_than_the_show_is_reloaded_for_the_next_run(tmp_path, style):
+    """H1: the end of the file - the unsolicited "@P 1" mpg123 1.26.4 really
+    prints (measured on radxa-05), or a "@P 0" - drops the loaded track; it
+    is loaded again from the top with LP (never jumped: a JUMP does not
+    make an ended file playable), THIS run stays silent without a P every
+    tick, and the next run - the Loop's - has music."""
     st = Stage(tmp_path, extra_lead_s=0.0)
     st.speaker.start()
     try:
@@ -1201,16 +1221,49 @@ def test_a_track_shorter_than_the_show_is_reloaded_for_the_next_run(tmp_path):
         st.run = {"t0": clock() - 1.0, "state": "running", "held_at": None}
         st.wait_state("playing")
         assert st.fake.loads == 1
-        st.fake.end_of_track()                       # the file ran out at 0:30 of 1:00
-        assert st.wait_for(lambda: st.fake.loads == 2 and st.speaker.state == "ended")
-        assert st.fake.state == 1 and st.fake.position == 0.0
-        time.sleep(0.1)
+        mark = len(st.fake.commands)
+        st.fake.end_of_track(style)                  # the file ran out at 0:30 of 1:00
+        assert st.wait_for(lambda: st.fake.loads == 2 and st.speaker.state == "ended", 3.0)
+        assert not st.fake.at_eof and st.fake.state == 1 and st.fake.position == 0.0
+        # Between the EOF and the reload nothing was jumped and nothing
+        # was toggled against the ended file; the reload is one LP.
+        before_reload = st.fake.since(mark)[:st.fake.since(mark).index(f"LP {st.track_path}")]
+        assert "P" not in before_reload and not any(t.startswith("J") for t in before_reload)
+        time.sleep(0.2)
         assert st.fake.state == 1, "the same run was followed back into the track"
+        assert getattr(st.fake, "p_at_eof", 0) == 0
         # The next run: armed and unpaused from the top.
         st.run = {"t0": clock() + 0.3, "state": "running", "held_at": None}
         st.wait_state("armed")
         st.wait_state("playing", timeout=2.0)
         assert st.fake.loads == 2 and st.fake.state == 2
+    finally:
+        st.speaker.stop()
+
+
+def test_a_p_that_lands_on_the_ended_file_is_read_as_eof_not_retried(tmp_path):
+    """H1 (2): the "@P 2" then "@P 1" a P gets at EOF must not become a P
+    every 50 ms - the pair is the end of the file, and a reload follows."""
+    st = Stage(tmp_path, extra_lead_s=0.0)
+    st.speaker.start()
+    try:
+        st.wait_state("loaded")
+        clock = st.speaker._clock
+        # The file runs out while the speaker is paused on HOLD - so the
+        # unsolicited line cannot be seen as such - and the RESUME's P then
+        # meets the ended file.
+        st.duration = 60.0
+        st.run = {"t0": clock() - 1.0, "state": "running", "held_at": None}
+        st.wait_state("playing")
+        st.run = {"t0": st.run["t0"], "state": "holding", "held_at": clock()}
+        st.wait_state("paused")
+        st.fake.at_eof = True                        # ran out (no line: it was paused)
+        st.run = {"t0": clock() - 2.0, "state": "running", "held_at": None}
+        assert st.wait_for(lambda: st.fake.loads == 2, 3.0), st.fake.since()
+        time.sleep(0.3)
+        assert getattr(st.fake, "p_at_eof", 0) == 1, "P was retried against the ended file"
+        assert st.speaker.state == "ended" and st.fake.state == 1
+        assert st.speaker.error is None
     finally:
         st.speaker.stop()
 
