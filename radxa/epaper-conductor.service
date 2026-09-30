@@ -7,8 +7,10 @@ Description=H_WALL_BRICKS show Conductor (EXHIBITION mode, headless on this unit
 # 127.0.0.1 needs it whatever the Wi-Fi does. It does not conflict with
 # epaper-ui - this unit is control only (no garment), its agent at
 # 127.0.0.1:8787 keeps a tile.
-After=network-online.target NetworkManager.service epaper-ui.service
-Wants=network-online.target
+# ...and after radxa's user manager (uid 1000), which is what keeps the
+# persistent PulseAudio the speaker plays through (enable-linger).
+After=network-online.target NetworkManager.service epaper-ui.service user@1000.service
+Wants=network-online.target user@1000.service
 
 [Service]
 Type=simple

@@ -36,6 +36,7 @@ import hmac
 import http.client
 import importlib.util
 import json
+import math
 import os
 import shutil
 import socket
@@ -2018,11 +2019,40 @@ class Workspace:
     def set_fleet_option(self, key: str, value) -> None:
         """Write one key of fleet.json, keeping the rest - the per-host
         settings the page changes (the speaker's volume). Whole or not at
-        all, like show.json."""
+        all, like show.json; the file's mode is kept (a chmod 600 with the
+        passcode in it stays 600); a fleet.json that does not PARSE is
+        never overwritten - RuntimeError, the caller's 500."""
+        path = self.root / "fleet.json"
         with self._lock:
-            config = self._fleet_json()
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                raw = None
+            if raw is None:
+                config: dict = {}
+            else:
+                try:
+                    config = json.loads(raw)
+                except ValueError as exc:
+                    raise RuntimeError(f"fleet.json does not parse ({exc}) - "
+                                       "not overwriting it; fix it by hand")
+                if not isinstance(config, dict):
+                    raise RuntimeError("fleet.json is not an object - not "
+                                       "overwriting it; fix it by hand")
             config[key] = value
-            self._write(self.root / "fleet.json", config)
+            mode = None
+            try:
+                mode = os.stat(path).st_mode & 0o777
+            except OSError:
+                pass
+            scratch = path.with_name(path.name + ".tmp")
+            scratch.write_text(json.dumps(config, indent=1), encoding="utf-8")
+            if mode is not None:
+                try:
+                    os.chmod(scratch, mode)
+                except OSError:
+                    pass
+            os.replace(scratch, path)
 
     def compile_units(self, choices: "dict[str, str]", cue: str
                       ) -> "tuple[dict[str, dict], list[str]]":
@@ -2807,6 +2837,7 @@ class Handler(BaseHTTPRequestHandler):
     passcode: "str | None" = None          # see PASSCODE_HEADER
     local_hosts = _LOCAL_HOSTS             # clients the passcode never applies to
     hotspot: str = DEFAULT_HOTSPOT_UNIT    # fleet.json's "hotspot" (wifi_select)
+    adopt: bool = False                    # the exhibition's Conductor (serve --adopt)
     prepared: "dict[str, str]" = {}        # unit -> the cue it was last sent
     prepared_lock = threading.Lock()       # request threads share the dict
     send_jobs: "dict[str, SendJob]" = {}   # id -> a workspace transfer
@@ -2867,6 +2898,21 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_UPLOAD:
             raise ValueError("upload too large")
         return json.loads(self.rfile.read(length) or b"{}")
+
+    def _drop_imported_loop(self) -> "str | None":
+        """A show that arrived by import (a show file, a workspace tar) may
+        carry a Loop - and only the exhibition's Conductor (`--adopt`) may
+        take it: on the show PC the Loop is turned off again, said in the
+        corrections and in the reply, so an export from radxa-05 can never
+        make the PC restart shows on its own. Returns the note, or None."""
+        if self.adopt or self.workspace.loop_wait() is None:
+            return None
+        self.workspace.set_loop(None)
+        note = ("the imported show had Loop on - turned off here (only the "
+                "exhibition's Conductor keeps it)")
+        if self.fleet is not None:
+            self.fleet._note(note)
+        return note
 
     def _loop_object(self, pending: "dict | None") -> dict:
         """THE SHOW's Loop as /api/fleet and POST /api/loop report it - one
@@ -3173,6 +3219,7 @@ class Handler(BaseHTTPRequestHandler):
             self.fleet.forget_shows()
             if held:
                 self.workspace.unit_marks["upload"] = {u: "before-import" for u in held}
+        dropped = self._drop_imported_loop()
         shows, problems = self.workspace.compile_show()
         with self.prepared_lock:
             self.prepared.clear()           # manual cues of the old workspace
@@ -3180,7 +3227,7 @@ class Handler(BaseHTTPRequestHandler):
                            "cues": len(self.workspace.state()["show"]["cues"]),
                            "revision": self.workspace.revision(),
                            "shows": {unit: show["id"] for unit, show in shows.items()},
-                           "problems": problems})
+                           "problems": problems + ([dropped] if dropped else [])})
 
     def _send_workspace(self, body: dict) -> None:
         """POST /api/workspace/send {"to": "radxa-05:8765"} -> {"job": id};
@@ -3374,16 +3421,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"error": "no speaker on this Conductor "
                                                 "(serve --speaker)"}, status=400)
                 if "delta" in body:
-                    if not _is_number(body["delta"]):
+                    if not _is_number(body["delta"]) or not math.isfinite(body["delta"]):
                         raise ValueError("delta: a number of percent")
                     wanted = self.speaker.status()["volume"] + float(body["delta"])
                 else:
                     wanted = body.get("volume")
-                    if not _is_number(wanted):
+                    if (not _is_number(wanted) or not math.isfinite(wanted)
+                            or not 0 <= float(wanted) <= 100):
                         raise ValueError("volume: 0 to 100")
-                if not 0 <= float(wanted) <= 100 and "delta" not in body:
-                    raise ValueError("volume: 0 to 100")
-                return self._json(self.speaker.set_volume(wanted))
+                try:
+                    return self._json(self.speaker.set_volume(wanted))
+                except RuntimeError as exc:         # fleet.json unreadable: kept
+                    return self._json({"error": str(exc)}, status=500)
             if self.path == "/api/files":
                 # A malformed body is the caller's mistake, not a 500:
                 # `files` as a list of bare strings used to reach
@@ -3440,8 +3489,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if self.path == "/api/show/import":
                 cues, warnings = self.workspace.import_show(body)
+                dropped = self._drop_imported_loop()
                 return self._json({"ok": True, "cues": cues,
-                                   "warnings": warnings})
+                                   "warnings": warnings + ([dropped] if dropped else [])})
             if self.path == "/api/bundle/import":
                 return self._json(self.workspace.import_bundle(body))
             if self.path == "/api/transition":
@@ -3858,11 +3908,13 @@ class _Server(ThreadingHTTPServer):
 def make_server(workspace, port: int = 8765, host: str = "127.0.0.1",
                 fleet: "Fleet | None" = None, speaker=None,
                 token: "str | None" = None, passcode: "str | None" = None,
-                hotspot: str = DEFAULT_HOTSPOT_UNIT) -> ThreadingHTTPServer:
+                hotspot: str = DEFAULT_HOTSPOT_UNIT,
+                adopt: bool = False) -> ThreadingHTTPServer:
     handler = type("BoundHandler", (Handler,),
                    {"workspace": Workspace(workspace), "fleet": fleet,
                     "speaker": speaker, "token": token, "passcode": passcode,
-                    "hotspot": hotspot, "prepared": {}, "send_jobs": {}})
+                    "hotspot": hotspot, "adopt": adopt, "prepared": {},
+                    "send_jobs": {}})
     return _Server((host, port), handler)
 
 
@@ -4003,9 +4055,10 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
         print(f"refusing to serve on {host}: {problem}", flush=True)
         return 2
     hotspot = str(config.fleet_option("hotspot", DEFAULT_HOTSPOT_UNIT))
+    adopt = bool(adopt or config.fleet_option("adopt", False))
     try:
         server = make_server(workspace, port, host, token=token,
-                             passcode=passcode, hotspot=hotspot)
+                             passcode=passcode, hotspot=hotspot, adopt=adopt)
     except OSError as exc:
         print(f"cannot listen on {host}:{port}: {exc}", flush=True)
         return 1
@@ -4021,7 +4074,7 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
     # d79681a: an adopted show with no marks let an edit + START run the
     # old pictures).
     compiled, problems = {}, []
-    if adopt or bool(config.fleet_option("adopt", False)):
+    if adopt:
         compiled, problems = offer_startup_shows(fleet, ws)
     fleet.start()
     server.RequestHandlerClass.fleet = fleet

@@ -341,7 +341,13 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
   記憶される)。`… — mpg123 not found` なら 2.1
 - **HOLD / RESUME / NEXT / MOVE** はいつもどおり(音も追いかける)。Loop の待ち時間中に
   MOVE や NEXT をすると待ちはいったん解除され、次にショーが終わったときにまた数える。
-  待ち時間中の ③ START は次のランをすぐ始める(「もう走っている」とは聞かれない)
+  待ち時間中(と ENDED のあと)の ③ START は次のランをすぐ始める ― 「もう走っている、やり直す?」
+  とは聞かれず `force` も付かない(意図した動作: 焼き込みの関門は最初の START と同じように聞く)
+- **PC の Conductor でも見える新しいボタン**(Units タブの Send workspace to … と All units →
+  AZ-Epaper / router)は確認ダイアログ付きだが**本物** ― PC で押せば本当に送る / 切り替える
+- PC の Conductor は radxa-05 から届いたショー(ショーファイル・ワークスペース)の **Loop を
+  受け取らない**(off に戻して `Corrected automatically:` に 1 行)。Loop を持てるのは
+  `--adopt` の展示 Conductor だけ
 - **Clear pictures after the show** と Loop を両方入れたときは、消去は **STOP のとき**
   だけ(ラン間では消さない ― 次のランが同じ絵を使う)
 - **1 台が準備できないとき**(電源が落ちた、絵が消えた): Loop は ③ START と同じ理由で

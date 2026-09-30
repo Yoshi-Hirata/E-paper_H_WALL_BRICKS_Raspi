@@ -1572,9 +1572,12 @@ class Fleet:
                                     if name not in self.shows]
         with self._run_lock:
             adopted = bool(self.run and self.run.get("adopted"))
-        if adopted:
-            # A run adopted from the units: whoever reports a show is in
-            # it, whether or not this conductor knows that show.
+        if adopted and (not self.shows or self._offered):
+            # A run adopted from the units by a conductor that knows
+            # nothing (or was only offered a compile): whoever reports a
+            # show is in it. NOT once this conductor has uploaded (a
+            # mid-show restart followed by a force Upload): a unit outside
+            # that timeline must not be posted `show: None` on HOLD/RESUME.
             known += [name for name, link in self.links.items()
                       if name not in known and (link.status or {}).get("show")]
         return known or [

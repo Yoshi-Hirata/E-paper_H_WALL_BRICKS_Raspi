@@ -1010,8 +1010,9 @@ def test_import_over_http_round_trips_and_refuses_while_a_run_is_active(tmp_path
         assert answer["ok"] and answer["files"] == 3 and answer["music"] == "show.mp3"
         assert answer["cues"] == 2 and answer["history"] is True
         assert answer["shows"] == {"radxa-01": b.compile_show()[0]["radxa-01"]["id"]}
-        assert answer["problems"] == []
-        assert b.loop_wait() == 60.0
+        # A PC (no --adopt) takes the workspace but not its Loop - said in the reply.
+        assert answer["problems"] == ["the imported show had Loop on - turned off here (only the exhibition's Conductor keeps it)"]
+        assert b.loop_wait() is None
         # Not a tar at all.
         status, answer = _post(port, "/api/workspace/import", b"hello")
         assert status == 400 and "not a workspace tar" in answer["error"]
@@ -2264,3 +2265,214 @@ def test_the_exhibition_service_files_do_not_gate_the_boot():
     script = (radxa / "exhibition-net.sh").read_text(encoding="utf-8")
     assert "grep -q" not in script and "$SECONDS" in script
     assert '$4 == "activated"' in script
+
+
+# ------------------------------------------------------------ last round (8495976)
+
+def test_a_volume_change_during_an_apply_is_never_lost(tmp_path):
+    """1a: a set_volume landing while a tick is inside pactl must not be
+    marked done by that tick - the next tick applies the new value."""
+    audio = FakeAudio()
+    slow = {"s": 0.0}
+    real = audio.__call__
+
+    def slow_runner(argv, timeout=5.0):
+        if argv[:2] == ["pactl", "set-sink-volume"] and slow["s"]:
+            time.sleep(slow["s"])
+        return real(argv, timeout)
+
+    st = _volume_stage(tmp_path, slow_runner, volume=70)
+    st.speaker.start()
+    try:
+        assert st.wait_for(lambda: st.speaker.status()["applied"] == "pulse")
+        slow["s"] = 0.3
+        first = {}
+        t = threading.Thread(target=lambda: first.update(st.speaker.set_volume(80)))
+        t.start()
+        time.sleep(0.1)                               # the 80 is inside pactl now
+        second = st.speaker.set_volume(90)
+        t.join(3)
+        assert second["volume"] == 90 and second["applied"] == "pulse"
+        assert st.wait_for(lambda: audio.pulse_volumes["@DEFAULT_SINK@"] == "90%", 2.0), \
+            audio.pulse_volumes
+        assert st.speaker.status()["volume"] == 90
+    finally:
+        st.speaker.stop()
+
+
+def test_a_failing_pactl_is_retried_on_the_interval_not_in_a_hot_loop(tmp_path):
+    """1b: pulse down (every boot until user@1000 is up) must cost one
+    pactl per VOLUME_CHECK_S, not twenty a second."""
+    calls = []
+
+    def down(argv, timeout=5.0):
+        calls.append(list(argv))
+        return 1, "Connection refused"
+
+    st = _volume_stage(tmp_path, down, volume_check_s=0.1)
+    st.speaker.start()
+    try:
+        assert st.wait_for(lambda: st.speaker.status()["volume_error"] is not None)
+        n0 = len(calls)
+        time.sleep(0.55)
+        n = len(calls) - n0
+        assert 3 <= n <= 8, f"{n} pactl calls in 0.55 s at a 0.1 s interval"
+        # A change while it is down is tried at once, then on the interval.
+        st.speaker.set_volume(40)
+        assert st.speaker.status()["volume"] == 40
+    finally:
+        st.speaker.stop()
+
+
+def test_the_volume_runs_on_its_own_thread_not_the_music_thread(tmp_path):
+    """1c: a pactl that hangs must not delay the 0:00 unpause."""
+    gate = threading.Event()
+
+    def hanging(argv, timeout=5.0):
+        if argv[:2] == ["pactl", "info"]:
+            gate.wait(2.0)                            # "pulse is slow"
+        return 1, ""
+
+    st = _volume_stage(tmp_path, hanging)
+    st.speaker.start()
+    try:
+        st.wait_state("loaded")
+        clock = st.speaker._clock
+        st.run = {"t0": clock() + 0.2, "state": "running", "held_at": None}
+        st.wait_state("armed")
+        st.wait_state("playing", timeout=1.0)         # well inside pactl's hang
+        assert st.speaker._volume_thread is not None and st.speaker._volume_thread.is_alive()
+    finally:
+        gate.set()
+        st.speaker.stop()
+
+
+def test_the_adopted_run_widening_stops_once_this_conductor_has_uploaded():
+    """3: restart mid-show, force Upload of a smaller timeline, HOLD/RESUME
+    must not post show:None to a unit outside that timeline."""
+    clock = Clock()
+    fleet = Fleet({}, clock=clock)
+    fleet.links = {n: StubLink(n, "running") for n in ("radxa-01", "radxa-02", "radxa-03")}
+    for link in fleet.links.values():
+        link.status["show"].update(id="X", t0=clock.now + 5.0 - 30.0, synced=True,
+                                   burn={"state": "burned"})
+    snap = fleet.snapshot()
+    assert snap["run"]["adopted"]
+    assert sorted(fleet._targets()) == ["radxa-01", "radxa-02", "radxa-03"]
+    # The operator uploads a timeline for 01 and 02 only, under the run.
+    fleet.upload({"radxa-01": {"id": "Y", "cues": [], "duration": 100.0},
+                  "radxa-02": {"id": "Y", "cues": [], "duration": 100.0}}, force=True)
+    assert sorted(fleet._targets()) == ["radxa-01", "radxa-02"]
+    for link in fleet.links.values():
+        link.posted.clear()
+    fleet.hold()
+    fleet.resume()
+    assert not [n for n, p in fleet.links["radxa-03"].posted]
+    assert sorted(n for n, _ in _posted(fleet, "/show/run")) == ["radxa-01", "radxa-02"]
+
+
+def test_an_imported_loop_is_kept_only_by_the_exhibitions_conductor(tmp_path):
+    """4: an export from radxa-05 must never make the PC restart shows."""
+    a = _workspace(tmp_path / "a", music=False)
+    a.set_loop(90)
+    show_file = a.export_show()
+    packed = io.BytesIO()
+    a.export_tar(packed)
+    # The PC (no --adopt): the Loop is turned off, said in the reply and the corrections.
+    fleet = Fleet({})
+    server = make_server(tmp_path / "pc", port=0, fleet=fleet)
+    port = _serve(server)
+    pc = server.RequestHandlerClass.workspace
+    try:
+        status, answer = _post(port, "/api/show/import", show_file)
+        assert status == 200 and pc.loop_wait() is None
+        assert any("Loop on - turned off here" in w for w in answer["warnings"])
+        assert any("Loop on - turned off here" in c for c in fleet.corrections)
+        status, answer = _post(port, "/api/workspace/import", packed.getvalue())
+        assert status == 200 and pc.loop_wait() is None
+        assert any("Loop on - turned off here" in p for p in answer["problems"])
+    finally:
+        server.shutdown()
+        server.server_close()
+    # The exhibition's Conductor (--adopt): kept.
+    server = make_server(tmp_path / "ex", port=0, fleet=Fleet({}), adopt=True)
+    port = _serve(server)
+    ex = server.RequestHandlerClass.workspace
+    try:
+        status, answer = _post(port, "/api/show/import", show_file)
+        assert status == 200 and ex.loop_wait() == 90.0
+        assert not any("turned off" in w for w in answer["warnings"])
+        ex.set_loop(None)
+        status, answer = _post(port, "/api/workspace/import", packed.getvalue())
+        assert status == 200 and ex.loop_wait() == 90.0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_set_fleet_option_keeps_the_mode_and_never_overwrites_a_broken_file(tmp_path):
+    """5."""
+    import os as _os
+    import stat as _stat
+
+    ws = Workspace(tmp_path / "ws")
+    path = ws.root / "fleet.json"
+    path.write_text('{"passcode": "pc", "speaker_volume": 70}', encoding="utf-8")
+    _os.chmod(path, 0o600)
+    ws.set_fleet_option("speaker_volume", 40)
+    assert json.loads(path.read_text(encoding="utf-8")) == {"passcode": "pc", "speaker_volume": 40}
+    if _os.name != "nt":
+        assert _stat.S_IMODE(_os.stat(path).st_mode) == 0o600
+    path.write_text('{"passcode": "pc", "speaker_volume": 4', encoding="utf-8")   # truncated
+    with pytest.raises(RuntimeError, match="does not parse"):
+        ws.set_fleet_option("speaker_volume", 50)
+    assert path.read_text(encoding="utf-8") == '{"passcode": "pc", "speaker_volume": 4'
+    path.write_text('[1, 2]', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="not an object"):
+        ws.set_fleet_option("speaker_volume", 50)
+    path.unlink()
+    ws.set_fleet_option("speaker_volume", 55)
+    assert json.loads(path.read_text(encoding="utf-8")) == {"speaker_volume": 55}
+
+
+def test_volume_rejects_nan_and_inf_and_a_broken_fleet_json_is_a_500(tmp_path, monkeypatch):
+    import conductor.server as srv
+
+    ws = _workspace(tmp_path / "ws")
+    (ws.root / "fleet.json").write_text('{"speaker_volume": 1e9}', encoding="utf-8")
+    audio = FakeAudio()
+    made = {}
+
+    class Once(srv._Server):
+        def serve_forever(self, poll_interval=0.5):
+            handler = self.RequestHandlerClass
+            port = self.server_address[1]
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and handler.speaker.status()["applied"] is None:
+                time.sleep(0.01)
+            threading.Thread(target=super().serve_forever, daemon=True).start()
+            made["start_volume"] = handler.speaker.status()["volume"]
+            made["bad"] = [_post(port, "/api/speaker/volume", b)
+                           for b in ({"volume": float("nan")}, {"volume": float("inf")},
+                                     {"delta": float("nan")}, {"delta": float("-inf")})]
+            (ws.root / "fleet.json").write_text('{"speaker_volume": 4', encoding="utf-8")
+            made["broken"] = _post(port, "/api/speaker/volume", {"volume": 30})
+            made["file"] = (ws.root / "fleet.json").read_text(encoding="utf-8")
+            self.shutdown()
+
+    monkeypatch.setattr(srv, "_Server", Once)
+    monkeypatch.setattr(srv, "already_serving", lambda port: False)
+    assert srv.serve(ws.root, port=0, speaker=True, speaker_lead_ms=0,
+                     speaker_factory=lambda argv: FakeMpg123(), speaker_runner=audio) == 0
+    assert made["start_volume"] == 100, "an absurd stored volume must clamp, not crash"
+    assert [s for s, _ in made["bad"]] == [400, 400, 400, 400]
+    assert made["broken"][0] == 500 and "does not parse" in made["broken"][1]["error"]
+    assert made["file"] == '{"speaker_volume": 4', "a broken fleet.json was overwritten"
+
+
+def test_the_conductor_service_waits_for_the_user_manager():
+    from pathlib import Path as _P
+    conductor = (_P(__file__).resolve().parents[1] / "radxa" / "epaper-conductor.service").read_text(encoding="utf-8")
+    after = conductor.split("\nAfter=")[1].split("\n")[0]
+    wants = conductor.split("\nWants=")[1].split("\n")[0]
+    assert "user@1000.service" in after and "user@1000.service" in wants

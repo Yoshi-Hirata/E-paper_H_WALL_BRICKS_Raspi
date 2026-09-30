@@ -148,7 +148,11 @@ class Speaker:
         self._applied: "str | None" = None  # "bluez" | "pulse" | None
         self.volume_error: "str | None" = None
         self._volume_gen = 0                # bumped by every apply attempt
+        self._volume_seq = 0                # bumped by every set_volume()
+        self._volume_applied_seq = 0        # the last seq a tick applied whole
         self._volume_done = threading.Condition()
+        self._volume_wake = threading.Event()
+        self._volume_thread: "threading.Thread | None" = None
         self._volume_said_key = None        # the sink the log last named
         self._extra_lead = max(0.0, float(extra_lead_s))
         self._tick_s = tick_s
@@ -195,11 +199,15 @@ class Speaker:
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+        self._volume_thread = threading.Thread(target=self._volume_loop, daemon=True)
+        self._volume_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=3)
+        self._volume_wake.set()
+        for thread in (self._thread, self._volume_thread):
+            if thread is not None:
+                thread.join(timeout=3)
         self._quit()
 
     def status(self) -> dict:
@@ -225,42 +233,65 @@ class Speaker:
     def _clamp_volume(value) -> int:
         try:
             return max(0, min(100, int(round(float(value)))))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):     # junk, NaN, inf
             return VOLUME_DEFAULT
 
     def set_volume(self, value) -> dict:
         """A new loudness (0-100): stored, persisted, and applied by the
-        speaker thread on its next tick - this waits for that (bounded by
-        VOLUME_APPLY_TIMEOUT_S, never on a subprocess itself) and answers
-        {"volume", "applied", "error"}."""
+        volume thread at once - this waits for THAT apply (the one made
+        for this value's sequence number, bounded by VOLUME_APPLY_TIMEOUT_S,
+        never on a subprocess itself) and answers {"volume", "applied",
+        "error"}. A save that cannot parse fleet.json raises (the caller's
+        500): the file is left as it is."""
         volume = self._clamp_volume(value)
         with self._volume_done:
-            gen = self._volume_gen
+            self._volume_seq += 1
+            seq = self._volume_seq
             with self._lock:
                 self._volume = volume
             self._volume_dirty = True
+        self._volume_wake.set()
         if self._save_volume is not None:
             try:
                 self._save_volume(volume)
             except OSError as exc:
                 self._fail(f"could not save the volume: {exc}")
         with self._volume_done:
-            self._volume_done.wait_for(lambda: self._volume_gen != gen,
+            self._volume_done.wait_for(lambda: self._volume_applied_seq >= seq,
                                        VOLUME_APPLY_TIMEOUT_S)
         status = self.status()
         return {"volume": status["volume"], "applied": status["applied"],
                 "error": status["volume_error"]}
 
+    def _volume_loop(self) -> None:
+        """The volume's OWN thread: pactl / busctl (up to four tools, each
+        with a 5 s timeout) must never sit between the music thread and
+        the 0:00 unpause or a JUMP."""
+        while not self._stop.is_set():
+            try:
+                self._volume_tick(self._clock())
+            except Exception as exc:        # noqa: BLE001 - said, never fatal
+                self._fail(f"volume: {exc.__class__.__name__}: {exc}")
+            self._volume_wake.wait(min(self._volume_check_s, 0.25))
+            self._volume_wake.clear()
+
     def _volume_tick(self, now: float) -> None:
-        """Every VOLUME_CHECK_S (at once when dirty): where the sound goes
-        right now, and the volume applied there if that changed or the
-        volume did. Cheap - one `pactl info`, plus one `busctl tree` for a
-        Bluetooth sink."""
-        if not self._volume_dirty and now - self._volume_checked < self._volume_check_s:
+        """Every VOLUME_CHECK_S - and at once after a change: where the
+        sound goes right now, and the volume applied there if that changed
+        or the volume did. Cheap - one `pactl info`, plus one `busctl tree`
+        for a Bluetooth sink. A failure is retried on the SAME interval,
+        never in a hot loop (PulseAudio is down for a while every boot).
+        The volume is read with its sequence number: a change that lands
+        while this applies is applied again by the next tick, never
+        mistaken for done."""
+        with self._volume_done:
+            dirty = self._volume_dirty
+            seq = self._volume_seq
+            with self._lock:
+                volume = self._volume
+        if not dirty and now - self._volume_checked < self._volume_check_s:
             return
         self._volume_checked = now
-        with self._lock:
-            volume = self._volume
         applied, key, error = None, None, None
         try:
             sink = self._default_sink()
@@ -272,7 +303,7 @@ class Speaker:
                 key = (sink, path)
                 if path is None:
                     error = f"bluez transport for {mac} not found (speaker connected?)"
-                elif key != self._volume_key or self._volume_dirty:
+                elif key != self._volume_key or dirty:
                     # The AVRCP absolute volume, 0-127, and the pulse sink
                     # pinned at 100 % so nothing scales it a second time.
                     code, out = self._runner(["busctl", "--system", "set-property",
@@ -289,7 +320,7 @@ class Speaker:
                     applied = self._applied
             else:
                 key = (sink, None)
-                if key != self._volume_key or self._volume_dirty:
+                if key != self._volume_key or dirty:
                     code, out = self._runner(["pactl", "set-sink-volume", "@DEFAULT_SINK@",
                                               f"{volume}%"])
                     if code != 0:
@@ -304,8 +335,15 @@ class Speaker:
                 self._applied = applied
                 said = self.volume_error == error
                 self.volume_error = error
+            # A failure: the key is forgotten, so the next INTERVAL applies
+            # again - dirty stays off, or this would spin on pactl.
             self._volume_key = key if error is None else None
-            self._volume_dirty = error is not None      # a failure: next check again
+            if self._volume_seq == seq:
+                # Nothing changed under us: this value is done (or failed
+                # and will be retried). A change that landed meanwhile
+                # keeps dirty, and the next tick applies the new value.
+                self._volume_dirty = False
+                self._volume_applied_seq = seq
             self._volume_gen += 1
             self._volume_done.notify_all()
         if error and not said:
@@ -345,10 +383,6 @@ class Speaker:
     def _tick(self) -> float:
         """One look at the run. Returns how long the loop may sleep."""
         now = self._clock()
-        try:
-            self._volume_tick(now)          # the host's loudness, track or not
-        except Exception as exc:            # noqa: BLE001 - said, never fatal
-            self._fail(f"volume: {exc.__class__.__name__}: {exc}")
         if not self._ensure_track(now):
             return self._tick_s
         run, duration = self._run()

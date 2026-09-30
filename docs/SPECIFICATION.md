@@ -1162,7 +1162,12 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   (理由が変われば猶予はまた 60 秒)。**Loop の待ちの間は END の消去(4.3)を出さない** ― 次のランが同じ絵を使う。
   消去は STOP のとき(従来の 30 秒窓)。
   終わったラン(位置 ≥ 長さ)への **③ START は `force` 無しで通る**(`fleet.run_is_over()`。
-  「もう走っている」ではない)。ページも待ち時間中は「走っていない」として聞く。
+  「もう走っている」ではない)。ページも待ち時間中・ENDED 後は「走っていない」として扱う ―
+  **「やり直す?」の確認なし・`force` なしで次のランが始まる**(意図した変更。焼き込みの関門は
+  最初の START と同じに聞く)。PC のページの新しいボタン(Send workspace / All units → Wi-Fi)は
+  確認付きだが本物。**読み込んだショーの `loop_wait_s` を持てるのは `--adopt` の Conductor だけ**:
+  PC はショーファイル / ワークスペースの取り込み後に off へ戻し corrections に 1 行
+  (`_drop_imported_loop`)― radxa-05 からの書き出しが PC を勝手に回すことはない。
   ページ: 大時計 `ENDED · NEXT RUN IN 0:45 (run 2)`、NOW → NEXT ボード(ステージ
   モニターも)は見出し `NEXT RUN in 45 s` と `0:45`(10 秒で琥珀、3 秒で赤)、注記に
   理由。STOP の確認文に「Loop も止まる」
@@ -1178,7 +1183,9 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   (Upload と同じ印)ので、再起動後に編集して START すると `_one_timeline` が `Upload again` と
   断る(古い絵で新しいタイムラインは走らない)。ショーの無いメンバー(radxa-05)は提示に
   入らないだけ。提示が開いている間は `_targets()` に未採用の機体も入るので、START の関門・
-  Loop の猶予・`started without X` が名指しする(`_send_run` は **ショーを何も報告しない**
+  Loop の猶予・`started without X` が名指しする(引き取ったランで「ショーを報告する機体」まで
+  広げるのは、この Conductor が何も知らないか提示だけのとき ― 途中再起動 + force Upload の
+  あとはタイムライン外の機体に送らない。`_send_run` は **ショーを何も報告しない**
   機体だけ `has not taken this show yet` で断り、ショーを報告する機体には main と同じく
   `show: null` で送る ― 途中再起動でコンパイルが機体の持ち物と違っても RESUME / NEXT が
   断られて HOLD のまま、にはならない。引き取ったランでは報告している機体も `_targets()` に入る)。採用後は `show_duration` が戻り、
@@ -1199,7 +1206,10 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   音源の AVRCP 絶対音量だけ。transport の `fdN` は再接続ごとに変わるので `busctl tree` で
   5 秒ごとに探し直す)、それ以外は `pactl set-sink-volume @DEFAULT_SINK@ v%`。起動時・sink や
   transport が(再)出現したとき・変更のたびにスピーカーのスレッドで適用(HTTP スレッドは
-  待つだけ、最長 1.5 秒)。`POST /api/speaker/volume {"volume": 0-100}`(または `{"delta": ±n}`)
+  待つだけ、最長 1.5 秒。音量は**専用スレッド**で、音楽のスレッドは pactl / busctl を待たない。
+  失敗の再試行は 5 秒間隔、変更は連番で追い、適用中に届いた変更は次の tick で必ず適用)。
+  `POST /api/speaker/volume {"volume": 0-100}`(または `{"delta": ±n}`; NaN / inf は 400。
+  fleet.json が壊れていれば書かずに 500)
   → `{"volume", "applied": "bluez"|"pulse"|null, "error"}`(他の POST と同じ関門)。
   `/api/fleet.speaker` に `volume`・`applied`・`volume_error`。ページの MUSIC 行にスライダーと ±
   (`--speaker` のときだけ)。radxa-05 の LCD の EXHIBITION 画面の LEFT / RIGHT も同じ endpoint。
