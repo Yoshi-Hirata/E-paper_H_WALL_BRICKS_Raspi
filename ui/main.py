@@ -33,6 +33,7 @@ from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
                       usb_rebind)
 from .versions import BoardVersions
 from .boardinfo import BoardInfo
+from .wifi import Wifi
 
 
 def preview(directory: str) -> int:
@@ -158,6 +159,23 @@ def preview(directory: str) -> int:
          ("FW", "(not read while the PC is driving)", ""),
          ("", "no flash record here", "")],
         False, usb_line=usb, host="radxa-01").save(out / "boardinfo_pc.png")
+    nets = [("yoshihirock.net_5G", "client", True), ("AZ-Epaper", "client", False)]
+    render.wifi_screen("yoshihirock.net_5G", "IP 192.168.51.103  72%  client",
+                       nets, 1, "idle", host="radxa-03"
+                       ).save(out / "wifi_list.png")
+    render.wifi_screen("yoshihirock.net_5G", "IP 192.168.51.103  72%  client",
+                       nets, 1, "connecting", status="connecting to AZ-Epaper…",
+                       host="radxa-03").save(out / "wifi_connecting.png")
+    render.wifi_screen("AZ-Epaper", "IP 10.42.0.1  hotspot",
+                       [("yoshihirock.net_5G", "client", False),
+                        ("AZ-Epaper", "hotspot", True)], 1, "done",
+                       status="on AZ-Epaper", host="radxa-05"
+                       ).save(out / "wifi_hotspot.png")
+    render.wifi_screen("yoshihirock.net_5G", "IP 192.168.51.103  70%  client",
+                       nets, 1, "failed",
+                       status="ERROR Connection activation failed: No suitable "
+                              "device found - back on yoshihirock.net_5G",
+                       host="radxa-03").save(out / "wifi_failed.png")
     print(f"wrote preview screens to {out}")
     return 0
 
@@ -476,6 +494,10 @@ def main() -> int:
     # /status itself.
     boardinfo = BoardInfo(versions, port=args.port, cache=runner)
     updater.usb_board_sink = runner.note_usb_board
+    # WIFI's cache (ui/wifi.py): its reader thread asks nmcli every ~10 s;
+    # the screen and /status only ever read the cache.
+    wifi = Wifi()
+    wifi.start_reader()
     host = socket.gethostname() or None
 
     remote = agent = demo_store = None
@@ -486,7 +508,7 @@ def main() -> int:
         remote.on_release = player.stop
         agent = Agent(remote, port=args.remote_port, token=args.remote_token,
                       commit=puller.before.commit, name=host, player=player,
-                      demos=demo_store)
+                      demos=demo_store, wifi=wifi)
         try:
             print(f"remote agent on port {agent.start()}", flush=True)
         except OSError as exc:
@@ -513,7 +535,7 @@ def main() -> int:
         app_kwargs = {"port_label": port, "locked": args.locked,
                       "updater": updater, "puller": puller, "host": host,
                       "versions": versions, "rebooter": rebooter,
-                      "boardinfo": boardinfo,
+                      "boardinfo": boardinfo, "wifi": wifi,
                       "remote": remote,
                       "player": player if remote is not None else None,
                       "demos": demo_store}

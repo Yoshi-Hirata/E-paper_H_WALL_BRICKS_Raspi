@@ -97,6 +97,11 @@ a show.
     show) is running or holding - /show/hold and /show/stop still work,
     since those are how the PC takes the unit back
 
+    /status also carries "wifi": {"ssid", "ip", "signal", "mode",
+    "profile"} - which network the unit is on (ui/wifi.py), nulls when
+    unknown. It is a cache the unit's own reader thread fills every
+    ~10 s; nothing is asked of nmcli on this thread
+
 The PC polls; the unit never calls out. A unit that walks out of Wi-Fi
 range simply stops answering for a while, and nothing here minds.
 
@@ -121,6 +126,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .config import WIFI_FIELDS
 from .remote import DEV_NUMBER_BRAND, RemoteError, RemoteSession
 from .showplay import HOLDING, LOADED, RUNNING
 
@@ -299,10 +305,11 @@ class Agent:
     def __init__(self, session: RemoteSession, port: int = DEFAULT_PORT,
                  token: "str | None" = None, host: str = "0.0.0.0",
                  commit: str = "?", name: "str | None" = None, player=None,
-                 demos=None):
+                 demos=None, wifi=None):
         self.session = session
         self.player = player
         self.demos = demos             # ui.demos.DemoStore, or None
+        self.wifi = wifi               # ui.wifi.Wifi (its cache), or None
         self.port = port
         self.token = token or None
         self.bind = host
@@ -328,8 +335,19 @@ class Agent:
                                  else None),
                         "demos": len(self.demos.list()) if self.demos
                         else 0,
+                        "wifi": self._wifi(),
                         "clock": clock})
         return payload
+
+    def _wifi(self) -> dict:
+        # The reader's cache, copied - never a question to nmcli here,
+        # and never an exception out of /status.
+        if self.wifi is None:
+            return dict.fromkeys(WIFI_FIELDS)
+        try:
+            return self.wifi.snapshot()
+        except Exception:               # noqa: BLE001 - nulls are an answer
+            return dict.fromkeys(WIFI_FIELDS)
 
     def start(self) -> int:
         """Serve in a daemon thread; returns the port actually bound."""
