@@ -573,9 +573,17 @@ def test_the_follow_shows_exhibition_not_remote_where_the_conductor_is_local():
     assert app.screen is Screen.MENU and remote.released == 0
     app.tick(wait=0.0)
     assert app.screen is Screen.MENU             # dismissed, not bounced
-    # No local run any more: KEY2 on REMOTE releases, as it always did.
+    # No local run any more - but the Conductor is still here, and its
+    # cache may be 30 s old: KEY2 on REMOTE still does not release.
     app._remote_dismissed = False
     fake.run = None
+    ex.poll()
+    app.screen = Screen.REMOTE
+    app.handle("key2")
+    assert remote.released == 0 and remote.active is True
+    # Only with no Conductor on this unit does KEY2 release, as it
+    # always did on the garment units.
+    fake.down = True
     ex.poll()
     app.screen = Screen.REMOTE
     app.handle("key2")
@@ -593,15 +601,124 @@ def test_without_a_local_conductor_the_follow_is_unchanged():
     assert app.screen is Screen.REMOTE
     app.handle("key2")
     assert app.screen is Screen.MENU and remote.released == 1
-    # The "(no conductor)" note itself is not left by the follow either.
-    remote.active = True
+    # The "(no conductor)" note is followed like any other screen on a
+    # garment unit: the PC arming it shows REMOTE (byte-for-byte the old
+    # behaviour on the nine units - review of 13c8dcc, LOW-2).
     enter(app)
     assert app.screen is Screen.EXHIBITION
+    remote.active = True
     app.tick(wait=0.0)
-    assert app.screen is Screen.EXHIBITION
+    assert app.screen is Screen.REMOTE
     app.handle("key2")
+    assert app.screen is Screen.MENU and remote.released == 2
+
+
+def test_a_session_armed_before_the_first_probe_moves_to_exhibition_once_known():
+    # A UI restart on radxa-05: the Conductor arms this unit before the
+    # reader has answered once (available is None), so the follow shows
+    # REMOTE; the moment the Conductor is known the screen moves over,
+    # and KEY2 on that REMOTE never released (review of 13c8dcc, MED-1).
+    remote = FakeRemote(active=True)
+    ex, fake = make_exhibition(remote=remote)
+    fake.run = {"t0": 0.0, "state": "running", "now": 12.0}
+    app, _ = make_app(ex, remote=remote)
+    assert ex.available is None
     app.tick(wait=0.0)
-    assert app.screen is Screen.REMOTE           # no local conductor: REMOTE
+    assert app.screen is Screen.REMOTE
+    ex.poll()                                    # the reader answers
+    app.tick(wait=0.0)
+    assert app.screen is Screen.EXHIBITION and ex.is_open
+    assert remote.released == 0
+    # The same from REMOTE with KEY2 pressed in the meantime: the
+    # Conductor's presence decides, not its (up to 30 s old) run.
+    app.screen = Screen.REMOTE
+    fake.run = None
+    ex.poll()
+    app.handle("key2")
+    assert app.screen is Screen.MENU and remote.released == 0
+    app.tick(wait=0.0)
+    assert app.screen is Screen.MENU             # dismissed
+    # The Conductor service stopped: REMOTE and its release() come back.
+    fake.down = True
+    ex.poll()
+    app.tick(wait=0.0)
+    assert app._remote_dismissed is False
+    assert app.screen is Screen.REMOTE
+    app.handle("key2")
+    assert remote.released == 1
+
+
+def test_the_menu_refuses_the_port_taking_rows_while_the_session_is_armed():
+    # radxa-05 sits on the menu with its own Conductor's session armed
+    # (KEY2 dismissed the screen): STANDBY, a pattern, FW VERSION and
+    # UPDATE FW must not take the port from under the run (review of
+    # 13c8dcc, HIGH-2). WIFI / EXHIBITION / BOARD INFO / GIT PULL /
+    # REBOOT stay as they are.
+    from ui.boardinfo import BoardInfo
+    from ui.puller import RepoPuller
+    from ui.rebooter import Rebooter
+    from ui.updater import MenuEntry
+
+    class FakeWorker:
+        """UPDATE FW / FW VERSION as the App opens them: a scan on entry."""
+
+        def __init__(self, key, label):
+            self.menu_entry = MenuEntry(key, label, "")
+            self.busy = False
+            self.scans = 0
+
+        def reset(self):
+            pass
+
+        def scan(self):
+            self.scans += 1
+
+    remote = FakeRemote(active=True)
+    ex, fake = make_exhibition(remote=remote)
+    fake.run = {"t0": 0.0, "state": "running", "now": 12.0}
+    ex.poll()
+    runner = FakeRunner()
+    updater = FakeWorker("update", "UPDATE FW")
+    versions = FakeWorker("versions", "FW VERSION")
+    app = App(NullDisplay(), ScriptedInput(()), runner, port_label="/dev/fake",
+              exhibition=ex, remote=remote, host="radxa-05", updater=updater,
+              versions=versions, puller=RepoPuller(), rebooter=Rebooter(),
+              boardinfo=BoardInfo(None))
+    app._remote_dismissed = True
+    app.screen = Screen.MENU
+    pattern = next(p.key for p in app.patterns
+                   if p.key not in ("standby", "update", "versions", "pull",
+                                    "reboot", "wifi", "exhibition", "boardinfo"))
+    for key in ("standby", pattern, "versions", "update"):
+        app.select(key)
+        app.handle("key1")
+        assert app.screen is Screen.MENU, key
+        assert app._standby_status() == "conductor holds this unit - see EXHIBITION"
+        app.handle("key1_hold")                  # the hold starts a row too
+        assert app.screen is Screen.MENU, key
+    assert runner.standbys == 0 and runner.starts == [] and runner.stops == 0
+    assert updater.scans == 0 and versions.scans == 0
+    for key, screen in (("pull", Screen.PULL), ("reboot", Screen.REBOOT),
+                        ("boardinfo", Screen.BOARDINFO),
+                        ("exhibition", Screen.EXHIBITION)):
+        app.select(key)
+        app.handle("key1")
+        assert app.screen is screen, key
+        app.handle("key2")
+    assert runner.stops == 0
+    # Without a local Conductor the words name the PC...
+    fake.down = True
+    ex.poll()
+    app._remote_dismissed = True
+    app.select("standby")
+    app.handle("key1")
+    assert app._standby_status() == "PC holds this unit - release it on the PC"
+    assert runner.standbys == 0
+    # ...and once the session is released the rows work again.
+    remote.active = False
+    app.select("standby")
+    app.handle("key1")
+    assert runner.standbys == 1
 
 
 def test_a_command_thread_that_cannot_start_is_a_verdict():

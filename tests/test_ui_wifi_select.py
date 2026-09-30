@@ -282,6 +282,38 @@ def test_a_timer_that_cannot_start_leaves_nothing_pending():
     assert fake.ups == []
 
 
+def test_a_timer_firing_into_a_switch_in_flight_says_busy():
+    wifi, fake = make_wifi()
+    wifi.poll()
+    fake.release.clear()
+    wifi.select(+1)
+    wifi.switch()                                 # HOTSPOT, held by the fake
+    assert wifi.busy
+    wifi.schedule(ROUTER, 0.05)
+    time.sleep(0.3)
+    assert wifi.pending is None
+    assert any("busy" in line or "in flight" in line for line in wifi.recent(10))
+    assert not any("no such profile" in line for line in wifi.recent(10))
+    fake.release.set()
+    assert wait_until(lambda: wifi.phase == DONE)
+    assert fake.ups == [HOTSPOT]                  # ROUTER was skipped, not queued
+
+
+def test_reset_and_refuse_never_undo_a_connecting_claim():
+    wifi, fake = make_wifi()
+    wifi.poll()
+    fake.release.clear()
+    wifi.select(+1)
+    wifi.switch()
+    assert wifi.phase == CONNECTING
+    wifi.reset()
+    wifi.refuse("x")
+    wifi.reopen()
+    assert wifi.phase == CONNECTING and wifi.target.name == HOTSPOT
+    fake.release.set()
+    assert wait_until(lambda: wifi.phase == DONE)
+
+
 def test_a_profile_gone_by_fire_time_is_a_failure_not_a_crash():
     wifi, fake = make_wifi()
     wifi.poll()

@@ -1289,11 +1289,18 @@ one`。その間に STOP を通さない長さの絵が 1 枚あるとき(絵 + 
 - **radxa-05 は自分自身も駆動される**(fleet.json の radxa-05 → 127.0.0.1:8787。PM の
   決定では radxa-05 は制御専用で服を持たないが、割り当てられても安全でなければ
   ならない): START を押した瞬間にこの機体の RemoteSession が armed になる。そこで
-  `App._follow_remote()` は **EXHIBITION 画面を決して離れず**、Conductor がこの機体で
-  応答している間は REMOTE の代わりに EXHIBITION を出し、REMOTE / EXHIBITION の KEY2 は
-  その Conductor が run を報告している間 `release()`(= この機体の player.stop、自分の
-  ショーから脱落)を**呼ばず**メニューへ戻るだけ ―― セッションが本当に解放されるまで
-  follow はメニューを動かさない。Conductor の無い機体では従来どおり REMOTE
+  `App._follow_remote()` は、Conductor がこの機体で応答している間、**EXHIBITION 画面を
+  決して離れず**、REMOTE の代わりに EXHIBITION を出し(最初のプローブが返る前に armed
+  されて REMOTE に居ても、Conductor が分かった瞬間に EXHIBITION へ移す)、REMOTE /
+  EXHIBITION の KEY2 は `release()`(= この機体の player.stop、自分のショーから脱落)を
+  **呼ばず**メニューへ戻るだけ ―― 判定は Conductor が**居るか**であって、最大 30 秒
+  古いキャッシュの run ではない。セッションが本当に解放されるか、Conductor のサービスが
+  止まるまで follow はメニューを動かさない。そのメニューでは**ポートを取る行を断る**:
+  STANDBY・各パターン・FW VERSION・UPDATE FW の KEY1(長押しも)は `conductor holds this
+  unit - see EXHIBITION`(Conductor の無い機体で PC が握っていれば `PC holds this unit -
+  release it on the PC`)の 5 秒の注記だけで何もしない(デモ行の断り方と同じ。WIFI・
+  EXHIBITION・BOARD INFO・GIT PULL・REBOOT はそのまま)。Conductor の無い機体では
+  follow も KEY2 も従来どおり(REMOTE、KEY2 で release)
 - **KEY3 の長押し**はこの画面でだけ意味を持つ。入力層(`ui/gpio.py` / `ui/inputs.py`)は
   KEY1 と同じ仕組みで `key3_hold` を出し、短押し(画面消灯)は**離したとき**に出る
   ようになる(長押しが出たら短押しは出ない)。他の画面での `key3_hold` は短押しと同じく

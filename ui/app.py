@@ -83,12 +83,16 @@ screen reads `sending…` and then the Conductor's answer or its
 refusal, verbatim. A held KEY3 anywhere else blanks the screen, as a
 plain KEY3 does. On radxa-05 the local Conductor drives radxa-05's own
 player too (fleet.json -> 127.0.0.1:8787), so a START from this screen
-arms this unit's own session: _follow_remote() never leaves the
-EXHIBITION screen, shows EXHIBITION instead of REMOTE wherever a
-Conductor answers locally, and KEY2 on REMOTE or EXHIBITION does not
-release() the session while that Conductor reports a run (that would
-be player.stop - radxa-05 dropping out of its own show); the operator
-is left on the menu until the session is really let go of.
+arms this unit's own session: wherever a Conductor answers locally,
+_follow_remote() never leaves the EXHIBITION screen, shows EXHIBITION
+instead of REMOTE (also moving over from a REMOTE reached before the
+first probe answered), and KEY2 on REMOTE or EXHIBITION does not
+release() the session (that would be player.stop - radxa-05 dropping
+out of its own show; the Conductor's presence decides, not its up to
+30 s old run); the operator is left on the menu until the session is
+really let go of or the Conductor service stops, and on that menu the
+rows that take the port (STANDBY, a pattern, FW VERSION, UPDATE FW)
+are refused with a note (_remote_holds), as demo rows are.
 
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
@@ -389,12 +393,14 @@ class App:
             return
         if self.screen is Screen.REMOTE:
             if event == "key2":
-                if self._local_run():
-                    # The run is the local Conductor's and this unit is
-                    # in it: KEY2 only leaves the screen (release() would
-                    # be player.stop - radxa-05 dropping out of its own
-                    # show). The follow does not bring it back until the
-                    # session is really let go of.
+                if self._local_conductor():
+                    # The session is the local Conductor's and this unit
+                    # may be in its run (the cache can be up to 30 s
+                    # old, so the Conductor's presence decides, not its
+                    # last reported run): KEY2 only leaves the screen -
+                    # release() would be player.stop, radxa-05 dropping
+                    # out of its own show. The follow does not bring it
+                    # back until the session is really let go of.
                     self._remote_dismissed = True
                 else:
                     self.remote.release()
@@ -1057,8 +1063,37 @@ class App:
                       detail=detail, slug=entry["slug"],
                       loop=bool(entry.get("loop")))
 
+    def _remote_holds(self) -> "str | None":
+        """Why a row that takes the serial port (STANDBY, a pattern, FW
+        VERSION, UPDATE FW) must be refused right now, in the operator's
+        words - or None. Somebody else drives this unit through its
+        session: the show PC, or on radxa-05 the local Conductor, whose
+        session stays armed after a START (the menu is reachable then,
+        _remote_dismissed) - a standby would white the garment, a
+        pattern would paint over the show, a stopped runner would fail
+        the next arm() (review of 13c8dcc, HIGH-2). Demo rows have their
+        own gate (_pc_show_wins)."""
+        remote = self.remote
+        if remote is None or not (remote.active or self._pc_driving()):
+            return None
+        note = (self._pc_show_wins(self.player) if self.player is not None
+                else None)
+        if note is not None:
+            return note
+        if self._local_conductor():
+            return "conductor holds this unit - see EXHIBITION"
+        return "PC holds this unit - release it on the PC"
+
     def _restart(self) -> None:
-        if self.patterns[self.selected].key == "update":
+        key = self.patterns[self.selected].key
+        if key in ("update", "versions", "standby") or (
+                key not in ("pull", "boardinfo", "reboot", "wifi", "exhibition")
+                and not isinstance(self.patterns[self.selected], DemoRow)):
+            note = self._remote_holds()
+            if note is not None:
+                self._note_on_menu(note)
+                return
+        if key == "update":
             self._enter_update()
             return
         if self.patterns[self.selected].key == "pull":
@@ -1352,41 +1387,47 @@ class App:
             # /show/load turns it False - this stops overriding at once,
             # instead of waiting for _track_demo()'s own next tick.
             return
-        if self.screen is Screen.EXHIBITION:
+        local = self._local_conductor()
+        if self.screen is Screen.EXHIBITION and local:
             # Never left by the follow. On radxa-05 the local Conductor
             # drives this very unit (fleet.json: radxa-05 -> 127.0.0.1),
             # so the START just pressed here arms this session and the
             # screen would otherwise flip to REMOTE the next tick - where
             # a held KEY1 cannot STOP and KEY2 would release() the unit
             # out of its own run (review of 951e0b7, HIGH-1). KEY2 is
-            # the only way out.
+            # the only way out. (A garment unit sitting on the "(no
+            # conductor)" note is followed as any other screen.)
             return
-        if not remote.active:
+        if not remote.active or not local:
+            # Released - or the Conductor service here is gone: REMOTE
+            # and its release() come back (review of 13c8dcc, LOW-1).
             self._remote_dismissed = False
+        if not remote.active:
             if self.screen is Screen.REMOTE:
                 self.screen = Screen.MENU
                 self._dirty = True
             return
-        if self.screen is Screen.REMOTE or self._remote_dismissed:
-            return
-        if self._local_conductor():
+        if local:
             # The Conductor is on this unit: EXHIBITION is where its run
             # is read and stopped; REMOTE would only offer a KEY2 that
-            # drops this unit out of it.
-            self._enter_exhibition()
-        else:
+            # drops this unit out of it. REMOTE is still reached when
+            # the session was armed before the first probe answered (a
+            # UI restart, a timed-out probe): moved over as soon as the
+            # Conductor is known (review of 13c8dcc, MED-1).
+            if self.screen is Screen.REMOTE or (
+                    self.screen is not Screen.EXHIBITION
+                    and not self._remote_dismissed):
+                self._enter_exhibition()
+                self._standby = False
+            return
+        if self.screen is not Screen.REMOTE:
             self.screen = Screen.REMOTE
+            self._standby = False
             self._dirty = True
-        self._standby = False
 
     def _local_conductor(self) -> bool:
         """A Conductor answers on this unit (the EXHIBITION cache)."""
         return self.exhibition is not None and bool(self.exhibition.available)
-
-    def _local_run(self) -> bool:
-        """...and it reports a run (or its countdown / loop wait): this
-        unit is in it, and releasing the session would drop it out."""
-        return self._local_conductor() and self.exhibition.active
 
     def _idle_tasks(self) -> None:
         self._follow_remote()

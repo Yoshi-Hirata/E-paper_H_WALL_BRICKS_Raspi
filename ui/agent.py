@@ -368,7 +368,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._answer(200, {"scheduled": True, "after_s": after,
                                       "profile": profile})
         wifi.cancel_pending()
-        wifi.switch_to(profile)
+        if not wifi.switch_to(profile):
+            # The name is known (checked above), so False is a switch
+            # that started between the busy check and this claim.
+            return self._answer(409, {"error": "a switch is in flight"})
         return self._answer(200, {"scheduled": False, "profile": profile,
                                   "phase": wifi.phase,
                                   "wifi": self.agent._wifi()})

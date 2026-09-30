@@ -397,16 +397,19 @@ class Wifi:
             self.emit(f"wifi: switch to {name} skipped - {note}", error=True)
             self.refuse(f"{note} - switch to {name} skipped")
             return
-        if self.busy:
-            self.emit(f"wifi: switch to {name} skipped - a switch is in "
-                      "flight", error=True)
-            return
-        if not self.switch_to(name):
+        if name not in self.names():
             # Said, not done - like a lock: nothing was tried, so there
             # is no restore outcome for FAILED's wording to report.
             self.emit(f"wifi: switch to {name} skipped - no such profile",
                       error=True)
             self.refuse(f"no such profile: {name} - switch skipped")
+            return
+        if not self.switch_to(name):
+            # False with the name known: a switch is in flight (the
+            # check and the claim are one step in switch()).
+            self.emit(f"wifi: switch to {name} skipped - a switch is in "
+                      "flight", error=True)
+            self.refuse(f"busy - switch to {name} skipped")
 
     # ---- the list ----
 
@@ -587,12 +590,15 @@ class Wifi:
 
     def reset(self) -> None:
         """Back to the plain list (a verdict was read, or KEY2 left)."""
-        if self.busy:
-            return
-        self.phase = IDLE
-        self.error = None
-        self.target = None
-        self.restored = None
+        # Check-then-set under the lock: switch() claims CONNECTING
+        # there, and a reset racing it must not undo the claim.
+        with self._lock:
+            if self.phase == CONNECTING:
+                return
+            self.phase = IDLE
+            self.error = None
+            self.target = None
+            self.restored = None
 
     def reopen(self) -> None:
         """The screen is opened again (App._enter_wifi). A FAILED verdict
@@ -604,12 +610,13 @@ class Wifi:
 
     def refuse(self, note: str = LOCKED_NOTE) -> None:
         """The App's answer while the PC drives the unit: said, not done."""
-        if self.busy:
-            return
-        self.phase = LOCKED
-        self.error = note
-        self.target = None
-        self.restored = None
+        with self._lock:
+            if self.phase == CONNECTING:
+                return
+            self.phase = LOCKED
+            self.error = note
+            self.target = None
+            self.restored = None
 
     def switch(self, target: "Profile | None" = None) -> None:
         """Bring `target` - by default the chosen profile - up on a thread
