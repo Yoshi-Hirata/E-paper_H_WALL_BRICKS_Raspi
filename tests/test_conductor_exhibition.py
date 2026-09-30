@@ -129,7 +129,7 @@ def test_serve_host_is_a_flag_and_localhost_stays_the_default(monkeypatch):
 
     def fake_serve(workspace, port, open_browser=False, host="127.0.0.1",
                    speaker=False, speaker_lead_ms=None, speaker_output=None,
-                   speaker_factory=None, passcode=None, adopt=False):
+                   speaker_factory=None, passcode=None, adopt=False, label=None):
         seen.update(workspace=workspace, port=port, host=host, speaker=speaker,
                     lead=speaker_lead_ms, output=speaker_output, passcode=passcode)
         return 0

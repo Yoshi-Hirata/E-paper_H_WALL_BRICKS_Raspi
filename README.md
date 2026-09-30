@@ -321,6 +321,23 @@ python -m conductor serve        # http://127.0.0.1:8765
 既に起動中なら新しいサーバは立てず、ページを開くだけ。黒いウィンドウを閉じると UI が
 止まる(開始済みのショーは各機体が自走するので止まらない)。
 
+**起動用の bat は 2 つ**(同じプログラム、別のアプリとして動く):
+
+| | 本番ショー | 展示(EXHIBITION) |
+|---|---|---|
+| 起動 | `Start Conductor.bat` → http://localhost:8765 | `Start Exhibition Conductor.bat` → http://localhost:8766 |
+| データ | `showdata/` | `exhibition-data/`(`fleet.json` が無ければ `{"hotspot": "radxa-05"}` を書く。あるものには触らない) |
+| 見た目 | いつもどおり | 左上に琥珀色の **EXHIBITION** バッジ、ブラウザのタブ名は `EXHIBITION · Conductor`、黒い窓は `E-paper Exhibition Conductor` |
+| バックアップ | `Backup showdata.bat` | `Backup exhibition-data.bat` |
+
+中身は `python -m conductor serve --workspace exhibition-data --port 8766 --label EXHIBITION --open`。
+`--label` はページのバッジとタブの題名になるだけで、本番の Conductor(ラベル無し)のページは変わらない。
+**こちらで Upload / START する前に、もう一方の黒いウィンドウを閉じる(Ctrl+C)** ― 開いているだけの
+Conductor も機体に手を出す(始めていないランへの STOP、予約済みの消去)ので「押さなければよい」では
+足りない。もう一方が動いていると起動時に `WARNING: another Conductor is running on port …`、ページ上部に
+赤い 1 行が出続ける(閉じれば消える)。PC の展示 Conductor はショーを作って radxa-05 に送るまで、
+会場では radxa-05 自身の Conductor が回す(`radxa/EXHIBITION.md` 4 章)。
+
 起動・停止・開けないときの対処は **docs/CONDUCTOR_START.md**。
 
 UI の表記はすべて英語。タブは **Designs**(デザイン確認)/ **Timeline** / **Units**(機体)。

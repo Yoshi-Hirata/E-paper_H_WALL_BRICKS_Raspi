@@ -455,8 +455,18 @@ def test_a_second_conductor_on_the_same_port_steps_aside(tmp_path, capsys):
     try:
         assert already_serving(port)
         # Returns at once instead of serving a second copy on the port.
-        assert serve(tmp_path / "other", port) == 0
+        assert serve(tmp_path, port) == 0
         assert "already running" in capsys.readouterr().out
+        # ...when it IS this Conductor. Another workspace (or label) on the
+        # port is a DIFFERENT Conductor: said, not opened (2026-10-01: the
+        # show's launcher must never open the exhibition's page, nor the
+        # other way round).
+        assert serve(tmp_path / "other", port) == 2
+        out = capsys.readouterr().out
+        assert "a different Conductor is on port" in out and "close it" in out
+        assert f"workspace {tmp_path.name}" in out and "workspace other" in out
+        assert serve(tmp_path, port, label="EXHIBITION") == 2
+        assert "label none" in capsys.readouterr().out
         with pytest.raises(OSError):
             make_server(tmp_path, port=port)        # the port is exclusive
     finally:

@@ -31,6 +31,32 @@ UI 本体の使い方は README の「Conductor」の節を参照。
 デスクトップにショートカットを置きたいときは、`Start Conductor.bat` を右クリック →
 「ショートカットの作成」→ できたショートカットをデスクトップへ。
 
+### 1b. Conductor は 2 つある(本番と展示)
+
+リポジトリ直下には起動用の bat が 2 つある。**同じプログラム**だが、**別のアプリ**として動く:
+
+| | 本番ショー | 展示(EXHIBITION) |
+|---|---|---|
+| 起動 | `Start Conductor.bat` | `Start Exhibition Conductor.bat` |
+| ページ | http://localhost:8765 | http://localhost:8766 |
+| データ | `showdata/` | `exhibition-data/` |
+| 黒いウィンドウのタイトル | `E-paper Show Conductor` | `E-paper Exhibition Conductor` |
+| ページの見た目 | いつもどおり | 左上のアプリ名の隣に琥珀色の **EXHIBITION** バッジ、タブの題名が `EXHIBITION · Conductor`、タブのアイコンも琥珀色 |
+| バックアップ | `Backup showdata.bat` | `Backup exhibition-data.bat` |
+
+展示の Conductor で何をしても本番のショー(`showdata/`)は変わらない。逆も同じ。
+**ただし機体は共通**なので、**こちらで Upload / START する前に、もう一方の黒いウィンドウを
+閉じる(Ctrl+C)**。「もう一方のボタンを押さなければよい」では**足りない**: 開いているだけの
+Conductor も機体に手を出す(自分が始めていないランに `stopped (missed STOP)` で STOP を送る、
+予約済みの消去を実行する。両方が同じ機体を見ると互いの T0 も補正し合う)。
+もう一方が動いていると、起動時の黒いウィンドウに `WARNING: another Conductor is running on
+port …` と出て、ページの上部に赤い 1 行(`⚠ another Conductor is running on port 8766
+(workspace exhibition-data) [EXHIBITION] - close its black window (Ctrl+C) before Upload or
+START here …`)が出続ける ― もう一方を閉じれば数秒で消える。同じポートに別の Conductor
+(別フォルダ・別ラベル)がいるときは起動そのものを断る(`a different Conductor is on port …
+close it`)。PC の展示 Conductor はショーを作って radxa-05 に送るまでが役目で、会場では
+radxa-05 自身の Conductor がショーを回す(`radxa/EXHIBITION.md` 4 章)。
+
 ## 2. 停止する
 
 黒いウィンドウを閉じる(または そのウィンドウで Ctrl+C)。
@@ -49,6 +75,8 @@ UI 本体の使い方は README の「Conductor」の節を参照。
 | ブラウザが「接続できません」 | UI が起動していない。`Start Conductor.bat` をダブルクリック |
 | ダブルクリックしても黒いウィンドウがすぐ消える | 起動に失敗している。ウィンドウが消える前のメッセージを見る。残るときは `pause` で止まるので読める。多いのは Python 未検出(`Python 3.9 or newer was not found`)と、ポート 8765 を別のものが使っている(`cannot listen on port 8765`) |
 | 黒いウィンドウに `already running` と出る | すでに起動している。ページが開くだけで正常 |
+| 黒いウィンドウに `a different Conductor is on port …` と出てすぐ終わる | 同じポートに別の Conductor(別のフォルダ・別のラベル、例: `--workspace` を変えて手で起動したもの)がいる。その黒いウィンドウを閉じてからやり直す |
+| 黒いウィンドウに `WARNING: another Conductor is running on port …`、ページ上部に赤い 1 行 | もう一方の Conductor(本番 8765 / 展示 8766 ― 1b 節)が開いている。**そちらの黒いウィンドウを閉じてから** Upload / START する。閉じれば赤い行は数秒で消える |
 | Units タブが全部 offline | UI は正常。PC が機体と同じネットワーク(専用ルータ)にいない。つなぎ直せば自動で online に戻る。Designs / Timeline の編集はオフラインのままでできる |
 | PC を再起動した・スリープから戻った | UI は起動し直す(`Start Conductor.bat`)。データは消えていない |
 
@@ -58,7 +86,9 @@ UI 本体の使い方は README の「Conductor」の節を参照。
 python -m conductor serve --open
 ```
 
-別のポートで動かす(2 つ目を試すとき):`python -m conductor serve --port 8766 --workspace <別フォルダ>`
+別のポートで動かす(2 つ目を試すとき):`python -m conductor serve --port 8767 --workspace <別フォルダ>`
+(8766 は展示の Conductor が使う ― 1b 節。`--label <名前>` を付けるとページにその名前の
+琥珀色バッジが出て、窓を取り違えない)
 
 ## 4b. ネットワーク
 
@@ -265,7 +295,9 @@ Units タブのタイルにも、その機体の USB の基板(マスタ)が小�
   `{"units": {"radxa-01": "192.168.51.101:8787", ...}}`(書いた機体だけ上書き)
 - 別 PC で開発・テストもするなら `pip install pytest` のうえ `python -m pytest -q`(約 3 分)
 - **展示(PC もルータも無い会場)**: Conductor を radxa-05 で動かし、ワークスペースは
-  Units タブの **Send workspace to …** で送る。手順は `radxa/EXHIBITION.md`
+  PC の**展示 Conductor**(`Start Exhibition Conductor.bat`、8766、`exhibition-data/` ― 1b 節)の
+  Units タブの **Send workspace to …** で送る。別 PC へ移すときは `Backup exhibition-data.bat`
+  の zip を `exhibition-data/` に展開する。手順は `radxa/EXHIBITION.md`
   (Loop、radxa-05 のスピーカー、`serve --host 0.0.0.0 --speaker`)
 
 ## 6. ショー当日の順番(要点)

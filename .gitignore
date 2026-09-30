@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 ~$*
 showdata/
+# The exhibition Conductor's own data on the PC (Start Exhibition
+# Conductor.bat, port 8766) - a second workspace, never the show's.
+exhibition-data/
 # The simulator with the show's music inside it (~23 MB for a 17.5 MB MP3).
 # Built on demand - the Conductor's Timeline toolbar has a "Simulator for
 # designers…" button, or `python tools/build_designer.py --music auto` -
