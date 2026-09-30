@@ -1638,13 +1638,15 @@ class Workspace:
     def import_tar(self, source) -> dict:
         """Replace the workspace with the .tar at `source` (a path).
 
-        Whole or not at all, and nothing outside this folder: every member
-        is checked by name before one byte is written (_tar_member_ok),
-        everything is written into a staging folder BESIDE the workspace's
-        own files, and only then - under the lock, with nothing running
-        (the caller's 409) - are the four entries swapped: the old ones
-        move aside, the new ones move in, the old ones are deleted. A
-        failure half way through moves the old ones back. fleet.json is
+        Whole or not at all, and nothing outside this folder: each member
+        is checked by name as it is read (_tar_member_ok) and written into
+        a staging folder BESIDE the workspace's own files - a member that
+        fails the check aborts the import with the staging folder removed
+        and the workspace untouched - and only then, under the lock, with
+        nothing running (the caller's 409), are the four entries swapped:
+        the old ones move aside, the new ones move in, the old ones are
+        deleted. A failure half way through moves the old ones back and
+        removes only what this import had placed. fleet.json is
         never touched (a fleet.json inside the tar is skipped), the
         receiver's marks of what its units hold are forgotten (the
         timeline is new: START says "Upload again", which is right), and
@@ -2778,8 +2780,12 @@ class SendJob:
 # so the same value in a `passcode` cookie is accepted too.
 PASSCODE_HEADER = "X-Passcode"
 PASSCODE_COOKIE = "passcode"
+# The example value in radxa/exhibition/fleet.json: a Conductor open to other
+# hosts refuses to start with it, or with no passcode at all (serve()).
+PASSCODE_EXAMPLE = "CHANGE-ME-2026"
 _PASSCODE_GETS = {"/api/workspace/export", "/api/music/file", "/api/show/export",
                   "/api/simulator"}
+_PASSCODE_COOKIE_PATHS = {"/api/music/file"}      # the <audio> element's route
 _LOCAL_HOSTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
@@ -2807,7 +2813,10 @@ class Handler(BaseHTTPRequestHandler):
         if not code or self._client_local():
             return True
         given = self.headers.get(PASSCODE_HEADER) or ""
-        if not given:
+        # The cookie counts only where a header cannot be set - the music
+        # file the <audio> element streams. Everything else, every POST
+        # above all, is the page's own fetch() and carries the header.
+        if not given and self.path.split("?", 1)[0] in _PASSCODE_COOKIE_PATHS:
             for part in (self.headers.get("Cookie") or "").split(";"):
                 name, _, value = part.strip().partition("=")
                 if name == PASSCODE_COOKIE:
@@ -3110,21 +3119,28 @@ class Handler(BaseHTTPRequestHandler):
                                         "STOP it first"}, status=409)
         # To a temp file beside the workspace (the same disk the swap
         # renames on), streamed in chunks: never the whole tar in memory.
+        # The spool is named BEFORE the body is read and removed in the one
+        # finally below, so a truncated or stalled upload leaves no
+        # .import-*.tar behind.
         try:
-            with tempfile.NamedTemporaryFile(dir=str(self.workspace.root),
-                                             prefix=".import-", suffix=".tar",
-                                             delete=False) as spool:
-                remaining = length
-                while remaining > 0:
-                    chunk = self.rfile.read(min(WORKSPACE_TAR_CHUNK, remaining))
-                    if not chunk:
-                        raise ValueError("the upload ended early")
-                    spool.write(chunk)
-                    remaining -= len(chunk)
-                spool_path = Path(spool.name)
-        except (OSError, ValueError) as exc:
-            return self._json({"error": str(exc)}, status=400)
+            spool = tempfile.NamedTemporaryFile(dir=str(self.workspace.root),
+                                                prefix=".import-", suffix=".tar",
+                                                delete=False)
+        except OSError as exc:
+            return self._json({"error": str(exc)}, status=500)
+        spool_path = Path(spool.name)
         try:
+            try:
+                with spool:
+                    remaining = length
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(WORKSPACE_TAR_CHUNK, remaining))
+                        if not chunk:
+                            raise ValueError("the upload ended early")
+                        spool.write(chunk)
+                        remaining -= len(chunk)
+            except (OSError, ValueError) as exc:
+                return self._json({"error": str(exc)}, status=400)
             # Checked again with the tar in hand: a START may have landed
             # while the body was on its way.
             if self.fleet is not None and self.fleet.run is not None:
@@ -3850,6 +3866,23 @@ def reachable_urls(host: str, port: int) -> "list[str]":
     return urls
 
 
+def passcode_problem(host: str, passcode) -> "str | None":
+    """Why a Conductor bound to other hosts may not start with this
+    passcode - none at all, or the example value still in fleet.json - or
+    None when it may. Loopback needs none: nothing but this host reaches
+    it."""
+    if host in _LOCAL_HOSTS or host == "localhost":
+        return None
+    if not passcode:
+        return ("no passcode - put \"passcode\": \"<your own>\" into the "
+                "workspace's fleet.json (chmod 600) or pass --passcode; every "
+                "other host then needs it before it may change the show")
+    if str(passcode) == PASSCODE_EXAMPLE:
+        return (f"the passcode is still the example value {PASSCODE_EXAMPLE!r} "
+                "from radxa/exhibition/fleet.json - choose your own")
+    return None
+
+
 def local_ipv4s() -> "list[str]":
     """This host's own IPv4 addresses, without a DNS lookup: the UDP
     "connect" trick (no packet is sent) against the two networks the
@@ -3907,7 +3940,17 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
         return 0
     config = Workspace(workspace)
     units, token = config.fleet_config()
-    passcode = passcode or config.fleet_option("passcode")
+    stored = config.fleet_option("passcode")
+    if passcode and stored and str(passcode) != str(stored):
+        print(f"warning: --passcode and {Path(workspace) / 'fleet.json'}'s "
+              "\"passcode\" differ - the command line's is used", flush=True)
+    passcode = passcode or stored
+    problem = passcode_problem(host, passcode)
+    if problem:
+        # Open to other hosts with no real passcode is open to the room:
+        # refused before anything listens (review of 53b9b6b, MED-6).
+        print(f"refusing to serve on {host}: {problem}", flush=True)
+        return 2
     hotspot = str(config.fleet_option("hotspot", DEFAULT_HOTSPOT_UNIT))
     try:
         server = make_server(workspace, port, host, token=token,

@@ -36,7 +36,10 @@ this side did not ask for, while the state was playing, is the end of the
 file (as is a "@P 0", for a build that says so): the track is dropped and
 loaded again with LP for the NEXT run, never jumped, and THIS run stays
 silent - the `_eof` guard keeps the run key, so nothing sends a P every
-tick against a file that has run out.
+tick against a file that has run out. A P of ours excuses only the FIRST
+wanted line after it: when the track ends in the same instant as the
+show-end pause the burst is "@P 1" (EOF), "@P 2", "@P 1" (our P against
+the ended file), and the last line is the EOF nobody asked for.
 
 The unpause latency. Between writing "P" on the pipe and the first sample
 leaving the speaker there is the pipe, mpg123's command loop and the
@@ -129,6 +132,7 @@ class Speaker:
         # reader's verdict "the file ran out" (see the module doc).
         self._awaiting = 0
         self._await_want = None
+        self._answered = False            # the in-flight command got its line
         self._phist: "list[tuple[int, int]]" = []    # the last few (seq, state)
         self._eof_seen = False
         self._frames_left: "int | None" = None
@@ -354,13 +358,21 @@ class Speaker:
                         # the file ran out (mpg123 1.26.4 says it this way;
                         # "@P 0" is the same news from a build that says so).
                         # "Nobody asked" = no P of ours that wanted a pause
-                        # is in flight - a P that wanted PLAYING and got
-                        # "@P 2" then "@P 1" is exactly the EOF case.
-                        asked_pause = self._awaiting and PAUSED in (self._await_want or ())
+                        # is in flight AND still unanswered: a P excuses
+                        # only the FIRST wanted line after it. So a P that
+                        # wanted PLAYING and got "@P 2" then "@P 1" is the
+                        # EOF case, and so is the burst where the track
+                        # ends in the same instant as our show-end pause -
+                        # "@P 1" (EOF), then "@P 2" / "@P 1" from our P:
+                        # the first pause is excused, the last one is not.
+                        asked_pause = (self._awaiting and not self._answered
+                                       and PAUSED in (self._await_want or ()))
                         if state == PAUSED and self._pstate == PLAYING and not asked_pause:
                             self._eof_seen = True
                         elif state == STOPPED and self._pstate != STOPPED:
                             self._eof_seen = True
+                        if self._awaiting and state in (self._await_want or ()):
+                            self._answered = True
                         self._pstate = state
                         self._pseq += 1
                         self._phist.append((self._pseq, state))
@@ -423,6 +435,7 @@ class Speaker:
             if wanted is not None:
                 self._awaiting += 1
                 self._await_want = wanted
+                self._answered = False
             try:
                 proc.stdin.write((text + "\n").encode("utf-8"))
                 proc.stdin.flush()

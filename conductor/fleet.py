@@ -467,6 +467,9 @@ class Fleet:
         # there), and the refusals already written down for this wait.
         self._loop_due: "float | None" = None
         self._loop_said: "set[str]" = set()
+        # {unit: why} left out of the last restart - the same reason again
+        # is skipped without a second grace period.
+        self._loop_skipped: "dict[str, str]" = {}
         # What THIS conductor's workspace compiles to, offered for adoption:
         # a conductor restarted (systemd, a power blip) knows nothing about
         # who holds what, and a unit that reports exactly one of these show
@@ -628,8 +631,11 @@ class Fleet:
         again every loop_retry_s. For LOOP_WAIT_READY_S past the wait,
         that is; after that the run starts with the units that ARE ready
         and names the others (`problem`, and once in the corrections) -
-        they stay polled and supervised and rejoin at the next restart.
-        STOP takes the loop back at any point, the restart's own window
+        they stay polled and supervised, and supervision puts one INTO
+        the running show the moment it answers holding it ("started
+        late"). A unit left out for a reason that has not changed is left
+        out of the next restart at once, without a second grace. STOP
+        takes the loop back at any point, the restart's own window
         included (the run generation is checked under the lock inside
         start_show).
         """
@@ -674,11 +680,14 @@ class Fleet:
             if self._loop_due is None:
                 self._loop_due = now
             overdue = now - self._loop_due >= LOOP_WAIT_READY_S
-        skip: "set[str]" = set()
-        if overdue:
-            # The 60 s of grace are up: whoever is not ready is left out
-            # of this run, by name, and the rest go on.
-            skip = set(self._not_ready(self._targets()))
+        # Whoever is not ready, with why. A unit left out of the LAST
+        # restart for the very same reason is left out at once - one 60 s
+        # grace per fault, not one per run - while a new fault (or a new
+        # unit) gets the full grace; after it, everyone not ready is left
+        # out by name and the rest go on.
+        not_ready = self._not_ready(self._targets())
+        skip = {name for name, why in not_ready.items()
+                if overdue or self._loop_skipped.get(name) == why}
         try:
             results = self.start_show(float(lead_s), 0.0, loop=True,
                                       skip=skip, expect_gen=gen)
@@ -699,12 +708,14 @@ class Fleet:
         left_out = sorted(skip)
         problem = None
         if left_out:
-            problem = (f"started without {', '.join(left_out)} - not ready "
-                       f"after {LOOP_WAIT_READY_S:.0f} s; rejoins at the next run")
+            problem = (f"started without {', '.join(left_out)} (not ready) - "
+                       "it joins this run as soon as it answers with the show")
         with self._run_lock:
             self._loop_problem = problem
+            self._loop_skipped = {name: not_ready[name] for name in left_out}
         self._note(f"Loop: run {self._loop_runs} started"
-                   + (f" without {', '.join(left_out)} (not ready)" if left_out else "")
+                   + (f" without {', '.join(left_out)} (not ready: "
+                      f"{'; '.join(not_ready[n] for n in left_out)})" if left_out else "")
                    + (f" ({', '.join(failed)} did not take it)" if failed else ""))
 
     def _note(self, text: str) -> None:
@@ -712,13 +723,20 @@ class Fleet:
         self.corrections.append(f"{time.strftime('%H:%M:%S')} {text}")
         del self.corrections[:-20]
 
-    def _not_ready(self, names) -> "list[str]":
-        """The units of `names` a START would refuse on right now (offline,
-        not holding the show, still writing, pictures cleared) - each
-        message from _burn_problems starts with the unit's name."""
+    def _not_ready(self, names) -> "dict[str, str]":
+        """{unit: why} for the units of `names` a START would refuse on
+        right now (offline, not holding the show, still writing, pictures
+        cleared) - each message from _burn_problems starts with the unit's
+        name. A unit left out of a run this way is not forgotten: it holds
+        the show, so supervision puts it INTO the running show the moment
+        it answers with it ("started late"), not only at the next restart."""
         problems = self._burn_problems(names, force=False)
-        return [name for name in names
-                if any(p.startswith(f"{name}:") for p in problems)]
+        out: "dict[str, str]" = {}
+        for name in names:
+            mine = [p for p in problems if p.startswith(f"{name}:")]
+            if mine:
+                out[name] = "; ".join(mine)
+        return out
 
     def loop_state(self) -> "dict | None":
         """What /api/fleet says about a pending loop restart: seconds until
@@ -764,8 +782,10 @@ class Fleet:
 
     def _adopt_show(self, link: UnitLink) -> None:
         """Take the offered show for this unit if the unit says it holds
-        exactly that - the same id, pictures burned - and say so once;
-        say once, too, when it holds something else (an Upload is needed)."""
+        exactly that - the same id, pictures burned (or burned with some
+        boards failed: the START gate then decides, with the run's force,
+        as it would after an Upload) - and say so once; say once, too, when
+        it holds something else (an Upload is needed)."""
         offered = self._offered.get(link.name)
         if offered is None or link.name in self.shows:
             return
@@ -773,9 +793,11 @@ class Fleet:
         if not isinstance(unit, dict) or unit.get("id") is None:
             return
         burn = unit.get("burn")
-        burned = isinstance(burn, dict) and burn.get("state") == "burned"
+        burned = isinstance(burn, dict) and burn.get("state") in ("burned", "failed")
         if unit.get("id") == offered["id"] and burned:
-            self.shows[link.name] = offered
+            # Rebound, never mutated in place: snapshot() and the page's
+            # requests read `shows` from other threads.
+            self.shows = dict(self.shows, **{link.name: offered})
             self._note(f"{link.name}: holds this show already (adopted "
                        "after a restart of the conductor)")
             return
@@ -1271,6 +1293,11 @@ class Fleet:
         would go on driving it and START would post /show/run to a unit
         that is not in the show at all (review F3)."""
         self._cancel_armed_clear()      # the pictures are going back in
+        # An Upload is the truth about who holds what from here on: the
+        # startup offer is withdrawn, so a garment taken OUT of the
+        # timeline cannot be adopted from the burned show it still holds
+        # and be sent a START (review of 53b9b6b, MED-1).
+        self.offer_shows({})
         targets = ([name for name in shows] if only is None
                    else [name for name in only if name in shows])
         if only is not None:
@@ -1366,6 +1393,9 @@ class Fleet:
         model."""
         targets = ([name_ for name_ in shows] if only is None
                    else [name_ for name_ in only if name_ in shows])
+        # The timeline was compiled afresh for this: a unit it no longer
+        # reaches leaves the startup offer too (see upload()).
+        self._offered = {u: s for u, s in self._offered.items() if u in shows}
 
         def action(link):
             result = link.post("/demo/save", {"name": name, "loop": bool(loop),
@@ -1478,6 +1508,11 @@ class Fleet:
             if offset is None:
                 raise RuntimeError("clock not measured yet")
             show = self.shows.get(link.name)
+            if show is None and link.name in self._offered:
+                # Offered after a restart and not adopted: the unit does
+                # not hold this show, and a /show/run naming none would
+                # only be refused there. Said here, by name.
+                raise RuntimeError("has not taken this show yet")
             link.post("/show/run", {"t0": t0 + offset,
                                     "show": show["id"] if show else None,
                                     "force": force or link.name in forced})
@@ -1485,7 +1520,16 @@ class Fleet:
         return self._each(list(names), action)
 
     def _targets(self) -> "list[str]":
-        return list(self.shows) or [
+        """The units a run is about: the ones holding this conductor's show
+        - and, while a startup offer is open, the offered ones not adopted
+        yet, so the burn gate / the Loop's grace / "started without X" NAME
+        a garment that has not come back rather than leave it out in
+        silence (a command to one of those is refused by name: _send_run).
+        With nothing known at all, whoever reports a show (a run adopted
+        from the units)."""
+        known = list(self.shows) + [name for name in self._offered
+                                    if name not in self.shows]
+        return known or [
             name for name, link in self.links.items()
             if (link.status or {}).get("show")]
 
@@ -1578,6 +1622,8 @@ class Fleet:
                 raise ValueError("stopped or moved meanwhile")
             self._may_adopt, self._stopped = False, False
             self._loop_runs = self._loop_runs + 1 if loop else 0
+            if not loop:
+                self._loop_skipped = {}     # a START press: every fault is new
             self.run = {"t0": self._clock() + lead_s - at, "state": "running",
                         "held_at": None, "force": bool(force),
                         # Mirrored onto the run so the page can see what
@@ -2174,10 +2220,10 @@ class Fleet:
         "Upload first" / "Upload again" (the server marks the units it
         used to know as holding an older upload) instead of running the
         units' old pictures under the new music."""
+        self.offer_shows({})            # first, so no poll adopts one back
         with self._run_lock:
             self.shows = {}
             self.start_at = 0.0
-        self.offer_shows({})
 
     def wifi_select(self, profile: str, after_s: float,
                     last: "list[str] | None" = None,

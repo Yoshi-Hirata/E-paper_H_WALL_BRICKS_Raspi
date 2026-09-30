@@ -1108,7 +1108,8 @@ Wi-Fi ホットスポット `AZ-Epaper`(10.42.0.1)でもあり、**制御専用(
 epaper-exhibition-net.service`、`--speaker-output alsa --passcode …`)、`radxa/exhibition/fleet.json`
 (`units`: radxa-05 自身は `127.0.0.1:8787`、`hotspot`、`passcode`)、
 `radxa/epaper-exhibition-net.service` + `radxa/exhibition-net.sh`(oneshot、radxa-05 だけ:
-起動後 30 秒までにクライアントの Wi-Fi が上がらなければ `nmcli con up AZ-Epaper`。
+起動後 90 秒までにクライアントの Wi-Fi が `activated` にならなければ ― 知っているルータの
+SSID がスキャンに見えている間は最長 10 分待ってから ― `nmcli con up AZ-Epaper`。
 `AZ-Epaper` 自体は autoconnect=no のまま ― このサービスの有効化が「展示モードの武装」)、
 `radxa/exhibition/az-epaper-dhcp.conf`(`/etc/NetworkManager/dnsmasq-shared.d/` に置く
 `dhcp-host=<MAC>,10.42.0.1NN,radxa-NN` の予約。NM 1.42.4 に `ipv4.shared-dhcp-range` が無い
@@ -1117,10 +1118,12 @@ epaper-exhibition-net.service`、`--speaker-output alsa --passcode …`)、`radx
 - **`serve --host`**: `python -m conductor serve --host 0.0.0.0`(既定は従来どおり
   `127.0.0.1`)。起動時に届く URL を全部表示する(`127.0.0.1` とホストの IPv4。IPv4 は
   UDP connect と `ip -4 -o addr` で取り、**DNS は引かない**)。`--port`・`--workspace` は従来どおり
-- **パスコード**(`serve --passcode` または fleet.json の `"passcode"`): 設定されていると、
+- **パスコード**(fleet.json の `"passcode"`(chmod 600)、または `serve --passcode`; 両方あって
+  違えば警告して CLI 優先。**ループバック以外に bind するときは必須** ― 無い、または例の値
+  `CHANGE-ME-2026` のままなら `serve` は起動を拒否して理由を出す): 設定されていると、
   **127.0.0.1 / ::1 以外のクライアント**からの **全 POST** と `GET /api/workspace/export`・
-  `/api/music/file`・`/api/show/export`・`/api/simulator` は `X-Passcode` ヘッダ(または
-  `passcode` クッキー ― `<audio>` はヘッダを付けられない)が無いと **401
+  `/api/music/file`・`/api/show/export`・`/api/simulator` は `X-Passcode` ヘッダ(`/api/music/file`
+  だけは `passcode` クッキーでも可 ― `<audio>` はヘッダを付けられない)が無いと **401
   `{"error": "passcode required"}`**。ループバックは自由(radxa-05 の LCD の EXHIBITION 行)。
   ページは最初の 401 で 1 回だけ聞き(`prompt`)、localStorage `conductor.passcode` と
   クッキーに覚えて以後全リクエストに付ける。`/api/workspace/send` も POST なので同じ規則
@@ -1150,10 +1153,11 @@ epaper-exhibition-net.service`、`--speaker-output alsa --passcode …`)、`radx
   `_stopped` を見て断る(STOP が勝つ)。再開が断られたとき(機体が落ちている、絵が
   消えている ― ③ START と同じ拒否)は理由を `problem` と corrections に **理由ごとに 1 回**
   書き、5 秒ごとに再試行。**待ちが尽きてから 60 秒(`LOOP_WAIT_READY_S`)たっても揃わなければ、
-  揃った機体だけで始める**(`start_show(skip=…)`、`problem` = `started without radxa-03 - not
-  ready after 60 s; rejoins at the next run`、corrections に 1 回)。外れた機体はそのまま
-  監視され(supervision が絵の書き込み済みの機体を走行中のランに戻すこともある)、次の
-  再開から戻る。**Loop の待ちの間は END の消去(4.3)を出さない** ― 次のランが同じ絵を使う。
+  揃った機体だけで始める**(`start_show(skip=…)`、`problem` = `started without radxa-03 (not ready) -
+  it joins this run as soon as it answers with the show`、corrections に 1 回)。外れた機体は
+  そのまま監視され、ショーを持って答えた瞬間に supervision が走行中のランへ入れる
+  (`started late`)。同じ理由のまま外れている機体は次の再開では 60 秒待たずにすぐ外す
+  (理由が変われば猶予はまた 60 秒)。**Loop の待ちの間は END の消去(4.3)を出さない** ― 次のランが同じ絵を使う。
   消去は STOP のとき(従来の 30 秒窓)。
   終わったラン(位置 ≥ 長さ)への **③ START は `force` 無しで通る**(`fleet.run_is_over()`。
   「もう走っている」ではない)。ページも待ち時間中は「走っていない」として聞く。
@@ -1163,12 +1167,18 @@ epaper-exhibition-net.service`、`--speaker-output alsa --passcode …`)、`radx
 - **Conductor 再起動後のショーの引き取り**(`Fleet.offer_shows` / `_adopt_show`): `fleet.shows`
   はメモリだけなので、systemd の再起動・停電のあと Conductor は誰が何を持っているか知らない
   → `serve` は起動時にワークスペースをコンパイルして機体ごとのショーを **提示**し、
-  `/status` の `show.id` が一致し `burn.state == "burned"` の機体を最初のポールで
-  「持っている」と採用する(corrections `radxa-01: holds this show already (adopted after a
+  `/status` の `show.id` が一致し `burn.state` が `burned`(一部失敗の `failed` も ― START の
+  関門が force で判断する)の機体を最初のポールで「持っている」と採用する(corrections `radxa-01: holds this show already (adopted after a
   restart of the conductor)`)。別の id・絵の無い機体は 1 回 `… - Upload before START`。
-  ショーの無いメンバー(radxa-05)は提示に入らないだけ。採用後は `show_duration` が戻り、
+  ショーの無いメンバー(radxa-05)は提示に入らないだけ。提示が開いている間は `_targets()` に
+  未採用の機体も入るので、START の関門・Loop の猶予・`started without X` が名指しする
+  (`_send_run` は `has not taken this show yet` で断る)。採用後は `show_duration` が戻り、
   走行中のランは従来の `_adopt()` で引き取られ、Loop はそのランの終わりから回る。
-  `/api/workspace/import` は提示を取り下げる
+  **Upload は提示を取り下げる**(タイムラインから外した衣装が古い焼き込み済みのショーから
+  採用されて START を送られないため)、Save on units は今のコンパイルに無い機体を提示から外す、
+  `/api/workspace/import` も取り下げる。**引き取れるのは Conductor だけの再起動**: 機体ごと
+  停電すると agent は `burn none` を報告するので ① Upload が要る。同じネットワークに Conductor
+  は 1 台(PC と radxa-05 が同時に同じ機体を見ると T0 を補正し合う)
 - **`serve --speaker`**(`conductor/speaker.py`): ホストの `mpg123 -R --keep-open`(remote-control、
   stdin / stdout のパイプ、`-o <module>` は `--speaker-output`)でショーの音楽を鳴らす。
   専用スレッド、HTTP スレッドは `status()` を読むだけ(待ちに使う Condition と status の
@@ -1185,7 +1195,9 @@ epaper-exhibition-net.service`、`--speaker-output alsa --passcode …`)、`radx
   SEEK・NEXT・RESUME → `J <pos + 遅延>s`(止まっていれば `P`)。HOLD → `P`。STOP / ショーの
   長さに達した(4.4 と同じ、曲が長くても止める)→ `P` と `J 0s`(曲は読み込んだまま、
   次のランへ)。**曲がショーより短く先に終わった(`@P 0`)** → 曲を読み直して先頭で止め、
-  今のランは無音のまま、次のランから鳴る。音楽ファイルが替わったら 1 秒以内に読み直す。
+  今のランは無音のまま、次のランから鳴る(実測 1.26.4: EOF は **自発的な `@P 1`**、`P` は
+  `@P 2`/`@P 1` を返すだけ、`J` では戻らず LP だけが効く。自分の `P` が免責するのは直後の
+  1 行だけ ― ショー終了の pause と同時に曲が尽きた `@P 1`,`@P 2`,`@P 1` の最後も EOF)。音楽ファイルが替わったら 1 秒以内に読み直す。
   **mpg123 が無い / 死んだ**: 1 回ログに書き、ランはそのまま進み、30 秒ごとに再試行。
   `/api/fleet` の `speaker: {"available", "error", "state", "track", "latency_ms", "playing",
   "log"}`(`--speaker` 無しは `null`)。ページは `speaker` を見たら **自分のプレイヤーを既定で

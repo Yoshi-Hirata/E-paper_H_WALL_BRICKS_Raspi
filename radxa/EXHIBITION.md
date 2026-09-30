@@ -29,14 +29,19 @@ radxa-05  ─┬─  radxa-01  10.42.0.101:8787
 - Conductor は `python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0
   --speaker --speaker-output alsa --passcode … --port 8765` を systemd(`epaper-conductor.service`)
   が常時動かす。落ちても 10 秒で立ち上がる
-- **再起動しても続く**: Conductor が立ち上がると自分のワークスペースをコンパイルし、
-  **同じショー(同じ id)を持っていて絵が書き込み済み**の機体をそのまま「持っている」と
-  みなす(`Corrected automatically:` に `radxa-01: holds this show already (adopted after a
-  restart of the conductor)`)。機体がショーを走らせていればランも引き取り、Loop はその
-  ランの終わりから、または次の ③ START からまた回る。別のショーを持っている機体・
-  絵の無い機体は `… - Upload before START` と出るので **① Upload**。ただし **radxa-05 の
-  Conductor に送ったあと機体に Upload していない**なら、何も引き取るものが無い ― まず
-  ① Upload(5 章)
+- **Conductor だけの再起動なら続く**: Conductor が立ち上がると自分のワークスペースを
+  コンパイルし、**同じショー(同じ id)を持っていて絵が書き込み済み**(一部の基板が失敗した
+  `failed` も含む ― START の関門が判断する)の機体をそのまま「持っている」とみなす
+  (`Corrected automatically:` に `radxa-01: holds this show already (adopted after a restart of
+  the conductor)`)。機体がショーを走らせていればランも引き取り、Loop はそのランの終わりから、
+  または次の ③ START からまた回る。別のショーを持っている機体・絵の無い機体は
+  `… - Upload before START` と出るので **① Upload**。**引き取れるのは Conductor 側だけが
+  再起動したとき**: 機体ごと電源が落ちた(会場の停電・ブレーカー)あとは各機体のエージェントが
+  絵を `none`(再起動後は未書き込み)と報告するので、**radxa-05 の画面から ① Upload が必要**
+  (5 章)。radxa-05 の Conductor に送ったあとまだ Upload していないときも同じ
+- **Conductor は 1 台だけ**: PC の Conductor と radxa-05 の Conductor が同じネットワークで
+  同じ機体を見ると、互いの T0 を「補正」し合って喧嘩する。会場では PC の Conductor を閉じる
+  (事務所で radxa-05 に送るときも、送ったら PC 側は Units タブを開いたまま START しない)
 - 機体の割り当ては `/home/radxa/exhibition/fleet.json`(雛形 `radxa/exhibition/fleet.json`:
   `units`、`hotspot`(= radxa-05)、`passcode`)。radxa-05 自身は `127.0.0.1:8787`
 - ルータのネットワーク(192.168.51.x)と両方が見えるところでは、**radxa-01〜04・06〜10 は
@@ -97,16 +102,21 @@ sudo systemctl daemon-reload
 sudo systemctl enable epaper-exhibition-net
 ```
 
-`radxa/exhibition-net.sh` は起動時に **最長 30 秒、クライアントの Wi-Fi(ルータ)が
-自分で上がるのを待ち、上がらなければ `nmcli con up AZ-Epaper`** する(どちらでも
-journal に 1 行)。つまり **このサービスを有効にした状態 = 展示モードの武装**:
+`radxa/exhibition-net.sh` は起動時に **最長 90 秒、クライアントの Wi-Fi(ルータ)が
+自分で上がる(`activated`)のを待ち、上がらなければ `nmcli con up AZ-Epaper`** する
+(どちらでも journal に 1 行)。つまり **このサービスを有効にした状態 = 展示モードの武装**:
 
 - 事務所や、ルータを持ち込んだ会場 → radxa-05 は今までどおりルータのクライアント
-  (PC の Conductor から 192.168.51.105 で見える)
-- ルータの無い会場 → 30 秒後に radxa-05 がホットスポットになる
+  (PC の Conductor から 192.168.51.105 で見える)。「上がった」と数えるのは STATE が
+  `activated` のプロファイルだけ(つなぎに行って失敗したものは数えない)
+- ルータの無い会場 → 90 秒後に radxa-05 がホットスポットになる。**知っているルータの SSID が
+  スキャンに見えている間は最長 10 分待つ**(停電のあとルータの立ち上がりが遅くても負けない)
 - どちらでも LCD の **WIFI** 行でいつでも手で切り替えられる
-- 展示が終わったら `sudo systemctl disable epaper-exhibition-net` で武装解除(しなくても
-  ルータがあれば何も変わらない)
+- 展示が終わったら `sudo systemctl disable epaper-exhibition-net` で武装解除。有効のままでも
+  ルータが見えていれば radxa-05 はルータに入る ― **ただし、ルータと機体が一緒に停電した
+  あとルータが 10 分以上戻らないと、radxa-05 はホットスポットになり、ほかの機体もそちらに
+  落ちてくる**。戻すには radxa-05 の LCD の WIFI 行でルータを選ぶか、10.42.0.1:8765 の
+  Units タブで **All units → router in 20 s**
 
 > なぜ priority や autoconnect で決めないか: `AZ-Epaper` を autoconnect にすると事務所でも
 > ホットスポットとして立ち上がってルータに入らず、LCD の WIFI 行(再起動でクライアントに
@@ -131,18 +141,19 @@ sudo nmcli con down AZ-Epaper; sudo nmcli con up AZ-Epaper     # 読み直し(�
 ```bash
 mkdir -p /home/radxa/exhibition
 cp ~/E-paper_H_WALL_BRICKS_Raspi/radxa/exhibition/fleet.json /home/radxa/exhibition/fleet.json
-nano /home/radxa/exhibition/fleet.json      # "passcode" を決めて書き換える
+nano /home/radxa/exhibition/fleet.json      # "passcode" を決めて書き換える(必須)
+chmod 600 /home/radxa/exhibition/fleet.json
 ```
 
+**パスコードはこのファイルだけに置く**(サービスファイルには書かない ― `systemctl show` で
+見えてしまう)。`--host 0.0.0.0` の Conductor は、パスコードが無いか例の値
+`CHANGE-ME-2026` のままだと **起動を拒否**する(journal に `refusing to serve on 0.0.0.0: …`)。
 ショーの中身(CSV・タイムライン・音楽)はまだ空でよい。あとで PC から送る(4 章)。
 
 ### 2.4 サービスを入れて有効にする
 
-サービスファイルの `--passcode CHANGE-ME-2026` を fleet.json と同じ値に直してから:
-
 ```bash
 sudo cp ~/E-paper_H_WALL_BRICKS_Raspi/radxa/epaper-conductor.service /etc/systemd/system/epaper-conductor.service
-sudo nano /etc/systemd/system/epaper-conductor.service          # --passcode を直す
 sudo systemctl daemon-reload
 sudo systemctl enable --now epaper-conductor
 systemctl status epaper-conductor --no-pager
@@ -258,16 +269,23 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
 - **1 台が準備できないとき**(電源が落ちた、絵が消えた): Loop は ③ START と同じ理由で
   `Loop: the next run could not start yet — radxa-03: not answering` と出して 5 秒ごとに
   やり直し、**60 秒たっても揃わなければ揃った機体だけで次のランを始める**
-  (`started without radxa-03 …`)。その機体は直り次第また監視され、**次のランから戻る**。
-  1 着のために展示全体は止めない。Loop の再スタートは `force` を使わない(基板の書き込み
-  失敗を「それでも始める」と決めるのは人が ③ START を押すときだけ)
+  (`started without radxa-03 (not ready) - it joins this run as soon as it answers with the
+  show`)。その機体は監視されたままで、**ショーを持って答えた瞬間に走行中のランへ入る**
+  (`started late`)― 次のランを待たない。同じ理由のままなら次の再スタートでは 60 秒待たずに
+  すぐ外す(理由が変われば、また 60 秒待つ)。1 着のために展示全体は止めない。Loop の
+  再スタートは `force` を使わない(基板の書き込み失敗を「それでも始める」と決めるのは人が
+  ③ START を押すときだけ)
+- **会場で停電したら**: 機体は再起動すると絵を `none` と報告する(Conductor が引き取れるのは
+  Conductor だけの再起動のとき)。Units タブで **① Upload** → `written` → ③ START(Loop は
+  入ったまま)
 
 ## 6. 困ったとき
 
 | 症状 | 見るところ・対処 |
 |---|---|
 | 10.42.0.1:8765 が開かない | radxa-05 の電源。ホットスポットの SSID が見えるか(起動から 30 秒以上待つ)。見えなければ LCD の WIFI 行で `AZ-Epaper` を選ぶ。`ssh radxa@10.42.0.1` で `systemctl status epaper-conductor epaper-exhibition-net` |
-| パスコードを忘れた | radxa-05 の `/home/radxa/exhibition/fleet.json` と `/etc/systemd/system/epaper-conductor.service`。ブラウザで入れ直したいときは `localStorage` の `conductor.passcode` を消す(または別のブラウザ) |
+| パスコードを忘れた | radxa-05 の `/home/radxa/exhibition/fleet.json`(`sudo cat`)。ブラウザで入れ直したいときは `localStorage` の `conductor.passcode` を消す(または別のブラウザ) |
+| `epaper-conductor` が起動しない、journal に `refusing to serve on 0.0.0.0` | fleet.json の `"passcode"` が無い / 例の値のまま。2.3 |
 | 機体が offline | その機体の電源。`AZ-Epaper` に入っているか(LCD の上部バーの IP が 10.42.0.1NN か)。3 章のプロファイルが無い・番号違い。2.2 の予約に MAC が無い機体はスマホと番地がぶつかることがある |
 | 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。音量は 2.1 の `amixer` |
 | 音が絵より遅れる / 早い | `--speaker-lead-ms`(既定 50 = 測ったパイプ往復 + 50 ms 早くアンパウズ。**50 は当て推量**: クリック音源で一度測って決める)を service の ExecStart で変えて `daemon-reload` + `restart` |

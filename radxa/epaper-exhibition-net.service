@@ -1,16 +1,22 @@
 [Unit]
 Description=EXHIBITION mode: start the AZ-Epaper hotspot when no router is in reach (radxa-05 only)
-# radxa/exhibition-net.sh: waits up to 30 s for a client Wi-Fi profile to
-# come up on its own, otherwise `nmcli con up AZ-Epaper`. Enabling this
-# unit is "exhibition mode armed" - see radxa/EXHIBITION.md.
+# radxa/exhibition-net.sh: waits up to 90 s for a client Wi-Fi profile to
+# be ACTIVATED on its own (longer, up to 10 min, while a known router's
+# SSID is still visible), otherwise `nmcli con up AZ-Epaper`. Enabling
+# this unit is "exhibition mode armed" - see radxa/EXHIBITION.md.
 After=NetworkManager.service
 Wants=NetworkManager.service
-Before=epaper-conductor.service
+# Deliberately NOT Before=epaper-conductor.service: the Conductor binds
+# 0.0.0.0 and serves the LCD's own row at 127.0.0.1 whatever the Wi-Fi is
+# doing, and this script may wait minutes for a slow router.
 
 [Service]
 Type=oneshot
 ExecStart=/bin/bash /home/radxa/E-paper_H_WALL_BRICKS_Raspi/radxa/exhibition-net.sh
 RemainAfterExit=yes
+# The script may wait up to ~12 min for a slow router; systemd's default
+# oneshot timeout is infinite, this only says so.
+TimeoutStartSec=900
 
 [Install]
 WantedBy=multi-user.target

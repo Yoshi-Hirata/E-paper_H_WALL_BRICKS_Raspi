@@ -529,6 +529,18 @@ class FakeMpg123:
                 return
             if self.delay_s:
                 time.sleep(self.delay_s)
+            if getattr(self, "burst_on_next_p", False):
+                # The track ends in the same instant as this P: the EOF's
+                # own "@F ... 0" / "@P 1", then this P's "@P 2" / "@P 1"
+                # against the ended file - three @P lines in one burst.
+                self.burst_on_next_p = False
+                self.at_eof = True
+                self.state = 1
+                self._say("@F 323 0 7.75 0.00")
+                self._say("@P 1")
+                self._say("@P 2")
+                self._say("@P 1")
+                return
             if self.at_eof:
                 # Nothing left to play: "@P 2" and at once "@P 1" again.
                 self.p_at_eof = getattr(self, "p_at_eof", 0) + 1
@@ -1469,7 +1481,7 @@ def test_after_sixty_seconds_the_loop_starts_without_the_unit_that_is_not_ready(
     assert [name for name, _ in runs] == ["radxa-01"]
     state = fleet.loop_state()
     assert state["next_in_s"] is None
-    assert state["problem"].startswith("started without radxa-02 - not ready after 60 s")
+    assert state["problem"].startswith("started without radxa-02 (not ready)")
     assert sum("started without radxa-02" in l for l in fleet.corrections) == 1
     # The one that was left out is still supervised (it holds the show), and
     # the next end arms the loop for everybody again.
@@ -1684,3 +1696,238 @@ def test_reachable_urls_and_local_ipv4s_never_resolve_a_name(monkeypatch):
     assert urls[0] == "http://127.0.0.1:8765"
     assert all(not u.startswith("http://127.") for u in urls[1:])
     assert all(isinstance(a, str) and a.count(".") == 3 for a in srv.local_ipv4s())
+
+
+# ------------------------------------------------------------ review round 2 (53b9b6b+92cef21)
+
+def test_an_upload_withdraws_the_startup_offer():
+    """MED-1: a garment taken out of the timeline still holds the old
+    burned show; after an Upload it must not be adopted from it and sent
+    a START."""
+    clock = Clock()
+    old = {"radxa-01": {"id": "showA", "cues": [], "duration": 100.0},
+           "radxa-02": {"id": "showA", "cues": [], "duration": 100.0},
+           "radxa-03": {"id": "showA", "cues": [], "duration": 100.0}}
+    fleet = Fleet({}, clock=clock)
+    fleet.links = {n: StubLink(n, "loaded") for n in old}
+    for link in fleet.links.values():
+        link.status["show"].update(id="showA", burn={"state": "burned"})
+    fleet.offer_shows(old)
+    # The new timeline has no radxa-03; the Upload writes 01 and 02.
+    new = {"radxa-01": {"id": "showB", "cues": [], "duration": 90.0},
+           "radxa-02": {"id": "showB", "cues": [], "duration": 90.0}}
+    fleet.upload(new)
+    assert fleet._offered == {}
+    for link in fleet.links.values():
+        link.status["show"].update(id="showB", burn={"state": "burned"})
+    fleet.links["radxa-03"].status["show"].update(id="showA")
+    for link in fleet.links.values():
+        fleet._supervise(link)
+    assert set(fleet.shows) == {"radxa-01", "radxa-02"}
+    fleet.start_show(lead_s=1.0)
+    assert sorted(name for name, _ in _posted(fleet, "/show/run")) == ["radxa-01", "radxa-02"]
+    # Save on units drops the offer for units the compile no longer reaches.
+    fleet2 = Fleet({}, clock=clock)
+    fleet2.links = {n: StubLink(n, "loaded") for n in old}
+    fleet2.offer_shows(old)
+    fleet2.write_demo("DEMO", False, new)
+    assert set(fleet2._offered) == {"radxa-01", "radxa-02"}
+
+
+def test_an_offered_unit_not_adopted_yet_is_named_not_left_out():
+    """MED-2: while the offer is open the gate, the grace and 'started
+    without X' name a unit that has not come back; burn 'failed' adopts."""
+    clock = Clock()
+    compiled = {"radxa-01": {"id": "showA", "cues": [], "duration": 100.0},
+                "radxa-02": {"id": "showA", "cues": [], "duration": 100.0}}
+    fleet = Fleet({}, clock=clock, loop_settings=lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.links = {n: StubLink(n, "loaded") for n in compiled}
+    fleet.links["radxa-01"].status["show"].update(id="showA", burn={"state": "failed",
+                                                                     "failed": [[3, 1]], "total": 4})
+    fleet.links["radxa-02"].online = False          # still off after the restart
+    fleet.offer_shows(compiled)
+    fleet._supervise(fleet.links["radxa-01"])
+    assert set(fleet.shows) == {"radxa-01"}          # 'failed' is adopted...
+    assert sorted(fleet._targets()) == ["radxa-01", "radxa-02"]
+    with pytest.raises(ValueError) as refused:        # ...and the gate decides
+        fleet.start_show(lead_s=1.0)
+    assert "radxa-01: 1 of 4 pictures not written" in str(refused.value)
+    assert "radxa-02: not answering" in str(refused.value)
+    fleet.start_show(lead_s=1.0, force=True, skip={"radxa-02"})
+    # A run, and the Loop's restart: radxa-02 is named, never silent.
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    assert "radxa-02: not answering" in fleet.loop_state()["problem"]
+    # A command aimed at it while the offer is open is refused by name.
+    fleet.links["radxa-02"].online = True
+    results = fleet._send_run(["radxa-01", "radxa-02"])
+    assert results["radxa-01"]["ok"]
+    assert results["radxa-02"] == {"ok": False, "error": "has not taken this show yet"}
+
+
+def test_the_speakers_own_p_excuses_only_its_first_answer(tmp_path):
+    """MED-3: the track ends in the same instant as the show-end pause -
+    "@P 1" (EOF), then "@P 2" / "@P 1" from our P against the ended file.
+    The first line answers our P; the last one is the EOF."""
+    fake = FakeMpg123()
+    st = Stage(tmp_path, fake=fake, extra_lead_s=0.0)
+    st.speaker.start()
+    try:
+        st.wait_state("loaded")
+        clock = st.speaker._clock
+        st.duration = 0.3
+        st.run = {"t0": clock() - 0.05, "state": "running", "held_at": None}
+        st.wait_state("playing")
+        # The show ends: the speaker's P (want PAUSED) meets the burst.
+        fake.burst_on_next_p = True
+        st.wait_state("ended", timeout=2.0)
+        assert st.wait_for(lambda: fake.loads == 2, 3.0), fake.since()
+        assert st.speaker.error is None
+        # The next run has music from the top.
+        st.run = {"t0": clock() + 0.3, "state": "running", "held_at": None}
+        st.wait_state("armed")
+        st.wait_state("playing", timeout=2.0)
+        assert fake.state == 2 and fake.loads == 2
+    finally:
+        st.speaker.stop()
+
+
+def test_a_unit_skipped_for_an_unchanged_reason_is_skipped_at_once():
+    """MED-4: one 60 s grace per fault, not one per run; a new fault gets
+    its own grace; a START press forgets."""
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.start_show(lead_s=1.0)
+    fleet.links["radxa-02"].online = False
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()                                # refused: the grace starts
+    clock.now += 60.0
+    fleet._loop_tick()                                # the first grace ran out
+    assert fleet.run["loops"] == 1 and fleet._loop_skipped == {
+        "radxa-02": "radxa-02: not answering"}
+    assert "joins this run as soon as it answers" in fleet.loop_state()["problem"]
+    # Run 2 ends; radxa-02 is still off for the same reason: no second wait.
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    for link in fleet.links.values():
+        link.posted.clear()
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 2
+    assert [name for name, _ in _posted(fleet, "/show/run")] == ["radxa-01"]
+    # A different fault on it: the grace applies again.
+    fleet.links["radxa-02"].online = True
+    fleet.links["radxa-02"].status["show"]["burn"] = {"state": "none"}
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 2 and "Upload again" in fleet.loop_state()["problem"]
+    clock.now += 60.0
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 3
+    # A START press starts with a clean slate.
+    fleet.start_show(lead_s=1.0, skip={"radxa-02"})
+    assert fleet._loop_skipped == {}
+
+
+def test_a_conductor_open_to_other_hosts_refuses_without_a_real_passcode(tmp_path, capsys):
+    """MED-6."""
+    import conductor.server as srv
+
+    ws = Workspace(tmp_path / "ws")
+    monkey_free = {"already": lambda port: False}
+    real = srv.already_serving
+    srv.already_serving = monkey_free["already"]
+    try:
+        assert srv.serve(ws.root, port=0, host="0.0.0.0") == 2
+        out = capsys.readouterr().out
+        assert "refusing to serve on 0.0.0.0" in out and "no passcode" in out
+        assert "fleet.json" in out and "--passcode" in out
+        (ws.root / "fleet.json").write_text('{"passcode": "CHANGE-ME-2026"}', encoding="utf-8")
+        assert srv.serve(ws.root, port=0, host="0.0.0.0") == 2
+        out = capsys.readouterr().out
+        assert "example value" in out and "CHANGE-ME-2026" in out
+        assert srv.serve(ws.root, port=0, host="0.0.0.0",
+                         passcode="CHANGE-ME-2026") == 2
+        # Loopback needs none (the show PC as ever).
+        assert srv.passcode_problem("127.0.0.1", None) is None
+        assert srv.passcode_problem("localhost", "CHANGE-ME-2026") is None
+        assert srv.passcode_problem("0.0.0.0", "my-own") is None
+        assert srv.passcode_problem("10.42.0.1", "") is not None
+    finally:
+        srv.already_serving = real
+
+
+def test_a_cli_passcode_that_differs_from_fleet_json_is_warned_about(tmp_path, capsys, monkeypatch):
+    import conductor.server as srv
+
+    ws = Workspace(tmp_path / "ws")
+    (ws.root / "fleet.json").write_text('{"passcode": "stored"}', encoding="utf-8")
+    seen = {}
+
+    class Once(srv._Server):
+        def serve_forever(self, poll_interval=0.5):
+            seen["passcode"] = self.RequestHandlerClass.passcode
+
+    monkeypatch.setattr(srv, "_Server", Once)
+    monkeypatch.setattr(srv, "already_serving", lambda port: False)
+    assert srv.serve(ws.root, port=0, host="0.0.0.0", passcode="typed") == 0
+    out = capsys.readouterr().out
+    assert "warning: --passcode and" in out and "differ" in out
+    assert seen["passcode"] == "typed"
+    assert srv.serve(ws.root, port=0, host="0.0.0.0") == 0
+    assert "warning" not in capsys.readouterr().out and seen["passcode"] == "stored"
+
+
+def test_the_service_file_carries_no_passcode():
+    from pathlib import Path as _P
+    service = (_P(__file__).resolve().parents[1] / "radxa" / "epaper-conductor.service").read_text(encoding="utf-8")
+    assert "--passcode" not in service.split("ExecStart=")[1].split("\n")[0]
+    assert "--host 0.0.0.0" in service and "--speaker-output alsa" in service
+
+
+def test_the_passcode_cookie_counts_for_the_music_file_only(tmp_path):
+    ws = _workspace(tmp_path / "ws")
+    server = make_server(ws.root, port=0, fleet=Fleet({}), passcode="pc")
+    port = _serve(server)
+    handler = server.RequestHandlerClass
+    try:
+        handler.local_hosts = ()
+        cookie = {"Cookie": "passcode=pc"}
+        assert _get(port, "/api/music/file", cookie)[0] == 200
+        assert _get(port, "/api/show/export", cookie)[0] == 401
+        assert _post(port, "/api/loop", {"on": False}, cookie)[0] == 401
+        assert _post(port, "/api/loop", {"on": False}, {"X-Passcode": "pc"})[0] == 200
+    finally:
+        handler.local_hosts = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_truncated_import_leaves_no_spool_behind(tmp_path):
+    import http.client
+
+    server = make_server(tmp_path / "b", port=0, fleet=Fleet({}))
+    port = _serve(server)
+    root = server.RequestHandlerClass.workspace.root
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", "/api/workspace/import")
+        conn.putheader("Content-Type", "application/x-tar")
+        conn.putheader("Content-Length", "100000")
+        conn.endheaders()
+        conn.send(b"x" * 1000)                       # ...and stops
+        conn.close()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(
+                p.name.startswith(".import-") for p in root.iterdir()):
+            time.sleep(0.05)
+        assert not any(p.name.startswith(".import-") for p in root.iterdir())
+    finally:
+        server.shutdown()
+        server.server_close()
