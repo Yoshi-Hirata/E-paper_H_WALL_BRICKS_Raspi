@@ -33,6 +33,7 @@ from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
                       usb_rebind)
 from .versions import BoardVersions
 from .boardinfo import BoardInfo
+from .exhibition import Exhibition
 from .wifi import Wifi
 
 
@@ -176,6 +177,38 @@ def preview(directory: str) -> int:
                        status="ERROR Connection activation failed: No suitable "
                               "device found - back on yoshihirock.net_5G",
                        host="radxa-03").save(out / "wifi_failed.png")
+    render.wifi_screen("yoshihirock.net_5G", "IP 192.168.51.103  72%  client",
+                       nets, 0, "idle", status="switching to AZ-Epaper in 25 s",
+                       host="radxa-03").save(out / "wifi_pending.png")
+    show = ("AZ_show_2026", "18 cues · 10:54")
+    render.exhibition_screen(True, show, "idle", "units 7/7 online",
+                             "LOOP off", "speaker ok", "idle", host="radxa-05"
+                             ).save(out / "exhibition_idle.png")
+    render.exhibition_screen(True, show, "3:20 / 10:54 running",
+                             "units 7/7 online", "LOOP off", "speaker ok",
+                             "done", status="START in 11 s · 7/7 units",
+                             active=True, host="radxa-05"
+                             ).save(out / "exhibition_running.png")
+    render.exhibition_screen(True, show, "next run in 0:25",
+                             "units 6/7 online", "LOOP on", "speaker ok",
+                             "done", status="LOOP on", host="radxa-05"
+                             ).save(out / "exhibition_loop.png")
+    render.exhibition_screen(True, show, "countdown -0:11",
+                             "units 7/7 online", "LOOP off",
+                             "no speaker - no ALSA playback device",
+                             "sending", status="sending…", active=True,
+                             host="radxa-05").save(out / "exhibition_countdown.png")
+    render.exhibition_screen(True, ("AZ_show_2026", "18 cues · 10:54 · "
+                                                    "not uploaded"),
+                             "idle", "units 0/7 online", "loop ?",
+                             "speaker ?", "failed",
+                             status="ERROR Nothing uploaded yet - Upload "
+                                    "first.", host="radxa-05"
+                             ).save(out / "exhibition_refused.png")
+    render.exhibition_screen(False, ("", ""), "", "", "", "", "idle",
+                             status="no conductor: [Errno 111] Connection "
+                                    "refused", host="radxa-03"
+                             ).save(out / "exhibition_none.png")
     print(f"wrote preview screens to {out}")
     return 0
 
@@ -498,6 +531,11 @@ def main() -> int:
     # the screen and /status only ever read the cache.
     wifi = Wifi()
     wifi.start_reader()
+    # EXHIBITION's cache (ui/exhibition.py): its reader asks the Conductor
+    # on 127.0.0.1:8765 every ~30 s (~5 s while the screen is open); the
+    # menu label and the screen only ever read the cache.
+    exhibition = Exhibition()
+    exhibition.start_reader()
     host = socket.gethostname() or None
 
     remote = agent = demo_store = None
@@ -536,6 +574,7 @@ def main() -> int:
                       "updater": updater, "puller": puller, "host": host,
                       "versions": versions, "rebooter": rebooter,
                       "boardinfo": boardinfo, "wifi": wifi,
+                      "exhibition": exhibition,
                       "remote": remote,
                       "player": player if remote is not None else None,
                       "demos": demo_store}

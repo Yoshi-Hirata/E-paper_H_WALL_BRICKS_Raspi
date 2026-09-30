@@ -27,6 +27,16 @@ POLL_S - cheap D-Bus questions, no USB, and no scan (`dev wifi list
 or the LCD loop. Every nmcli call goes through one injectable runner,
 REBOOT's run_command, so the tests run against a fake and never touch
 the network of the machine they run on.
+
+The switch can also be asked for over the agent (ui/agent.py's POST
+/wifi/select), with a delay: the Conductor that sends the command is
+about to leave the network itself to become the hotspot, so it says
+"AZ-Epaper, in 30 s" and goes. schedule() keeps that on a timer thread;
+while it is pending the screen counts it down and refuses UP/DOWN and a
+held KEY1 ("switch pending"), KEY2 leaves it alone, and only a cancel
+over the same endpoint takes it back. When the timer fires the lock is
+asked AGAIN (the PC may have taken the unit meanwhile): a refused
+switch is logged and skipped, never run.
 """
 
 from __future__ import annotations
@@ -49,6 +59,8 @@ LOCKED = "locked"            # the PC drives the unit: nothing was done
 
 WIRELESS = "802-11-wireless"
 LOCKED_NOTE = "PC show running - WIFI locked"
+PENDING_NOTE = "switch pending"      # the list is refused while one counts down
+MAX_AFTER_S = 120.0                  # /wifi/select's longest deferral
 
 LIST_COMMAND = ["nmcli", "-t", "-f", "NAME,TYPE,ACTIVE,AUTOCONNECT",
                 "con", "show"]
@@ -153,13 +165,21 @@ class Wifi:
         self.previous: "str | None" = None
         self.error: "str | None" = None
         self.restored: "bool | None" = None   # FAILED: previous back up?
+        # A switch asked for over /wifi/select with a delay: (profile
+        # name, due time in time.monotonic()) while it counts down.
+        self.pending: "tuple[str, float] | None" = None
+        self._timer: "threading.Timer | None" = None
+        self._pending_gen = 0
+        self._pending_args: tuple = (0, "", None)   # (gen, name, allowed)
         self.log: deque = deque(maxlen=LOG_HISTORY)
-        self._lock = threading.Lock()         # cache, log
+        self._lock = threading.Lock()         # cache, log, pending
         self._poll_lock = threading.Lock()    # one poll at a time
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._reader: "threading.Thread | None" = None
         self._thread: "threading.Thread | None" = None
+
+    PENDING_NOTE = PENDING_NOTE
 
     # ---- facts for the screen ----
 
@@ -227,6 +247,14 @@ class Wifi:
         target = self.target
         if self.phase == CONNECTING:
             return f"connecting to {target.ssid if target else '?'}…"
+        pending = self.pending_info()
+        if pending is not None:
+            # A deferred /wifi/select counting down. A refused key on
+            # the list says why first.
+            text = f"switching to {pending['profile']} in {pending['in_s']} s"
+            if self.phase == LOCKED and self.error:
+                return f"{self.error} - {text}"
+            return text
         if self.phase == DONE:
             return f"on {target.ssid}" if target else ""
         if self.phase == FAILED:
@@ -246,9 +274,108 @@ class Wifi:
         with self._lock:
             state = tuple(self.state[k] for k in WIFI_BLANK)
             profiles = tuple(self.profiles)
+        pending = self.pending_info()
         return (self.phase, self.choice, profiles, state, self.error,
                 self.restored, self.read_state, self.read_error,
-                None if self.target is None else self.target.name)
+                None if self.target is None else self.target.name,
+                None if pending is None else (pending["profile"],
+                                              pending["in_s"]))
+
+    # ---- a switch asked for over the agent, later ----
+
+    def pending_info(self) -> "dict | None":
+        """/status.wifi's "pending": {"profile", "in_s"} while a deferred
+        switch counts down, else None."""
+        with self._lock:
+            pending = self.pending
+        if pending is None:
+            return None
+        name, due = pending
+        return {"profile": name,
+                "in_s": max(0, int(round(due - time.monotonic())))}
+
+    def names(self) -> "list[str]":
+        with self._lock:
+            return [p.name for p in self.profiles]
+
+    def switch_to(self, name: str) -> bool:
+        """Bring the named profile up (the agent's path into switch()):
+        the cursor moves onto it first, so the screen shows what is
+        happening. False when no such profile is in the list."""
+        with self._lock:
+            for index, profile in enumerate(self.profiles):
+                if profile.name == name:
+                    self.choice = index
+                    break
+            else:
+                return False
+        self.switch()
+        return True
+
+    def schedule(self, name: str, after_s: float, allowed=None) -> None:
+        """Switch to `name` in `after_s` seconds, on a timer thread. A
+        pending deferral is replaced. `allowed` (-> refusal note or
+        None) is asked again when the timer fires - the PC may have
+        taken the unit meanwhile - and a refused switch is skipped and
+        logged, never run."""
+        timer = threading.Timer(after_s, self._fire_scheduled)
+        timer.daemon = True
+        with self._lock:
+            old = self._timer
+            self._pending_gen += 1
+            gen = self._pending_gen
+            self.pending = (name, time.monotonic() + after_s)
+            self._timer = timer
+            self._pending_args = (gen, name, allowed)
+        if old is not None:
+            old.cancel()
+        self.emit(f"wifi: switch to {name} in {after_s:g} s")
+        timer.start()
+
+    def cancel_pending(self) -> bool:
+        """Take a deferred switch back; True when there was one."""
+        with self._lock:
+            timer, self._timer = self._timer, None
+            pending, self.pending = self.pending, None
+            self._pending_gen += 1          # a fire already racing is void
+        if timer is not None:
+            timer.cancel()
+        if pending is not None:
+            self.emit(f"wifi: switch to {pending[0]} cancelled")
+            if self.phase == LOCKED and self.error == PENDING_NOTE:
+                self.reset()
+        return pending is not None
+
+    def _fire_scheduled(self) -> None:
+        with self._lock:
+            gen, name, allowed = self._pending_args
+            if gen != self._pending_gen or self.pending is None:
+                return                      # cancelled or replaced meanwhile
+            self.pending = None
+            self._timer = None
+        if self.phase == LOCKED and self.error == PENDING_NOTE:
+            self.reset()                    # the countdown's own refusals
+        note = None
+        if allowed is not None:
+            try:
+                note = allowed()
+            except Exception as exc:        # noqa: BLE001 - a doubt is a no
+                note = str(exc) or exc.__class__.__name__
+        if note:
+            self.emit(f"wifi: switch to {name} skipped - {note}", error=True)
+            self.refuse(f"{note} - switch to {name} skipped")
+            return
+        if self.busy:
+            self.emit(f"wifi: switch to {name} skipped - a switch is in "
+                      "flight", error=True)
+            return
+        if not self.switch_to(name):
+            self.emit(f"wifi: switch to {name} skipped - no such profile",
+                      error=True)
+            self.phase = FAILED
+            self.error = f"no such profile: {name}"
+            self.target = None
+            self.restored = None
 
     # ---- the list ----
 

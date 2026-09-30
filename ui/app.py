@@ -53,7 +53,31 @@ also while a switch is in flight (it keeps running). Refused with
 "PC show running - WIFI locked" exactly when a demo row's KEY1 is
 refused (_pc_show_wins()). The runner, the port and the boards are
 never touched; the row order is UPDATE FW, FW VERSION, GIT PULL,
-REBOOT, WIFI, BOARD INFO.
+REBOOT, WIFI, EXHIBITION, BOARD INFO. The show PC (or the Conductor on
+radxa-05, before it leaves the network to become the hotspot) can also
+ask for a switch over the agent - POST /wifi/select, with a delay - and
+while that deferral is pending the WIFI screen counts it down
+("switching to AZ-Epaper in 25 s"); UP/DOWN and a held KEY1 are then
+refused with "switch pending", and KEY2 goes back without cancelling
+it (only /wifi/select {"cancel": true} does).
+
+EXHIBITION (ui/exhibition.py, the row after WIFI) runs the show from
+the unit that IS the Conductor - radxa-05 at an exhibition without a
+PC. The row reads `EXHIBITION  (no conductor)` on a unit where nothing
+answers on 127.0.0.1:8765 (a reader thread asks every ~30 s, ~5 s while
+the screen is open - the HAT loop never waits on HTTP), and its screen
+then only says so. With a Conductor: the timeline's name and length,
+the run (`idle`, `countdown -0:11`, `0:00 / 10:54 running`, `hold`,
+`ended`, `next run in 0:25` while LOOP waits), `units 7/7 online`,
+`LOOP on/off`, `speaker ok / no speaker`. KEY1 *held* is START when
+idle and STOP while a run or its countdown exists (the REBOOT gesture;
+a plain press does nothing), KEY3 *held* toggles LOOP, UP/DOWN only
+read a verdict away (the Conductor has one timeline; there is nothing
+to choose), and KEY2 goes back to the menu - the show keeps running,
+the Conductor owns it. Every command goes on a worker thread; the
+screen reads `sending…` and then the Conductor's answer or its
+refusal, verbatim. A held KEY3 anywhere else blanks the screen, as a
+plain KEY3 does.
 
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
@@ -144,6 +168,7 @@ class Screen(Enum):
     PULL = "pull"
     REBOOT = "reboot"
     WIFI = "wifi"
+    EXHIBITION = "exhibition"
     REMOTE = "remote"
     DEMO = "demo"
 
@@ -167,7 +192,7 @@ class App:
                  clock=time.monotonic, updater=None, puller=None,
                  host: str | None = None, versions=None, rebooter=None,
                  remote=None, player=None, demos=None, boardinfo=None,
-                 wifi=None):
+                 wifi=None, exhibition=None):
         self.display = display
         self.inputs = inputs
         self.runner = runner or DemoRunner()
@@ -193,6 +218,11 @@ class App:
         self.wifi = wifi
         if wifi is not None:
             self.patterns.append(wifi.menu_entry)
+        # EXHIBITION (ui/exhibition.py) follows WIFI: a client of the
+        # Conductor on this unit, nothing on the port or the boards.
+        self.exhibition = exhibition
+        if exhibition is not None:
+            self.patterns.append(exhibition.menu_entry)
         # BOARD INFO is the last row, so GIT PULL and REBOOT keep theirs.
         # It reads FW through `versions` (the same worker, so its scan
         # already counts in remote.busy below).
@@ -307,6 +337,15 @@ class App:
         if event == "key3":
             self._blank()
             return
+        if event == "key3_hold":
+            # Only EXHIBITION gives the hold a meaning (LOOP on/off).
+            # Anywhere else a KEY3 held too long still blanks the
+            # screen - the short press was suppressed by the hold.
+            if self.screen is Screen.EXHIBITION:
+                self._handle_exhibition(event)
+            else:
+                self._blank()
+            return
 
         if self.screen is Screen.UPDATE:
             self._handle_update(event)
@@ -325,6 +364,9 @@ class App:
             return
         if self.screen is Screen.WIFI:
             self._handle_wifi(event)
+            return
+        if self.screen is Screen.EXHIBITION:
+            self._handle_exhibition(event)
             return
         if self.screen is Screen.REMOTE:
             if event == "key2":
@@ -447,6 +489,18 @@ class App:
                 self.screen = Screen.MENU
                 self._dirty = True
             return
+        if wifi.pending is not None:
+            # A switch the Conductor (or the PC) asked for over
+            # /wifi/select is counting down: the list is not for
+            # choosing now, and KEY2 leaves it pending - only another
+            # /wifi/select {"cancel": true} takes it back.
+            if event in ("up", "down", "left", "right", "key1_hold"):
+                wifi.refuse(wifi.PENDING_NOTE)
+            elif event == "key2":
+                wifi.reset()
+                self.screen = Screen.MENU
+            self._dirty = True
+            return
         if event in ("up", "left"):
             wifi.select(-1)
         elif event in ("down", "right"):
@@ -464,6 +518,42 @@ class App:
                 wifi.switch()
         elif event == "key2":
             wifi.reset()
+            self.screen = Screen.MENU
+        self._dirty = True
+
+    def _handle_exhibition(self, event: str) -> None:
+        exhibition = self.exhibition
+        if not exhibition.available:
+            # No Conductor here: the screen is a note, KEY2 the way out.
+            if event == "key2":
+                exhibition.close()
+                self.screen = Screen.MENU
+                self._dirty = True
+            return
+        if exhibition.busy:
+            # The command completes on its thread; only KEY2 is heard.
+            if event == "key2":
+                exhibition.close()
+                self.screen = Screen.MENU
+                self._dirty = True
+            return
+        if event in ("up", "down", "left", "right"):
+            # The Conductor has one timeline - nothing to choose between.
+            # Moving reads a verdict away, as on the WIFI list.
+            exhibition.reset()
+        elif event == "key1_hold":
+            # The hold is START while idle and STOP while a run or its
+            # countdown exists - the REBOOT gesture: a plain press does
+            # nothing on a screen that can start a show on ten units.
+            if exhibition.active:
+                exhibition.stop()
+            else:
+                exhibition.start()
+        elif event == "key3_hold":
+            exhibition.toggle_loop()
+        elif event == "key2":
+            # Back to the menu; the run is the Conductor's and goes on.
+            exhibition.close()
             self.screen = Screen.MENU
         self._dirty = True
 
@@ -550,6 +640,14 @@ class App:
         self.wifi.refresh()
         self.wifi.select_active()
         self.screen = Screen.WIFI
+        self._dirty = True
+
+    def _enter_exhibition(self) -> None:
+        # Nothing on the port either: the Conductor drives the units over
+        # HTTP, this unit's own included. open() polls right away (on the
+        # reader's thread) and reads the show's name once.
+        self.exhibition.open()
+        self.screen = Screen.EXHIBITION
         self._dirty = True
 
     def _enter_pull(self) -> None:
@@ -908,6 +1006,9 @@ class App:
         if self.patterns[self.selected].key == "wifi":
             self._enter_wifi()
             return
+        if self.patterns[self.selected].key == "exhibition":
+            self._enter_exhibition()
+            return
         if self.patterns[self.selected].key == "standby":
             # The top menu entry is not a looping demo. One shot of the
             # boot standby - every sector white, every board probed -
@@ -1021,6 +1122,13 @@ class App:
             return render.wifi_screen(
                 ssid, info, wifi.rows(), wifi.choice, wifi.phase,
                 status=wifi.status_text(), locked=self.locked, host=self.host)
+        if self.screen is Screen.EXHIBITION:
+            ex = self.exhibition
+            return render.exhibition_screen(
+                ex.available, ex.show_lines(), ex.run_text(), ex.fleet_text(),
+                ex.loop_text(), ex.speaker_text(), ex.phase,
+                status=ex.status_text(), active=ex.active,
+                locked=self.locked, host=self.host)
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",
@@ -1114,7 +1222,13 @@ class App:
                         self.locked)
             if self.screen is Screen.WIFI:
                 return ("wifi", self.wifi.key(), self.locked)
-            return ("menu", self._standby_status())
+            if self.screen is Screen.EXHIBITION:
+                return ("exhibition", self.exhibition.key(), self.locked)
+            # The EXHIBITION row's label follows its cache ("(no
+            # conductor)" or not), so the menu repaints when that flips.
+            return ("menu", self._standby_status(),
+                    None if self.exhibition is None
+                    else self.exhibition.available)
         return (int(self.runner.elapsed), self.runner.cycle,
                 self.runner.caption,
                 tuple(self.runner.recent(LOG_LINES)),

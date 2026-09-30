@@ -39,9 +39,12 @@ BUTTON_PINS = {
 
 # Holding KEY1 this long resets the demo instead of pausing it. The hold
 # is reported as its own event and suppresses the short press, so one
-# press never does both.
+# press never does both. KEY3 reports a hold the same way (EXHIBITION's
+# LOOP toggle, 2026-09-30); its short press - blank the screen - is
+# therefore reported on release rather than on the press.
 KEY1_HOLD_S = 1.0
-EVENTS = tuple(BUTTON_PINS) + ("key1_hold",)
+HOLD_EVENTS = {"key1": KEY1_HOLD_S, "key3": KEY1_HOLD_S}
+EVENTS = tuple(BUTTON_PINS) + ("key1_hold", "key3_hold")
 
 # --- UI behaviour ---
 # Input poll interval. Redraws are separate and only happen when the
