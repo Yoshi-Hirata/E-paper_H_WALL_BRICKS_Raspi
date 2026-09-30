@@ -1241,7 +1241,9 @@ class App:
                 ex.available, ex.show_lines(), ex.run_text(), ex.fleet_text(),
                 ex.loop_text(), ex.speaker_text(), ex.phase,
                 status=ex.status_text(), active=ex.active,
-                locked=self.locked, host=self.host)
+                locked=self.locked, host=self.host,
+                volume_keys=ex.available and ex.speaker_available()
+                and ex.volume_supported())
         pattern = self.runner.pattern
         return render.running_screen(
             pattern.label if pattern else "-",

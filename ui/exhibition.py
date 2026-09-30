@@ -138,6 +138,17 @@ def _why(exc: BaseException) -> str:
     return _first_line(text) or exc.__class__.__name__
 
 
+def _percent(value) -> "int | None":
+    """A volume as the screen shows it: an int 0-100, or None for
+    anything that is not a finite number (a bool, a string, NaN - the
+    HAT loop must never raise on what a Conductor sent)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    return max(0, min(100, int(value)))
+
+
 def format_clock(seconds: float) -> str:
     """m:ss (the Conductor's page format), never negative."""
     total = max(0, int(seconds))
@@ -355,12 +366,13 @@ class Exhibition:
         if not isinstance(speaker, dict) or "available" not in speaker:
             return "speaker ?"
         if speaker.get("available"):
-            volume = speaker.get("volume")
-            if not isinstance(volume, (int, float)) or isinstance(volume, bool):
+            volume = _percent(speaker.get("volume"))
+            if volume is None:
                 return "speaker ok · vol ?"
-            text = f"speaker ok · vol {int(volume)}%"
-            if speaker.get("applied"):
-                text += f" ({speaker['applied']})"
+            text = f"speaker ok · vol {volume}%"
+            applied = speaker.get("applied")
+            if isinstance(applied, str) and applied:
+                text += f" ({_first_line(applied)})"
             return text
         error = _first_line(speaker.get("error") or "")
         return f"no speaker - {error}" if error else "no speaker"
@@ -412,11 +424,12 @@ class Exhibition:
 
     def reset(self) -> None:
         """A verdict was read (UP/DOWN, or the screen re-opened)."""
-        if self.busy:
-            return
-        self.phase = IDLE
-        self.command = None
-        self.note = ""
+        with self._lock:
+            if self.phase == SENDING:
+                return
+            self.phase = IDLE
+            self.command = None
+            self.note = ""
 
     # ---- the reader ----
 
@@ -522,9 +535,10 @@ class Exhibition:
         if not self.available or not self.speaker_available():
             return
         if not self.volume_supported():
-            if not self.busy:
-                self.phase = DONE
-                self.note = VOLUME_UNSUPPORTED
+            with self._lock:
+                if self.phase != SENDING:
+                    self.phase = DONE
+                    self.note = VOLUME_UNSUPPORTED
             return
         with self._lock:
             if self._volume_inflight:
@@ -587,34 +601,40 @@ class Exhibition:
             self._volume_verdict(f"ERROR volume: {_first_line(payload['error'])}",
                                  error=True)
             return
-        volume = payload.get("volume")
-        self._volume_verdict(f"vol {int(volume)}%" if isinstance(volume, (int, float))
-                             else "volume set")
+        volume = _percent(payload.get("volume"))
+        self._volume_verdict("volume set" if volume is None else f"vol {volume}%")
 
     def _volume_verdict(self, note: str, error: bool = False) -> None:
-        # The speaker line is what really shows the result; the note
-        # only when no START/STOP/LOOP verdict is in flight or waiting.
+        # The speaker line is what really shows the result. The note and
+        # the phase are written only while no START/STOP/LOOP command is
+        # in flight - checked and written under the lock, so a volume
+        # answer landing mid-START can never turn SENDING into DONE and
+        # reopen the key gate (review of 7c68f87, MED-1).
         self.emit(note, error=error)
-        if self.busy:
-            return
-        self.note = note
-        self.phase = FAILED if error else DONE
+        with self._lock:
+            if self.phase == SENDING:
+                return
+            self.note = note
+            self.phase = FAILED if error else DONE
 
     def _send(self, command: str, path: str, body: dict) -> None:
-        if self.busy:
-            return
-        self.phase = SENDING
-        self.command = command
-        self.note = ""
+        with self._lock:
+            if self.phase == SENDING:
+                return
+            self.phase = SENDING
+            self.command = command
+            self.note = ""
         try:
             self._thread = threading.Thread(target=self._command,
                                             args=(command, path, body),
                                             daemon=True, name="exhibition-cmd")
             self._thread.start()
         except Exception as exc:            # noqa: BLE001 - never stuck SENDING
-            self.note = f"ERROR could not start: {_first_line(str(exc))}"
-            self.emit(self.note, error=True)
-            self.phase = FAILED
+            note = f"ERROR could not start: {_first_line(str(exc))}"
+            self.emit(note, error=True)
+            with self._lock:
+                self.note = note
+                self.phase = FAILED
 
     def join(self, timeout: "float | None" = None) -> None:
         thread = self._thread
@@ -640,9 +660,10 @@ class Exhibition:
         # screen that says DONE already shows the countdown (or, after
         # a failure, that the Conductor is gone).
         self.poll()
-        self.note = note
         self.emit(note, error=phase == FAILED)
-        self.phase = phase
+        with self._lock:
+            self.note = note
+            self.phase = phase
 
     def _describe(self, command: str, payload) -> str:
         if not isinstance(payload, dict):
