@@ -126,9 +126,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .config import WIFI_FIELDS
 from .remote import DEV_NUMBER_BRAND, RemoteError, RemoteSession
 from .showplay import HOLDING, LOADED, RUNNING
-from .wifi import WIFI_BLANK
 
 DEFAULT_PORT = 8787
 MAX_BODY = 4 * 1024 * 1024      # a show: cues x boards x 2 x 128 hex chars
@@ -343,11 +343,11 @@ class Agent:
         # The reader's cache, copied - never a question to nmcli here,
         # and never an exception out of /status.
         if self.wifi is None:
-            return dict(WIFI_BLANK)
+            return dict.fromkeys(WIFI_FIELDS)
         try:
             return self.wifi.snapshot()
         except Exception:               # noqa: BLE001 - nulls are an answer
-            return dict(WIFI_BLANK)
+            return dict.fromkeys(WIFI_FIELDS)
 
     def start(self) -> int:
         """Serve in a daemon thread; returns the port actually bound."""

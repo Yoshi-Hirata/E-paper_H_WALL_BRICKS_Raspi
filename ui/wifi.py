@@ -15,10 +15,18 @@ REBOOT gesture - a plain press does nothing here, a knock must never
 move a unit off its network) runs `sudo -n nmcli --wait 45 con up
 <name>` on a thread of its own. Success shows the new SSID and address;
 a refusal shows nmcli's first line and brings the previous profile back
-up, so a wrong choice cannot strand a unit out of reach. Profiles are
-never created, modified or deleted here, autoconnect is never touched,
-nothing is written under /etc: the row only chooses among what the
-setup left on the unit (radxa/README.md).
+up, so a choice nmcli itself rejects (no such network in reach, a
+profile that does not fit the device) leaves the unit where it was. A
+choice nmcli accepts is kept, reachable or not: a unit moved onto a
+hotspot that is then switched off is only reached from its own LCD (or
+by a reboot) - so at an exhibition radxa-05 is switched first, the
+others after it. Profiles are never created, modified or deleted here,
+autoconnect is never touched, nothing is written under /etc: the row
+only chooses among what the setup left on the unit (radxa/README.md),
+and the choice lasts until the next reboot - then autoconnect decides
+again, which on every unit means the router's profile (AZ-Epaper is
+autoconnect=no; radxa-05's hotspot in particular has to be raised again
+by hand after a power cycle).
 
 Everything shown comes from a cache. A daemon thread asks nmcli every
 POLL_S - cheap D-Bus questions, no USB, and no scan (`dev wifi list
@@ -37,7 +45,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-from .config import LOG_HISTORY
+from .config import LOG_HISTORY, WIFI_FIELDS
 from .rebooter import run_command
 from .updater import MenuEntry
 
@@ -70,8 +78,8 @@ POLL_S = 10.0
 MAX_PROFILES = 8             # rows asked about per poll; the screen fits 5
 
 # What /status serves when nothing has been read (or nmcli is missing).
-WIFI_BLANK = {"ssid": None, "ip": None, "signal": None, "mode": None,
-              "profile": None}
+# The keys live in ui/config.py so the agent needs nothing from here.
+WIFI_BLANK = dict.fromkeys(WIFI_FIELDS)
 
 _MODES = {"infrastructure": "client", "": "client", "ap": "hotspot"}
 
@@ -230,11 +238,17 @@ class Wifi:
         if self.phase == DONE:
             return f"on {target.ssid}" if target else ""
         if self.phase == FAILED:
-            text = f"ERROR {self.error or 'nmcli refused'}"
-            if self.previous and self.restored is not None:
-                text += (f" - back on {self.previous}" if self.restored
-                         else f" - {self.previous} NOT restored")
-            return text
+            # The restore's outcome first: it is the one thing the
+            # operator must not miss, and nmcli's own sentence behind it
+            # can run past the three lines the screen gives this.
+            error = self.error or "nmcli refused"
+            if self.previous is None:
+                return f"ERROR no previous network to go back to: {error}"
+            if self.restored is None:       # no restore was even tried
+                return f"ERROR {self.previous} not restored: {error}"
+            if self.restored:
+                return f"ERROR back on {self.previous}: {error}"
+            return f"ERROR {self.previous} NOT restored: {error}"
         if self.phase == LOCKED:
             return self.error or LOCKED_NOTE
         if self.read_state == "error" and self.state["profile"] is not None:
@@ -318,27 +332,32 @@ class Wifi:
 
     def poll(self) -> None:
         """One refresh of the cache, on the caller's thread (the reader's,
-        normally; a test's). Never raises: what nmcli would not say is
-        null, and the last error is kept for the screen."""
+        normally; a test's). Never raises. A read nmcli refuses (a busy
+        D-Bus, a restart of NetworkManager) keeps the last good answer
+        and notes the error for the screen; only a read that went
+        through replaces the cache - so /status does not flicker to
+        nulls on a hiccup, and a first read that fails leaves nulls."""
         with self._poll_lock:
             error = None
-            profiles: "list[Profile]" = []
+            profiles = state = None
             try:
                 profiles = self._read_profiles()
             except Exception as exc:        # noqa: BLE001 - shown, not raised
                 error = _first_line(str(exc)) or exc.__class__.__name__
-            state = dict(WIFI_BLANK)
             try:
-                state = self._read_state(profiles)
+                state = self._read_state(profiles if profiles is not None
+                                         else self.profiles)
             except Exception as exc:        # noqa: BLE001
                 error = error or _first_line(str(exc)) or exc.__class__.__name__
             with self._lock:
-                before = self.profiles
-                self.profiles = profiles
-                self.state = state
+                if profiles is not None:
+                    before = self.profiles
+                    self.profiles = profiles
+                    self._keep_choice(before)
+                if state is not None:
+                    self.state = state
                 self.read_error = error
                 self.read_state = "error" if error else "read"
-                self._keep_choice(before)
 
     def _read_profiles(self) -> "list[Profile]":
         found = []
@@ -411,6 +430,10 @@ class Wifi:
                 except ValueError:
                     pass
                 break
+        if state["mode"] == "hotspot":
+            # A hotspot has no signal of its own; whatever the list said
+            # (some builds put the AP itself there at 100) is not one.
+            state["signal"] = None
         return state
 
     # ---- the switch ----
@@ -423,6 +446,14 @@ class Wifi:
         self.error = None
         self.target = None
         self.restored = None
+
+    def reopen(self) -> None:
+        """The screen is opened again (App._enter_wifi). A FAILED verdict
+        stays until it is read - the operator may have left during the
+        switch (KEY2 is allowed then) and must find out what became of
+        it; DONE, LOCKED and the plain list start clean."""
+        if self.phase != FAILED:
+            self.reset()
 
     def refuse(self, note: str = LOCKED_NOTE) -> None:
         """The App's answer while the PC drives the unit: said, not done."""
@@ -451,10 +482,15 @@ class Wifi:
             return
         self.previous = self.snapshot()["profile"]
         self.phase = CONNECTING
-        self._thread = threading.Thread(target=self._switch,
-                                        args=(target, self.previous),
-                                        daemon=True, name="wifi-switch")
-        self._thread.start()
+        try:
+            self._thread = threading.Thread(target=self._switch,
+                                            args=(target, self.previous),
+                                            daemon=True, name="wifi-switch")
+            self._thread.start()
+        except Exception as exc:            # noqa: BLE001 - never stuck CONNECTING
+            self.error = f"could not start: {exc}"
+            self.emit(self.error, error=True)
+            self.phase = FAILED
 
     def join(self, timeout: "float | None" = None) -> None:
         thread = self._thread
@@ -470,6 +506,18 @@ class Wifi:
             return 1, str(exc) or exc.__class__.__name__
 
     def _switch(self, target: Profile, previous: "str | None") -> None:
+        # Whatever happens on this thread, the screen must not stay on
+        # CONNECTING: an exception nobody foresaw becomes a FAILED verdict.
+        try:
+            self._switch_body(target, previous)
+        except Exception as exc:            # noqa: BLE001 - shown, not raised
+            self.error = self.error or _first_line(str(exc)) or exc.__class__.__name__
+            self.emit(self.error, error=True)
+        finally:
+            if self.phase == CONNECTING:
+                self.phase = FAILED
+
+    def _switch_body(self, target: Profile, previous: "str | None") -> None:
         self.emit(f"wifi: con up {target.name}")
         code, output = self._up(target.name)
         if code == 0:

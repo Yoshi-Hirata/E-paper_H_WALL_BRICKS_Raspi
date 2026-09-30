@@ -69,3 +69,7 @@ RELOCK_AFTER_S = 60.0
 
 # How often to pet systemd's watchdog (WatchdogSec must be well above).
 WATCHDOG_PERIOD_S = 5.0
+
+# /status's "wifi" (ui/wifi.py fills it, ui/agent.py serves it): the
+# keys, so the agent can answer all-null without importing the worker.
+WIFI_FIELDS = ("ssid", "ip", "signal", "mode", "profile")

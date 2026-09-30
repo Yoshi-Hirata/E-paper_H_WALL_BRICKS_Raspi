@@ -180,8 +180,19 @@ CLI からは `host/ota.py FW/FW_260903/OTA_16c.bin --addr auto` で同じ
    処理後に削除される。`/config` は 16 MB の FAT パーティションで、
    **イメージを書いた直後の microSD を Windows で開いて置ける**
 2. **`epaper-firstboot.service`**(`radxa/firstboot.sh`、rsetup の後に毎起動
-   実行、冪等): ホスト名が `radxa-NN` なら Wi-Fi プロファイルの IPv4 を
-   導出値に合わせる。すでに一致していれば何もしない
+   実行、冪等): ホスト名が `radxa-NN` なら**ルータ用の** Wi-Fi プロファイルの
+   IPv4 を導出値に合わせる。すでに一致していれば何もしない。
+   **展示用プロファイル `AZ-Epaper`(2026-09-30、スクリプト先頭の `EXPO_SSID`)は
+   対象外**: radxa-05 ではホットスポット(`802-11-wireless.mode ap` /
+   `ipv4.method shared`)、他機ではそれに乗るクライアント(10.42.0.x)で、
+   どちらも `192.168.51.1NN` にしてはならない。無線プロファイルが複数あると
+   Wi-Fi が上がる前の `nmcli connection show` はアルファベット順なので
+   「最初の 1 つ」は取らず、mode/method/名前/SSID で展示用を除いた残りのうち
+   有効なもの、無ければ最初のものを選ぶ。`connection up` は選んだプロファイルが
+   いま有効なもの(または無線が何も有効でない)ときだけ ―― このスクリプトが
+   機体を今いるネットワークから動かすことはない。どのネットワークに乗るかは
+   起動時は autoconnect(= ルータ。`AZ-Epaper` は autoconnect=no)、その後は
+   LCD の WIFI 行が決める(docs/SPECIFICATION.md「Wi-Fi の切り替え」)
 
 ### ゴールデンイメージの作り方
 
