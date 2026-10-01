@@ -1196,11 +1196,15 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   押し切った機体はその機体だけ引き継ぐ**(2026-10-01、radxa-10 の 1 枚死んだ基板で Loop が
   run 1 で止まった): forced START のとき機体ごとの焼き込み失敗(失敗した (board, slot)、理由、
   total)を覚え(`_waved`)、再開時に**同じまま**の機体だけ `forced_units` として関門を通し
-  `/show/run` に `force: true`(`run["forced"]`)、corrections に 1 回
-  `radxa-10: started again with the operator's 'start anyway' (same N boards)`。失敗が変わった
+  `/show/run` に `force: true`(`run["forced"]`)、corrections には**押し切る機体の集合が
+  変わったときだけ** `radxa-10: started again with the operator's 'start anyway' (same N boards)`
+  (毎ランではない ― 20 行のバッファが埋まる)。再開のとき offline だった機体は署名が取れず
+  外れるが、ラン途中で戻ったときの supervision の `/show/run` は署名を見直して同じ失敗なら
+  `force: true`(`_rejoin_force`)― そのランじゅう断られない。署名にはショー id も入る
+  (別のコンパイルの救済 Upload は引き継がない)。失敗が変わった
   (基板が増えた、理由が違う)機体は押し切らず、通常の 60 秒猶予 / `started without X` へ。
   素の START のあとは何も引き継がない。再開が断られて再試行している間は `loop.next_in_s` は
-  **null**、`retrying: true`(`retry_in_s` は診断用)― 5 秒の再試行をカウントダウンとして
+  **null**、`retrying: true`・`waiting: true`(LCD の語。`retry_in_s` は診断用)― 5 秒の再試行をカウントダウンとして
   出すと LCD とページが「next run in 0:03」を繰り返す。ページは
   `Loop: waiting - radxa-10 not ready (retrying)`、ボードは `LOOP WAITING`。ランの `loops` が 1, 2, … と増え、③ START を押すと 0 に戻る。
   **STOP と、どの T0 移動(HOLD / RESUME / SEEK / NEXT / START)も**保留中の再開を取り消す

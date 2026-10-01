@@ -4037,8 +4037,13 @@ function runIsOver() {
 function loopWaitingText() {
   const loop = fleet && fleet.loop;
   if (!loop || !loop.retrying) return null;
-  const units = String(loop.problem || "").split(";").map(p => p.trim().split(":")[0]).filter(Boolean);
-  return "Loop: waiting - " + (units.length ? units.join(", ") : "a unit") + " not ready (retrying)";
+  // "radxa-10: none of its 16 boards answered; radxa-03: not answering" ->
+  // the units named; a problem with no "unit:" prefix ("no unit is ready")
+  // is shown as it is.
+  const parts = String(loop.problem || "").split(";").map(p => p.trim()).filter(Boolean);
+  const named = parts.every(p => /^radxa-\d+:/.test(p));
+  const units = named ? parts.map(p => p.split(":")[0]) : [];
+  return "Loop: waiting - " + (units.length ? units.join(", ") + " not ready" : (parts.join("; ") || "not ready")) + " (retrying)";
 }
 // Seconds until the Loop's next run, carried forward from the last poll the
 // way the run position is - or null when no run is pending.

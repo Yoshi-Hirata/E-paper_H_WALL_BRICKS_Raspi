@@ -20,6 +20,7 @@ import http.server
 import json
 import re
 import threading
+import urllib.parse
 from html import unescape
 
 import pytest
@@ -205,6 +206,7 @@ class _Stand:
         self.run = "none"
         self.loop_next = None                # next_in_s the stand-in reports
         self.loop_retrying = False           # a refused restart being retried
+        self.loop_problem = "radxa-10: none of its 16 boards answered"
         self.speaker = None
         self.passcode = None                 # set: POSTs need X-Passcode
         self.sent = []                       # [command, body] as they arrived
@@ -239,8 +241,9 @@ class _Stand:
                         "next_in_s": None if stand.loop_retrying else stand.loop_next,
                         "runs": 0, "retrying": stand.loop_retrying,
                         "retry_in_s": stand.loop_next if stand.loop_retrying else None,
-                        "problem": ("radxa-10: none of its 16 boards answered"
-                                    if stand.loop_retrying else None), "min_wait_s": 0}
+                        "waiting": stand.loop_retrying,
+                        "problem": (stand.loop_problem if stand.loop_retrying else None),
+                        "min_wait_s": 0}
 
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
@@ -329,6 +332,8 @@ class _Stand:
                                            else float(args["loop_next"]))
                     if "retrying" in args:
                         stand.loop_retrying = args["retrying"] == "1"
+                    if "problem" in args:
+                        stand.loop_problem = urllib.parse.unquote(args["problem"])
                     if "passcode" in args:
                         stand.passcode = None if args["passcode"] == "null" else args["passcode"]
                     if "speaker" in args:
@@ -430,7 +435,11 @@ _PAGE_PROBE = """
       out.retryClock = clockNow();
       out.retryHead = { cap: head("[data-cap]"), count: head("[data-count]"), note: head("[data-note]") };
       out.retryHint = $q("#show-hint").textContent;
-      await fetch("/test/fleet?retrying=0&loop_next=25");
+      // A problem with no "unit:" prefix is shown verbatim.
+      await fetch("/test/fleet?run=ended&loop_next=3&retrying=1&problem=" + encodeURIComponent("no unit is ready"));
+      await refreshFleetNow();
+      out.retryPlain = clockNow().word;
+      await fetch("/test/fleet?retrying=0&loop_next=25&problem=" + encodeURIComponent("radxa-10: none of its 16 boards answered"));
       await refreshFleetNow();
       // (3) START during the wait: the next run, asked about like a first
       // one, sent WITHOUT force (M5).
@@ -592,6 +601,7 @@ def test_a_refused_restart_shows_words_not_a_countdown(page):
     assert head["cap"] == "LOOP WAITING" and head["count"] in ("", None), head
     assert head["note"] == "Loop: waiting - radxa-10 not ready (retrying)"
     assert "Retrying every few seconds (no countdown until it can)" in page["retryHint"]
+    assert page["retryPlain"] == "Loop: waiting - no unit is ready (retrying)"
 
 
 def test_a_speaker_conductor_mutes_the_page_once_and_the_operator_wins(page):

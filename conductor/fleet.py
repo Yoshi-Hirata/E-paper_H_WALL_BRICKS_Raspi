@@ -482,6 +482,7 @@ class Fleet:
         # {unit: its burn failure at the operator's forced START} - what the
         # Loop's restarts may wave through again (see _still_waved).
         self._waved: "dict[str, tuple]" = {}
+        self._waved_said: "set[str]" = set()        # the set the corrections last named
         # The two windows the clear after the show waits out: after a STOP
         # (the director's mid-show abort), and after any T0 move (so a seek
         # in the last seconds cannot delete the show). Knobs so the tests
@@ -698,6 +699,7 @@ class Fleet:
         # failed boards, the same reason) is waved through again; one whose
         # failure changed (more boards gone) is not, and takes the ordinary
         # grace / "started without X" path. Every other unit: never forced.
+        waved_signatures = dict(self._waved)        # a START landing meanwhile may clear it
         waved = self._still_waved()
         not_ready = self._not_ready(self._targets(), forced=waved)
         skip = {name for name, why in not_ready.items()
@@ -728,13 +730,17 @@ class Fleet:
         with self._run_lock:
             self._loop_problem = problem
             self._loop_skipped = {name: not_ready[name] for name in left_out}
-        for name in sorted(waved):
-            boards = {pair[0] for pair in self._waved[name][0]}
-            self._note(f"{name}: started again with the operator's 'start anyway' "
-                       f"(same {len(boards)} board{'' if len(boards) == 1 else 's'})"
-                       if boards else
-                       f"{name}: started again with the operator's 'start anyway' "
-                       "(same failure)")
+        # Said when the waved set CHANGES, not on every restart - a line a
+        # run would flood the 20-line corrections.
+        if waved != self._waved_said:
+            self._waved_said = set(waved)
+            for name in sorted(waved):
+                boards = {pair[0] for pair in waved_signatures.get(name, ((),))[0]}
+                self._note(f"{name}: started again with the operator's 'start anyway' "
+                           f"(same {len(boards)} board{'' if len(boards) == 1 else 's'})"
+                           if boards else
+                           f"{name}: started again with the operator's 'start anyway' "
+                           "(same failure)")
         self._note(f"Loop: run {self._loop_runs} started"
                    + (f" without {', '.join(left_out)} (not ready: "
                       f"{'; '.join(not_ready[n] for n in left_out)})" if left_out else "")
@@ -753,12 +759,26 @@ class Fleet:
         found = self._burn(name)
         if found is None:
             return None
-        _show, burn = found
+        show, burn = found
         if not isinstance(burn, dict) or burn.get("state") != "failed":
             return None
         failed = tuple(sorted(tuple(pair) for pair in (burn.get("failed") or [])
                               if isinstance(pair, (list, tuple))))
-        return (failed, burn.get("reason"), burn.get("total"))
+        # The show id too: a rescue Upload of a different compile is a
+        # different burn, whatever boards it failed on.
+        return (failed, burn.get("reason"), burn.get("total"), show.get("id"))
+
+    def _rejoin_force(self, run: dict, name: str) -> bool:
+        """The `force` a supervision /show/run carries: the run's own, the
+        units a rescue Upload or the Loop's restart forced - and, for a
+        LOOP run, a unit the operator waved through that was offline at the
+        restart (no signature then, so not in `forced`) and rejoins now
+        with its failure still the same (the signature re-checked here).
+        Without it the rejoin posts force:False and is refused for the
+        whole run (review of ef61d26, MED-1)."""
+        if bool(run.get("force")) or name in (run.get("forced") or ()):
+            return True
+        return bool(run.get("loops", 0)) and name in self._still_waved()
 
     def _still_waved(self) -> "set[str]":
         """The units the operator's forced START waved through whose
@@ -805,14 +825,14 @@ class Fleet:
                 return ({"next_in_s": None, "wait_s": self._loop_wait,
                          "lead_s": self._loop_lead, "runs": self._loop_runs,
                          "problem": self._loop_problem, "retrying": False,
-                         "retry_in_s": None}
+                         "waiting": False, "retry_in_s": None}
                         if self._loop_problem else None)
             left = max(0.0, round(self._loop_at - self._clock(), 2))
             retrying = self._loop_problem is not None
             return {"next_in_s": None if retrying else left,
                     "wait_s": self._loop_wait, "lead_s": self._loop_lead,
                     "runs": self._loop_runs, "problem": self._loop_problem,
-                    "retrying": retrying,
+                    "retrying": retrying, "waiting": retrying,
                     "retry_in_s": left if retrying else None}
 
     def _forget_joined(self) -> None:
@@ -1735,6 +1755,7 @@ class Fleet:
             self._waved = ({name: sig for name in targets
                             for sig in [self._failure_signature(name)]
                             if sig is not None} if force else {})
+            self._waved_said = set()
         with self._run_lock:
             if expect_gen is not None and (self._run_gen != expect_gen
                                            or self._stopped):
@@ -2109,8 +2130,7 @@ class Fleet:
                 if not self._post_or_refused(
                         link, now, "/show/run",
                         {"t0": expected, "show": show["id"],
-                         "force": bool(run.get("force"))
-                                  or link.name in (run.get("forced") or ())},
+                         "force": self._rejoin_force(run, link.name)},
                         "run"):
                     return
                 why = why or ("started late" if unit.get("t0") is None

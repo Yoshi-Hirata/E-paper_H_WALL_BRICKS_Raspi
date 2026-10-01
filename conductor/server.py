@@ -3102,6 +3102,9 @@ class Handler(BaseHTTPRequestHandler):
                 # counts next_in_s down, and a 5 s retry is not a countdown.
                 "next_in_s": pending.get("next_in_s"),
                 "retrying": bool(pending.get("retrying")),
+                # `waiting` is the LCD's word for the same state (Coder
+                # AA's EXHIBITION row reads it): true while retrying.
+                "waiting": bool(pending.get("waiting")),
                 "retry_in_s": pending.get("retry_in_s"),
                 "runs": int(pending.get("runs") or 0),
                 "problem": pending.get("problem"),
@@ -3128,9 +3131,11 @@ class Handler(BaseHTTPRequestHandler):
             self.workspace.set_loop(wait)
         pending = self.fleet.loop_state() if self.fleet is not None else None
         answer = self._loop_object(pending)
-        if on and self.fleet is not None and any(
+        if on and self.fleet is not None and (any(
                 bool(unit_show.get("clear_after_show"))
-                for unit_show in self.fleet.shows.values()):
+                for unit_show in self.fleet.shows.values()) or any(
+                bool((((link.status or {}).get("show") or {}).get("clear_after_show")))
+                for link in self.fleet.links.values() if link.online)):
             # The units hold a copy that clears ITSELF at its end (uploaded
             # before the Loop was on): the restart would meet "cleared".
             # Said here and in the corrections; an Upload writes the copy
