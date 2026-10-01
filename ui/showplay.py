@@ -90,11 +90,12 @@ never come back as "burned".
 from __future__ import annotations
 
 import json
-import os
+import sys
 import threading
 import time
 from pathlib import Path
 
+from conductor import durable      # standard library only, nothing else of the Conductor
 from .remote import ARMED, DEFAULT_SLOT, FAILED, FIRED, PREPARING, READY, RemoteError
 
 STORE = Path.home() / ".epaper"
@@ -212,6 +213,163 @@ def show_boards(show: dict) -> "list[int]":
     return sorted(addresses)
 
 
+# How long a command's answer waits for the record it changed to be on the
+# card (outside the lock - ShowPlayer._settle()). Bounded: an SD card that
+# stalls must not hang the PC's request; the write still lands behind it.
+COMMAND_WRITE_WAIT_S = 2.0
+LOAD_WRITE_WAIT_S = 10.0           # three files, show.json up to 300 KB
+SHUTDOWN_WRITE_WAIT_S = 5.0
+
+_DELETE = object()                 # a _DiskWriter item that removes the file
+
+
+class _DiskWriter:
+    """One thread per ShowPlayer that writes its records (review of
+    411fd10): the player snapshots a payload under its lock and submits
+    it; the fsync happens here, so nothing that takes the player's lock -
+    /status, the LCD, _plan() firing a cue - ever waits on the SD card.
+
+    Only the LATEST snapshot of each file is kept: a run record queued
+    behind a slow write is replaced, not written twice. Order is kept as
+    submitted - a replaced item keeps its place (so a state change never
+    overtakes a show.json queued after its run record), and `to_end`
+    moves a write behind everything still queued (a load: old burn record
+    deleted, run record, show.json, in that order). A DELETE supersedes
+    every queued write of its file, and a write that comes after a queued
+    DELETE is queued BEHIND it, never in its place (a status poll's burn
+    record must not undo load()'s delete of the old one - final review of
+    669979b). A run record that cannot be written is deleted and the
+    show.json behind it in the same batch skipped (the old _persist()'s
+    rule). Errors go to `on_error` and are logged once each, never raised
+    into the player; the thread itself never dies of one."""
+
+    def __init__(self, store: Path, write, on_error):
+        self.store = store
+        self._write = write                 # (name, payload) -> None
+        self._on_error = on_error           # (name, exc, payload) -> None
+        self._cond = threading.Condition()
+        # [name, payload] in write order; at most one write per file, or
+        # one DELETE followed by one write.
+        self._pending: "list[list]" = []
+        self._submitted = 0                 # tickets handed out
+        self._done = 0                      # every ticket up to here written
+        self._quit = False
+        self._logged: "set[tuple[str, str]]" = set()
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                         name="showplay-disk")
+        self._thread.start()
+
+    def submit(self, items, to_end: bool = False) -> int:
+        with self._cond:
+            for name, payload in items:
+                self._queue(name, payload, to_end)
+            self._submitted += 1
+            self._cond.notify_all()
+            return self._submitted
+
+    def _queue(self, name: str, payload, to_end: bool) -> None:
+        pending = self._pending
+        if payload is _DELETE:
+            pending[:] = [entry for entry in pending if entry[0] != name]
+            pending.append([name, _DELETE])
+            return
+        last = None
+        for index, entry in enumerate(pending):
+            if entry[0] == name:
+                last = index
+        if last is not None and pending[last][1] is not _DELETE:
+            if not to_end:
+                pending[last][1] = payload          # in place: keeps its order
+                return
+            del pending[last]
+        pending.append([name, payload])             # behind a queued DELETE too
+
+    def wait(self, ticket: "int | None" = None,
+             timeout: "float | None" = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            target = self._submitted if ticket is None else ticket
+            while self._done < target:
+                if not self._thread.is_alive():
+                    return False
+                left = None if deadline is None else deadline - time.monotonic()
+                if left is not None and left <= 0:
+                    return False
+                self._cond.wait(left)
+            return True
+
+    def close(self, timeout: "float | None" = None) -> None:
+        self.wait(timeout=timeout)
+        with self._cond:
+            self._quit = True
+            self._cond.notify_all()
+        self._thread.join(timeout=1)
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._pending and not self._quit:
+                    self._cond.wait()
+                if not self._pending:
+                    return
+                batch, self._pending = self._pending, []
+                ticket = self._submitted
+            try:
+                self._write_batch(batch)
+            except Exception as exc:        # noqa: BLE001 - the thread never dies
+                try:
+                    print(f"showplay: disk thread: {exc!r}", file=sys.stderr,
+                          flush=True)
+                except Exception:           # noqa: BLE001
+                    pass
+            finally:
+                with self._cond:
+                    self._done = ticket
+                    self._cond.notify_all()
+
+    def _write_batch(self, batch: list) -> None:
+        skip_show = False
+        for name, payload in batch:
+            if name == "show.json" and skip_show:
+                continue
+            try:
+                self.store.mkdir(parents=True, exist_ok=True)
+                if payload is _DELETE:
+                    try:
+                        (self.store / name).unlink()
+                    except FileNotFoundError:
+                        pass
+                else:
+                    self._write(name, payload)
+            except Exception as exc:        # noqa: BLE001 - never into the player
+                if name == "show-run.json":
+                    # The one on disk is the PREVIOUS state's - with
+                    # show.json about to be replaced (or already holding
+                    # an older show), a restart could read the two as a
+                    # matched pair. No record at all is the honest state.
+                    skip_show = True
+                    try:
+                        (self.store / name).unlink()
+                    except OSError:
+                        pass
+                try:
+                    self._log(name, exc)
+                except Exception:           # noqa: BLE001 - stderr gone, say
+                    pass
+                try:
+                    self._on_error(name, exc, payload)
+                except Exception:           # noqa: BLE001
+                    pass
+
+    def _log(self, name: str, exc: BaseException) -> None:
+        key = (name, str(exc))
+        if key in self._logged:
+            return
+        self._logged.add(key)
+        print(f"showplay: could not write {self.store / name}: {exc}",
+              file=sys.stderr, flush=True)
+
+
 class ShowPlayer:
     def __init__(self, session, store: "Path | None" = STORE,
                  clock=time.monotonic, wall=time.time,
@@ -282,6 +440,9 @@ class ShowPlayer:
         # it a poll late or not at all (review round 2, 2026-09-25). Not
         # retried on every poll - the next load() tries again.
         self._burn_record_error: "str | None" = None
+        # The disk thread could not delete the old burn record during the
+        # last load(): that load refuses to burn (see load()).
+        self._burn_delete_error: "str | None" = None
         self._burn_none_why = "(the burn never started)"
         # The show asked for its pictures to be deleted once it is over
         # (show.json's `clear_after_show`, carried in the show file):
@@ -321,6 +482,14 @@ class ShowPlayer:
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._quit = threading.Event()
+        # The disk, off the lock: every record is snapshotted under the
+        # lock and written (fsynced - 5-40 ms on the SD card, tails over
+        # a second) by this one thread, so /status, the LCD and a cue's
+        # fire never wait on the card (review of 411fd10). See _DiskWriter.
+        self._disk = (_DiskWriter(self.store,
+                                  lambda name, payload: self._write(name, payload),
+                                  self._disk_error)
+                      if self.store is not None else None)
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -364,7 +533,6 @@ class ShowPlayer:
             # also what makes a clear queued a moment ago never run.
             self._clear_asked, self._clear_due = None, False
             self._clear_at = None            # ...and a STOP's armed window
-            self._forget_burn_record()
             self.show = show
             self.is_demo = bool(demo)
             # The name it was written under (ui/demos.py), not show["name"]
@@ -385,7 +553,34 @@ class ShowPlayer:
             self.session.forget_verify()     # the previous show's, not this one's
             self._verify_seen = None
             self.note = ""
-            self._persist(with_show=True)
+            self._burn_delete_error = None
+            # One batch, in this order: the old burn record goes, then the
+            # run record, then show.json (see _persist()).
+            written = self._persist(with_show=True, forget_burn=True)
+        # load() answers once its three files are on the card (not on the
+        # show path: an Upload, minutes before START) - waited for outside
+        # the lock, so /status keeps answering meanwhile. A disk that does
+        # not take them is said in `note` by then (_disk_error()).
+        #
+        # And the burn below starts ONLY once the old burn record is gone
+        # from the card (final review of 669979b): burning over the slots
+        # while the previous show's "burned" is still on disk would let a
+        # power cut restore that OLD show as burned, on slots already
+        # partly overwritten - the wrong pictures. A card that does not
+        # take the batch in time, or will not delete the record, refuses
+        # the load: burn "none", the PC uploads again.
+        landed = (not written
+                  or self._disk.wait(written, LOAD_WRITE_WAIT_S))
+        with self._lock:
+            why = (None if landed else
+                   f"the SD card did not take the show within "
+                   f"{LOAD_WRITE_WAIT_S:g} s") or self._burn_delete_error
+            if why and self.show is show:
+                self._burn_none_why = "(the SD card did not take the show)"
+                self.note = f"{why} - Upload again"
+        if why:
+            self.session.cancel_burn()       # nothing more onto those slots
+            raise RemoteError(f"{why} - Upload again")
         # Which sockets this garment has, before anything is written and
         # whatever the burn below turns out to be: a burn every pair of
         # which the cache already holds writes nothing, and a demo's own
@@ -477,6 +672,8 @@ class ShowPlayer:
             # one-cue show, a looping demo - review round 3).
             self.session.forget_verify()
             self._verify_seen = None
+            # Handed to the disk thread, not waited for: a START or a SEEK
+            # answers (and fires) without the card in the way.
             self._persist()
         self._wake.set()
 
@@ -510,7 +707,7 @@ class ShowPlayer:
             # leaning on that (review round 4).
             self.session.forget_verify()
             self._verify_seen = None
-            self._persist()
+            self._persist()                       # the disk thread's
             # No write to budget for any more - the picture is already
             # burned into its slot; a small margin only covers arm()
             # possibly waiting for the port (start_remote()).
@@ -742,7 +939,7 @@ class ShowPlayer:
             if self.state == RUNNING:
                 self.state = HOLDING
                 self._disarm()
-                self._persist()
+                self._persist()                   # the disk thread's
         self._wake.set()
 
     def stop(self) -> None:
@@ -763,7 +960,7 @@ class ShowPlayer:
             # same reasoning as run()'s).
             self.session.forget_verify()
             self._verify_seen = None
-            self._persist()
+            written = self._persist()
         self.session.cancel_burn()   # give up on a burn still in flight
         # STOP is the other end of the show, and the one the operator
         # actually presses before unplugging a garment: if this show asked
@@ -778,11 +975,34 @@ class ShowPlayer:
             with self._lock:
                 self._clear_at = self._clock() + self.clear_after_stop_s
         self._wake.set()
+        # STOP is what the operator presses before unplugging: it answers
+        # once the stopped state is on the card.
+        self._settle(written)
 
     def close(self) -> None:
         self._quit.set()
         self._wake.set()
         self._thread.join(timeout=2)
+        if self._disk is not None:
+            self._disk.close(timeout=SHUTDOWN_WRITE_WAIT_S)   # what is queued, written
+
+    def flush(self, timeout: "float | None" = None) -> bool:
+        """Wait until every record handed to the disk so far is written
+        (or failed and said so). True when it is; False on `timeout`.
+        Never call it with the lock held - the writer may need it to
+        report an error."""
+        if self._disk is None:
+            return True
+        return self._disk.wait(timeout=timeout)
+
+    def _settle(self, written: int, timeout: "float | None" = None) -> None:
+        """load()'s and stop()'s answer waits (outside the lock, bounded)
+        for the record it changed - so the PC that hears "ok" knows the
+        unit would come back to it after a power cut. run/hold/preset do
+        not wait: nothing on the show path stands behind the card."""
+        if written and self._disk is not None:
+            self._disk.wait(written, COMMAND_WRITE_WAIT_S if timeout is None
+                            else timeout)
 
     @property
     def running(self) -> bool:
@@ -792,11 +1012,9 @@ class ShowPlayer:
 
     def _write(self, name: str, payload) -> None:
         """Whole or not at all: the power cut restore() exists for must
-        not find half a file."""
-        target = self.store / name
-        scratch = self.store / (name + ".tmp")
-        scratch.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(scratch, target)
+        not find half a file - nor an empty one, so fsynced before and
+        after the rename (conductor/durable.py)."""
+        durable.atomic_write_json(self.store / name, payload)
 
     def _persist_burn(self, show_id: str, burn: dict) -> None:
         """Record a finished burn ("burned", or "failed" with its pairs)
@@ -807,32 +1025,37 @@ class ShowPlayer:
                tuple(tuple(pair) for pair in burn["failed"]))
         if key == self._burn_saved:
             return
-        try:
-            self.store.mkdir(parents=True, exist_ok=True)
-            self._write(BURN_FILE, {
-                "burned": show_id, "when": self._wall(),
-                "state": burn["state"], "total": burn["total"],
-                "reason": burn.get("reason"),
-                "failed": [list(pair) for pair in burn["failed"]]})
-            self._burn_saved = key
-            self._burn_record_error = None
-        except OSError as exc:
-            # Said in the burn dict, which the PC's tile shows, and not
-            # tried again until the next load(): _burn_record_locked()
-            # runs on every poll, and a full disk would have it fail
-            # (slowly) every second (review round 2, 2026-09-25).
-            self._burn_saved = key
-            self._burn_record_error = f"unsaved: {exc}"
+        # Handed to the disk thread (this runs under the lock, from
+        # status() on every poll). Recorded as saved now: a disk that
+        # refuses it is said in the burn dict, which the PC's tile shows,
+        # by _disk_error(), and not tried again until the next load() -
+        # a full disk would otherwise fail (slowly) on every poll (review
+        # round 2, 2026-09-25). Behind whatever run record / show.json is
+        # still queued (to_end), never ahead of them.
+        self._burn_saved = key
+        self._burn_record_error = None
+        self._disk.submit([(BURN_FILE, {
+            "burned": show_id, "when": self._wall(),
+            "state": burn["state"], "total": burn["total"],
+            "reason": burn.get("reason"),
+            "failed": [list(pair) for pair in burn["failed"]]})], to_end=True)
 
-    def _forget_burn_record(self) -> None:
-        if self.store is None:
-            return
-        try:
-            (self.store / BURN_FILE).unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            self.note = f"cannot clear the burn record: {exc}"
+    def _disk_error(self, name: str, exc: BaseException, payload) -> None:
+        """The disk thread could not write (or delete) `name`. Never
+        raised into the player: said where the PC sees it."""
+        with self._lock:
+            if name == BURN_FILE:
+                if payload is _DELETE:
+                    self.note = f"cannot clear the burn record: {exc}"
+                    # load() refuses to burn over a record it could not
+                    # delete (final review of 669979b, L3).
+                    self._burn_delete_error = (f"cannot clear the burn "
+                                               f"record: {exc}")
+                elif (self.show is not None
+                      and payload.get("burned") == self.show.get("id")):
+                    self._burn_record_error = f"unsaved: {exc}"
+            else:
+                self.note = f"cannot save the show: {exc}"
 
     def _read_burn_record(self, show: dict) -> "dict | None":
         """The finished burn on disk, if it names this show."""
@@ -855,62 +1078,80 @@ class ShowPlayer:
             return {"show": show["id"], "state": state,
                     "total": int(record.get("total", self._burn_total(show))),
                     "reason": record.get("reason"), "failed": failed}
-        except (OSError, ValueError, KeyError, TypeError):
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # Empty or torn (a power cut under an older version): no
+            # record, said once per file version, not on every poll.
+            durable.note_unreadable(self.store / BURN_FILE, exc)
+            return None
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
 
-    def _persist(self, with_show: bool = False) -> None:
+    def _persist(self, with_show: bool = False,
+                 forget_burn: bool = False) -> int:
+        """Snapshot the run record (and on a load show.json, after the old
+        burn record is deleted) under the lock and hand it to the disk
+        thread. Returns the ticket _settle()/flush() wait on (0: no
+        store). A write that fails is _disk_error()'s, never this
+        caller's."""
         if self.store is None:
-            return
-        try:
-            self.store.mkdir(parents=True, exist_ok=True)
-            # The run record goes FIRST, even on a load. A power cut
-            # between the two files then leaves a record that names the
-            # NEW show beside the OLD show.json, which restore() reads as
-            # "this record says nothing about this show file" and takes
-            # as a plain PC show. The other order could leave the
-            # PREVIOUS show's record - `demo: true` and all - paired with
-            # a freshly loaded PC show that happens to carry the same id
-            # (a demo written from the very show the PC is running), and
-            # the unit would come back guarding a demo nobody started.
-            try:
-                self._write("show-run.json", {
-                    "show": self.show["id"] if self.show else None,
-                    "state": self.state, "applied": self.applied,
-                    # What the show IS, not just what it holds: a demo
-                    # comes back as a demo after a restart (restore()),
-                    # so the LCD owns it again and the PC keeps leaving
-                    # it alone.
-                    "demo": self.is_demo, "demo_name": self.demo_name,
-                    "demo_slug": self.demo_slug, "demo_loop": self.demo_loop,
-                    # The unit's own verdict on the last cue it sent
-                    # (ui/remote.py's RemoteSession.verify). A restart
-                    # must not turn a red "not applied" into a blank
-                    # while the garment is still wrong.
-                    "verify": self._verify_seen,
-                    # T0 as wall time: what survives a reboot.
-                    "t0_wall": (None if self.t0 is None else
-                                self._wall() + (self.t0 - self._clock()))})
-            except OSError:
-                # The record could not be replaced, so the one on disk is
-                # the PREVIOUS show's - and with show.json about to be
-                # replaced (or already holding that older show), a
-                # restart would read the two as a matched pair and
-                # restore, say, yesterday's demo over a PC load that has
-                # since happened. No record at all is the honest state:
-                # restore() bails on it and the unit comes up with
-                # nothing loaded, waiting for the PC.
-                self._forget_run_record()
-                raise
-            if with_show and self.show is not None:
-                self._write("show.json", self.show)     # only when it changes
-        except OSError as exc:
-            self.note = f"cannot save the show: {exc}"
+            return 0
+        # The run record goes BEFORE show.json, even on a load (the disk
+        # thread keeps the order, _DiskWriter). A power cut between the
+        # two files then leaves a record that names the NEW show beside
+        # the OLD show.json, which restore() reads as "this record says
+        # nothing about this show file" and takes as a plain PC show. The
+        # other order could leave the PREVIOUS show's record - `demo: true`
+        # and all - paired with a freshly loaded PC show that happens to
+        # carry the same id (a demo written from the very show the PC is
+        # running), and the unit would come back guarding a demo nobody
+        # started. A run record that cannot be written is DELETED and the
+        # show.json behind it skipped: no record is the honest state.
+        items = []
+        if forget_burn:
+            # The burn state follows the show (load()): the record on
+            # disk goes before the new show file is written.
+            items.append((BURN_FILE, _DELETE))
+        items.append(("show-run.json", {
+            "show": self.show["id"] if self.show else None,
+            "state": self.state, "applied": self.applied,
+            # What the show IS, not just what it holds: a demo comes back
+            # as a demo after a restart (restore()), so the LCD owns it
+            # again and the PC keeps leaving it alone.
+            "demo": self.is_demo, "demo_name": self.demo_name,
+            "demo_slug": self.demo_slug, "demo_loop": self.demo_loop,
+            # The unit's own verdict on the last cue it sent
+            # (ui/remote.py's RemoteSession.verify). A restart must not
+            # turn a red "not applied" into a blank while the garment is
+            # still wrong.
+            "verify": dict(self._verify_seen) if self._verify_seen else None,
+            # T0 as wall time: what survives a reboot.
+            "t0_wall": (None if self.t0 is None else
+                        self._wall() + (self.t0 - self._clock()))}))
+        if with_show and self.show is not None:
+            items.append(("show.json", self.show))       # only when it changes
+        # A load is one batch, moved behind anything still queued; a
+        # plain state change replaces a queued run record IN PLACE, so it
+        # can never overtake a show.json queued after it.
+        return self._disk.submit(items, to_end=with_show)
 
-    def _forget_run_record(self) -> None:
+    def _read_state(self, name: str) -> "dict | None":
+        """One of restore()'s two files as a dict, or None: missing (a
+        unit that never loaded a show), or there but empty or torn - a
+        power cut under a version before conductor/durable.py - which is
+        the same "no record" plus one log line, never a crash at boot."""
+        path = self.store / name
         try:
-            (self.store / "show-run.json").unlink()
-        except OSError:
-            pass                # missing, or a disk that will not have it
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except ValueError as exc:            # JSON, or not UTF-8 at all
+            durable.note_unreadable(path, exc, "restored as nothing loaded")
+            return None
+        if not isinstance(data, dict):
+            durable.note_unreadable(path, "not a JSON object",
+                                    "restored as nothing loaded")
+            return None
+        return data
 
     def restore(self) -> None:
         """At start-up: pick the show up again if it was running.
@@ -924,12 +1165,14 @@ class ShowPlayer:
         if self.store is None:
             return
         try:
-            show = json.loads((self.store / "show.json")
-                              .read_text(encoding="utf-8"))
-            run = json.loads((self.store / "show-run.json")
-                             .read_text(encoding="utf-8"))
+            show = self._read_state("show.json")
+            run = self._read_state("show-run.json")
+            if show is None or run is None:
+                return
             duration = float(show["duration"])
             float(show["refresh_s"]), show["cues"][0]["sent"]
+            if not isinstance(run.get("t0_wall"), (int, float, type(None))):
+                return
         except (OSError, ValueError, KeyError, TypeError, IndexError):
             return
         with self._lock:

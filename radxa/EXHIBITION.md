@@ -302,6 +302,19 @@ journalctl -u epaper-conductor -n 20 --no-pager   # speaker: loaded xxx.mp3, unp
 `music plays on the Conductor host (USB speaker) — loaded, xxx.mp3, …` と **`loaded`** になっている
 こと(`mpg123 exited` や `volume: …` のエラーではなく)を見てから、テストで ③ START を 1 回。
 
+### 2.5 電源 ― radxa-05 は無停電の給電で
+
+radxa-05 は会場のショーそのもの(Conductor・ワークスペース・fleet.json のパスコード・
+ホットスポット)を 1 台で持っているので、**UPS かバッテリー付きの USB-C 給電(パススルー
+充電できるモバイルバッテリーなど)から給電し、抜けやすいテーブルタップやほかの機材と
+共用のコンセントにはつながない**。2026-10-01 に 2 回電源が落ち(journal が 10:08 と
+12:46 で途切れ、次の起動で `EXT4-fs (mmcblk0p3): recovery complete`)、以後の版は
+ワークスペース・fleet.json・機体の記録をすべて fsync してから置き換える
+(仕様書 4.8 ― 書きかけのファイルは古いか新しいかのどちらかで、空にはならない)が、
+停電中はショーも Wi-Fi(AZ-Epaper)も止まり、戻ったあとは各機体の絵が `none` になるので
+**① Upload からやり直し**になる(1 章)。停電後に journal に `…: unreadable (empty …)` と
+出ていたら、それは古い版が残した壊れたファイル ― fleet.json なら 2.3 のとおり書き直す。
+
 ## 3. ほかの機体(radxa-01〜04・06〜10)で一度だけやること
 
 まず**その機体の番号 NN** を確かめる: LCD の各画面の上部バーに `radxa-03` のように

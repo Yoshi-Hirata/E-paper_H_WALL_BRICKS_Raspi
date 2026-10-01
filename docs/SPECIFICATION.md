@@ -1432,6 +1432,85 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   最後に伝える**(同じ秒数で)。返答 `{"units", "last", "hotspot", "profile", "after_s"}`、
   トーストに受けた機体と断った機体
 
+### 4.8 電源断への耐性(2026-10-01)
+
+radxa-05(Debian 11、SD/eMMC 上の ext4 `rw,relatime`)は 2026-10-01 に 2 回電源を失い、
+次の起動で `EXT4-fs (mmcblk0p3): recovery complete` が出た。ext4 の遅延割り当てのため、
+それまでの書き方(scratch ファイル → `os.replace`、fsync なし)では電源断の直前数秒〜
+30 秒ほどに書いたファイルが**空や古い中身で戻りうる**。
+
+- **書き方**: 永続ファイルはすべて `conductor/durable.py` を通す ― 同じフォルダの一時
+  ファイル(`.<名前の先頭 40 文字>.<乱数 12 桁>.tmp` ― 長い CSV 名でも ENAMETOOLONG に
+  ならない)に書き、flush → `fsync(ファイル)` →
+  元のファイルのモードを引き継ぐ(fleet.json の 0600 は 0600 のまま、新規は
+  0666 & ~umask)→ `os.replace` → `fsync(フォルダ)`(POSIX のみ。Windows は黙って省く)。
+  置き換え前に失敗したら一時ファイルを消し、古いファイルはそのまま。Windows(PC の
+  Conductor)では読み手が開いているあいだ `os.replace` が PermissionError になるので
+  10 ms おきに 0.2 秒まで再試行する(POSIX では再試行しない)。標準ライブラリだけで
+  Conductor のほかのモジュールを import しないので、機体の UI(Python 3.9)も
+  `from conductor import durable` で使う
+- **対象**: Conductor の `show.json` / `history.json`(`Workspace._write`)、アップロード
+  した CSV(`_save_locked`)、マップの複製(`duplicate`)、`fleet.json` の 1 キー書き換え
+  (`set_fleet_option`、スピーカー音量)、PC 用 fleet.json の雛形(`write_fleet_template`:
+  一時ファイルに書いて fsync してから `os.link` で置く ― 既にあれば何もしない排他のまま、
+  電源断で空の fleet.json が残ることはない。ハードリンクの無いファイルシステムでは
+  排他作成 + fsync)、音源(`save_music`、**チャンクごとではなく最後に 1 回** fsync
+  してから置き換え、music フォルダも fsync)、ワークスペースの取り込み(`import_tar`、
+  展開したステージングフォルダを `fsync_tree` してから入れ替え、入れ替え後にルートを
+  fsync)。機体の `~/.epaper/show.json` / `show-run.json` / `show-burn.json`
+  (`ShowPlayer._write`)、デモ(`demos/<slug>.json` と `.meta.json`)、
+  `flash-log.json`(UPDATE FW の記録 ― **記録を書いてから DONE を出す**)。
+  `raspi/runlog.py`(もとから fsync していた)もフォルダの fsync を足した
+- **機体の記録はプレーヤーの錠の外で書く**: SD カードの fsync は 5〜40 ms、裾は 1 秒を
+  超えるので、`ShowPlayer` は記録を錠の中で**スナップショットするだけ**にして、書き込みは
+  プレーヤーごとに 1 本の書き込みスレッド(`_DiskWriter`)がする。`/status`・LCD・
+  キューの発火(`_plan()` の cue ごとの verdict、ENDED)はカードを待たない。
+  同じファイルの書き待ちは**最新のものだけ**残す(遅い書き込みの後ろに並んだ run record は
+  上書きされ、2 回は書かない)。順序は保つ ― load は「古い burn record の削除 →
+  `show-run.json` → `show.json`」を 1 まとまりで、それより前に並んでいたものの後ろに置き、
+  あとから来た run record は**並んでいた位置のまま**差し替える(show.json を追い越さない)。
+  ファイルの**削除はそれより前に並んだ同じファイルの書き込みをすべて取り消し**、削除の
+  あとに来た書き込みは削除の**後ろ**に並ぶ(status のポーリングが書く burn record が
+  load の「古い burn record の削除」を消すことはない)。
+  run record が書けなければ消し、同じまとまりの show.json は書かない(従来の規則)。
+  書き込みの失敗はプレーヤーに例外として返さず、stderr に 1 回だけ出して `note`
+  (`cannot save the show: …`)か burn の `record: unsaved: …` で言う。
+  **load と STOP の返事は自分の記録を待つ**(錠の外で): load は 3 ファイルが載るまで
+  (最大 10 秒、ショーの最中ではない Upload)。**10 秒で載らない、または古い burn record を
+  消せなかった load は焼き込みを始めない** ― 古いショーの「burned」がカードに残ったまま
+  スロットを書き換えると、停電後に古いショーが burned として戻り、半分書き換わった
+  スロットで走る。burn は `none`(`pictures not written (the SD card did not take the show)`)、
+  `note` に理由、PC には `… - Upload again` の RemoteError。STOP は最大 2 秒(電源を抜く前に
+  押すもの。LCD の KEY2 もここを通るので、カードが詰まれば最大 2 秒 LCD が待つ)。run / SEEK /
+  hold / preset は待たない(発火と返事をカードの後ろに置かない)。終了時(`ShowPlayer.close()`、
+  `ui/main.py` の終わり)は並んでいる分を書いてから閉じる(最大 5 秒)。`systemctl stop` や
+  再起動の SIGTERM は `ui/main.py` が例外(`Terminated`)に変えるので同じ後始末を通り、
+  そのあと即座に終了する(UI でほかにシグナルを扱うものは無い)。書き込みスレッドは
+  例外で死なない(ログに 1 行出して次へ)
+- **電源断で何が残るか**: 書いている最中のファイルは**古いか新しいかのどちらか**で、
+  空や途中までにはならない。fsync が返ったあとの書き込みは失われない。
+  2 ファイルにまたがる更新(`show-run.json` → `show.json`、show.json → 音源)は
+  1 つずつ原子的なだけで、間で落ちれば片方だけが新しい ― その組み合わせは
+  これまでどおり各読み手が「記録なし/PC のショー」として扱う(4 章冒頭)
+- **永続化しないもの(この変更でも)**: 走っているショーの実行状態は Conductor 側では
+  保存しない(Conductor の `marks` / `unit_marks` / `compiled`、Fleet の run・Loop・
+  Preset before START の段取りはメモリだけ)。電源が戻った Conductor は何も走らせて
+  いない状態で上がり、機体側は `show-run.json` から 4 章冒頭の規則で戻る。
+  Conductor の PC 側のエクスポート(`python -m conductor` の `--output`、プレビュー PNG)
+  と UI の PNG 表示バックエンドは対象外
+- **古い版が残した壊れたファイルの読み方**: 空・途中までの JSON は**「記録なし」**として
+  読み、`<パス>: unreadable (empty: …) - <どう扱ったか>` を 1 行だけ stderr(journal)
+  に出す(同じファイルの同じ版では 2 度出さない)。起動時に落ちることはない ―
+  show.json / history.json は新しいショー・undo なし、fleet.json は無いものとして
+  (**パスコードも無いので 0.0.0.0 では起動を断る**、手で書き直す)、ただし
+  **空(空白だけ)の fleet.json は `set_fleet_option` が新しく書いてよい**(途中までの
+  JSON はこれまでどおり上書きしない)。機体の `show.json` / `show-run.json` が壊れて
+  いれば何も読み込まずに PC を待ち、`show-burn.json` が壊れていれば burn なし
+  (走っていたショーは走り直さず「no record of its pictures」)。デモは壊れた
+  `.meta.json` を本体から作り直し、壊れた本体は一覧に出さない。`flash-log.json` は空
+- 電源断そのものを防ぐものではない。radxa-05 には無停電の給電を勧める
+  (radxa/EXHIBITION.md 2.5)
+
 ## 5. 実機検証で確認した制約(メーカー仕様との差異)
 
 | # | 事象 | 対応 |
