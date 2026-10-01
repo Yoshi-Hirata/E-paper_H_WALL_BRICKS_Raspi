@@ -198,6 +198,13 @@ WORKSPACE_TAR_MEMBERS = 5000
 # allowed plus every CSV a show could hold.
 WORKSPACE_TAR_MAX = 200 * 1024 * 1024
 WORKSPACE_TAR_CHUNK = 256 * 1024
+# How much of a request body an EARLY refusal (401 / 409 / 413, answered
+# before the body is wanted) still reads before answering - see
+# Handler._refuse_early. Enough for every JSON body and a small tar; a
+# bigger one gets `Connection: close` instead of 200 MB of draining.
+EARLY_DRAIN_MAX = 2 * 1024 * 1024
+EARLY_DRAIN_S = 2.0        # ...and how long a bigger one is still read after the answer
+EARLY_IDLE_S = 10.0        # a drain's per-recv timeout: an idle client holds no thread
 _TAR_TOP = ("show.json", "history.json")
 _TAR_DIRS = ("files", "music")
 
@@ -2883,32 +2890,85 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(given.encode("utf-8", "replace"),
                                    str(code).encode("utf-8", "replace"))
 
-    def _refuse_passcode(self, drain: bool = True) -> None:
-        if drain:
+    def _refuse_early(self, payload: dict, status: int,
+                      drain_all: bool = False) -> None:
+        """An answer given BEFORE the request body was read (401, 409,
+        413...). Windows resets the connection under a client whose body
+        is still on the wire, and the client then sees a connection
+        error instead of the status. So the body is drained first - up to
+        EARLY_DRAIN_MAX (a passcode or token refusal is not worth 200 MB
+        of reading), or WHOLE with `drain_all` (the 409 to an
+        authenticated client whose 5-30 MB Send over the hotspot takes
+        longer than any short grace: it must read the 409's text, not a
+        reset). A bigger body without `drain_all` is answered with
+        `Connection: close` after the headers and still read for
+        EARLY_DRAIN_S, which is the most a server can do to get the status
+        through before the reset. Every read here has a socket timeout
+        (EARLY_IDLE_S per recv): an idle client never holds a thread for
+        good, and a timeout is the end of the drain, not a traceback."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if 0 < length <= EARLY_DRAIN_MAX or (drain_all and length > 0):
             try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                length = 0
-            if 0 < length <= 1024 * 1024:
+                self.connection.settimeout(EARLY_IDLE_S)
                 self._drain(length)
-            elif length > 0:
-                self.close_connection = True
-        return self._json({"error": "passcode required"}, status=401)
+            except (OSError, ValueError):
+                self.close_connection = True       # the client went quiet
+            return self._json(payload, status=status)
+        self._json(payload, status=status, close=length > 0)
+        if length > 0:
+            # The answer is on its way; now keep READING for a bounded
+            # while, so a client still sending finishes, reads the status
+            # and closes on its own - closing with unread bytes in the
+            # socket is what makes Windows send the reset. A client that
+            # is still sending after EARLY_DRAIN_S (a 200 MB body on a
+            # slow link) loses the status to the reset; nothing more can
+            # be done for it from here. read1(), one recv at a time, and
+            # the socket timeout shrunk to what is left of the deadline,
+            # so the bound is a bound.
+            try:
+                self.wfile.flush()
+                deadline = time.monotonic() + EARLY_DRAIN_S
+                remaining = length
+                while remaining > 0:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        break
+                    self.connection.settimeout(max(0.05, left))
+                    chunk = self.rfile.read1(min(WORKSPACE_TAR_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except (OSError, ValueError):
+                pass
+
+    def _refuse_passcode(self, drain: bool = True) -> None:
+        if not drain:
+            return self._json({"error": "passcode required"}, status=401)
+        return self._refuse_early({"error": "passcode required"}, 401)
 
     def log_message(self, fmt, *args):     # keep the console for errors
         pass
 
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
+    def _send(self, status: int, body: bytes, content_type: str,
+              close: bool = False) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if close:
+            # Said in the headers, not only done afterwards: the client
+            # reads the status before the socket goes (see _refuse_early).
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, payload, status: int = 200) -> None:
+    def _json(self, payload, status: int = 200, close: bool = False) -> None:
         self._send(status, json.dumps(payload).encode("utf-8"),
-                   "application/json; charset=utf-8")
+                   "application/json; charset=utf-8", close=close)
 
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
@@ -3193,8 +3253,7 @@ class Handler(BaseHTTPRequestHandler):
         also what makes the new workspace's first compile happen here and
         not on the next poll."""
         if not self._token_ok():
-            self.close_connection = True
-            return self._json({"error": "fleet token required"}, status=401)
+            return self._refuse_early({"error": "fleet token required"}, 401)
         try:
             length = int(self.headers.get("Content-Length") or -1)
         except ValueError:
@@ -3202,14 +3261,15 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0:
             return self._json({"error": "Content-Length required"}, status=400)
         if length > WORKSPACE_TAR_MAX:
-            self.close_connection = True
-            return self._json({"error": f"the workspace is at most "
-                               f"{WORKSPACE_TAR_MAX // (1024 * 1024)} MB"},
-                              status=413)
+            return self._refuse_early({"error": f"the workspace is at most "
+                                       f"{WORKSPACE_TAR_MAX // (1024 * 1024)} MB"},
+                                      413)
         if self.fleet is not None and self.fleet.run is not None:
-            self._drain(length)
-            return self._json({"error": "a run is active on this Conductor - "
-                                        "STOP it first"}, status=409)
+            # Drained WHOLE: this client passed the token and is sending a
+            # real workspace; it must read "STOP it first", not a reset.
+            return self._refuse_early({"error": "a run is active on this Conductor "
+                                                "- STOP it first"}, 409,
+                                      drain_all=True)
         # To a temp file beside the workspace (the same disk the swap
         # renames on), streamed in chunks: never the whole tar in memory.
         # The spool is named BEFORE the body is read and removed in the one
@@ -3406,10 +3466,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "that music file is empty (0 bytes) - "
                                         "nothing was uploaded"}, status=400)
         if length > MAX_MUSIC:
-            # Refused before a single byte is read off the wire.
-            self.close_connection = True
-            return self._json({"error": f"music is at most "
-                               f"{MAX_MUSIC // (1024 * 1024)} MB"}, status=400)
+            # Refused before the body is wanted: `Connection: close` (the
+            # body is far past EARLY_DRAIN_MAX) - see _refuse_early.
+            return self._refuse_early({"error": f"music is at most "
+                                       f"{MAX_MUSIC // (1024 * 1024)} MB"}, 400)
         # The page sends encodeURIComponent(name): decoded here so a
         # Japanese or accented file name survives, not just ASCII ones.
         name = urllib.parse.unquote(self.headers.get("X-File-Name") or "music")
@@ -3418,18 +3478,9 @@ class Handler(BaseHTTPRequestHandler):
             # Answering before the request body is read makes Windows
             # reset the connection under the client, which then sees
             # ConnectionAborted instead of this 400 (a flaky test found
-            # it). Drain a small body first; a big one is closed instead.
-            if length <= 1024 * 1024:
-                remaining = length
-                while remaining > 0:
-                    chunk = self.rfile.read(min(65536, remaining))
-                    if not chunk:
-                        break
-                    remaining -= len(chunk)
-            else:
-                self.close_connection = True
-            return self._json({"error": f"music must be one of {allowed}"},
-                              status=400)
+            # it): the one rule for every early answer, _refuse_early.
+            return self._refuse_early({"error": f"music must be one of {allowed}"},
+                                      400)
         try:
             self.workspace.save_music(name, self.rfile, length)
         except (OSError, ValueError) as exc:
