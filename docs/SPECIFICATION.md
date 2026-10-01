@@ -1538,8 +1538,12 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   たびに 1 回だけ読む)と `18 cues · 10:54`(`/api/fleet` の `show_duration`。何も Upload
   されていなければ `· not uploaded`)。Conductor のタイムラインは**常に 1 本**なので
   「ショーを選ぶ」という概念は無く、UP/DOWN は判定文を消すだけ。その下に走行状態
-  ―― `idle` / `countdown -0:11`(`run.now` が負) / `3:20 / 10:54 running` /
-  `hold 3:20 / 10:54` / `ended 10:54 / 10:54` / LOOP 待ちなら `next run in 0:25`
+  ―― `idle` / `preset… 5/7 painted`(`run.state == "preset"`: START の第一段、最初の絵を
+  各機に載せている最中。人数は上位の `preset.painted` / `preset.targets`、無ければ
+  `preset…` だけ。この間も長押し KEY1 = STOP) / `countdown -0:11`(`run.now` が負) /
+  `3:20 / 10:54 running` / `hold 3:20 / 10:54` / `ended 10:54 / 10:54` / LOOP 待ちなら
+  `next run in 0:25` / `loop.waiting` が真(再開を再試行中、まだ次の時刻が無い)なら
+  `ended …` の代わりに `loop waiting`(琥珀色、ヒントは `hold KEY1 = STOP (loop waiting)`)
   (`loop.next_in_s` は **`run` が何であれ先に見る** ―― Conductor は LOOP の待ち時間中も
   終わった run をそのまま置いておく。ポーリングの間は `now` と `next_in_s` を機体の
   時計で進める)、`units 7/7 online`、

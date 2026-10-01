@@ -79,6 +79,7 @@ class FakeConductor:
         self.release = threading.Event()
         self.release.set()
         self.hold_paths = None          # None: `release` holds every path
+        self.preset = None              # the top-level preset object, if any
 
     def wait(self, next_in_s=25.0):
         """LOOP between runs: the run ended, the next one is pending."""
@@ -86,6 +87,25 @@ class FakeConductor:
         self.loop["next_in_s"] = next_in_s
         self.run = {"t0": 0.0, "state": "running", "held_at": None,
                     "now": DURATION + 3.0, "force": False}
+
+    def retrying(self):
+        """LOOP's restart is being retried (a unit not ready): the ended
+        run stays, `loop.waiting` is set, no next_in_s yet."""
+        self.loop["on"] = True
+        self.loop["next_in_s"] = None
+        self.loop["waiting"] = True
+        self.run = {"t0": 0.0, "state": "running", "held_at": None,
+                    "now": DURATION + 3.0, "force": False}
+
+    def presetting(self, painted=("radxa-01", "radxa-02", "radxa-03",
+                                  "radxa-04", "radxa-05")):
+        """START's first stage: the first picture going onto the units."""
+        self.run = {"t0": 0.0, "state": "preset", "phase": "preset",
+                    "held_at": None, "now": 0.0, "force": False}
+        self.preset = {"targets": list(UNITS), "painted": list(painted),
+                       "waiting_for": [u for u in UNITS if u not in painted],
+                       "elapsed_s": 4.2, "cap_s": 45, "lead_s": COUNTDOWN,
+                       "loop": False}
 
     def posts(self):
         return [(path, body) for method, path, body, _ in self.calls
@@ -100,6 +120,8 @@ class FakeConductor:
                 "show_duration": DURATION if self.uploaded else None,
                 "start_at": 0.0, "last_fire": None, "corrections": [],
                 "prepared": {}, "timeline": {}}
+        if self.preset is not None:
+            snap["preset"] = dict(self.preset)
         if not self.old:
             snap["loop"] = dict(self.loop)
             snap["speaker"] = dict(self.speaker)
@@ -220,7 +242,9 @@ class FakeConductor:
         if method == "POST" and path == "/api/fleet/stop":
             assert body == {}
             self.run = None
+            self.preset = None
             self.loop["next_in_s"] = None       # ...and the pending restart
+            self.loop["waiting"] = False
             return 200, {"units": {u: {"ok": True} for u in UNITS}}
         if method == "POST" and path == "/api/loop":
             assert isinstance(body.get("on"), bool)
@@ -636,6 +660,63 @@ def test_a_held_key1_stops_the_loops_pending_restart_too():
     assert fake.posts() == [("/api/fleet/stop", {})]
     assert fake.run is None and fake.loop["next_in_s"] is None
     assert ex.run_text() == "idle" and not ex.active
+
+
+def test_the_preset_stage_shows_who_painted_and_a_held_key1_stops_it():
+    ex, fake = make_exhibition()
+    fake.presetting()
+    ex.poll()
+    assert ex.run_text() == "preset… 5/7 painted"
+    assert ex.active is True and not ex.waiting
+    app, _ = make_app(ex)
+    enter(app)
+    app.draw()                                   # amber, the STOP hint
+    fake.presetting(painted=UNITS)
+    ex.poll()
+    assert ex.run_text() == "preset… 7/7 painted"
+    # No preset object (a Conductor between versions): still the stage.
+    fake.preset = None
+    ex.poll()
+    assert ex.run_text() == "preset…" and ex.active
+    fake.presetting()
+    ex.poll()
+    app.handle("key1_hold")
+    assert wait_until(lambda: ex.phase == DONE)
+    assert fake.posts() == [("/api/fleet/stop", {})]
+    assert fake.run is None and fake.preset is None
+    assert ex.run_text() == "idle" and not ex.active
+    # The stage flows on: preset -> countdown -> running.
+    fake.run = {"t0": 0.0, "state": "running", "now": -COUNTDOWN}
+    ex.poll()
+    assert ex.run_text() == "countdown -0:11"
+
+
+def test_a_loop_restart_being_retried_reads_loop_waiting():
+    ex, fake = make_exhibition()
+    fake.retrying()
+    ex.poll()
+    assert fake.run is not None
+    assert ex.run_text() == "loop waiting"       # not "ended 10:54 / 10:54"
+    assert ex.active is True and ex.waiting is True and ex.loop_waiting()
+    assert ex.loop_text() == "LOOP on"
+    app, _ = make_app(ex)
+    enter(app)
+    app.draw()                                   # amber, "(loop waiting)" hint
+    # The pending restart found its moment: next_in_s wins the line.
+    fake.loop["next_in_s"] = 12.0
+    ex.poll()
+    assert ex.run_text() == "next run in 0:12"
+    fake.retrying()
+    ex.poll()
+    app.handle("key1_hold")                      # STOP ends the retrying too
+    assert wait_until(lambda: ex.phase == DONE)
+    assert fake.posts() == [("/api/fleet/stop", {})]
+    assert ex.run_text() == "idle" and not ex.active and not ex.loop_waiting()
+    # `waiting` with the loop off means nothing.
+    fake.loop["waiting"] = True
+    fake.loop["on"] = False
+    ex.poll()
+    assert ex.run_text() == "idle" and not ex.waiting
 
 
 # ---- the unit that IS the Conductor (HIGH-1) ----
@@ -1160,6 +1241,10 @@ def test_the_screen_renders_every_state():
          "speaker ?", DONE, "STOP · 7/7 units", True),
         (True, show, "next run in 0:25", "units 7/7 online", "LOOP on",
          "speaker ok", DONE, "LOOP on", False),
+        (True, show, "preset… 5/7 painted", "units 7/7 online", "LOOP off",
+         "speaker ok", DONE, "START in 11 s · 7/7 units", True),
+        (True, show, "loop waiting", "units 6/7 online", "LOOP on",
+         "speaker ok", IDLE, "", True),
         (True, ("AZ_show_2026", "18 cues · 10:54 · not uploaded"), "idle",
          "units 0/7 online", "LOOP off", "speaker ok", FAILED,
          "ERROR every unit holds an older upload than the timeline on "

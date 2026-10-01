@@ -785,7 +785,7 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
     draw.line((8, 68, WIDTH - 8, 68), fill=BAR, width=1)
 
     # The run: bright while something is happening, quiet when idle.
-    if run.startswith("countdown") or run.startswith("hold"):
+    if run.startswith(("countdown", "hold", "preset", "loop waiting")):
         tint = WARN
     elif run.endswith("running") or run.startswith("next run"):
         tint = OK
@@ -842,6 +842,8 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
         # LOOP between runs: STOP cancels the restart the Conductor
         # has pending, which is the thing the operator must know.
         hint = "hold KEY1 = STOP (no next run)"
+    elif run == "loop waiting":
+        hint = "hold KEY1 = STOP (loop waiting)"
     elif active:
         hint = "hold KEY1 = STOP  KEY2 back"
     else:
