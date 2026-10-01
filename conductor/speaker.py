@@ -108,14 +108,18 @@ MPG123 = "mpg123"
 # source - so loudness is entirely the source's AVRCP absolute volume, the
 # bluez MediaTransport1 `Volume` (0-127; 47 was quiet, 90 comfortable, 127
 # loud), set with busctl as user radxa. Its object path's fdN changes on
-# every reconnect, so it is looked up each time. A plain USB speaker is the
+# every reconnect, so it is looked up each time - and so does its parent:
+# BlueZ 5.55 hangs it under the endpoint (`.../dev_<MAC>/sep1/fd3`) on one
+# connection and straight under the device (`.../dev_<MAC>/fd0`) on another
+# (both seen on radxa-05, 2026-10-01 - the second after a re-pair, when the
+# volume silently stopped applying). A plain USB speaker is the
 # PulseAudio default sink's own volume instead. Stored per host in
 # fleet.json ("speaker_volume", 0-100, VOLUME_DEFAULT), applied at startup,
 # whenever the sink or transport (re)appears, and on every change.
 VOLUME_DEFAULT = 70
 VOLUME_CHECK_S = 5.0
 VOLUME_APPLY_TIMEOUT_S = 1.5    # how long a POST waits for the thread to apply
-_TRANSPORT_RE = r"/org/bluez/hci[0-9]+/dev_{mac}/sep[0-9]+/fd[0-9]+"
+_TRANSPORT_RE = r"/org/bluez/hci[0-9]+/dev_{mac}(?:/sep[0-9]+)?/fd[0-9]+"
 # The Bluetooth speaker's connection (see the module doc).
 CONNECTION_CHECK_S = 10.0       # bluetoothctl info + pactl list, idle
 CONNECTION_CHECK_RUN_S = 2.0    # ...while a run is active

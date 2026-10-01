@@ -2115,8 +2115,12 @@ class FakeAudio:
             lines = ["/org/bluez/hci0", "/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB",
                      "/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/player0"]
             if self.transport_fd is not None:
+                # BlueZ hangs the transport under the endpoint on one
+                # connection and straight under the device on another.
+                parent = ("" if getattr(self, "direct_transport", False)
+                          else "/sep1")
                 lines += [f"/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/sep1",
-                          f"/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/sep1/fd{self.transport_fd}"]
+                          f"/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB{parent}/fd{self.transport_fd}"]
             return 0, "\n".join(lines) + "\n"
         if argv[:3] == ["busctl", "--system", "set-property"]:
             if argv[4].endswith(f"/fd{self.transport_fd}"):
@@ -2162,6 +2166,21 @@ def test_the_volume_goes_to_the_pulse_sink_for_a_usb_speaker(tmp_path):
         n = len([c for c in audio.calls if c[:2] == ["pactl", "set-sink-volume"]])
         time.sleep(0.3)
         assert len([c for c in audio.calls if c[:2] == ["pactl", "set-sink-volume"]]) == n
+    finally:
+        st.speaker.stop()
+
+
+def test_the_volume_finds_a_transport_straight_under_the_device(tmp_path):
+    # radxa-05, 2026-10-01: after a re-pair BlueZ put the transport at
+    # .../dev_<MAC>/fd0 (no sepN in between) and the volume stopped applying.
+    audio = FakeAudio(sink="bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink", transport_fd=0)
+    audio.direct_transport = True
+    st = _volume_stage(tmp_path, audio, volume=100)
+    st.speaker.start()
+    try:
+        assert st.wait_for(lambda: st.speaker.status()["applied"] == "bluez")
+        assert audio.bluez_volume == ("/org/bluez/hci0/dev_AC_BF_71_FA_8F_AB/fd0", 127)
+        assert st.speaker.status()["volume_error"] is None
     finally:
         st.speaker.stop()
 
