@@ -1228,6 +1228,62 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   ページ: 大時計 `ENDED · NEXT RUN IN 0:45 (run 2)`、NOW → NEXT ボード(ステージ
   モニターも)は見出し `NEXT RUN in 45 s` と `0:45`(10 秒で琥珀、3 秒で赤)、注記に
   理由。STOP の確認文に「Loop も止まる」
+- **Preset before START**(2026-10-01、展示の実機テスト: カウントダウン 3 秒では 0:00 の絵が曲の
+  前に描き終わらなかった): `show.json` の `preset_before_start`(**既定 off = キーなし**、on は
+  `true` だけを保存 ― `set_preset_before_start` も `import_show` も同じ規則で、`false` の
+  ファイルを読み込むとキーが消える。undo・書き出し / 読み込み、`_REVISION_IGNORES`、機体には
+  届かない)。**PC のファッションショー**の show.json にはキーが無いので off のまま: ② プリセット
+  → ③ START → 11 秒のカウントダウン → 0:00 は以前と同じ。**展示の Conductor** のワークスペース
+  ではページの「Preset before START」チェックボックスで on にする(PC で on にしてから tar /
+  show ファイルで渡せば一緒に運ばれる)。on のとき
+  0:00 からの ③ START と Loop の再スタートは **PRESET → カウントダウン → 0:00**:
+  `Fleet.start_show(preset_first=True)` は既存の `/show/preset` を全対象機体に送って
+  `_staging` に START の内容(lead、force、`forced_units`、skip、世代)を覚え、ループの
+  スレッド(`_staging_tick`、0.25 秒おき)が各機体の `/status.show.applied == 最初のキュー id`
+  かつ `dirty` でない を見てから、その機体の 0:00 の絵の描画時間(コンパイル済みキューの
+  `refresh_s + span`、無ければ 10 秒)+ 0.5 秒待ち、全機体が揃ったら `start_show(lead=
+  カウントダウン)`(T0 = カウントダウン後)。**最長 45 秒**(`PRESET_WAIT_MAX_S`)で揃わなければ
+  遅い機体を corrections に名指しして始める。機体は立っている 0:00 の絵を T0 で描き直さない
+  (ui/showplay.py `preset()`/`run()`: applied == 最初のキュー なら forget しない ―
+  `test_preset_survives_a_run_no_bump_and_is_not_repainted_at_start`)。STOP・どの T0 移動も
+  ステージを捨てる(世代チェック)。途中位置からの START と off のときは main と同じ即時 START。
+  **描き済みの近道**: この Conductor 自身の `/show/preset`(② の手動プリセットか前のステージ)の
+  返答時刻を機体ごとに覚え(`_preset_at`、run の開始と その機体への Upload で忘れる)、返答より
+  後に問い合わせた status が `applied == 最初のキュー`・`dirty` でない・running / holding でない
+  機体には二度送らない(送ると機体の `preset()` は garment を忘れてもう一度描く = 目に見える
+  二度描き)。全対象がそうで、しかも返答から描画時間 + 0.5 秒を過ぎていれば**ステージを作らず
+  即カウントダウン**(② → ③ は off と同じタイミング)。まだ描画中なら送らずに待つ。プリセットが
+  描画時間 + 0.5 + 5 秒(`PRESET_INFLIGHT_S`)より若く、まだ発火の報告が無い機体(② の直後の ③)
+  も送らずに待つ。それ以外は送る。**数えるのは返答より後の status だけ**(`UnitLink.status_sent`
+  ― 飛行中のポーリングが前の絵を報告しても数えない)。
+  **断った機体**: 「the show is running」(前の run がまだ ENDED になっていない ― Loop の待ち 0 で
+  終わりの直後に再スタートが来たとき)と「unit is busy」は一時的なので、**0.5 秒おきに最長 10 秒**
+  (`PRESET_RETRY_S` / `PRESET_RETRY_FOR_S`)もう一度プリセットを送り、その間は待つ(`preset.retrying`)。
+  受け付けたら他の機体と同じく描き終わりを待つ。10 秒過ぎても断る機体と、それ以外の理由(応答なし
+  など)で断った機体は待たない ― corrections に名指しし、`preset.refused` に出し、開始はいつも通り
+  送る。ページの `PRESET… n/N painted` の N は待つ機体の数(`preset.waited`、LCD も同じ数を使える。
+  断った機体は数えず「(1 refused)」)。返答では送り直し中の機体はエラーでなく `retrying: true`。
+  0:00 の絵なしで始まった機体は run の `preset_left_out = {at, units: {名前: 理由}}` に載り、
+  ページが run ごとに一度だけ警告の toast を出す。「inflight」と見なした機体が窓の終わりまで
+  報告しなければ一度だけプリセットを送り直す(45 秒待たない)。`fire()` / `prepare()`(単発の
+  テストの絵)はその機体の `_preset_at` を忘れる ― ② のあとのテストの絵で近道を取らない。
+  ステージ中(終わった run の上で)は監督が古い T0 の `/show/run` 補正を送らない ― 戻って来た
+  機体が 0:00 の絵の上に最後のキューを出さないように。
+  **走っている(holding の)ショーに force の START** はステージを作らず、カウントダウン付きで
+  即開始(機体は走行中のプリセットを断るため)。終わった run(ENDED、Loop の待ち)はステージ。
+  **ステージの終わり**で、ステージ中に用意できなくなった機体(オフライン、絵の消去)は開始の
+  ゲートで全体を断らず名指しで外す(Loop は `_loop_skipped` / 「started without X」、全体の
+  待ち + 60 秒の猶予をやり直さない)。戻れば監督が「started late」で入れる。SEEK / HOLD / RESUME /
+  NEXT がステージを捨てたら corrections に一行。同時の START 2 つは run ロックの下の
+  check-and-set で片方だけがステージ(もう片方は「starting (preset first)」)。ステージ中は
+  Upload・デモ保存・Clear pictures・ワークスペース tar の読み込みも run 中と同じく断る(「the
+  show is starting (preset first) - STOP it first」)。Loop のステージ中は終わりの自動消去もしない。
+  `/api/fleet`: ステージ中は **`run = {"state": "preset", "phase": "preset", "now": 0, "t0": null,
+  "preset": {...}}`**(LCD は `run.phase == "preset"` で「preset…」)と `preset: {phase, targets,
+  painted, waiting_for, refused, already, elapsed_s, cap_s, lead_s, loop}`、`POST
+  /api/fleet/start` の返答に `staged: true` と注記(近道で即開始したときは付かない)。ページの大時計 `PRESET… n/N painted`、ボードは「loaded」扱い、
+  ステージ中の ③ START は「starting (preset first)」の注記、STOP で中止。
+  `loop_settings()` は 3 要素 `(wait, countdown, preset_first)`。
 - **Conductor 再起動後のショーの引き取り**(`Fleet.offer_shows` / `_adopt_show`、**`serve --adopt`
   か fleet.json `"adopt": true` のときだけ** ― PC の既定の起動は main と同じで何も提示しない):
   `fleet.shows` はメモリだけなので、systemd の再起動のあと Conductor は誰が何を持っているか

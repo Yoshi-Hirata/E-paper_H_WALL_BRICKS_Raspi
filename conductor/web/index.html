@@ -3882,6 +3882,7 @@ function fleetShowPos() {
   if (!fleet) return 0;
   const run = fleet.run;
   if (!run) return fleetStartAt();
+  if (run.state === "preset") return 0;          // the 0:00 look going up; nothing moves yet
   if (run.state === "holding") return run.now;
   return run.now + (performance.now() - fleet.at) / 1000;
 }
@@ -4148,6 +4149,21 @@ function loopNextIn() {
   return Math.max(0, loop.next_in_s - (performance.now() - fleet.at) / 1000);
 }
 const NEXT_NOT_YET = "The show has not started yet";
+// "Preset before START" (2026-10-01, from the live exhibition test: with a
+// 3 s countdown the 0:00 look had no time to paint before the music). OFF by
+// default - the PC's fashion show keeps ② preset → ③ START → countdown; the
+// exhibition workspace ticks it on. Stored with the show (show.json's
+// preset_before_start, true only); never part of what a unit is sent.
+const PRESET_BEFORE_TITLE = "③ START の前にプリセット: まず 0:00 の絵を全衣装に出し、"
+  + "描き終わるのを待ってからカウントダウン → 0:00(曲とショー)。Loop の再スタートも同じ順。"
+  + "② でプリセット済み・描き終わった衣装には二度送らず、全員そうなら即カウントダウン。"
+  + "既定 off(展示ではオンにする)。ショーと一緒に保存、Upload 不要。"
+  + "\n\nPreset before START: the 0:00 look goes up on every garment first; the "
+  + "countdown begins once every one has painted it (at most 45 s, then anyway), and "
+  + "the music starts at 0:00. Loop restarts do the same. A garment that already shows "
+  + "the look from ② Show preset is not preset again - if all do, the countdown starts "
+  + "at once. Off by default (tick it for the exhibition). Stored with the show, no "
+  + "Upload needed.";
 // A typed number of seconds, read the way the server reads it: NFKC first (so
 // full-width "１１" is 11), then rounded to a tenth exactly as Python's
 // round(x, 1) does - to the nearest tenth of the double's exact value, an
@@ -4292,6 +4308,9 @@ const SHOWBOARD = (() => {
   //   "running" / "holding" / "ended" (past the show's own length)
   function phase(run, t, duration, ranBefore) {
     if (!run) return ranBefore ? "kept" : "loaded";
+    // A START in its PRESET stage: the 0:00 look is going up and nothing
+    // counts yet - the board reads as "loaded" (START runs from 0:00).
+    if (run.state === "preset") return "loaded";
     if (run.state === "holding") return "holding";
     if (duration > 0 && t >= duration) return "ended";
     return "running";
@@ -5108,6 +5127,9 @@ function renderFleet() {
           id="show-loop" ${loopWait() !== null ? "checked" : ""}>
           Loop: next run after <input type="text" id="show-loop-wait"
           value="${loopWaitShown()}" title="${esc(loopMinTitle())}" style="width:46px"> s</label>
+        <label class="meta" title="${esc(PRESET_BEFORE_TITLE)}"><input type="checkbox"
+          id="show-preset-before" ${state.show.preset_before_start === true ? "checked" : ""}>
+          Preset before START</label>
         <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
           id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
           Clear pictures after the show
@@ -5206,7 +5228,19 @@ function showClockText() {
   }
   const run = fleet.run;
   let now = null, word = "NOT STARTED", big = null, tone = "";
-  if (run) {
+  if (run && run.state === "preset") {
+    // PRESET -> countdown -> 0:00: the 0:00 look is going up, with how
+    // many garments have painted it so far (fleet.preset). N is the units
+    // waited for: one that refused the preset is counted out, and said.
+    const p = run.preset || fleet.preset || {};
+    const refused = Object.keys(p.refused || {});
+    const waited = (p.targets || []).filter(n => !refused.includes(n));
+    const painted = (p.painted || []).filter(n => waited.includes(n)).length,
+          total = typeof p.waited === "number" ? p.waited : waited.length;
+    now = 0;
+    word = `PRESET… ${painted}/${total} painted`
+      + (refused.length ? ` (${refused.length} refused)` : "") + (p.loop ? " (Loop)" : "");
+  } else if (run) {
     now = run.state === "holding" ? run.now : run.now + (performance.now() - fleet.at) / 1000;
     word = run.state === "holding" ? "ON HOLD" : "RUNNING" + (run.adopted ? " (RECOVERED FROM THE UNITS)" : "");
     // ③ START's countdown: "START in 11 s" over a big -0:11, counting to
@@ -5873,6 +5907,21 @@ function renderTiles() {
 async function fetchFleet() {
   try { fleet = await api("/api/fleet"); fleet.at = performance.now(); applySpeakerDefault(); }
   catch (err) { /* the server is restarting */ }
+  notePresetLeftOut();
+}
+// A staged START (Preset before START) that went on without the 0:00 look on
+// some garments says so ONCE per run, as a warning - the corrections line
+// alone is easy to miss (run.preset_left_out, keyed by the run's first T0).
+function notePresetLeftOut() {
+  const left = fleet && fleet.run && fleet.run.preset_left_out;
+  if (!left || !left.units) return;
+  const key = String(left.at);
+  if (ui.presetLeftOutSaid === key) return;
+  ui.presetLeftOutSaid = key;
+  const names = Object.keys(left.units);
+  if (!names.length) return;
+  toast(`The show started without the 0:00 look on ${names.join(", ")} - `
+    + names.map(n => `${n}: ${left.units[n]}`).join("; "), "warn");
 }
 // Once a second on the Units tab (and while the dialog is open anywhere,
 // so its per-unit burn keeps up with the tiles); every fifth second on the
@@ -6100,7 +6149,7 @@ document.addEventListener("click", async e => {
     // first one and sent WITHOUT `force` (the server agrees: run_is_over).
     // The burn-gate force is the operator's own answer to one question,
     // never something a restart inherits.
-    const again = !!fleet?.run && !runIsOver(), startAt = fleetStartAt();
+    const again = !!fleet?.run && fleet.run.state !== "preset" && !runIsOver(), startAt = fleetStartAt();
     // A unit that failed to burn some boards does not block START outright -
     // the operator may choose to start anyway, missing boards and all - but
     // is asked first, the same way an already-running show asks before it
@@ -6441,6 +6490,18 @@ document.addEventListener("change", async e => {
     const on = e.target.checked;
     try {
       await api("/api/show/clear_after", { on });
+    } catch (err) {
+      toast(`Could not save it: ${err.message}`);
+    }
+    await refresh();
+    render();
+    return;
+  }
+  // "Preset before START": stored with the show like the two above.
+  if (id === "show-preset-before") {
+    const on = e.target.checked;
+    try {
+      await api("/api/show/preset_before", { on });
     } catch (err) {
       toast(`Could not save it: ${err.message}`);
     }

@@ -105,6 +105,36 @@ LOOP_RETRY_S = 5.0
 # garment must never freeze the whole exhibition. The others are still
 # polled and supervised, and rejoin at the next restart.
 LOOP_WAIT_READY_S = 60.0
+# "Preset before START" (2026-10-01, the operator, from the live exhibition
+# test: with a 3 s countdown the 0:00 look had no time to paint before the
+# music). A START - and every Loop restart - then goes PRESET (the 0:00 look
+# painted on every garment) -> countdown -> 0:00. The Conductor waits for
+# every target unit to report the first cue applied, then that cue's paint
+# time (its refresh_s + span, from the compiled show) + PRESET_SETTLE_S, and
+# at most PRESET_WAIT_MAX_S in all - then starts anyway, naming who was late.
+# The unit itself never repaints a 0:00 look that already stands (ui/showplay
+# preset()/run(): "START does not repaint it").
+PRESET_SETTLE_S = 0.5
+PRESET_WAIT_MAX_S = 45.0
+PRESET_PAINT_FALLBACK_S = 10.0
+# A unit THIS Conductor preset (the manual (2) or a stage) is not preset
+# again by the stage when it already shows that look, or when the preset is
+# younger than its paint time + PRESET_SETTLE_S + this and the unit has not
+# reported the fire yet: a second /show/preset would forget the garment and
+# paint the same look twice, visibly (review of d64e6e0, HIGH-2).
+PRESET_INFLIGHT_S = 5.0
+# A unit that refuses a stage's /show/preset with one of these (its last run
+# not ENDED yet - with a Loop wait of 0 the restart lands within moments of
+# the end - or busy for a moment) is asked again every PRESET_RETRY_S for
+# PRESET_RETRY_FOR_S, and waited for meanwhile, before it counts as refused
+# (PM, after the review of d64e6e0: otherwise it starts without its 0:00
+# look painted - the very start the operator complained about).
+PRESET_RETRY_ON = ("the show is running", "unit is busy")
+PRESET_RETRY_S = 0.5
+PRESET_RETRY_FOR_S = 10.0
+# What a second START during the PRESET stage is told (the server's own
+# check, and the check-and-set under the run lock behind it).
+STAGING_BUSY = "The show is starting (preset first) - wait for the countdown, or STOP."
 # The fleet-wide Wi-Fi switch (EXHIBITION mode): the side that must move
 # first gets the short lead, the other side the long one, so the hotspot is
 # up before its clients look for it and down only after they have left.
@@ -195,6 +225,12 @@ class UnitLink:
         self._suspect: "tuple[float, float] | None" = None
 
         self.status: "dict | None" = None
+        # When the request whose answer `status` is was SENT (this PC's
+        # clock): anything the unit says in it was true at or after that
+        # instant. The PRESET stage counts a unit's 0:00 look only from a
+        # status asked for after its /show/preset was answered - a poll
+        # already in flight would otherwise report the look it had before.
+        self.status_sent: "float | None" = None
         self.last_seen: "float | None" = None
         self.error: "str | None" = None
         self.rtt: "float | None" = None
@@ -242,7 +278,7 @@ class UnitLink:
                 if suspect is None or abs(offset - suspect[1]) > JUMP_S:
                     self.rtt, self.last_seen, self.error = rtt, received, None
                     if "phase" in payload:
-                        self.status = payload
+                        self.status, self.status_sent = payload, sent
                     return
                 self._samples.clear()
                 self._samples.append(suspect)
@@ -250,7 +286,7 @@ class UnitLink:
             self._samples.append((rtt, offset))
             self.rtt = rtt
             if "phase" in payload:
-                self.status = payload
+                self.status, self.status_sent = payload, sent
             self.last_seen = received
             self.error = None
 
@@ -483,6 +519,16 @@ class Fleet:
         # Loop's restarts may wave through again (see _still_waved).
         self._waved: "dict[str, tuple]" = {}
         self._waved_said: "set[str]" = set()        # the set the corrections last named
+        # A START in its PRESET stage (start_show(preset_first=True)): what
+        # the start will be, who has painted the 0:00 look and when, and
+        # the deadline past which it starts anyway. None otherwise.
+        self._staging: "dict | None" = None
+        # {unit: when its answer to THIS Conductor's last /show/preset came
+        # back} - the manual (2) or a stage's. Forgotten by a run's start
+        # (the garment moves on) and by an Upload to that unit. What lets a
+        # START with "Preset before START" on skip the units already showing
+        # the 0:00 look (_own_preset).
+        self._preset_at: "dict[str, float]" = {}
         # The two windows the clear after the show waits out: after a STOP
         # (the director's mid-show abort), and after any T0 move (so a seek
         # in the last seconds cannot delete the show). Knobs so the tests
@@ -648,11 +694,13 @@ class Fleet:
         included (the run generation is checked under the lock inside
         start_show).
         """
+        self._staging_tick()
         with self._run_lock:
             run = dict(self.run) if self.run else None
             at = self._loop_at
             gen = self._run_gen
-        if run is None or run["state"] != "running":
+            staging = self._staging is not None
+        if staging or run is None or run["state"] != "running":
             return
         now = self._clock()
         if at is None:
@@ -662,7 +710,7 @@ class Fleet:
             settings = self.loop_settings() if self.loop_settings else None
             if not settings:
                 return                      # Loop off: the run ends as ever
-            wait_s, lead_s = settings
+            wait_s, lead_s = settings[0], settings[1]
             with self._run_lock:
                 if self._run_gen != gen or self._loop_at is not None:
                     return                  # moved meanwhile: read it again
@@ -684,7 +732,8 @@ class Fleet:
                 self._loop_at = None
             self._note("Loop turned off - no next run")
             return
-        _wait_s, lead_s = settings
+        _wait_s, lead_s = settings[0], settings[1]
+        preset_first = bool(settings[2]) if len(settings) > 2 else False
         with self._run_lock:
             if self._loop_due is None:
                 self._loop_due = now
@@ -707,20 +756,45 @@ class Fleet:
         try:
             results = self.start_show(float(lead_s), 0.0, loop=True,
                                       skip=skip, expect_gen=gen,
-                                      forced_units=waved)
+                                      forced_units=waved,
+                                      preset_first=preset_first)
         except ValueError as exc:
-            reason = str(exc)
-            with self._run_lock:
-                if self._run_gen != gen:
-                    return                  # STOP or a move beat us to it
-                self._loop_at = now + self.loop_retry_s
-                said = reason in self._loop_said
-                self._loop_said.add(reason)
-                self._loop_problem = reason
-            if not said:
-                self._note(f"Loop: cannot start again yet ({reason}) - "
-                           f"trying every {self.loop_retry_s:.0f} s")
+            self._loop_refused(gen, now, str(exc))
             return
+        if results and all(r.get("preset") is True for r in results.values()):
+            # Staged (PRESET -> countdown -> 0:00): the run has not started
+            # yet. The stage's end (_staging_tick) starts it, works out who
+            # is ready THEN (MED-2) and writes the "Loop: run n started"
+            # line - the reasons for who this restart already leaves out
+            # travel with the stage.
+            with self._run_lock:
+                if self._staging is not None and self._staging["gen"] == gen:
+                    self._staging["skip_why"] = {name: not_ready[name]
+                                                 for name in skip}
+            return
+        self._loop_started(results, skip, not_ready, waved, waved_signatures)
+
+    def _loop_refused(self, gen: int, now: float, reason: str) -> None:
+        """A Loop restart (or the start at the end of its PRESET stage) was
+        refused: try again every loop_retry_s, said once per reason."""
+        with self._run_lock:
+            if self._run_gen != gen:
+                return                      # STOP or a move beat us to it
+            if self._staging is not None:
+                return                      # an operator's START is presetting
+            self._loop_at = now + self.loop_retry_s
+            said = reason in self._loop_said
+            self._loop_said.add(reason)
+            self._loop_problem = reason
+        if not said:
+            self._note(f"Loop: cannot start again yet ({reason}) - "
+                       f"trying every {self.loop_retry_s:.0f} s")
+
+    def _loop_started(self, results: "dict[str, dict]", skip, not_ready: dict,
+                      waved: "set[str]", waved_signatures: dict) -> None:
+        """The bookkeeping and the corrections line of a Loop restart that
+        has just started its run - straight from _loop_tick(), or from the
+        end of the restart's PRESET stage."""
         failed = sorted(name for name, r in results.items() if not r.get("ok"))
         left_out = sorted(skip)
         problem = None
@@ -787,14 +861,16 @@ class Fleet:
         return {name for name, signature in self._waved.items()
                 if self._failure_signature(name) == signature}
 
-    def _not_ready(self, names, forced=()) -> "dict[str, str]":
+    def _not_ready(self, names, forced=(), force: bool = False) -> "dict[str, str]":
         """{unit: why} for the units of `names` a START would refuse on
         right now (offline, not holding the show, still writing, pictures
         cleared) - each message from _burn_problems starts with the unit's
         name. A unit left out of a run this way is not forgotten: it holds
         the show, so supervision puts it INTO the running show the moment
-        it answers with it ("started late"), not only at the next restart."""
-        problems = self._burn_problems(names, force=False, forced=forced)
+        it answers with it ("started late"), not only at the next restart.
+        `force` is the operator's START-wide one (the end of a PRESET
+        stage); the Loop's own restarts never pass it."""
+        problems = self._burn_problems(names, force=force, forced=forced)
         out: "dict[str, str]" = {}
         for name in names:
             mine = [p for p in problems if p.startswith(f"{name}:")]
@@ -1017,7 +1093,16 @@ class Fleet:
             # business - showing it would invite "Back to 0:00" to seek a
             # LIVE show back to the top (found in review).
             start_at = self.start_at if run is None else 0.0
-        if run:
+        preset = self.preset_state()
+        if preset is not None:
+            # A START in its PRESET stage: the page and the LCD see a run
+            # whose state and phase say "preset" (position 0:00, nothing
+            # counting) - the countdown begins when the start goes out.
+            run = {"t0": None, "state": "preset", "phase": "preset",
+                   "held_at": None, "now": 0.0, "force": False,
+                   "preset": preset, "loops": self._loop_runs}
+            start_at = 0.0
+        if run and run["state"] != "preset":
             mark = run["held_at"] if run["state"] == "holding" else self._clock()
             run["now"] = round(mark - run["t0"], 2)
             # ...and whether this run's END can still bring a clear. A HOLD
@@ -1057,6 +1142,8 @@ class Fleet:
                 # EXHIBITION mode's Loop: the restart that is pending, or
                 # null - the page's "next run in m:ss" (loop_state()).
                 "loop": self.loop_state(),
+                # The PRESET stage of a START, or null (preset_state()).
+                "preset": preset,
                 "burn": {"burned": burned, "total": len(reporting)}}
 
     def _unit_snapshot(self, link, run: "dict | None" = None) -> dict:
@@ -1447,6 +1534,9 @@ class Fleet:
             # emptied them is history: a unit written here may be asked to
             # clear again when this show ends.
             for name in targets:
+                # A load (taken or not) is not the 0:00 look this
+                # Conductor preset: the next stage presets the unit again.
+                self._preset_at.pop(name, None)
                 if results.get(name, {}).get("ok"):
                     self._clear_told.discard(name)
                     self._clear_too_old.discard(name)
@@ -1693,14 +1783,20 @@ class Fleet:
         if problems:
             raise ValueError("; ".join(problems))
         body = {"force": bool(force)}
-        return self._each(targets, lambda link: {
-            "phase": link.post("/show/preset", body).get("phase")})
+
+        def action(link):
+            phase = link.post("/show/preset", body).get("phase")
+            # Remembered: a START right after this (with "Preset before
+            # START" on) need not preset this unit again (_own_preset).
+            self._preset_at[link.name] = self._clock()
+            return {"phase": phase}
+        return self._each(targets, action)
 
     def start_show(self, lead_s: float = DEFAULT_LEAD_S,
                    at: float = 0.0, force: bool = False,
                    loop: bool = False, skip=(),
                    expect_gen: "int | None" = None,
-                   forced_units=()) -> "dict[str, dict]":
+                   forced_units=(), preset_first: bool = False) -> "dict[str, dict]":
         """Begin the show `lead_s` from now, `at` seconds into it (0.0 for
         the top). The caller resolves `at` itself - normally
         `fleet.start_at`, where a SEEK made before the show started (or
@@ -1735,6 +1831,24 @@ class Fleet:
             self._cancel_armed_clear()
         duration = self.show_duration()
         at = self._clamped(at, 0.0, duration)
+        # A forced START over a show that is still running (or held) is
+        # never staged: the units refuse a preset while they run ("the show
+        # is running"), so it starts at once with its countdown, exactly as
+        # before (review of d64e6e0, MED-1). A run that has reached its END
+        # (ENDED, a Loop wait) is not running: that START is staged.
+        live = self.run is not None and not self.run_is_over()
+        if preset_first and at == 0.0 and not live:
+            # PRESET -> countdown -> 0:00 (see PRESET_WAIT_MAX_S): the 0:00
+            # look goes up now, the START itself follows from the loop
+            # thread (_staging_tick) once every garment has painted it.
+            # Everything below - the gate, the generation, the run - is
+            # that later start's; this returns the preset's own results.
+            staged = self._stage_start(lead_s, force, loop, skip, expect_gen,
+                                       forced_units, duration)
+            if staged is not None:
+                return staged
+            # None: every target already shows THIS Conductor's 0:00 look,
+            # painted - the countdown starts now, the old timing exactly.
         if not 0 <= at <= duration:
             raise ValueError(f"The show is {timeline.format_clock(0)} to "
                              f"{timeline.format_clock(duration)}.")
@@ -1760,7 +1874,11 @@ class Fleet:
             if expect_gen is not None and (self._run_gen != expect_gen
                                            or self._stopped):
                 raise ValueError("stopped or moved meanwhile")
+            self._staging = None            # a start is the end of any stage
             self._may_adopt, self._stopped = False, False
+            # The garments move on from the 0:00 look with this run: the
+            # next staged START presets them again.
+            self._preset_at = {}
             self._loop_runs = self._loop_runs + 1 if loop else 0
             if not loop:
                 self._loop_skipped = {}     # a START press: every fault is new
@@ -1783,6 +1901,420 @@ class Fleet:
             self._t0_moved()
         return self._send_run(targets)
 
+    # ---- PRESET -> countdown -> 0:00 (start_show(preset_first=True)) ----
+
+    def _stage_start(self, lead_s: float, force: bool, loop: bool, skip,
+                     expect_gen, forced_units,
+                     duration: float) -> "dict[str, dict] | None":
+        """Send the 0:00 look to the start's targets and remember the start
+        for _staging_tick(). The same gate as the start itself (a unit that
+        would refuse the run refuses the preset), the same `force` and
+        per-unit `forced_units`; a pending Loop wait ends here (the restart
+        has begun - the page shows PRESET, not a countdown).
+
+        A unit already showing THIS Conductor's own preset (the manual (2)
+        or an earlier stage, see _own_preset) is not preset again - a
+        second /show/preset would forget the garment and paint the same
+        look twice. When every target shows it AND has had its paint time,
+        nothing is staged at all: this returns None and start_show() starts
+        at once (the PC's (2) preset -> (3) START, the old timing exactly).
+
+        Every result is marked `"preset": True` (posted, refused, or
+        `"already": True`), which is how a caller tells a stage from a
+        start. A unit whose /show/preset is REFUSED (the show is running
+        there, the unit is busy, it does not answer) is not waited for: it
+        is named in the corrections and still sent the start (MED-1)."""
+        targets = [name for name in self._targets() if name not in set(skip)]
+        if not targets:
+            raise ValueError("no unit is ready")
+        problems = self._burn_problems(targets, force=force, forced=forced_units)
+        if problems:
+            raise ValueError("; ".join(problems))
+        now = self._clock()
+        standing = {name: found for name in targets
+                    for found in [self._own_preset(name, now)] if found}
+        if all(name in standing and standing[name][0] == "painted"
+               and now >= standing[name][1] + self._paint_s(name) + PRESET_SETTLE_S
+               for name in targets):
+            with self._run_lock:
+                if self._staging is not None:
+                    raise ValueError(STAGING_BUSY)
+            self._note("START: every garment already shows the 0:00 look - "
+                       "no second preset, the countdown starts now")
+            return None
+        with self._run_lock:
+            # Check-and-set: two START presses landing together (two pages,
+            # a double click) must not both stage (LOW-7).
+            if self._staging is not None:
+                raise ValueError(STAGING_BUSY)
+            if expect_gen is not None and (self._run_gen != expect_gen
+                                           or self._stopped):
+                raise ValueError("stopped or moved meanwhile")
+            # This IS the START, as far as an earlier STOP is concerned: a
+            # START does the same (start_show). Left set, the first tick
+            # dropped the stage of every START after any STOP (HIGH-1).
+            self._may_adopt, self._stopped = False, False
+            gen = self._run_gen
+            self._loop_at = None
+            if loop:
+                self._loop_problem = None   # the retry it was waiting out is over
+            staging = {"since": now, "deadline": now + PRESET_WAIT_MAX_S,
+                       "lead_s": float(lead_s), "force": bool(force),
+                       "loop": bool(loop), "skip": set(skip),
+                       "forced": set(forced_units), "gen": gen,
+                       "targets": list(targets),
+                       # {unit: when its preset was answered} - only a
+                       # status asked for after that counts (LOW-2).
+                       "replied": {name: found[1] for name, found in standing.items()},
+                       # {unit: when it was first seen showing the look}
+                       "painted": {name: found[1] for name, found in standing.items()
+                                   if found[0] == "painted"},
+                       "already": sorted(standing),
+                       # {unit: its preset's answer} for the ones counted
+                       # "inflight" - sent again once if never reported
+                       # within the in-flight window (_represet_stale).
+                       "inflight": {name: found[1] for name, found in standing.items()
+                                    if found[0] == "inflight"},
+                       "refused": {},       # {unit: why} - not waited for
+                       # {unit: {"why", "next", "until"}} - refused for a
+                       # reason that passes in moments ("the show is
+                       # running" just before ENDED): asked again every
+                       # PRESET_RETRY_S, waited for meanwhile.
+                       "retry": {},
+                       "skip_why": {},      # the Loop's reasons for `skip`
+                       "duration": float(duration)}
+            self._staging = staging
+        send = [name for name in targets if name not in standing]
+        results = self._each(send, lambda link: {
+            "phase": self._post_preset(link, staging), "preset": True})
+        failed = {name: r.get("error") or "refused"
+                  for name, r in results.items() if not r.get("ok")}
+        for name in failed:
+            results[name]["preset"] = True
+        for name in standing:
+            results[name] = {"ok": True, "preset": True, "already": True}
+        # A unit that refuses only because its show has not flipped to
+        # ENDED yet (Loop wait 0: the restart lands within moments of the
+        # end) or is momentarily busy is asked again, not left without
+        # its 0:00 look (_retry_presets); the rest are refused outright.
+        now = self._clock()
+        retry = {name: {"why": why, "next": now + PRESET_RETRY_S,
+                        "until": now + PRESET_RETRY_FOR_S}
+                 for name, why in failed.items() if self._retryable(why)}
+        refused = {name: why for name, why in failed.items() if name not in retry}
+        for name in retry:
+            results[name] = {"ok": True, "preset": True, "retrying": True,
+                             "why": failed[name]}
+        with self._run_lock:
+            current = self._staging is staging
+            if current:
+                staging["refused"].update(refused)
+                staging["retry"].update(retry)
+        if not current:
+            return results                  # a STOP (or a move) beat the posts
+        sent = [name for name in send if name not in failed]
+        self._note("START: preset first - the 0:00 look goes up on "
+                   + (", ".join(sent) if sent else "no unit")
+                   + (f" ({', '.join(sorted(standing))} already show"
+                      f"{'s' if len(standing) == 1 else ''} it)" if standing else "")
+                   + (f" ({', '.join(sorted(retry))} not yet - asked again "
+                      f"every {PRESET_RETRY_S:g} s)" if retry else "")
+                   + ", the countdown follows")
+        self._say_refused(refused)
+        return results
+
+    def _post_preset(self, link, staging: dict):
+        """One /show/preset for a stage, with the stage's force; the answer
+        is remembered (_preset_at, the stage's `replied`). Raises what the
+        unit (or its own demo) refuses with."""
+        excuse = self._demo_excuse(link)
+        if excuse:
+            raise RuntimeError(excuse)
+        body = {"force": staging["force"] or link.name in staging["forced"]}
+        phase = link.post("/show/preset", body).get("phase")
+        replied = self._clock()
+        self._preset_at[link.name] = replied
+        with self._run_lock:
+            staging["replied"][link.name] = replied
+        return phase
+
+    @staticmethod
+    def _retryable(why: str) -> bool:
+        """A preset refusal that passes by itself within moments: the unit's
+        last run is still RUNNING (it turns ENDED on its next tick past the
+        end - ui/showplay.py), or it is busy for a moment."""
+        return any(text in str(why) for text in PRESET_RETRY_ON)
+
+    def _say_refused(self, refused: dict) -> None:
+        if refused:
+            self._note("START: " + "; ".join(f"{name} refused the preset ({why})"
+                                            for name, why in sorted(refused.items()))
+                       + " - not waited for, sent the start all the same")
+
+    def _represet_stale(self, staging: dict, now: float) -> None:
+        """A unit taken as "inflight" (this Conductor's own preset, too young
+        to have been reported) that still has not reported the look when
+        that window is over is sent the preset again - once - rather than
+        waited for until the 45 s cap."""
+        with self._run_lock:
+            if self._staging is not staging:
+                return
+            stale = [name for name, at in staging["inflight"].items()
+                     if name not in staging["painted"]
+                     and now >= at + self._paint_s(name) + PRESET_SETTLE_S
+                     + PRESET_INFLIGHT_S]
+            for name in stale:
+                del staging["inflight"][name]
+        if not stale:
+            return
+        self._note(f"START: {', '.join(stale)} never reported the 0:00 look "
+                   "from the earlier preset - sent it again")
+        results = self._each(stale, lambda link: {
+            "phase": self._post_preset(link, staging)})
+        now = self._clock()
+        refused = {}
+        with self._run_lock:
+            if self._staging is not staging:
+                return
+            for name in stale:
+                result = results.get(name) or {}
+                if result.get("ok"):
+                    continue
+                why = result.get("error") or "refused"
+                if self._retryable(why):
+                    staging["retry"][name] = {"why": why, "next": now + PRESET_RETRY_S,
+                                              "until": now + PRESET_RETRY_FOR_S}
+                else:
+                    staging["refused"][name] = refused[name] = why
+        self._say_refused(refused)
+
+    def _retry_presets(self, staging: dict, now: float) -> None:
+        """Ask again the units whose preset was refused for a passing reason
+        (_retryable), every PRESET_RETRY_S for PRESET_RETRY_FOR_S. Taken:
+        waited for like any other. Still refused after that (or refused
+        for another reason now): refused - named, not waited for, sent the
+        start all the same."""
+        with self._run_lock:
+            if self._staging is not staging:
+                return
+            due = [name for name, r in staging["retry"].items() if now >= r["next"]]
+        if not due:
+            return
+        results = self._each(due, lambda link: {
+            "phase": self._post_preset(link, staging)})
+        now = self._clock()
+        refused = {}
+        with self._run_lock:
+            if self._staging is not staging:
+                return
+            for name in due:
+                entry = staging["retry"].get(name)
+                if entry is None:
+                    continue
+                result = results.get(name) or {}
+                if result.get("ok"):
+                    del staging["retry"][name]
+                    continue
+                why = result.get("error") or "refused"
+                if self._retryable(why) and now < entry["until"]:
+                    entry.update(why=why, next=now + PRESET_RETRY_S)
+                    continue
+                del staging["retry"][name]
+                staging["refused"][name] = (
+                    f"{why}, still after {PRESET_RETRY_FOR_S:g} s"
+                    if self._retryable(why) else why)
+                refused[name] = staging["refused"][name]
+        self._say_refused(refused)
+
+    def _status_after(self, link, since: float) -> bool:
+        """Was this unit's current status asked for at or after `since`
+        (this PC's clock)? A link that does not say (a test's stub) is
+        taken as current."""
+        sent = getattr(link, "status_sent", None)
+        return sent is None or sent >= since
+
+    def _own_preset(self, name: str, now: float) -> "tuple[str, float] | None":
+        """Does this unit still stand on THIS Conductor's last preset?
+
+        ("painted", at): a status asked for after that preset was answered
+        (at `at`) shows its 0:00 cue applied, not dirty, not running - the
+        look is up (or going up) and needs no second /show/preset.
+        ("inflight", at): the preset is younger than its paint time +
+        PRESET_SETTLE_S + PRESET_INFLIGHT_S and no newer status has said
+        otherwise - the fire is on its way (a (3) START pressed right after
+        (2)). None: preset it."""
+        at = self._preset_at.get(name)
+        link = self.links.get(name)
+        if at is None or link is None or not link.online:
+            return None
+        unit = (link.status or {}).get("show") or {}
+        first = self._first_cue(name)
+        show = self.shows.get(name) or {}
+        if (not first or unit.get("id") != show.get("id")
+                or unit.get("state") in ("running", "holding")
+                or unit.get("dirty")):
+            return None
+        fresh = self._status_after(link, at)
+        if fresh and unit.get("applied") == first.get("id"):
+            return ("painted", at)
+        young = now - at < self._paint_s(name) + PRESET_SETTLE_S + PRESET_INFLIGHT_S
+        if young and (not fresh or unit.get("applied") is None):
+            return ("inflight", at)
+        return None
+
+    def _first_cue(self, name: str) -> "dict | None":
+        show = self.shows.get(name) or {}
+        cues = show.get("cues") or []
+        return cues[0] if cues else None
+
+    def _paint_s(self, name: str) -> float:
+        """How long this unit's 0:00 look takes to paint once fired: the
+        compiled first cue's refresh_s + span (conductor/showfile.py), or a
+        generous fallback for a show file that does not say."""
+        cue = self._first_cue(name)
+        if not cue:
+            return PRESET_PAINT_FALLBACK_S
+        try:
+            return float(cue.get("refresh_s") or 0.0) + float(cue.get("span") or 0.0) \
+                or PRESET_PAINT_FALLBACK_S
+        except (TypeError, ValueError):
+            return PRESET_PAINT_FALLBACK_S
+
+    def _staging_tick(self) -> None:
+        """While a START is in its PRESET stage: note each target the
+        moment its unit reports the 0:00 cue applied (and not dirty) in a
+        status asked for after its preset was answered, and start the show
+        once every target has had its paint time since then - or at the
+        deadline, naming who was late. A unit that refused the preset is
+        not waited for. Runs on the loop thread every LOOP_TICK_S.
+
+        At the end, whoever has stopped being ready DURING the stage (gone
+        offline, pictures cleared) is left out of the start by name - not
+        the whole start refused on the gate it passed at the press, and for
+        a Loop restart not a full wait + grace all over again (MED-2).
+        Supervision puts such a unit into the run the moment it answers
+        holding the show ("started late")."""
+        with self._run_lock:
+            staging = self._staging
+            if staging is None:
+                return
+            if self._run_gen != staging["gen"]:
+                self._staging = None        # a move (said by _t0_moved)
+                return
+        self._represet_stale(staging, self._clock())
+        self._retry_presets(staging, self._clock())
+        with self._run_lock:
+            if self._staging is not staging:
+                return
+            painted = dict(staging["painted"])
+            replied = dict(staging["replied"])
+            refused = dict(staging["refused"])
+        now = self._clock()
+        for name in staging["targets"]:
+            if name in painted or name not in replied:
+                continue
+            link = self.links.get(name)
+            unit = ((link.status if link else None) or {}).get("show") or {}
+            first = self._first_cue(name)
+            if (link is not None and link.online and first
+                    and unit.get("applied") == first.get("id")
+                    and not unit.get("dirty")
+                    and self._status_after(link, replied[name])):
+                painted[name] = now
+        waiting = [name for name in staging["targets"]
+                   if name not in refused
+                   and not (name in painted
+                            and now >= painted[name] + self._paint_s(name)
+                            + PRESET_SETTLE_S)]
+        with self._run_lock:
+            if self._staging is not staging:
+                return
+            staging["painted"].update(painted)
+            if waiting and now < staging["deadline"]:
+                return
+            self._staging = None            # the start takes it from here
+            skip_why = dict(staging["skip_why"])
+        if waiting:
+            self._note(f"START: {', '.join(waiting)} had not painted the 0:00 look "
+                       f"after {PRESET_WAIT_MAX_S:.0f} s - starting anyway")
+        loop = staging["loop"]
+        if loop:
+            # The Loop's own rules, read again now: who the operator's
+            # 'start anyway' still covers.
+            waved_signatures = dict(self._waved)
+            forced = self._still_waved()
+        else:
+            waved_signatures, forced = {}, set(staging["forced"])
+        candidates = [name for name in staging["targets"]
+                      if name not in staging["skip"]]
+        not_ready = self._not_ready(candidates, forced=forced,
+                                    force=staging["force"] and not loop)
+        skip = set(staging["skip"]) | set(not_ready)
+        why = dict(skip_why, **not_ready)
+        try:
+            results = self.start_show(staging["lead_s"], 0.0, force=staging["force"],
+                                      loop=loop, skip=skip,
+                                      expect_gen=staging["gen"],
+                                      forced_units=forced)
+        except ValueError as exc:
+            if loop:
+                self._loop_refused(staging["gen"], now, str(exc))
+            else:
+                self._note(f"START after the preset refused: {exc}")
+            return
+        # Who this run went on without the 0:00 look - on the run, so the
+        # page can say it out loud once (a toast; the corrections line is
+        # easy to miss). Keyed by the run's first T0.
+        left: "dict[str, str]" = {}
+        for name in waiting:
+            left[name] = f"had not painted it after {PRESET_WAIT_MAX_S:.0f} s"
+        for name, reason in refused.items():
+            left[name] = f"refused the preset: {reason}"
+        for name, reason in not_ready.items():
+            left[name] = f"left out: {reason}"
+        if left:
+            with self._run_lock:
+                if self.run is not None:
+                    self.run["preset_left_out"] = {"at": self.run["t0"],
+                                                   "units": left}
+        if loop:
+            self._loop_started(results, skip, why, forced, waved_signatures)
+            return
+        failed = sorted(name for name, r in results.items() if not r.get("ok"))
+        left_out = sorted(not_ready)
+        self._note("START: preset painted, countdown running"
+                   + (f" without {', '.join(left_out)} (not ready: "
+                      f"{'; '.join(not_ready[n] for n in left_out)})" if left_out else "")
+                   + (f" ({', '.join(failed)} did not take it)" if failed else ""))
+
+    def preset_state(self) -> "dict | None":
+        """What /api/fleet says while a START is in its PRESET stage (or
+        None): who has painted the 0:00 look, who is still being waited
+        for, who refused the preset (not waited for), how long since the
+        preset went out and the cap."""
+        with self._run_lock:
+            staging = self._staging
+            if staging is None:
+                return None
+            now = self._clock()
+            painted = sorted(staging["painted"])
+            refused = dict(staging["refused"])
+            return {"phase": "preset", "targets": list(staging["targets"]),
+                    "painted": painted,
+                    "waiting_for": [n for n in staging["targets"]
+                                    if n not in painted and n not in refused],
+                    "refused": refused,
+                    # how many units are waited for - the N of the page's
+                    # "n/N painted" (refused ones counted out); the LCD
+                    # can use the same number.
+                    "waited": len([n for n in staging["targets"] if n not in refused]),
+                    # asked again (refused for a passing reason), waited for
+                    "retrying": sorted(staging["retry"]),
+                    "already": list(staging["already"]),
+                    "elapsed_s": round(now - staging["since"], 1),
+                    "cap_s": PRESET_WAIT_MAX_S, "lead_s": staging["lead_s"],
+                    "loop": staging["loop"]}
+
     def _t0_moved(self) -> None:
         """One call for "the run just changed" - START, SEEK, HOLD,
         RESUME, NEXT, STOP and the adoption of a run found on the units.
@@ -1803,6 +2335,15 @@ class Fleet:
         # reaches its end (a STOP has no run, so it never does).
         self._loop_at = None
         self._loop_problem = None
+        if self._staging is not None:
+            # START and STOP end the stage before they get here, so this is
+            # a SEEK / HOLD / RESUME / NEXT (or an adoption) landing during
+            # the PRESET stage: the start is off, and said once (LOW-3).
+            self._staging = None
+            self.corrections.append(f"{time.strftime('%H:%M:%S')} START: the "
+                                    "preset stage was called off (the show was "
+                                    "moved before the countdown) - press START again")
+            del self.corrections[:-20]
         if self.run is None:
             self._t0_was, self._t0_seen = {}, {}
             return
@@ -1904,6 +2445,7 @@ class Fleet:
         targets = self._targets()
         with self._run_lock:
             self._may_adopt, self._stopped = False, True
+            self._staging = None            # a START still presetting is off too
             self._stop_told = set()
             self._demo_told = set()     # the next demo episode is announced again
             # Whether the show that is ENDING asked for its pictures to
@@ -2021,8 +2563,16 @@ class Fleet:
             run = dict(self.run) if self.run else None
             stopped = self._stopped
             gen = self._run_gen
+            staging = self._staging is not None
         now = self._clock()
         if now - self._corrected.get(link.name, -1e9) < SUPERVISE_EVERY_S:
+            return
+        if run is not None and staging:
+            # A START presetting over a run that has ENDED (a Loop restart,
+            # START after the end): that run is still `run` until the
+            # countdown begins, and a correction on its old T0 would make a
+            # unit that comes back fire the LAST cue over the 0:00 preset
+            # (review, MED-B). The new run puts everyone right.
             return
         unit = (link.status or {}).get("show") or {}
         if run is None:
@@ -2178,7 +2728,11 @@ class Fleet:
         # on, "Clear pictures after the show" happens on STOP (its own
         # window) and never at an end the Loop is about to play past.
         with self._run_lock:
-            if self._loop_at is not None:
+            # ...and the same while the restart's PRESET stage runs: the
+            # wait is over (`_loop_at` is gone) but the run that ended is
+            # still `run` until the countdown starts, and the slots are what
+            # that countdown's 0:00 reads from.
+            if self._loop_at is not None or self._staging is not None:
                 return False
         if not self._reached_end_by_playing(run, duration):
             return False
@@ -2312,6 +2866,10 @@ class Fleet:
     def prepare(self, payloads: "dict[str, dict]") -> "dict[str, dict]":
         """{unit: {"cue", "label", "dev_type", "boards"}} -> per-unit result."""
         def action(link):
+            # A loose test look is about to go up: whatever this unit
+            # showed from THIS Conductor's preset is no longer vouched for,
+            # so the next staged START presets it again (review, MED-A).
+            self._preset_at.pop(link.name, None)
             status = link.post("/prepare", payloads[link.name])
             return {"phase": status.get("phase")}
         return self._each(list(payloads), action)
@@ -2322,6 +2880,7 @@ class Fleet:
         instant = self._clock() + lead_s
 
         def action(link):
+            self._preset_at.pop(link.name, None)    # see prepare()
             offset = link.offset
             if offset is None:
                 raise RuntimeError("clock not measured yet")
@@ -2367,6 +2926,7 @@ class Fleet:
         with self._run_lock:
             self.shows = {}
             self.start_at = 0.0
+            self._preset_at = {}
 
     def wifi_select(self, profile: str, after_s: float,
                     last: "list[str] | None" = None,

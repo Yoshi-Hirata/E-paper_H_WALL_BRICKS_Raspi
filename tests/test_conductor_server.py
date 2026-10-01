@@ -495,6 +495,9 @@ def test_a_broken_map_is_named_when_the_show_is_compiled(workspace):
 def test_start_needs_an_upload_and_does_not_restart_by_accident(tmp_path):
     from conductor.fleet import Fleet
 
+    # These test START's own gates, not the exhibition's preset stage
+    # (test_conductor_exhibition.py): off, so START is main's immediate one.
+    Workspace(tmp_path).set_preset_before_start(False)
     fleet = Fleet({})
     server = make_server(tmp_path, port=0, fleet=fleet)
     port = server.server_address[1]
@@ -2274,6 +2277,9 @@ def test_start_begins_where_the_seek_bar_was_left(tmp_path):
 def test_start_from_a_time_needs_manual_too(tmp_path):
     from conductor.fleet import Fleet
 
+    # These test START's own gates, not the exhibition's preset stage
+    # (test_conductor_exhibition.py): off, so START is main's immediate one.
+    Workspace(tmp_path).set_preset_before_start(False)
     fleet = Fleet({})
     fleet.shows = {"radxa-01": {"id": "showA", "cues": [], "duration": 600}}
     fleet.links = {"radxa-01": StubLink("radxa-01", "stopped")}
@@ -3821,6 +3827,9 @@ def test_a_bundle_carries_the_countdown_only_when_it_has_one(tmp_path):
 def test_the_countdown_over_http_and_start_without_a_lead(tmp_path):
     from conductor.fleet import Fleet
 
+    # These test START's own gates, not the exhibition's preset stage
+    # (test_conductor_exhibition.py): off, so START is main's immediate one.
+    Workspace(tmp_path).set_preset_before_start(False)
     fleet = Fleet({})
     server = make_server(tmp_path, port=0, fleet=fleet)
     port = server.server_address[1]
