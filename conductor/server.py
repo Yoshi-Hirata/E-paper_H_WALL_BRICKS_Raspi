@@ -133,8 +133,11 @@ _DEMO_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # `loop_wait_s` (EXHIBITION mode's Loop, 2026-09-30) is the same kind of
 # thing as the countdown: how THIS Conductor runs the evening, never part of
 # a unit's show file.
+#
+# `preset_before_start` (2026-10-01) is how ③ START begins - PRESET, then the
+# countdown - and reaches no unit either.
 _REVISION_IGNORES = {"music", "labels", "clear_after_show", "start_countdown_s",
-                     "loop_wait_s"}
+                     "loop_wait_s", "preset_before_start"}
 # THE SHOW's "Countdown before START" (show.json's `start_countdown_s`): how
 # long ③ START counts down, -0:11 ... -0:01, before the show's 0:00. The
 # owner's request (2026-09-29): 「ショー開始までのカウントダウン時間を設定
@@ -242,6 +245,17 @@ def check_loop_wait(value, floor: float = 0.0, why: str = "") -> "float | None":
     if not low <= seconds <= high:          # NaN fails this too
         raise ValueError(message)
     return seconds
+
+
+def preset_before_start_of(show: dict) -> bool:
+    """show.json's "Preset before START" (2026-10-01, the operator, from
+    the live exhibition test: with a 3 s countdown the 0:00 look had no
+    time to paint before the music): ③ START - and every Loop restart -
+    sends the 0:00 look first, waits for every garment to have painted
+    it, THEN counts down to 0:00. ON unless the show says `false`: a show
+    written before the key existed starts this way too, which is what the
+    operator asked for; the old behaviour is one tick away."""
+    return show.get("preset_before_start") is not False
 
 
 def loop_wait_of(show: dict) -> "float | None":
@@ -1100,6 +1114,28 @@ class Workspace:
         with self._lock:
             return start_countdown_of(self._load_show())
 
+    def set_preset_before_start(self, on) -> None:
+        """"Preset before START" (show.json's `preset_before_start`,
+        undoable). Default ON is stored as no key; off is `false` - the
+        file says only what somebody chose. Never part of what reaches a
+        unit (_REVISION_IGNORES)."""
+        if not isinstance(on, bool):
+            raise ValueError("preset_before_start must be true or false")
+        with self._lock:
+            before = self._load_show()
+            if preset_before_start_of(before) == on:
+                return                          # nothing changed: not a step
+            after = dict(before)
+            if on:
+                after.pop("preset_before_start", None)
+            else:
+                after["preset_before_start"] = False
+            self._commit(before, after)
+
+    def preset_before_start(self) -> bool:
+        with self._lock:
+            return preset_before_start_of(self._load_show())
+
     def set_loop(self, wait_s) -> None:
         """THE SHOW's `Loop` (show.json's `loop_wait_s`, undoable): the
         seconds between the end of a run and the next START, or None for
@@ -1128,7 +1164,11 @@ class Workspace:
         with self._lock:
             show = self._load_show()
         wait = loop_effective_wait(show)
-        return None if wait is None else (wait, start_countdown_of(show))
+        if wait is None:
+            return None
+        # ...and whether the restart presets first (Fleet reads the third
+        # member when there is one).
+        return (wait, start_countdown_of(show), preset_before_start_of(show))
 
     def loop_floor(self) -> "tuple[float, float, str]":
         """(min wait, tail, why) for this timeline - loop_floor_of."""
@@ -1284,6 +1324,8 @@ class Workspace:
             # ...and the Loop (null = off), because the show file is how an
             # exhibition workspace gets from the PC to radxa-05 by hand.
             "loop_wait_s": loop_wait_of(show),
+            # ...and how START begins (preset first, or straight to the countdown).
+            "preset_before_start": preset_before_start_of(show),
             "transitions": show.get("transitions") or {},
             "labels": show.get("labels") or {},
             "units": show.get("units") or {},
@@ -1347,6 +1389,10 @@ class Workspace:
         # designers' bundles) leaves the Loop as it is here.
         if "loop_wait_s" in payload:
             changes["loop_wait_s"] = check_loop_wait(payload["loop_wait_s"])
+        if "preset_before_start" in payload:
+            if not isinstance(payload["preset_before_start"], bool):
+                raise ValueError("preset_before_start: must be true or false")
+            changes["preset_before_start"] = payload["preset_before_start"]
         if "transitions" in payload:
             if not isinstance(payload["transitions"], dict):
                 raise ValueError("transitions: must be an object")
@@ -2642,6 +2688,11 @@ class Workspace:
                          # THE SHOW's Loop: seconds between runs, or null
                          # for off (Workspace.set_loop).
                          "loop_wait_s": loop_wait_of(show),
+                         # How ③ START begins: PRESET -> countdown -> 0:00
+                         # (Workspace.set_preset_before_start).
+                         "preset_before_start": preset_before_start_of(show),
+            # ...and how START begins (preset first, or straight to the countdown).
+            "preset_before_start": preset_before_start_of(show),
                          "loop_default_s": LOOP_WAIT_S,
                          # The least wait THIS timeline allows, and why
                          # (loop_floor_of): the field's min and tooltip.
@@ -3691,6 +3742,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/show/clear_after":
                 self.workspace.set_clear_after_show(body.get("on"))
                 return self._json({"ok": True})
+            if self.path == "/api/show/preset_before":
+                self.workspace.set_preset_before_start(body.get("on"))
+                return self._json({"ok": True})
             if self.path == "/api/show/start_countdown":
                 self.workspace.set_start_countdown(body.get("s"))
                 return self._json({"ok": True})
@@ -4009,6 +4063,10 @@ class Handler(BaseHTTPRequestHandler):
                 # A run that has reached its end (ENDED, a Loop wait) is
                 # not running: START then is the next run, no `force`
                 # asked for and none implied.
+                if fleet.preset_state() is not None:
+                    return self._json({"units": {}, "note":
+                                       "The show is starting (preset first) - "
+                                       "wait for the countdown, or STOP."})
                 if (fleet.run is not None and not body.get("force")
                         and not fleet.run_is_over()):
                     return self._json({"units": {}, "note":
@@ -4051,8 +4109,18 @@ class Handler(BaseHTTPRequestHandler):
                     # not a show opening (review of 3f67087, MED-1).
                     lead = (DEFAULT_LEAD_S if float(at or 0) > 0
                             else self.workspace.start_countdown())
-                results = fleet.start_show(lead, at, force=bool(body.get("force")))
+                # From 0:00 with "Preset before START" on, the start is
+                # staged: the 0:00 look goes up now and the countdown
+                # follows once every garment shows it (Fleet._staging_tick).
+                # A start from a mark never presets.
+                preset_first = at == 0.0 and self.workspace.preset_before_start()
+                results = fleet.start_show(lead, at, force=bool(body.get("force")),
+                                           preset_first=preset_first)
                 response = {"units": results, "lead_s": lead, "from_s": at}
+                if preset_first:
+                    response["staged"] = True
+                    response["note"] = ("Preset first: the countdown starts once "
+                                        "every garment shows the 0:00 look.")
                 if at > 0:
                     response["note"] = (f"Started from "
                                         f"{timeline.format_clock(at)}.")

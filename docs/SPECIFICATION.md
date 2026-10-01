@@ -1228,6 +1228,26 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   ページ: 大時計 `ENDED · NEXT RUN IN 0:45 (run 2)`、NOW → NEXT ボード(ステージ
   モニターも)は見出し `NEXT RUN in 45 s` と `0:45`(10 秒で琥珀、3 秒で赤)、注記に
   理由。STOP の確認文に「Loop も止まる」
+- **Preset before START**(2026-10-01、展示の実機テスト: カウントダウン 3 秒では 0:00 の絵が曲の
+  前に描き終わらなかった): `show.json` の `preset_before_start`(**既定 on = キーなし**、off は
+  `false`。undo・書き出し / 読み込み、`_REVISION_IGNORES`、機体には届かない)。on のとき
+  0:00 からの ③ START と Loop の再スタートは **PRESET → カウントダウン → 0:00**:
+  `Fleet.start_show(preset_first=True)` は既存の `/show/preset` を全対象機体に送って
+  `_staging` に START の内容(lead、force、`forced_units`、skip、世代)を覚え、ループの
+  スレッド(`_staging_tick`、0.25 秒おき)が各機体の `/status.show.applied == 最初のキュー id`
+  かつ `dirty` でない を見てから、その機体の 0:00 の絵の描画時間(コンパイル済みキューの
+  `refresh_s + span`、無ければ 10 秒)+ 0.5 秒待ち、全機体が揃ったら `start_show(lead=
+  カウントダウン)`(T0 = カウントダウン後)。**最長 45 秒**(`PRESET_WAIT_MAX_S`)で揃わなければ
+  遅い機体を corrections に名指しして始める。機体は立っている 0:00 の絵を T0 で描き直さない
+  (ui/showplay.py `preset()`/`run()`: applied == 最初のキュー なら forget しない ―
+  `test_preset_survives_a_run_no_bump_and_is_not_repainted_at_start`)。STOP・どの T0 移動も
+  ステージを捨てる(世代チェック)。途中位置からの START と off のときは main と同じ即時 START。
+  `/api/fleet`: ステージ中は **`run = {"state": "preset", "phase": "preset", "now": 0, "t0": null,
+  "preset": {...}}`**(LCD は `run.phase == "preset"` で「preset…」)と `preset: {phase, targets,
+  painted, waiting_for, elapsed_s, cap_s, lead_s, loop}`、`POST /api/fleet/start` の返答に
+  `staged: true` と注記。ページの大時計 `PRESET… n/N painted`、ボードは「loaded」扱い、
+  ステージ中の ③ START は「starting (preset first)」の注記、STOP で中止。
+  `loop_settings()` は 3 要素 `(wait, countdown, preset_first)`。
 - **Conductor 再起動後のショーの引き取り**(`Fleet.offer_shows` / `_adopt_show`、**`serve --adopt`
   か fleet.json `"adopt": true` のときだけ** ― PC の既定の起動は main と同じで何も提示しない):
   `fleet.shows` はメモリだけなので、systemd の再起動のあと Conductor は誰が何を持っているか

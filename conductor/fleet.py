@@ -105,6 +105,18 @@ LOOP_RETRY_S = 5.0
 # garment must never freeze the whole exhibition. The others are still
 # polled and supervised, and rejoin at the next restart.
 LOOP_WAIT_READY_S = 60.0
+# "Preset before START" (2026-10-01, the operator, from the live exhibition
+# test: with a 3 s countdown the 0:00 look had no time to paint before the
+# music). A START - and every Loop restart - then goes PRESET (the 0:00 look
+# painted on every garment) -> countdown -> 0:00. The Conductor waits for
+# every target unit to report the first cue applied, then that cue's paint
+# time (its refresh_s + span, from the compiled show) + PRESET_SETTLE_S, and
+# at most PRESET_WAIT_MAX_S in all - then starts anyway, naming who was late.
+# The unit itself never repaints a 0:00 look that already stands (ui/showplay
+# preset()/run(): "START does not repaint it").
+PRESET_SETTLE_S = 0.5
+PRESET_WAIT_MAX_S = 45.0
+PRESET_PAINT_FALLBACK_S = 10.0
 # The fleet-wide Wi-Fi switch (EXHIBITION mode): the side that must move
 # first gets the short lead, the other side the long one, so the hotspot is
 # up before its clients look for it and down only after they have left.
@@ -483,6 +495,10 @@ class Fleet:
         # Loop's restarts may wave through again (see _still_waved).
         self._waved: "dict[str, tuple]" = {}
         self._waved_said: "set[str]" = set()        # the set the corrections last named
+        # A START in its PRESET stage (start_show(preset_first=True)): what
+        # the start will be, who has painted the 0:00 look and when, and
+        # the deadline past which it starts anyway. None otherwise.
+        self._staging: "dict | None" = None
         # The two windows the clear after the show waits out: after a STOP
         # (the director's mid-show abort), and after any T0 move (so a seek
         # in the last seconds cannot delete the show). Knobs so the tests
@@ -648,11 +664,13 @@ class Fleet:
         included (the run generation is checked under the lock inside
         start_show).
         """
+        self._staging_tick()
         with self._run_lock:
             run = dict(self.run) if self.run else None
             at = self._loop_at
             gen = self._run_gen
-        if run is None or run["state"] != "running":
+            staging = self._staging is not None
+        if staging or run is None or run["state"] != "running":
             return
         now = self._clock()
         if at is None:
@@ -662,7 +680,7 @@ class Fleet:
             settings = self.loop_settings() if self.loop_settings else None
             if not settings:
                 return                      # Loop off: the run ends as ever
-            wait_s, lead_s = settings
+            wait_s, lead_s = settings[0], settings[1]
             with self._run_lock:
                 if self._run_gen != gen or self._loop_at is not None:
                     return                  # moved meanwhile: read it again
@@ -684,7 +702,8 @@ class Fleet:
                 self._loop_at = None
             self._note("Loop turned off - no next run")
             return
-        _wait_s, lead_s = settings
+        _wait_s, lead_s = settings[0], settings[1]
+        preset_first = bool(settings[2]) if len(settings) > 2 else False
         with self._run_lock:
             if self._loop_due is None:
                 self._loop_due = now
@@ -707,7 +726,8 @@ class Fleet:
         try:
             results = self.start_show(float(lead_s), 0.0, loop=True,
                                       skip=skip, expect_gen=gen,
-                                      forced_units=waved)
+                                      forced_units=waved,
+                                      preset_first=preset_first)
         except ValueError as exc:
             reason = str(exc)
             with self._run_lock:
@@ -1017,7 +1037,16 @@ class Fleet:
             # business - showing it would invite "Back to 0:00" to seek a
             # LIVE show back to the top (found in review).
             start_at = self.start_at if run is None else 0.0
-        if run:
+        preset = self.preset_state()
+        if preset is not None:
+            # A START in its PRESET stage: the page and the LCD see a run
+            # whose state and phase say "preset" (position 0:00, nothing
+            # counting) - the countdown begins when the start goes out.
+            run = {"t0": None, "state": "preset", "phase": "preset",
+                   "held_at": None, "now": 0.0, "force": False,
+                   "preset": preset, "loops": self._loop_runs}
+            start_at = 0.0
+        if run and run["state"] != "preset":
             mark = run["held_at"] if run["state"] == "holding" else self._clock()
             run["now"] = round(mark - run["t0"], 2)
             # ...and whether this run's END can still bring a clear. A HOLD
@@ -1057,6 +1086,8 @@ class Fleet:
                 # EXHIBITION mode's Loop: the restart that is pending, or
                 # null - the page's "next run in m:ss" (loop_state()).
                 "loop": self.loop_state(),
+                # The PRESET stage of a START, or null (preset_state()).
+                "preset": preset,
                 "burn": {"burned": burned, "total": len(reporting)}}
 
     def _unit_snapshot(self, link, run: "dict | None" = None) -> dict:
@@ -1700,7 +1731,7 @@ class Fleet:
                    at: float = 0.0, force: bool = False,
                    loop: bool = False, skip=(),
                    expect_gen: "int | None" = None,
-                   forced_units=()) -> "dict[str, dict]":
+                   forced_units=(), preset_first: bool = False) -> "dict[str, dict]":
         """Begin the show `lead_s` from now, `at` seconds into it (0.0 for
         the top). The caller resolves `at` itself - normally
         `fleet.start_at`, where a SEEK made before the show started (or
@@ -1735,6 +1766,14 @@ class Fleet:
             self._cancel_armed_clear()
         duration = self.show_duration()
         at = self._clamped(at, 0.0, duration)
+        if preset_first and at == 0.0:
+            # PRESET -> countdown -> 0:00 (see PRESET_WAIT_MAX_S): the 0:00
+            # look goes up now, the START itself follows from the loop
+            # thread (_staging_tick) once every garment has painted it.
+            # Everything below - the gate, the generation, the run - is
+            # that later start's; this returns the preset's own results.
+            return self._stage_start(lead_s, force, loop, skip, expect_gen,
+                                     forced_units, duration)
         if not 0 <= at <= duration:
             raise ValueError(f"The show is {timeline.format_clock(0)} to "
                              f"{timeline.format_clock(duration)}.")
@@ -1760,6 +1799,7 @@ class Fleet:
             if expect_gen is not None and (self._run_gen != expect_gen
                                            or self._stopped):
                 raise ValueError("stopped or moved meanwhile")
+            self._staging = None            # a start is the end of any stage
             self._may_adopt, self._stopped = False, False
             self._loop_runs = self._loop_runs + 1 if loop else 0
             if not loop:
@@ -1782,6 +1822,135 @@ class Fleet:
             self._clear_told, self._clear_too_old = set(), set()
             self._t0_moved()
         return self._send_run(targets)
+
+    # ---- PRESET -> countdown -> 0:00 (start_show(preset_first=True)) ----
+
+    def _stage_start(self, lead_s: float, force: bool, loop: bool, skip,
+                     expect_gen, forced_units, duration: float) -> "dict[str, dict]":
+        """Send the 0:00 look to the start's targets and remember the start
+        for _staging_tick(). The same gate as the start itself (a unit that
+        would refuse the run refuses the preset), the same `force` and
+        per-unit `forced_units`; a pending Loop wait ends here (the restart
+        has begun - the page shows PRESET, not a countdown)."""
+        targets = [name for name in self._targets() if name not in set(skip)]
+        if not targets:
+            raise ValueError("no unit is ready")
+        problems = self._burn_problems(targets, force=force, forced=forced_units)
+        if problems:
+            raise ValueError("; ".join(problems))
+        with self._run_lock:
+            if expect_gen is not None and (self._run_gen != expect_gen
+                                           or self._stopped):
+                raise ValueError("stopped or moved meanwhile")
+            gen = self._run_gen
+            now = self._clock()
+            self._loop_at = None
+            self._staging = {"since": now, "deadline": now + PRESET_WAIT_MAX_S,
+                             "lead_s": float(lead_s), "force": bool(force),
+                             "loop": bool(loop), "skip": set(skip),
+                             "forced": set(forced_units), "gen": gen,
+                             "targets": list(targets), "painted": {},
+                             "duration": float(duration)}
+        forced = set(forced_units)
+
+        def action(link):
+            excuse = self._demo_excuse(link)
+            if excuse:
+                raise RuntimeError(excuse)
+            body = {"force": bool(force) or link.name in forced}
+            return {"phase": link.post("/show/preset", body).get("phase"),
+                    "preset": True}
+
+        results = self._each(targets, action)
+        self._note(f"START: preset first - the 0:00 look goes up on "
+                   f"{', '.join(targets)}, the countdown follows")
+        return results
+
+    def _first_cue(self, name: str) -> "dict | None":
+        show = self.shows.get(name) or {}
+        cues = show.get("cues") or []
+        return cues[0] if cues else None
+
+    def _paint_s(self, name: str) -> float:
+        """How long this unit's 0:00 look takes to paint once fired: the
+        compiled first cue's refresh_s + span (conductor/showfile.py), or a
+        generous fallback for a show file that does not say."""
+        cue = self._first_cue(name)
+        if not cue:
+            return PRESET_PAINT_FALLBACK_S
+        try:
+            return float(cue.get("refresh_s") or 0.0) + float(cue.get("span") or 0.0) \
+                or PRESET_PAINT_FALLBACK_S
+        except (TypeError, ValueError):
+            return PRESET_PAINT_FALLBACK_S
+
+    def _staging_tick(self) -> None:
+        """While a START is in its PRESET stage: note each target the
+        moment its unit reports the 0:00 cue applied (and not dirty), and
+        start the show once every target has had its paint time since
+        then - or at the deadline, naming who was late. Runs on the loop
+        thread every LOOP_TICK_S."""
+        with self._run_lock:
+            staging = self._staging
+            if staging is None:
+                return
+            if self._run_gen != staging["gen"] or self._stopped:
+                self._staging = None        # STOP or a move: the start is off
+                return
+            staging = dict(staging, painted=dict(staging["painted"]))
+        now = self._clock()
+        for name in staging["targets"]:
+            if name in staging["painted"]:
+                continue
+            link = self.links.get(name)
+            unit = ((link.status if link else None) or {}).get("show") or {}
+            first = self._first_cue(name)
+            if (link is not None and link.online and first
+                    and unit.get("applied") == first.get("id")
+                    and not unit.get("dirty")):
+                staging["painted"][name] = now
+        ready = [name for name in staging["targets"]
+                 if name in staging["painted"]
+                 and now >= staging["painted"][name] + self._paint_s(name) + PRESET_SETTLE_S]
+        waiting = [name for name in staging["targets"] if name not in ready]
+        with self._run_lock:
+            if self._staging is None or self._staging["gen"] != staging["gen"]:
+                return
+            self._staging["painted"] = staging["painted"]
+            if waiting and now < staging["deadline"]:
+                return
+            self._staging = None            # the start takes it from here
+        if waiting:
+            self._note(f"START: {', '.join(waiting)} had not painted the 0:00 look "
+                       f"after {PRESET_WAIT_MAX_S:.0f} s - starting anyway")
+        try:
+            results = self.start_show(staging["lead_s"], 0.0, force=staging["force"],
+                                      loop=staging["loop"], skip=staging["skip"],
+                                      expect_gen=staging["gen"],
+                                      forced_units=staging["forced"])
+        except ValueError as exc:
+            self._note(f"START after the preset refused: {exc}")
+            return
+        failed = sorted(name for name, r in results.items() if not r.get("ok"))
+        self._note("START: preset painted, countdown running"
+                   + (f" ({', '.join(failed)} did not take it)" if failed else ""))
+
+    def preset_state(self) -> "dict | None":
+        """What /api/fleet says while a START is in its PRESET stage (or
+        None): who has painted the 0:00 look, who is still being waited
+        for, how long since the preset went out and the cap."""
+        with self._run_lock:
+            staging = self._staging
+            if staging is None:
+                return None
+            now = self._clock()
+            painted = sorted(staging["painted"])
+            return {"phase": "preset", "targets": list(staging["targets"]),
+                    "painted": painted,
+                    "waiting_for": [n for n in staging["targets"] if n not in painted],
+                    "elapsed_s": round(now - staging["since"], 1),
+                    "cap_s": PRESET_WAIT_MAX_S, "lead_s": staging["lead_s"],
+                    "loop": staging["loop"]}
 
     def _t0_moved(self) -> None:
         """One call for "the run just changed" - START, SEEK, HOLD,
@@ -1904,6 +2073,7 @@ class Fleet:
         targets = self._targets()
         with self._run_lock:
             self._may_adopt, self._stopped = False, True
+            self._staging = None            # a START still presetting is off too
             self._stop_told = set()
             self._demo_told = set()     # the next demo episode is announced again
             # Whether the show that is ENDING asked for its pictures to
