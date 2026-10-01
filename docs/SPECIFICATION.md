@@ -1418,6 +1418,49 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   ソケットのタイムアウトは 300 秒 ― 受け手は 10 台分コンパイルしてから答える)→
   `GET /api/workspace/send?job=…` を 0.4 秒ごとに読み、`packing / sending n of N MB /
   done` と受け手の返答(CSV 数・キュー数・音楽・機体ごとの id)を出す
+- **ワークスペースの自動バックアップと復元**(`conductor/backups.py`、2026-10-01。会場は 1 日に
+  何度も停電する ― 壊れたショーを PC なしでその場で戻すため): **`serve --backups`**(展示の
+  サービスファイル)か fleet.json の `"backups": true` のときだけ。**PC の既定の `serve` は
+  何も変わらない**(CLI は `backups` を渡しもしない、ディスクに何も作らない)。
+  **世代** = 書き出しと同じ素の tar(`show.json`, `history.json`, `files/*.csv`, 曲。fleet.json は
+  入らない)を **ワークスペースの外**、隣の `<workspace>-backups/`(radxa-05 は
+  `/home/radxa/exhibition-backups/`)に `YYYYmmdd-HHMMSS-<reason>-<revision8>.tar` で置く ―
+  取り込み(= 復元)の差し替えが触れない場所。**いつ**(全部 `workspace-backups` ワーカースレッド。
+  HTTP スレッドでは tar を書かない): `start`(起動時に 1 回。空のワークスペースは取らない)、
+  `import`(`/api/workspace/import` の成功後)、`upload`(Upload で 1 台以上書けたあと。
+  **その世代を「機体が持っているもの」として index.json の `uploaded` に記録**し、古くても
+  消さない。Upload が始まったときの `Workspace.revision()` と tar を書いた前後の値が同じときだけ
+  ― 間に編集が入ったら記録を外す。`whole` = タイムラインの全機体に届いた)、`edit`(編集のあと
+  **60 秒静か**になったら 1 回: ワーカーが 2 秒ごとにファイルの名前・サイズ・mtime を見る ―
+  Workspace の編集経路にフックは無い。失敗したらまた 60 秒後)、`prerestore`(復元の直前の状態。
+  間違えた復元はこれを復元すれば戻る)。**中身が一番新しい世代と同じなら書かない**(`upload` は
+  その世代に印を付けるだけ)。ここでの revision は**中身の**ハッシュ(全メンバーの名前 + バイト、
+  16 桁): `Workspace.revision()` は mtime を読むので取り込みのたびに変わり使えない。
+  show.json / history.json が読めない(停電で壊れた)ワークスペースは世代にしない(良い世代を
+  押し出さない。`problem` に理由)。**残すのは新しい順に N 個**(fleet.json `"backup_keep"`、
+  1〜50、既定 5。範囲外は警告して 5)**+ `uploaded` の世代**。
+  **電源断に強く**: tar はフォルダ内の `.….part` に書いて flush + fsync → **全メンバーを最後まで
+  読み、終端の 2 ブロック(ゼロ 1024 バイト)まで確かめて**(メンバー境界で切れた tar は tarfile
+  だけでは「短い正しい tar」に読める)から `os.replace` → フォルダを fsync → それから index.json
+  (同じ手順の `_durable_write`。`conductor/durable.py` が入ったら置き換える TODO)。起動時は
+  `.part` を消し、index に無い名前どおりの tar は全部読めれば(書いた時刻順に)取り込み、
+  読めなければ消し、ファイルの無い項目は落とす(index.json が壊れていればフォルダから作り直す。
+  `uploaded` の印だけは戻らない)。
+  `GET /api/backups` → `{"enabled", "folder", "keep", "uploaded", "problem", "backups": [{name, at,
+  reason, revision, uploaded, cues, size}](新しい順)}`(無効なら `{"enabled": false, "backups": [],
+  "why"}`)。`POST /api/backups/restore {"name"}` → **ラン中・プリセット段階中は 409**(取り込みと
+  同じ文言)、知らない名前は 404、無効なら 400 → `prerestore` を取ってから(対象の世代は剪定から
+  守る)**取り込みと同じ `import_tar`**(差し替えは全部か無し、fleet.json = パスコード・units・
+  hotspot は**決して戻さない**)→ 取り込みと同じ後処理(fleet の shows を忘れ、知っていた機体は
+  `before-import`、コンパイル)→ 取り込みの返答 + `restored`・`units_hold`・`note`。**`units_hold`** =
+  `--adopt` の Conductor で、復元した世代の中身が最後の whole な Upload の世代と同じ
+  (`uploaded.revision`)で、online の機体が別の id を報告していないとき → `note` `restored - units
+  already hold it`(コンパイルしたショーを**もう一度提示**するので、持っている機体は次のポールで
+  採用され Upload 不要)。それ以外は `restored - Upload needed`。復元後に `edit` 世代は作らない。
+  関門は他と同じ(GET も `_PASSCODE_GETS` に入る: ループバック = LCD は自由、他のホストは
+  パスコード)。ページ: Units タブの SEND の下に **BACKUPS ON THIS CONDUCTOR**(取った時刻・理由・
+  キュー数・サイズ・revision・★ on the units・**Restore…**(確認付き))。LCD: 5 章 EXHIBITION の
+  BACKUPS ページ
 - **機体の Wi-Fi**(radxa-05 の LCD の EXHIBITION 行と対): `/status` の
   `wifi: {ssid, ip, signal(%), mode, profile, pending}` をタイルの `Wi-Fi` 行に(signal が null なら
   `mode`、radxa-05 は `hotspot`)。UNITS カードの `All units → AZ-Epaper in 20 s` /
@@ -1593,7 +1636,8 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
 - **画面**: 上にタイムラインの名前(`GET /api/show/export` の `workspace`、画面を開く
   たびに 1 回だけ読む)と `18 cues · 10:54`(`/api/fleet` の `show_duration`。何も Upload
   されていなければ `· not uploaded`)。Conductor のタイムラインは**常に 1 本**なので
-  「ショーを選ぶ」という概念は無く、UP/DOWN は判定文を消すだけ。その下に走行状態
+  「ショーを選ぶ」という概念は無く、UP は判定文を消すだけ(DOWN は 2 ページ目の BACKUPS ―
+  下の項)。その下に走行状態
   ―― `idle` / `preset… 5/7 painted`(`run.state == "preset"`: START の第一段、最初の絵を
   各機に載せている最中。人数は上位の `preset.painted` / `preset.targets`、無ければ
   `preset…` だけ。この間も長押し KEY1 = STOP) / `countdown -0:11`(`run.now` が負) /
@@ -1665,6 +1709,20 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   vol 70% (bluez)` の代わりに赤で **`speaker LOST - see SPEAKER`**
   (`exhibition_speaker_lost.png`。`bluetooth` が false の有線出力では出ない)。直すのは
   次の SPEAKER 画面
+- **BACKUPS ページ**(2026-10-01、4.7 の自動バックアップ): EXHIBITION 画面で **DOWN** を押すと
+  2 ページ目(Screen は EXHIBITION のまま ― follow の規則は変わらない。UP は従来どおり判定文を
+  消すだけ。キー行の右に `DOWN backups`)。`GET /api/backups` を**このページが開いている間だけ**
+  リーダーのポールで読む(開いた瞬間に 1 回)。新しい順に `10-01 15:20 upload *`(`*` と緑 =
+  最後の Upload の世代)、選んだ世代の `18 cues · 31.0 MB · 1a2b3c4d`。UP/DOWN で選ぶ(読み直しで
+  列がずれてもカーソルは同じ世代に残る)、**KEY1 長押し = 復元**(`POST /api/backups/restore
+  {"name"}`、タイムアウト 120 秒、`restoring…`)→ Conductor の `note` そのまま(`restored - Upload
+  needed` / `restored - units already hold it`)、断り(ラン中の 409 `a run is active on this
+  Conductor - STOP it first`)は `ERROR …` で**そのまま**。KEY2 で EXHIBITION ページへ(送信中も ―
+  復元は完了し、判定は EXHIBITION ページに出る)。このページでは KEY3 長押し・LEFT/RIGHT・短押しの
+  KEY1 は何もしない(LOOP や音量が見えないところで変わらないように)。古い Conductor(404)は
+  `backups: not supported by this conductor`、`--backups` 無しは `backups are off on this
+  conductor`。`--preview` に `backups_list.png` / `backups_restored.png` / `backups_refused.png` /
+  `exhibition_backups_key.png`
 
 ### SPEAKER(Bluetooth スピーカーの状態・接続・再ペアリングを LCD から、2026-10-01)
 

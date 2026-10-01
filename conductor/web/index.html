@@ -3866,6 +3866,61 @@ async function sendWorkspace() {
     sendLog(`Send to ${to}: ${err.message}`);
   } finally { sendInFlight = false; }
 }
+// ---- "Backups on this Conductor" (conductor/backups.py, 2026-10-01) ---------
+// GET /api/backups lists the generations newest first; Restore posts
+// /api/backups/restore {name} (confirmed first; 409 during a run). Read when
+// the Units tab first opens, on Refresh and after a restore - never per poll.
+let backupList = null, backupListTried = false, backupListLoading = false,
+    backupListError = null, restoreInFlight = false;
+function backupLog(text) {
+  ui.backupLog = text;
+  const box = $("#backup-log");
+  if (box) box.textContent = text;
+}
+function backupTableHtml() {
+  if (!backupListTried) return `<div class="meta">Reading…</div>`;
+  if (backupListError) return `<div class="warn">Could not read the backups: ${esc(backupListError)}</div>`;
+  const list = backupList || {};
+  if (list.enabled === false)
+    return `<div class="meta">Off on this Conductor (${esc(list.why || "serve --backups")}).</div>`;
+  const rows = list.backups || [];
+  return (rows.length ? `<table><thead><tr><th>Taken</th><th>Why</th><th>Cues</th><th>Size</th>
+      <th>Revision</th><th></th><th></th></tr></thead><tbody>${rows.map(b => `<tr>
+        <td>${esc(b.at || "")}</td><td>${esc(b.reason || "")}</td><td>${esc(b.cues ?? "—")}</td>
+        <td>${esc(fmtSize(b.size || 0))}</td><td><code>${esc((b.revision || "").slice(0, 8))}</code></td>
+        <td>${b.uploaded ? `<span class="okline" title="The generation the last Upload put on the units">★ on the units</span>` : ""}</td>
+        <td><button data-backup-restore="${esc(b.name)}" data-backup-at="${esc(b.at || b.name)}">Restore…</button></td></tr>`).join("")}
+      </tbody></table>` : `<div class="meta">No backups yet — the first is taken a minute after an edit, or at an Upload.</div>`)
+    + `<div class="meta" style="margin-top:4px">Kept in ${esc(list.folder || "?")} — the newest ${esc(list.keep ?? "?")} and the one on the units.</div>`
+    + (list.problem ? `<div class="warn" style="margin-top:2px">Last problem: ${esc(list.problem)}</div>` : "");
+}
+async function refreshBackups() {
+  if (backupListLoading) return;
+  backupListLoading = true;
+  try { backupList = await api("/api/backups"); backupListError = backupList?.error || null; }
+  catch (err) { backupListError = err.message || "no answer from the conductor server"; }
+  finally { backupListLoading = false; backupListTried = true; }
+  const box = $("#backup-table");
+  if (box) box.innerHTML = backupTableHtml();
+}
+async function restoreBackup(name, at) {
+  if (restoreInFlight) return;               // a double click must not restore twice
+  if (!confirm(`Restore the backup taken ${at}?\n\nThe workspace here (CSVs, timeline, music, history) is replaced by it - the current one is kept as a backup first. fleet.json (passcode, units, hotspot) stays. The units may need ① Upload afterwards.`)) return;
+  restoreInFlight = true;
+  const when = new Date().toLocaleTimeString();
+  try {
+    const r = await api("/api/backups/restore", { name });
+    if (!r || r.error) { backupLog(`Restore ${at} REFUSED (${when}): ${r?.error || "no answer"}`); return; }
+    backupLog(`Restored ${at} (${when}): ${r.files ?? 0} CSV file(s), ${r.cues ?? 0} cue(s), music ${r.music || "none"}.\n`
+      + `${r.note}${r.units_hold ? "" : " — ① Upload before START."}`
+      + (r.problems && r.problems.length ? `\nProblems: ${r.problems.join(" · ")}` : ""));
+    toast(r.note || "restored", r.units_hold ? "" : "warn");
+    await refresh();
+  } catch (err) {
+    backupLog(`Restore ${at}: ${err.message}`);
+  } finally { restoreInFlight = false; }
+  await refreshBackups();
+}
 // `show_duration`/`start_at` are new fields (round 3 §2.1); fall back gracefully
 // so the page works unmodified against an older conductor server.
 function fleetDuration() {
@@ -5175,6 +5230,14 @@ function renderFleet() {
       </div>
       <div class="meta" id="ws-send-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.sendLog || "")}</div>
     </div>
+    <div class="card"><h2>BACKUPS ON THIS CONDUCTOR</h2>
+      <div class="meta sub">With <code>serve --backups</code> (the exhibition's Conductor on radxa-05) this Conductor keeps copies of its own workspace beside it — after Send workspace, after an Upload and a minute after edits; the newest few, plus the one the units hold (★). Restore puts one back exactly as an import would: the CSVs, the timeline, the music and the history — never this host's fleet.json (passcode, units, hotspot). Refused while a run is active.</div>
+      <div class="go" style="margin-top:4px">
+        <button id="backup-refresh">Refresh</button>
+      </div>
+      <div id="backup-table" style="margin-top:6px">${backupTableHtml()}</div>
+      <div class="meta" id="backup-log" style="margin-top:8px;white-space:pre-wrap">${esc(ui.backupLog || "")}</div>
+    </div>
     <div class="card"><h2>MANUAL CUE</h2>
       <div class="meta sub">For checking the sync outside a show: write a design to the boards, then fire every unit at the same instant.</div>
       <div class="meta sub">Prepare sweeps each design with <b>the design's own transition</b> (Designs tab) — never a timeline cue's override, which belongs to that cue alone.</div>
@@ -5209,6 +5272,7 @@ function renderFleet() {
   paintChips();
   paintShowMusic();            // the bar is freshly built: fill it in now, not in 250 ms
   if (!demoListTried) refreshDemos();        // first time the Units tab is opened
+  if (!backupListTried) refreshBackups();    // ...and the backups, the same way
 }
 let lastFleetThumbPos = null, lastFleetRunState = undefined;
 function showClockText() {
@@ -6291,6 +6355,9 @@ document.addEventListener("click", async e => {
   if (e.target.id === "write-clear-now") { await writeClearNow(); return; }
   if (e.target.id === "demo-refresh") { await refreshDemos(); return; }
   if (e.target.id === "ws-send") { await sendWorkspace(); return; }
+  if (e.target.id === "backup-refresh") { await refreshBackups(); return; }
+  const restoreBtn = e.target.closest("[data-backup-restore]");
+  if (restoreBtn) { await restoreBackup(restoreBtn.dataset.backupRestore, restoreBtn.dataset.backupAt); return; }
   if (e.target.id === "wifi-hotspot") { await switchFleetWifi(WIFI_HOTSPOT); return; }
   if (e.target.id === "wifi-router") { await switchFleetWifi(($("#wifi-router-name") || {}).value || ""); return; }
   const recover = e.target.closest("[data-recover-bus]");

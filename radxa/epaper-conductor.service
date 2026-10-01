@@ -44,7 +44,11 @@ Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 # not be confused with a rehearsal's.
 # --adopt: a restart of THIS conductor takes the units that still hold its
 # show as holding it (EXHIBITION mode only - never on the show PC).
-ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --speaker-output pulse --adopt --port 8765
+# --backups: generations of the workspace in /home/radxa/exhibition-backups
+# (after Send workspace, an Upload, and 60 s after edits; the newest 5 plus
+# the one on the units), restorable from the page's Units tab and from the
+# LCD (EXHIBITION, DOWN = BACKUPS, hold KEY1) - never fleet.json.
+ExecStart=/usr/bin/python3 -m conductor serve --workspace /home/radxa/exhibition --host 0.0.0.0 --speaker --speaker-output pulse --adopt --backups --port 8765
 # always, not on-failure: with the Loop on, this process IS the show, and a
 # clean exit would leave the garments on their last look until somebody
 # reached a terminal.

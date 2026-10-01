@@ -78,8 +78,14 @@ the run (`idle`, `countdown -0:11`, `0:00 / 10:54 running`, `hold`,
 idle and STOP while a run or its countdown exists (the REBOOT gesture;
 a plain press does nothing), KEY3 *held* toggles LOOP, LEFT/RIGHT are
 the speaker's volume -5/+5 (plain presses; one request in flight,
-presses meanwhile add up), UP/DOWN only read a verdict away (the
-Conductor has one timeline; there is nothing to choose), and KEY2 goes
+presses meanwhile add up), UP only reads a verdict away (the
+Conductor has one timeline; there is nothing to choose), DOWN opens the
+second page, BACKUPS - the Conductor's workspace generations
+(conductor/backups.py, `10-01 15:20 upload *`, the `*` on the one the
+units hold; read only while the page is open): UP/DOWN choose, KEY1
+*held* restores (the Conductor's refusal - 409 during a run - shown
+verbatim; then `restored - Upload needed` or `restored - units already
+hold it`), KEY2 back to the EXHIBITION page - and KEY2 goes
 back to the menu - the show keeps running,
 the Conductor owns it. Every command goes on a worker thread; the
 screen reads `sending…` and then the Conductor's answer or its
@@ -182,6 +188,7 @@ from . import notify, render
 from .config import (BLANK_AFTER_S, FRAME_INTERVAL_S, LOG_LINES,
                      RELOCK_AFTER_S, UNLOCK_SEQUENCE, UNLOCK_WINDOW_S,
                      WATCHDOG_PERIOD_S)
+from .exhibition import BACKUPS as EX_BACKUPS
 from .exhibition import VOLUME_STEP
 from .patterns import PATTERNS
 from .speaker import INSTRUCTION as SPEAKER_INSTRUCTION
@@ -599,14 +606,25 @@ class App:
                 self._leave_exhibition()
             return
         if exhibition.busy:
-            # The command completes on its thread; only KEY2 is heard.
+            # The command completes on its thread; only KEY2 is heard -
+            # from BACKUPS it goes back to the EXHIBITION page.
             if event == "key2":
-                self._leave_exhibition()
+                if exhibition.page == EX_BACKUPS:
+                    exhibition.close_backups()
+                    self._dirty = True
+                else:
+                    self._leave_exhibition()
             return
-        if event in ("up", "down"):
+        if exhibition.page == EX_BACKUPS:
+            self._handle_backups(event)
+            return
+        if event == "up":
             # The Conductor has one timeline - nothing to choose between.
             # Moving reads a verdict away, as on the WIFI list.
             exhibition.reset()
+        elif event == "down":
+            # ...and DOWN opens the second page, the Conductor's backups.
+            exhibition.open_backups()
         elif event in ("left", "right"):
             # The speaker's volume, 5 % a press - plain presses, as many
             # as wanted; presses during a request add up into the next.
@@ -624,6 +642,23 @@ class App:
             exhibition.toggle_loop()
         elif event == "key2":
             self._leave_exhibition()
+        self._dirty = True
+
+    def _handle_backups(self, event: str) -> None:
+        """The BACKUPS page (DOWN from EXHIBITION): UP/DOWN choose a
+        generation, KEY1 *held* restores it (the REBOOT gesture - a plain
+        press does nothing), KEY2 goes back to the EXHIBITION page. KEY3
+        held and LEFT/RIGHT do nothing here: nothing on this page may
+        flip the Loop or the volume unseen."""
+        exhibition = self.exhibition
+        if event == "up":
+            exhibition.move_backup(-1)
+        elif event == "down":
+            exhibition.move_backup(+1)
+        elif event == "key1_hold":
+            exhibition.restore_backup()
+        elif event == "key2":
+            exhibition.close_backups()
         self._dirty = True
 
     def _leave_exhibition(self) -> None:
@@ -1360,13 +1395,19 @@ class App:
                 status=wifi.status_text(), locked=self.locked, host=self.host)
         if self.screen is Screen.EXHIBITION:
             ex = self.exhibition
+            if ex.page == EX_BACKUPS and ex.available:
+                return render.backups_screen(
+                    ex.backup_rows(), ex.backup_choice, ex.phase,
+                    status=ex.status_text(), info=ex.backups_text(),
+                    detail=ex.backup_detail(), locked=self.locked,
+                    host=self.host)
             return render.exhibition_screen(
                 ex.available, ex.show_lines(), ex.run_text(), ex.fleet_text(),
                 ex.loop_text(), ex.speaker_text(), ex.phase,
                 status=ex.status_text(), active=ex.active,
                 locked=self.locked, host=self.host,
                 volume_keys=ex.available and ex.speaker_available()
-                and ex.volume_supported())
+                and ex.volume_supported(), backups_key=True)
         if self.screen is Screen.SPEAKER:
             sp = self.speaker
             return render.speaker_screen(

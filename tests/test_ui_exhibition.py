@@ -491,7 +491,9 @@ def test_only_a_held_key1_starts_and_the_answer_is_shown():
     enter(app)
     assert app.screen is Screen.EXHIBITION and ex.is_open
     assert runner.stops == 0                    # the runner keeps the port
-    for event in ("key1", "press", "up", "down", "key3"):
+    # (DOWN opens the BACKUPS page since 2026-10-01 - its own tests in
+    # tests/test_backups.py.)
+    for event in ("key1", "press", "up", "key3"):
         app.handle(event)
     app.blanked = False
     ex.join(0.2)
@@ -505,7 +507,7 @@ def test_only_a_held_key1_starts_and_the_answer_is_shown():
     assert ex.run_text() == "countdown -0:11"
     assert fake.run is not None
     # Moving reads the verdict away; the run stays.
-    app.handle("down")
+    app.handle("up")
     assert ex.phase == IDLE and ex.status_text() == ""
     assert fake.run is not None
 
