@@ -6,10 +6,15 @@ Description=H_WALL_BRICKS show Conductor (EXHIBITION mode, headless on this unit
 # for a slow router: the page binds 0.0.0.0 and the LCD's own row at
 # 127.0.0.1 needs it whatever the Wi-Fi does. It does not conflict with
 # epaper-ui - this unit is control only (no garment), its agent at
-# 127.0.0.1:8787 keeps a tile.
+# 127.0.0.1:8787 keeps a tile. It must NOT order itself after
+# epaper-ui.service: that unit is After=multi-user.target, and this one is
+# wanted by multi-user.target, so "After=epaper-ui" closed an ordering
+# cycle and systemd dropped this unit's start job at boot (seen on
+# radxa-05, 2026-10-01). The LCD's EXHIBITION row polls 127.0.0.1:8765
+# and copes with the Conductor coming up before or after it.
 # ...and after radxa's user manager (uid 1000), which is what keeps the
 # persistent PulseAudio the speaker plays through (enable-linger).
-After=network-online.target NetworkManager.service epaper-ui.service user@1000.service
+After=network-online.target NetworkManager.service user@1000.service
 Wants=network-online.target user@1000.service
 
 [Service]
