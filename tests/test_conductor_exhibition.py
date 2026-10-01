@@ -1041,18 +1041,64 @@ def test_import_over_http_round_trips_and_refuses_while_a_run_is_active(tmp_path
 
 
 def test_the_fleet_token_gates_both_workspace_endpoints(tmp_path):
+    """The 401 is answered BEFORE the body is wanted; the server drains a
+    small body first (Handler._refuse_early), so the client sees the
+    status and not a Windows connection reset - this asserts the status
+    with a small body, repeatedly, the way the flake showed up."""
     a = _workspace(tmp_path / "a", music=False)
     server = make_server(tmp_path / "b", port=0, fleet=Fleet({}), token="s3cret")
     port = _serve(server)
     try:
         packed = io.BytesIO()
         a.export_tar(packed)
+        body = packed.getvalue()
+        assert len(body) < 64 * 1024                    # a small body, drained
         assert _get(port, "/api/workspace/export")[0] == 401
         assert _get(port, "/api/workspace/export", {"X-Show-Token": "wrong"})[0] == 401
         assert _get(port, "/api/workspace/export", {"X-Show-Token": "s3cret"})[0] == 200
-        assert _post(port, "/api/workspace/import", packed.getvalue())[0] == 401
-        assert _post(port, "/api/workspace/import", packed.getvalue(),
+        for _ in range(5):
+            assert _post(port, "/api/workspace/import", body)[0] == 401
+            assert _post(port, "/api/workspace/import", body,
+                         {"X-Show-Token": "wrong"})[0] == 401
+        assert _post(port, "/api/workspace/import", body,
                      {"X-Show-Token": "s3cret"})[0] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_an_early_refusal_drains_a_small_body_and_closes_on_a_big_one(tmp_path):
+    import http.client
+
+    server = make_server(tmp_path / "b", port=0, fleet=Fleet({}), token="s3cret")
+    port = _serve(server)
+    try:
+        # Small: the whole body is read, the 401 arrives, the connection
+        # stays usable (keep-alive) - a second request on it works.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("POST", "/api/workspace/import", body=b"x" * 100000,
+                     headers={"Content-Type": "application/x-tar"})
+        response = conn.getresponse()
+        assert response.status == 401
+        response.read()
+        conn.request("GET", "/api/state")
+        assert conn.getresponse().status == 200
+        conn.close()
+        # Big (past EARLY_DRAIN_MAX): the status still comes, with
+        # Connection: close, because the server goes on reading for a
+        # bounded while after answering - a client that finishes sending
+        # reads it instead of a reset. Twice, the way the flake showed.
+        from conductor.server import EARLY_DRAIN_MAX
+        for _ in range(2):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.request("POST", "/api/workspace/import",
+                         body=b"x" * (EARLY_DRAIN_MAX + 1),
+                         headers={"Content-Type": "application/x-tar"})
+            response = conn.getresponse()
+            assert response.status == 401
+            assert response.getheader("Connection", "").lower() == "close"
+            response.read()
+            conn.close()
     finally:
         server.shutdown()
         server.server_close()
