@@ -367,8 +367,18 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
    後に切り替わる。ショー中の機体は断る。radxa-05 は最後に伝える)
 4. **① Upload** → 全タイルが `written` になるまで待つ → **② Show preset**
    (再起動後で機体が同じショーを持っていれば Upload は要らない ― 1 章)
-5. **Loop: next run after [45] s** にチェック(待ち時間は 40〜600 秒。ショーと一緒に
-   保存されるので、PC で入れて送ってあれば入ったまま)
+5. **Loop: next run after [45] s** にチェック(待ち時間は 0〜600 秒。ショーと一緒に
+   保存されるので、PC で入れて送ってあれば入ったまま)。**下限はタイムラインで決まる**:
+   最後のキューから次のランの最初のトリガまで 40 秒空ける必要があり、ショー自身の
+   尻尾(最後のキューから終わりまで)がその一部 ― 今の展示ショー(最後のキュー 9:37、
+   終わり 10:54、尻尾 77 秒)は **0 秒 = 終わった直後に再開**できる(次のランの 0:00 の
+   プリセットはカウントダウンの間に送られるので、最後のキューから再開まで 40 秒空けば足りる)。
+   欄のツールチップに `min 0 s - the last cue is 77 s before the end` と出る。
+   **40 秒未満の待ちを入れたワークスペースを送る前に radxa-05 を `git pull` して更新する**
+   (古い版は 40 未満を読めず Loop が黙って off になる)。
+   最後のキューが終わりの 10 秒前のショーなら下限 30 秒(下限未満は断られる)。あとで
+   タイムラインを編集して尻尾が縮んだら、保存した値は残るが Timeline に警告が出て、
+   再開は下限の方の秒数で待つ
 6. **③ START**。カウントダウン(既定 11 秒)のあと 0:00 で曲と絵が始まる。ショーが
    終わると大きな時計が `ENDED · NEXT RUN IN 0:45 (run 2)` と数え、0 で ③ START を
    Conductor が押す。NOW → NEXT ボード(ステージモニターも)も同じカウントを出す
@@ -390,7 +400,10 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
   受け取らない**(off に戻して `Corrected automatically:` に 1 行)。Loop を持てるのは
   `--adopt` の展示 Conductor だけ
 - **Clear pictures after the show** と Loop を両方入れたときは、消去は **STOP のとき**
-  だけ(ラン間では消さない ― 次のランが同じ絵を使う)
+  だけ(ラン間では消さない ― 次のランが同じ絵を使う)。**Loop を入れてから ① Upload**:
+  Loop が on だと機体に送るショーは「自分で消さない」コピーになり、Conductor が STOP で消す。
+  Loop を入れる前に Upload してあると機体が自分の終わりで消してしまい Loop が run 1 で
+  止まる(チェックを入れたときにその旨のトーストが出る → ① Upload をやり直す。絵は書き直さない)
 - **1 台が準備できないとき**(電源が落ちた、絵が消えた): Loop は ③ START と同じ理由で
   `Loop: the next run could not start yet — radxa-03: not answering` と出して 5 秒ごとに
   やり直し、**60 秒たっても揃わなければ揃った機体だけで次のランを始める**
@@ -398,8 +411,12 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
   show`)。その機体は監視されたままで、**ショーを持って答えた瞬間に走行中のランへ入る**
   (`started late`)― 次のランを待たない。同じ理由のままなら次の再スタートでは 60 秒待たずに
   すぐ外す(理由が変われば、また 60 秒待つ)。1 着のために展示全体は止めない。Loop の
-  再スタートは `force` を使わない(基板の書き込み失敗を「それでも始める」と決めるのは人が
-  ③ START を押すときだけ)
+  再スタートは艦隊全体には `force` を使わないが、**③ START で「それでも始める」と押し切った
+  機体は、その失敗が同じままなら再スタートでも押し切る**(押し切る機体が変わったときに
+  `radxa-10: started again with the operator's 'start anyway' (same 1 board)` と 1 行)― 1 枚死んだ
+  基板で Loop が止まらない。再スタートのときに電源が落ちていた機体も、戻ったときに同じ失敗なら
+  走行中のランへ押し切って入る。失敗が増えた機体は押し切らず上の 60 秒の扱いになる。再スタートが断られて再試行している間、画面は
+  `Loop: waiting - radxa-10 not ready (retrying)` と出てカウントダウンはしない
 - **会場で停電したら**: 機体は再起動すると絵を `none` と報告する(Conductor が引き取れるのは
   Conductor だけの再起動のとき)。Units タブで **① Upload** → `written` → ③ START(Loop は
   入ったまま)
@@ -414,7 +431,7 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
 | 機体が offline | その機体の電源。`AZ-Epaper` に入っているか(LCD の上部バーの IP が 10.42.0.1NN か)。3 章のプロファイルが無い・番号違い。2.2 の予約に MAC が無い機体はスマホと番地がぶつかることがある |
 | 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。Bluetooth: `pactl list short sinks` に `bluez_sink.…a2dp_sink` が無ければ 2.1b の b〜c(スピーカーの電源、スマホの Bluetooth を切る)、sink はあるのに無音なら `bluetoothctl disconnect` → `connect`(2.1b d)。音量はページの MUSIC 行のスライダー(= fleet.json `speaker_volume`)。本体のボタンは効かない(2.1b c) |
 | 音が絵より遅れる / 早い | `--speaker-lead-ms`(既定 50 = 測ったパイプ往復 + 50 ms 早くアンパウズ。**50 は当て推量**、Bluetooth(A2DP)は 100〜200 ms 余計に遅れる: クリック音源で一度測って決める)を service の ExecStart で変えて `daemon-reload` + `restart` |
-| Loop が回らない | `Loop` のチェック、待ち時間が 40〜600 か。Units タブの `Corrected automatically:` の行に `Loop: …` の理由 |
+| Loop が回らない | `Loop` のチェック、待ち時間が下限〜600 か(欄のツールチップ)。Units タブの `Corrected automatically:` の行に `Loop: …` の理由 |
 | 再起動後に START が `Upload again` / `Upload first` | 機体が持っているショーが今のタイムラインと違う(送り直した・編集した)。① Upload |
 | ショーを差し替えたい | 会場でも PC を `AZ-Epaper` に入れれば 4 章の手順で送れる(先に STOP) |
 

@@ -170,20 +170,92 @@ def test_reachable_urls_name_every_address_when_bound_to_all():
 
 # ------------------------------------------------------------ 2. the Loop
 
-def test_loop_wait_is_ten_to_six_hundred_seconds_or_off():
+def test_loop_wait_is_zero_to_six_hundred_seconds_or_off_above_the_timelines_floor():
     assert check_loop_wait(None) is None
     assert check_loop_wait(40) == 40.0
+    assert check_loop_wait(0) == 0.0
     assert check_loop_wait("６０") == 60.0             # NFKC, like the countdown
     assert check_loop_wait("42.34") == 42.3
     assert LOOP_WAIT_S == 45.0
-    # Below 40 s the seam between two runs can leave the master without a
-    # STOP for over 60 s (its idle STOP comes at L+15..41 and needs 5 s).
-    for bad in (39.9, 30, 600.1, True, "abc", "", [], {}, "0x10", float("nan")):
-        with pytest.raises(ValueError, match="40 to 600"):
+    for bad in (-0.1, 600.1, True, "abc", "", [], {}, "0x10", float("nan")):
+        with pytest.raises(ValueError, match="0 to 600"):
             check_loop_wait(bad)
+    # The floor is the timeline's (loop_floor_of): named with the reason.
+    with pytest.raises(ValueError, match="30 to 600 seconds here \\(tail\\)"):
+        check_loop_wait(20, floor=30, why="tail")
+    assert check_loop_wait(30, floor=30) == 30.0
     assert loop_wait_of({}) is None
     assert loop_wait_of({"loop_wait_s": "junk"}) is None
     assert loop_wait_of({"loop_wait_s": 45}) == 45.0
+
+
+def _show_with_tail(duration, last_cue_at):
+    return {"duration": duration, "cues": [
+        {"id": "p", "item": "Look23", "at": 0, "design": "Look23_color_ivory_grid.csv"},
+        {"id": "l", "item": "Look23", "at": last_cue_at,
+         "design": "Look23_color_scarlet_grid.csv"}]}
+
+
+def test_the_loop_floor_is_the_seam_minus_the_timelines_tail():
+    from conductor.server import LOOP_SEAM_S, loop_effective_wait, loop_floor_of
+
+    assert LOOP_SEAM_S == 40.0
+    # The exhibition show: last cue 9:37, music end 10:54 - a 77 s tail.
+    floor, tail, why = loop_floor_of(_show_with_tail(654.0, 577.0))
+    assert (floor, tail) == (0.0, 77.0) and "77 s before the end" in why
+    # A show whose last cue is 10 s before its end needs 30 s.
+    floor, tail, why = loop_floor_of(_show_with_tail(120.0, 110.0))
+    assert (floor, tail) == (30.0, 10.0) and "40 s are needed" in why
+    # Rounded UP to a second; a cue at the very end needs the whole seam.
+    assert loop_floor_of(_show_with_tail(120.0, 110.5))[0] == 31.0
+    assert loop_floor_of(_show_with_tail(120.0, 120.0))[0] == 40.0
+    # No cue: nothing to keep away from.
+    assert loop_floor_of({"duration": 60.0, "cues": []})[0] == 0.0
+    # The restart uses the stored wait, or the floor when it is higher.
+    assert loop_effective_wait(dict(_show_with_tail(120.0, 110.0), loop_wait_s=10)) == 30.0
+    assert loop_effective_wait(dict(_show_with_tail(120.0, 110.0), loop_wait_s=50)) == 50.0
+    assert loop_effective_wait(_show_with_tail(120.0, 110.0)) is None
+
+
+def test_the_loop_wait_is_validated_against_this_timelines_floor(tmp_path):
+    ws = _workspace(tmp_path / "ws", music=False)       # 120 s, last cue at 60: tail 60
+    assert ws.loop_floor()[0] == 0.0
+    ws.set_loop(0)                                        # "LOOP はゼロ秒で再開"
+    assert ws.loop_wait() == 0.0 and ws.loop_settings() == (0.0, 11.0)
+    assert ws.state()["show"]["loop_min_wait_s"] == 0.0
+    assert ws.state()["show"]["loop_tail_s"] == 60.0
+    # The last cue moves to 10 s before the end: the floor is 30 now. The
+    # stored 0 is KEPT, the Timeline warns, the restart waits the floor.
+    ws.set_timeline(120, _show_with_tail(120.0, 110.0)["cues"])
+    assert ws.loop_floor()[0] == 30.0
+    assert ws.loop_wait() == 0.0
+    assert ws.loop_settings() == (30.0, 11.0)
+    state = ws.state()
+    assert state["show"]["loop_min_wait_s"] == 30.0
+    assert any("Loop: the wait of 0 s is below the 30 s" in w for w in state["show"]["warnings"])
+    # ...and a new wait below the floor is refused with the number and why.
+    with pytest.raises(ValueError) as refused:
+        ws.set_loop(20)
+    assert "30 to 600 seconds here" in str(refused.value)
+    assert "10 s before the end" in str(refused.value)
+    ws.set_loop(30)
+    assert ws.loop_wait() == 30.0
+    assert not any("Loop: the wait" in w for w in ws.state()["show"]["warnings"])
+    # /api/fleet's loop carries the floor; a plain "on" lifts the default to it.
+    ws.set_loop(None)
+    ws.set_timeline(120, _show_with_tail(120.0, 119.0)["cues"])      # floor 39 < default 45
+    server = make_server(ws.root, port=0, fleet=Fleet({}))
+    port = _serve(server)
+    try:
+        loop = json.loads(_get(port, "/api/fleet")[1])["loop"]
+        assert loop["min_wait_s"] == 39 and loop["on"] is False
+        status, loop = _post(port, "/api/loop", {"on": True})
+        assert status == 200 and loop["wait_s"] == 45
+        status, answer = _post(port, "/api/loop", {"on": True, "wait_s": 20})
+        assert status == 400 and "39 to 600" in answer["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_loop_is_stored_with_the_show_off_as_no_key_and_undoable(tmp_path):
@@ -202,7 +274,8 @@ def test_loop_is_stored_with_the_show_off_as_no_key_and_undoable(tmp_path):
     assert ws.undo() and ws.loop_wait() == 45.0
     assert ws.redo() and ws.loop_wait() is None
     with pytest.raises(ValueError):
-        ws.set_loop(5)
+        ws.set_loop(-1)
+
     # Not a step when nothing changes.
     before = ws.state()["history"]
     ws.set_loop(None)
@@ -234,7 +307,7 @@ def test_loop_travels_in_the_show_file_and_null_means_off(tmp_path):
     b.import_show(without)
     assert b.loop_wait() == 50.0
     with pytest.raises(ValueError):
-        b.import_show(dict(exported, loop_wait_s=2))
+        b.import_show(dict(exported, loop_wait_s=-2))
 
 
 def test_post_api_loop_answers_the_fleet_loop_object(tmp_path):
@@ -246,20 +319,24 @@ def test_post_api_loop_answers_the_fleet_loop_object(tmp_path):
         status, before, _ = _get(port, "/api/fleet")
         assert json.loads(before)["loop"] == {"on": False, "wait_s": 45,
                                               "next_in_s": None, "runs": 0,
-                                              "problem": None}
+                                              "problem": None, "min_wait_s": 0,
+                                              "retrying": False, "waiting": False,
+                                              "retry_in_s": None, "stored_wait_s": None}
         status, loop = _post(port, "/api/loop", {"on": True})
         assert status == 200 and loop["on"] and loop["wait_s"] == 45
         status, loop = _post(port, "/api/loop", {"on": True, "wait_s": 45})
         assert status == 200 and loop == {"on": True, "wait_s": 45,
                                           "next_in_s": None, "runs": 0,
-                                          "problem": None}
+                                          "problem": None, "min_wait_s": 0,
+                                          "retrying": False, "waiting": False,
+                                          "retry_in_s": None, "stored_wait_s": 45}
         assert ws.loop_wait() == 45.0
         assert json.loads(_get(port, "/api/fleet")[1])["loop"]["on"] is True
         status, loop = _post(port, "/api/loop", {"on": False, "wait_s": 45})
         assert status == 200 and loop["on"] is False and loop["wait_s"] == 45
         assert ws.loop_wait() is None
-        for bad in ({}, {"on": "yes"}, {"on": True, "wait_s": 3},
-                    {"on": True, "wait_s": "x"}, {"on": True, "wait_s": 39}):
+        for bad in ({}, {"on": "yes"}, {"on": True, "wait_s": 601},
+                    {"on": True, "wait_s": "x"}, {"on": True, "wait_s": -1}):
             status, answer = _post(port, "/api/loop", bad)
             assert status == 400, bad
         # The old body shape the page used first is not an endpoint.
@@ -389,13 +466,17 @@ def test_a_refused_restart_is_said_once_and_retried_until_it_lands():
     fleet._loop_tick()
     assert fleet.run["loops"] == 0
     pending = fleet.loop_state()
-    assert pending["next_in_s"] == 5.0
+    # Refused and retried: NO countdown (a 5 s retry published as one read
+    # "next run in 0:03" over and over on the LCD), the retry for diagnostics.
+    assert pending["next_in_s"] is None and pending["retrying"] is True
+    assert pending["waiting"] is True and pending["retry_in_s"] == 5.0
     assert "radxa-02: not answering" in pending["problem"]
     said = [line for line in fleet.corrections if "cannot start again" in line]
     assert len(said) == 1
     clock.now += 5.0
     fleet._loop_tick()
-    assert fleet.run["loops"] == 0 and fleet.loop_state()["next_in_s"] == 5.0
+    assert fleet.run["loops"] == 0 and fleet.loop_state()["next_in_s"] is None
+    assert fleet.loop_state()["retrying"] and fleet.loop_state()["retry_in_s"] == 5.0
     assert len([l for l in fleet.corrections if "cannot start again" in l]) == 1
     fleet.links["radxa-02"].online = True
     clock.now += 5.0
@@ -862,7 +943,9 @@ def test_serve_wires_the_speaker_to_the_workspace_music(tmp_path, monkeypatch):
     assert speaker["available"] and speaker["track"] == "show.mp3"
     assert speaker["state"] == "loaded" and speaker["error"] is None
     assert made["fleet"]["loop"] == {"on": False, "wait_s": 45, "next_in_s": None,
-                                     "runs": 0, "problem": None}
+                                     "runs": 0, "problem": None, "min_wait_s": 0,
+                                     "retrying": False, "waiting": False,
+                                     "retry_in_s": None, "stored_wait_s": None}
     assert fake.since()[1] == f"LP {ws.music / 'show.mp3'}"
     assert fake.since()[-1] == "Q"                  # stopped with the server
 
@@ -2536,3 +2619,225 @@ def test_the_conductor_service_waits_for_the_user_manager():
     after = conductor.split("\nAfter=")[1].split("\n")[0]
     wants = conductor.split("\nWants=")[1].split("\n")[0]
     assert "user@1000.service" in after and "user@1000.service" in wants
+
+
+# ------------------------------------------------------------ the operator's 'start anyway', carried per unit
+
+def _failed_burn(pairs, total=16, reason=None):
+    burn = {"state": "failed", "failed": [list(p) for p in pairs], "total": total}
+    if reason:
+        burn["reason"] = reason
+    return burn
+
+
+def test_a_forced_start_is_carried_into_the_restart_for_the_same_failure():
+    """radxa-10, 2026-10-01: one dead board the operator waved through must
+    not stop the loop after run 1 - the restart forces THAT unit again
+    while its failure is unchanged, and nobody else."""
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1), (7, 2)])
+    with pytest.raises(ValueError, match="radxa-02: 2 of 16 pictures not written"):
+        fleet.start_show(lead_s=1.0)
+    fleet.start_show(lead_s=1.0, force=True)              # the operator's 'start anyway'
+    assert fleet._waved == {"radxa-02": (((7, 1), (7, 2)), None, 16, "showA")}
+    assert all(body["force"] for _, body in _posted(fleet, "/show/run"))
+    # The run ends; the loop restarts: radxa-02 forced, radxa-01 not.
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    for link in fleet.links.values():
+        link.posted.clear()
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 1 and fleet.run["force"] is False
+    assert fleet.run["forced"] == ["radxa-02"]
+    forces = {name: body["force"] for name, body in _posted(fleet, "/show/run")}
+    assert forces == {"radxa-01": False, "radxa-02": True}
+    assert fleet.loop_state() is None
+    said = [l for l in fleet.corrections if "started again with the operator's 'start anyway'" in l]
+    assert len(said) == 1 and "radxa-02" in said[0] and "same 1 board" in said[0]
+    # ...and again at the next end, as long as nothing changed - said ONCE,
+    # not on every restart (the corrections hold 20 lines).
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 2 and fleet.run["forced"] == ["radxa-02"]
+    assert len([l for l in fleet.corrections if "start anyway" in l]) == 1
+
+
+def test_a_failure_that_changed_is_not_forced_and_takes_the_grace_path():
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1)])
+    fleet.start_show(lead_s=1.0, force=True)
+    # A second board dies during the run: more failed pairs than waved.
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1), (9, 1)])
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 0
+    assert "radxa-02: 2 of 16 pictures not written" in fleet.loop_state()["problem"]
+    clock.now += 60.0
+    for link in fleet.links.values():
+        link.posted.clear()
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 1 and fleet.run["forced"] == []
+    assert [name for name, _ in _posted(fleet, "/show/run")] == ["radxa-01"]
+    assert fleet.loop_state()["problem"].startswith("started without radxa-02")
+    assert not any("start anyway" in l for l in fleet.corrections)
+    # A reason that changed counts as changed too.
+    fleet2 = _fleet(clock, lambda: (40.0, 2.0))
+    fleet2.links["radxa-02"].status["show"]["burn"] = _failed_burn(
+        [], reason="none of its 16 boards answered")
+    fleet2.start_show(lead_s=1.0, force=True)
+    assert fleet2._waved == {"radxa-02": ((), "none of its 16 boards answered", 16, "showA")}
+    fleet2.links["radxa-02"].status["show"]["burn"] = _failed_burn(
+        [], reason="the port was taken")
+    assert fleet2._still_waved() == set()
+    fleet2.links["radxa-02"].status["show"]["burn"] = _failed_burn(
+        [], reason="none of its 16 boards answered")
+    assert fleet2._still_waved() == {"radxa-02"}
+
+
+def test_a_plain_start_never_lets_the_loop_force():
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.start_show(lead_s=1.0)
+    assert fleet._waved == {}
+    # A board fails after the START: the restart does not force it.
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(3, 1)])
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 0 and "radxa-02" in fleet.loop_state()["problem"]
+    # A forced START, then a plain one: the plain one forgets the waving.
+    fleet.start_show(lead_s=1.0, force=True)
+    assert fleet._waved == {"radxa-02": (((3, 1),), None, 16, "showA")}
+    fleet.links["radxa-02"].status["show"]["burn"] = {"state": "burned"}
+    fleet.start_show(lead_s=1.0)
+    assert fleet._waved == {}
+
+
+# ------------------------------------------------------------ review of a9898aa
+
+def test_with_the_loop_on_the_units_copy_does_not_clear_itself_but_stop_still_clears(tmp_path):
+    ws = _workspace(tmp_path / "ws", music=False)
+    ws.set_clear_after_show(True)
+    plain, _ = ws.compile_show()
+    assert plain["radxa-01"]["clear_after_show"] is True
+    assert "conductor_clear_after_show" not in plain["radxa-01"]
+    rev = ws.revision()
+    ws.set_loop(0)
+    looped, _ = ws.compile_show()
+    unit_copy = looped["radxa-01"]
+    assert "clear_after_show" not in unit_copy, "the unit would clear at its own ENDED"
+    assert unit_copy["conductor_clear_after_show"] is True
+    # Same id, same revision: no picture rewritten, no "changed since".
+    assert unit_copy["id"] == plain["radxa-01"]["id"] and ws.revision() == rev
+    # The fleet still knows the operator wants the clear - on STOP.
+    clock = Clock()
+    fleet = Fleet({}, clock=clock, loop_settings=ws.loop_settings)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "loaded")}
+    fleet.links["radxa-01"].status["show"].update(id=unit_copy["id"], burn={"state": "burned"})
+    fleet.upload(looped)
+    assert fleet.clear_wanted() is True
+    fleet.start_show(lead_s=1.0)
+    assert fleet.run["clear_after_show"] is True
+    fleet.stop_show()
+    assert fleet.clear_armed_in_s() is not None
+
+
+def test_turning_the_loop_on_warns_when_the_units_hold_a_self_clearing_copy(tmp_path):
+    ws = _workspace(tmp_path / "ws", music=False)
+    ws.set_clear_after_show(True)
+    shows, _ = ws.compile_show()                      # uploaded BEFORE the Loop
+    fleet = Fleet({})
+    fleet.shows = dict(shows)
+    server = make_server(ws.root, port=0, fleet=fleet)
+    port = _serve(server)
+    try:
+        status, loop = _post(port, "/api/loop", {"on": True, "wait_s": 0})
+        assert status == 200 and loop["on"]
+        assert "clears its own pictures" in loop["note"]
+        assert any("Loop on:" in c for c in fleet.corrections)
+        # After an Upload of the looped compile, no note.
+        fleet.shows = dict(ws.compile_show()[0])
+        status, loop = _post(port, "/api/loop", {"on": True, "wait_s": 0})
+        assert status == 200 and "note" not in loop
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_plain_on_lifts_a_stored_wait_below_the_floor_and_wait_s_is_effective(tmp_path):
+    """MED-2."""
+    ws = _workspace(tmp_path / "ws", music=False)
+    ws.set_loop(0)
+    ws.set_timeline(120, _show_with_tail(120.0, 110.0)["cues"])     # floor 30 now
+    server = make_server(ws.root, port=0, fleet=Fleet({}))
+    port = _serve(server)
+    try:
+        loop = json.loads(_get(port, "/api/fleet")[1])["loop"]
+        assert loop["wait_s"] == 30 and loop["stored_wait_s"] == 0 and loop["min_wait_s"] == 30
+        status, loop = _post(port, "/api/loop", {"on": True})      # no 400
+        assert status == 200 and loop["wait_s"] == 30 and loop["stored_wait_s"] == 30
+        assert ws.loop_wait() == 30.0
+        status, loop = _post(port, "/api/loop", {"on": False})
+        assert status == 200 and loop["on"] is False and loop["stored_wait_s"] is None
+        assert loop["wait_s"] == 45                                   # the default, above the floor
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_waved_unit_offline_at_the_restart_rejoins_the_loop_run_forced():
+    """MED-1 (review of ef61d26): offline at the restart it has no
+    signature, is left out after the grace, and comes back mid-run -
+    supervision's /show/run must carry the operator's force then, or the
+    unit is refused for the whole run."""
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1)])
+    fleet.start_show(lead_s=1.0, force=True)
+    fleet.links["radxa-02"].online = False               # unplugged between runs
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()                                   # refused: not answering
+    clock.now += 60.0
+    fleet._loop_tick()                                   # started without it
+    assert fleet.run["loops"] == 1 and fleet.run["forced"] == []
+    # Back, 10 s into the run, with the SAME failure: the rejoin forces.
+    fleet.links["radxa-02"].online = True
+    fleet.links["radxa-02"].status["show"].update(state="loaded", t0=None)
+    fleet.links["radxa-02"].posted.clear()
+    fleet._corrected.clear()
+    clock.now = fleet.run["t0"] + 10.0
+    fleet._supervise(fleet.links["radxa-02"])
+    runs = [body for path, body in fleet.links["radxa-02"].posted if path == "/show/run"]
+    assert runs and runs[-1]["force"] is True, fleet.links["radxa-02"].posted
+    # ...a DIFFERENT failure, or a plain-START run: no force on the rejoin.
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1), (8, 1)])
+    fleet.links["radxa-02"].posted.clear()
+    fleet._corrected.clear()
+    fleet._supervise(fleet.links["radxa-02"])
+    runs = [body for path, body in fleet.links["radxa-02"].posted if path == "/show/run"]
+    assert runs and runs[-1]["force"] is False
+    assert fleet._rejoin_force({"force": False, "forced": [], "loops": 0}, "radxa-02") is False
+    assert fleet._rejoin_force({"force": False, "forced": ["radxa-02"], "loops": 0}, "radxa-02") is True
+
+
+def test_a_rescue_upload_of_another_compile_is_not_carried():
+    """LOW-1: the signature carries the show id."""
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0))
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1)])
+    fleet.start_show(lead_s=1.0, force=True)
+    assert fleet._still_waved() == {"radxa-02"}
+    fleet.upload({"radxa-02": {"id": "showB", "cues": [], "duration": 100.0}}, force=True,
+                 only=["radxa-02"])
+    fleet.links["radxa-02"].status["show"].update(id="showB")
+    assert fleet._still_waved() == set()

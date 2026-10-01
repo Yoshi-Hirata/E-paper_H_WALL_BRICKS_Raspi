@@ -998,6 +998,8 @@ def build_reference_state(project: dict) -> dict:
     # Conductor restarts the fleet's run. No fleet, no run in the simulator.
     state["show"].pop("loop_wait_s", None)
     state["show"].pop("loop_default_s", None)
+    for key in ("loop_min_wait_s", "loop_tail_s", "loop_min_why"):
+        state["show"].pop(key, None)
     music = show.get("music")
     state["music"] = {"name": music.get("name") if isinstance(music, dict) else None, "url": None}
     return state

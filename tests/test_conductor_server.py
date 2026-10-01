@@ -2420,7 +2420,9 @@ def test_the_fleet_snapshot_carries_the_start_position_and_the_show_length(tmp_p
                         # EXHIBITION mode: the Loop is always an object,
                         # the speaker is null without --speaker.
                         "loop": {"on": False, "wait_s": 45, "next_in_s": None,
-                                 "runs": 0, "problem": None},
+                                 "runs": 0, "problem": None, "min_wait_s": 0,
+                                 "retrying": False, "waiting": False,
+                                 "retry_in_s": None, "stored_wait_s": None},
                         "speaker": None}
         # Nothing to drive, but the page still asks the same question of
         # the workspace: what is the timeline now, and what was written.
