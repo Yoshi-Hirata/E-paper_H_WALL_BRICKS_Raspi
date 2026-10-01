@@ -30,11 +30,11 @@ once per KEY1/KEY1-hold/loop lap, never on a poll path.
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from pathlib import Path
 
+from conductor import durable      # standard library only, nothing else of the Conductor
 from .remote import RemoteError
 from .showplay import STORE, validate_show
 
@@ -71,20 +71,12 @@ class DemoStore:
         return self.root / f"{slug}.meta.json"       # slug already validated
 
     def _write(self, path: Path, payload: dict) -> None:
-        """Whole or not at all - the same rule as showplay._write. On a
-        write failure (a full SD card) the half-written scratch file is
-        removed rather than left behind for the next listing to trip on."""
+        """Whole or not at all, fsynced - the same rule as showplay._write
+        (conductor/durable.py). On a write failure (a full SD card) the
+        half-written temp file is removed rather than left behind for the
+        next listing to trip on."""
         self.root.mkdir(parents=True, exist_ok=True)
-        scratch = path.with_name(path.name + ".tmp")
-        try:
-            scratch.write_text(json.dumps(payload), encoding="utf-8")
-            os.replace(scratch, path)
-        except OSError:
-            try:
-                scratch.unlink()
-            except OSError:
-                pass
-            raise
+        durable.atomic_write_json(path, payload)
 
     def _meta_of(self, slug: str, name: str, show: dict, loop: bool,
                 saved_at: float) -> dict:
@@ -101,7 +93,13 @@ class DemoStore:
             return None             # tried once already; not every 2 s
         try:
             data = json.loads(self._path(slug).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except ValueError as exc:
+            # Empty or torn (a power cut under an older version): left
+            # out of the menu, said once.
+            durable.note_unreadable(self._path(slug), exc, "demo not listed")
+            self._unreadable.add(slug)
+            return None
+        except OSError:
             self._unreadable.add(slug)
             return None
         if not isinstance(data, dict) or not isinstance(data.get("show"), dict):
@@ -125,8 +123,14 @@ class DemoStore:
         for path in sorted(self.root.glob("*.meta.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue          # a half-written or foreign file: skip it
+            except ValueError as exc:
+                # A half-written or foreign sidecar: skip it (said once per
+                # file version) - the show file beside it, if whole, gets a
+                # fresh sidecar from the loop below.
+                durable.note_unreadable(path, exc, "rebuilt from its show file")
+                continue
+            except OSError:
+                continue
             if isinstance(data, dict) and data.get("slug"):
                 entries.append(data)
                 known.add(data["slug"])

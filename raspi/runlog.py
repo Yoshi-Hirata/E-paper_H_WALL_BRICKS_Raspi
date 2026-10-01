@@ -65,6 +65,18 @@ def write_atomic(path: Path, text: str) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp, path)
+    # ...and the rename itself (the same rule as conductor/durable.py,
+    # which this standalone script cannot import: it runs by path).
+    try:
+        fd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def format_uptime(seconds: float) -> str:

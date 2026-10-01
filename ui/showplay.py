@@ -90,11 +90,11 @@ never come back as "burned".
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from pathlib import Path
 
+from conductor import durable      # standard library only, nothing else of the Conductor
 from .remote import ARMED, DEFAULT_SLOT, FAILED, FIRED, PREPARING, READY, RemoteError
 
 STORE = Path.home() / ".epaper"
@@ -792,11 +792,9 @@ class ShowPlayer:
 
     def _write(self, name: str, payload) -> None:
         """Whole or not at all: the power cut restore() exists for must
-        not find half a file."""
-        target = self.store / name
-        scratch = self.store / (name + ".tmp")
-        scratch.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(scratch, target)
+        not find half a file - nor an empty one, so fsynced before and
+        after the rename (conductor/durable.py)."""
+        durable.atomic_write_json(self.store / name, payload)
 
     def _persist_burn(self, show_id: str, burn: dict) -> None:
         """Record a finished burn ("burned", or "failed" with its pairs)
@@ -855,7 +853,12 @@ class ShowPlayer:
             return {"show": show["id"], "state": state,
                     "total": int(record.get("total", self._burn_total(show))),
                     "reason": record.get("reason"), "failed": failed}
-        except (OSError, ValueError, KeyError, TypeError):
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # Empty or torn (a power cut under an older version): no
+            # record, said once per file version, not on every poll.
+            durable.note_unreadable(self.store / BURN_FILE, exc)
+            return None
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
 
     def _persist(self, with_show: bool = False) -> None:
@@ -912,6 +915,25 @@ class ShowPlayer:
         except OSError:
             pass                # missing, or a disk that will not have it
 
+    def _read_state(self, name: str) -> "dict | None":
+        """One of restore()'s two files as a dict, or None: missing (a
+        unit that never loaded a show), or there but empty or torn - a
+        power cut under a version before conductor/durable.py - which is
+        the same "no record" plus one log line, never a crash at boot."""
+        path = self.store / name
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except ValueError as exc:            # JSON, or not UTF-8 at all
+            durable.note_unreadable(path, exc, "restored as nothing loaded")
+            return None
+        if not isinstance(data, dict):
+            durable.note_unreadable(path, "not a JSON object",
+                                    "restored as nothing loaded")
+            return None
+        return data
+
     def restore(self) -> None:
         """At start-up: pick the show up again if it was running.
 
@@ -924,12 +946,14 @@ class ShowPlayer:
         if self.store is None:
             return
         try:
-            show = json.loads((self.store / "show.json")
-                              .read_text(encoding="utf-8"))
-            run = json.loads((self.store / "show-run.json")
-                             .read_text(encoding="utf-8"))
+            show = self._read_state("show.json")
+            run = self._read_state("show-run.json")
+            if show is None or run is None:
+                return
             duration = float(show["duration"])
             float(show["refresh_s"]), show["cues"][0]["sent"]
+            if not isinstance(run.get("t0_wall"), (int, float, type(None))):
+                return
         except (OSError, ValueError, KeyError, TypeError, IndexError):
             return
         with self._lock:

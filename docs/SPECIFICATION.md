@@ -1432,6 +1432,56 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   最後に伝える**(同じ秒数で)。返答 `{"units", "last", "hotspot", "profile", "after_s"}`、
   トーストに受けた機体と断った機体
 
+### 4.8 電源断への耐性(2026-10-01)
+
+radxa-05(Debian 11、SD/eMMC 上の ext4 `rw,relatime`)は 2026-10-01 に 2 回電源を失い、
+次の起動で `EXT4-fs (mmcblk0p3): recovery complete` が出た。ext4 の遅延割り当てのため、
+それまでの書き方(scratch ファイル → `os.replace`、fsync なし)では電源断の直前数秒〜
+30 秒ほどに書いたファイルが**空や古い中身で戻りうる**。
+
+- **書き方**: 永続ファイルはすべて `conductor/durable.py` を通す ― 同じフォルダの一時
+  ファイル(`.<名前>.<pid>-<thread>-<乱数>.tmp`)に書き、flush → `fsync(ファイル)` →
+  元のファイルのモードを引き継ぐ(fleet.json の 0600 は 0600 のまま、新規は
+  0666 & ~umask)→ `os.replace` → `fsync(フォルダ)`(POSIX のみ。Windows は黙って省く)。
+  置き換え前に失敗したら一時ファイルを消し、古いファイルはそのまま。Windows(PC の
+  Conductor)では読み手が開いているあいだ `os.replace` が PermissionError になるので
+  10 ms おきに 0.2 秒まで再試行する(POSIX では再試行しない)。標準ライブラリだけで
+  Conductor のほかのモジュールを import しないので、機体の UI(Python 3.9)も
+  `from conductor import durable` で使う
+- **対象**: Conductor の `show.json` / `history.json`(`Workspace._write`)、アップロード
+  した CSV(`_save_locked`)、マップの複製(`duplicate`)、`fleet.json` の 1 キー書き換え
+  (`set_fleet_option`、スピーカー音量)、PC 用 fleet.json の雛形(`write_fleet_template`、
+  排他作成のまま fsync)、音源(`save_music`、**チャンクごとではなく最後に 1 回** fsync
+  してから置き換え、music フォルダも fsync)、ワークスペースの取り込み(`import_tar`、
+  展開したステージングフォルダを `fsync_tree` してから入れ替え、入れ替え後にルートを
+  fsync)。機体の `~/.epaper/show.json` / `show-run.json` / `show-burn.json`
+  (`ShowPlayer._write`)、デモ(`demos/<slug>.json` と `.meta.json`)、
+  `flash-log.json`(UPDATE FW の記録 ― **記録を書いてから DONE を出す**)。
+  `raspi/runlog.py`(もとから fsync していた)もフォルダの fsync を足した
+- **電源断で何が残るか**: 書いている最中のファイルは**古いか新しいかのどちらか**で、
+  空や途中までにはならない。fsync が返ったあとの書き込みは失われない。
+  2 ファイルにまたがる更新(`show-run.json` → `show.json`、show.json → 音源)は
+  1 つずつ原子的なだけで、間で落ちれば片方だけが新しい ― その組み合わせは
+  これまでどおり各読み手が「記録なし/PC のショー」として扱う(4 章冒頭)
+- **永続化しないもの(この変更でも)**: 走っているショーの実行状態は Conductor 側では
+  保存しない(Conductor の `marks` / `unit_marks` / `compiled`、Fleet の run・Loop・
+  Preset before START の段取りはメモリだけ)。電源が戻った Conductor は何も走らせて
+  いない状態で上がり、機体側は `show-run.json` から 4 章冒頭の規則で戻る。
+  Conductor の PC 側のエクスポート(`python -m conductor` の `--output`、プレビュー PNG)
+  と UI の PNG 表示バックエンドは対象外
+- **古い版が残した壊れたファイルの読み方**: 空・途中までの JSON は**「記録なし」**として
+  読み、`<パス>: unreadable (empty: …) - <どう扱ったか>` を 1 行だけ stderr(journal)
+  に出す(同じファイルの同じ版では 2 度出さない)。起動時に落ちることはない ―
+  show.json / history.json は新しいショー・undo なし、fleet.json は無いものとして
+  (**パスコードも無いので 0.0.0.0 では起動を断る**、手で書き直す)、ただし
+  **空(空白だけ)の fleet.json は `set_fleet_option` が新しく書いてよい**(途中までの
+  JSON はこれまでどおり上書きしない)。機体の `show.json` / `show-run.json` が壊れて
+  いれば何も読み込まずに PC を待ち、`show-burn.json` が壊れていれば burn なし
+  (走っていたショーは走り直さず「no record of its pictures」)。デモは壊れた
+  `.meta.json` を本体から作り直し、壊れた本体は一覧に出さない。`flash-log.json` は空
+- 電源断そのものを防ぐものではない。radxa-05 には無停電の給電を勧める
+  (radxa/EXHIBITION.md 2.5)
+
 ## 5. 実機検証で確認した制約(メーカー仕様との差異)
 
 | # | 事象 | 対応 |

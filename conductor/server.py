@@ -58,7 +58,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import sequence, showfile, timeline
+from . import durable, sequence, showfile, timeline
 from .fleet import (DEFAULT_HOTSPOT_UNIT, DEFAULT_LEAD_S, STAGING_BUSY,
                     WIFI_SWITCH_RANGE_S, Fleet, default_units)
 from .look import (MAX_BOARD_ID, PALETTE, UNRELIABLE_DIP_NOTE, Design,
@@ -639,9 +639,15 @@ class Workspace:
     def _load_show(self) -> dict:
         try:
             show = json.loads(self._show_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
             # No show.json at all: a NEW show, which opens on today's
             # default refresh (every reader's own show.get(..., REFRESH_S)).
+            # One that is there but empty or torn (a power cut under a
+            # version before conductor/durable.py) opens the same way,
+            # said once in the log; history.json still holds its undo.
+            if isinstance(exc, ValueError):
+                durable.note_unreadable(self._show_path, exc,
+                                        "opened as a new show")
             return {}
         if isinstance(show, dict) and not _is_number(show.get("refresh_s")):
             # A show FILE that names no refresh time (or names it as null,
@@ -670,15 +676,18 @@ class Workspace:
         try:
             history = json.loads(self._history_path.read_text(encoding="utf-8"))
             return {"undo": list(history["undo"]), "redo": list(history["redo"])}
-        except (OSError, ValueError, KeyError, TypeError):
+        except ValueError as exc:
+            durable.note_unreadable(self._history_path, exc, "no undo history")
+            return {"undo": [], "redo": []}
+        except (OSError, KeyError, TypeError):
             return {"undo": [], "redo": []}
 
     def _write(self, path: Path, payload) -> None:
         # Whole or not at all: a power cut in the middle of a plain write
-        # would leave half a timeline, the night before the show.
-        scratch = path.with_name(path.name + ".tmp")
-        scratch.write_text(json.dumps(payload, indent=1), encoding="utf-8")
-        os.replace(scratch, path)
+        # would leave half a timeline, the night before the show - and
+        # fsynced, file and folder, or the cut can still bring it back
+        # empty (ext4's delayed allocation; conductor/durable.py).
+        durable.atomic_write_json(path, payload, indent=1)
 
     def _commit(self, before: dict, after: dict) -> None:
         """Save an edit of the show (lock held). The version it replaces
@@ -1016,7 +1025,8 @@ class Workspace:
             while self._map_path(f"{base}-{number}") is not None:
                 number += 1
             twin = f"{base}-{number}"
-            shutil.copyfile(source, self.files / f"{twin}_map.csv")
+            durable.atomic_write_bytes(self.files / f"{twin}_map.csv",
+                                       source.read_bytes())
             before = self._load_show()
             after = dict(before)
             for key in ("labels", "boards", "dips"):  # starts as what it copies
@@ -1256,6 +1266,9 @@ class Workspace:
                     handle.write(chunk)
                     written += len(chunk)
                     remaining -= len(chunk)
+                # One fsync for the whole file, at its end (not per chunk):
+                # the bytes are on the card before anything points at them.
+                durable.fsync_file(handle)
             # Also here, not only in the handler's Content-Length check:
             # save_music() is called directly (the tests, and anything
             # else that grows a caller later), and an empty file must
@@ -1276,6 +1289,7 @@ class Workspace:
                 os.replace(part, self.music / safe)
                 if old.get("name") and old["name"] != safe:
                     (self.music / Path(old["name"]).name).unlink(missing_ok=True)
+                durable.fsync_dir(self.music)
             return info
         except BaseException:
             part.unlink(missing_ok=True)
@@ -1851,8 +1865,13 @@ class Workspace:
                         json.loads(path.read_text(encoding="utf-8"))
                     except (OSError, ValueError) as exc:
                         raise ValueError(f"{name}: not JSON ({exc})")
+            # Every staged byte on the card BEFORE the swap renames it into
+            # place (conductor/durable.py): a power cut right after must
+            # find the new workspace whole, not its names over empty files.
+            durable.fsync_tree(stage)
             with self._lock:
                 self._swap_in(stage, aside)
+                durable.fsync_dir(self.root)
                 self.marks.clear()
                 self.unit_marks.clear()
                 self.compiled = None
@@ -1927,11 +1946,10 @@ class Workspace:
         name = workspace_name(name)          # raises on an unusable name
         if self.kind(name) is None:
             raise ValueError(f"{name}: {NOT_A_CSV_NAME}")
-        # open(), not Path.write_text(newline=...): that is 3.10+, and
-        # the units' Python 3.9 should be able to run this too.
-        with open(self.files / name, "w", encoding="utf-8",
-                  newline="") as handle:
-            handle.write(text)
+        # newline="" (written as given, no CRLF on the PC), and whole or
+        # not at all, fsynced (conductor/durable.py) - not Path.write_text
+        # (newline=...), which is 3.10+ where the units run 3.9.
+        durable.atomic_write_text(self.files / name, text, newline="")
         return name
 
     def item_names(self) -> "list[str]":
@@ -2135,10 +2153,13 @@ class Workspace:
     # ---- what goes to the units ----
 
     def _fleet_json(self) -> dict:
+        path = self.root / "fleet.json"
         try:
-            config = json.loads((self.root / "fleet.json")
-                                .read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            durable.note_unreadable(path, exc, "served as if there were none")
+            config = {}
+        except OSError:
             config = {}
         return config if isinstance(config, dict) else {}
 
@@ -2162,12 +2183,18 @@ class Workspace:
         settings the page changes (the speaker's volume). Whole or not at
         all, like show.json; the file's mode is kept (a chmod 600 with the
         passcode in it stays 600); a fleet.json that does not PARSE is
-        never overwritten - RuntimeError, the caller's 500."""
+        never overwritten - RuntimeError, the caller's 500. An EMPTY one
+        (nothing but whitespace: a power cut under a version before
+        conductor/durable.py) holds nothing to keep and is written as new."""
         path = self.root / "fleet.json"
         with self._lock:
             try:
                 raw = path.read_text(encoding="utf-8")
             except FileNotFoundError:
+                raw = None
+            if raw is not None and not raw.strip():
+                durable.note_unreadable(path, "no JSON in it",
+                                        f"written anew with {key!r}")
                 raw = None
             if raw is None:
                 config: dict = {}
@@ -2181,19 +2208,8 @@ class Workspace:
                     raise RuntimeError("fleet.json is not an object - not "
                                        "overwriting it; fix it by hand")
             config[key] = value
-            mode = None
-            try:
-                mode = os.stat(path).st_mode & 0o777
-            except OSError:
-                pass
-            scratch = path.with_name(path.name + ".tmp")
-            scratch.write_text(json.dumps(config, indent=1), encoding="utf-8")
-            if mode is not None:
-                try:
-                    os.chmod(scratch, mode)
-                except OSError:
-                    pass
-            os.replace(scratch, path)
+            # The old file's mode is kept (durable's default), fsynced.
+            durable.atomic_write_json(path, config, indent=1)
 
     def compile_units(self, choices: "dict[str, str]", cue: str
                       ) -> "tuple[dict[str, dict], list[str]]":
@@ -4305,8 +4321,10 @@ def write_fleet_template(root: Path, template: dict = PC_FLEET_TEMPLATE) -> bool
     try:
         with open(path, "x", encoding="utf-8") as handle:
             handle.write(text)
+            durable.fsync_file(handle)      # conductor/durable.py
     except FileExistsError:
         return False
+    durable.fsync_dir(path.parent)
     return True
 
 
