@@ -5140,7 +5140,8 @@ function showClockText() {
     const p = run.preset || fleet.preset || {};
     const refused = Object.keys(p.refused || {});
     const waited = (p.targets || []).filter(n => !refused.includes(n));
-    const painted = (p.painted || []).filter(n => waited.includes(n)).length, total = waited.length;
+    const painted = (p.painted || []).filter(n => waited.includes(n)).length,
+          total = typeof p.waited === "number" ? p.waited : waited.length;
     now = 0;
     word = `PRESET… ${painted}/${total} painted`
       + (refused.length ? ` (${refused.length} refused)` : "") + (p.loop ? " (Loop)" : "");
@@ -5811,6 +5812,21 @@ function renderTiles() {
 async function fetchFleet() {
   try { fleet = await api("/api/fleet"); fleet.at = performance.now(); applySpeakerDefault(); }
   catch (err) { /* the server is restarting */ }
+  notePresetLeftOut();
+}
+// A staged START (Preset before START) that went on without the 0:00 look on
+// some garments says so ONCE per run, as a warning - the corrections line
+// alone is easy to miss (run.preset_left_out, keyed by the run's first T0).
+function notePresetLeftOut() {
+  const left = fleet && fleet.run && fleet.run.preset_left_out;
+  if (!left || !left.units) return;
+  const key = String(left.at);
+  if (ui.presetLeftOutSaid === key) return;
+  ui.presetLeftOutSaid = key;
+  const names = Object.keys(left.units);
+  if (!names.length) return;
+  toast(`The show started without the 0:00 look on ${names.join(", ")} - `
+    + names.map(n => `${n}: ${left.units[n]}`).join("; "), "warn");
 }
 // Once a second on the Units tab (and while the dialog is open anywhere,
 // so its per-unit burn keeps up with the tiles); every fifth second on the

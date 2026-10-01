@@ -3072,6 +3072,10 @@ def test_the_page_shows_the_preset_stage():
     # N is the units waited for: a refused one is counted out, and said.
     assert "const waited = (p.targets || []).filter(n => !refused.includes(n));" in PAGE_TEXT
     assert '(refused.length ? ` (${refused.length} refused)` : "")' in PAGE_TEXT
+    assert 'total = typeof p.waited === "number" ? p.waited : waited.length;' in PAGE_TEXT
+    # ...and a staged START that went on without some garments says so once.
+    assert "function notePresetLeftOut()" in PAGE_TEXT
+    assert "The show started without the 0:00 look on ${names.join" in PAGE_TEXT
     assert 'fleet.run.state !== "preset" && !runIsOver()' in PAGE_TEXT
 
 
@@ -3207,7 +3211,7 @@ def test_a_refused_preset_is_not_waited_for_but_gets_the_start():
     assert results["radxa-02"] == {"ok": False, "error": "timed out", "preset": True}
     state = fleet.preset_state()
     assert state["refused"] == {"radxa-02": "timed out"} and state["retrying"] == []
-    assert state["waiting_for"] == ["radxa-01"]
+    assert state["waiting_for"] == ["radxa-01"] and state["waited"] == 1
     assert any("radxa-02 refused the preset (timed out) - not waited for" in c
                for c in fleet.corrections)
     _start_after_paint(fleet, clock, "radxa-01")
@@ -3389,8 +3393,12 @@ def test_a_unit_not_ended_yet_is_asked_again_and_waited_for():
     # ENDED. It is asked again every 0.5 s - not started without its look.
     clock = Clock()
     fleet = _still_running_fleet(clock, refusals=2)
-    fleet.start_show(lead_s=3.0, preset_first=True)
+    results = fleet.start_show(lead_s=3.0, preset_first=True)
+    # Not an error in the START's reply: it is being asked again.
+    assert results["radxa-02"] == {"ok": True, "preset": True, "retrying": True,
+                                   "why": "the show is running"}
     state = fleet.preset_state()
+    assert state["waited"] == 2
     assert state["refused"] == {} and state["retrying"] == ["radxa-02"]
     assert "radxa-02" in state["waiting_for"]
     _paint(fleet, "radxa-01")
@@ -3406,6 +3414,7 @@ def test_a_unit_not_ended_yet_is_asked_again_and_waited_for():
     _start_after_paint(fleet, clock, "radxa-02")
     assert fleet.run is not None and fleet.run["t0"] == clock.now + 3.0
     assert not any("refused the preset" in c for c in fleet.corrections)
+    assert "preset_left_out" not in fleet.run
 
 
 def test_a_unit_that_keeps_refusing_is_left_out_of_the_wait_after_10_s():
@@ -3425,3 +3434,76 @@ def test_a_unit_that_keeps_refusing_is_left_out_of_the_wait_after_10_s():
     assert any("radxa-02 refused the preset (the show is running, still after 10 s)"
                " - not waited for" in c for c in fleet.corrections)
     assert "radxa-02" in [n for n, _ in _posted(fleet, "/show/run")]
+    left = fleet.snapshot()["run"]["preset_left_out"]
+    assert left == {"at": fleet.run["t0"], "units": {
+        "radxa-02": "refused the preset: the show is running, still after 10 s"}}
+
+
+def test_a_loose_test_look_after_the_preset_is_preset_again():
+    # MED-A: (2) preset, then a loose cue fired / prepared on a garment: its
+    # 0:00 look is no longer vouched for, so (3) presets it again.
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.preset()
+    clock.now += 10.0
+    _paint(fleet, "radxa-01", "radxa-02")
+    fleet.fire({"radxa-01": "test"})
+    fleet.start_show(lead_s=11.0, preset_first=True)
+    assert fleet.preset_state()["already"] == ["radxa-02"]
+    assert [n for n, _ in _posted(fleet, "/show/preset")].count("radxa-01") == 2
+    fleet.stop_show()
+    fleet._preset_at = {"radxa-01": clock.now - 20.0, "radxa-02": clock.now - 20.0}
+    fleet.prepare({"radxa-02": {"cue": "t", "boards": {}}})
+    assert "radxa-02" not in fleet._preset_at and "radxa-01" in fleet._preset_at
+
+
+def test_no_run_correction_during_a_stage_over_an_ended_run():
+    # MED-B: the ended run is still `run` during a Loop restart's preset; a
+    # unit coming back must not be sent /show/run on its old T0 (it would
+    # fire the LAST cue over the 0:00 preset).
+    clock = Clock()
+    fleet = _preset_fleet(clock, settings=lambda: (0.0, 3.0, True))
+    fleet.start_show(lead_s=3.0)
+    clock.now = fleet.run["t0"] + 101.0                  # just past the end
+    fleet._loop_tick()
+    fleet._loop_tick()
+    assert fleet.preset_state() is not None and fleet.run is not None
+    link = fleet.links["radxa-02"]
+    link.status["show"].update(state="stopped", t0=None)  # came back, not running
+    link.posted.clear()
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert [p for p, _ in link.posted if p == "/show/run"] == []
+    # Without a stage the same unit IS put back into the run (the control).
+    fleet.stop_show()
+    fleet.start_show(lead_s=3.0)
+    clock.now += 5.0
+    link.status["show"].update(state="stopped", t0=None)
+    link.posted.clear()
+    fleet._corrected.clear()
+    fleet._supervise(link)
+    assert [p for p, _ in link.posted if p == "/show/run"] == ["/show/run"]
+
+
+def test_an_inflight_preset_never_reported_is_sent_again_once():
+    # LOW: (3) right after (2), and radxa-02 never reports the look: when the
+    # in-flight window (8 + 0.5 + 5 s) is over it is preset again - once -
+    # instead of being waited for until 45 s.
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.preset()
+    clock.now += 2.0
+    fleet.start_show(lead_s=11.0, preset_first=True)
+    _paint(fleet, "radxa-01")
+    clock.now += 11.0                                    # 13 s since (2): not yet
+    fleet._staging_tick()
+    assert [n for n, _ in _posted(fleet, "/show/preset")].count("radxa-02") == 1
+    clock.now += 0.6                                     # 13.6 s: window over
+    fleet._staging_tick()
+    assert [n for n, _ in _posted(fleet, "/show/preset")].count("radxa-02") == 2
+    assert any("radxa-02 never reported the 0:00 look" in c for c in fleet.corrections)
+    clock.now += 1.0
+    fleet._staging_tick()
+    assert [n for n, _ in _posted(fleet, "/show/preset")].count("radxa-02") == 2
+    _start_after_paint(fleet, clock, "radxa-02")
+    assert fleet.run is not None and fleet.run["t0"] == clock.now + 11.0
