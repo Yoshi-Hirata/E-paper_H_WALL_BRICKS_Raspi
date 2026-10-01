@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import json
+import queue
 import tarfile
 import threading
 import time
@@ -33,7 +34,7 @@ from pathlib import Path
 import pytest
 
 from conductor import __main__ as cli
-from conductor.fleet import Fleet
+from conductor.fleet import Fleet, pc_clock
 from conductor.server import (LOOP_WAIT_S, WORKSPACE_TAR_MAX, WORKSPACE_TAR_MEMBERS,
                               Workspace, check_loop_wait, loop_wait_of, make_server,
                               parse_conductor_address, reachable_urls)
@@ -2619,6 +2620,936 @@ def test_the_conductor_service_waits_for_the_user_manager():
     after = conductor.split("\nAfter=")[1].split("\n")[0]
     wants = conductor.split("\nWants=")[1].split("\n")[0]
     assert "user@1000.service" in after and "user@1000.service" in wants
+
+
+# ------------------------------------------------------------ the Bluetooth speaker's connection
+
+MAC = "AC:BF:71:FA:8F:AB"
+BLUEZ_SINK = "bluez_sink.AC_BF_71_FA_8F_AB.a2dp_sink"
+USB_SINK = "alsa_output.usb-Foo.analog-stereo"
+
+
+class FakeBluetooth:
+    """bluetoothctl + pactl as the connection thread runs them (the volume
+    calls go on to a FakeAudio): a Bose that the test connects, drops,
+    hides from BlueZ, or puts in pairing mode."""
+
+    def __init__(self, paired=True, connected=True, known=True,
+                 name="Bose Flex SoundLink"):
+        self.audio = FakeAudio(sink=USB_SINK, transport_fd=3 if connected else None)
+        self.paired, self.connected, self.known, self.name = paired, connected, known, name
+        self.trusted = paired
+        self.pairing_mode = False          # the classic address shows in a scan
+        self.connect_answer = "Connection successful"
+        self.sink_lag = 0                  # listings after a connect without the sink
+        self.sink_index = "1"              # the bluez sink's pulse index (new one per rebirth)
+        self.no_sink = False               # connected, but pulse never makes the sink
+        self.sink_inputs: "dict[str, str]" = {}   # mpg123's streams: input -> sink index
+        self.calls: "list[list[str]]" = []
+        self.threads: "list[tuple[str, str]]" = []
+        self.raising = False               # bluetoothctl raises (a broken host)
+        self.gate: "threading.Event | None" = None   # connect waits on it
+
+    def _ansi(self, text):
+        return f"\x1b[0;94m[bluetooth]\x1b[0m# {text}"
+
+    def __call__(self, argv, timeout=5.0):
+        self.calls.append(list(argv))
+        self.threads.append((argv[0] + " " + " ".join(argv[1:3]), threading.current_thread().name))
+        if argv[0] == "bluetoothctl":
+            if self.raising:
+                raise OSError("bluetoothctl exploded")
+            if argv[1] == "paired-devices":
+                return 0, (f"Device {MAC} {self.name}\n" if self.paired else "")
+            if argv[1] == "info":
+                if argv[2] != MAC or not self.known:
+                    return 1, f"Device {argv[2]} not available\n"
+                yes_no = lambda b: "yes" if b else "no"
+                return 0, (f"Device {MAC} (public)\n\tName: {self.name}\n\tAlias: {self.name}\n"
+                           f"\tClass: 0x00240418\n\tPaired: {yes_no(self.paired)}\n"
+                           f"\tTrusted: {yes_no(self.trusted)}\n\tBlocked: no\n"
+                           f"\tConnected: {yes_no(self.connected)}\n"
+                           "\tUUID: Audio Sink                (0000110b-0000-1000-8000-00805f9b34fb)\n"
+                           "\tUUID: A/V Remote Control        (0000110e-0000-1000-8000-00805f9b34fb)\n")
+            if argv[1] == "connect":
+                if self.gate is not None:
+                    self.gate.wait(3.0)
+                if self.connect_answer == "Connection successful" and self.known:
+                    self.connected = True
+                    self.audio.transport_fd = 3
+                    return 0, f"Attempting to connect to {MAC}\n{self._ansi('Connection successful')}\n"
+                return 1, f"Attempting to connect to {MAC}\n{self._ansi(self.connect_answer)}\n"
+            if argv[1] == "disconnect":
+                self.connected = False
+                self.audio.transport_fd = None
+                return 0, f"Attempting to disconnect from {MAC}\nSuccessful disconnected\n"
+            if argv[1] == "devices":
+                return 0, (f"Device {MAC} {self.name}\n" if self.pairing_mode or self.known else
+                           "Device 11:22:33:44:55:66 LE-Bose Flex SoundLink\n")
+            return 1, f"Invalid command {argv[1]}"
+        if argv[:4] == ["pactl", "list", "short", "sinks"]:
+            lines = [f"0\t{USB_SINK}\tmodule-alsa-card.c\ts16le 2ch 48000Hz\tSUSPENDED"]
+            if self.connected and self.sink_lag <= 0 and not self.no_sink:
+                lines.append(f"{self.sink_index}\t{BLUEZ_SINK}\tmodule-bluez5-device.c\t"
+                             "s16le 2ch 44100Hz\tRUNNING")
+            elif self.connected:
+                self.sink_lag -= 1
+            return 0, "\n".join(lines) + "\n"
+        if argv[:4] == ["pactl", "list", "short", "sink-inputs"]:
+            return 0, "".join(f"{i}\t{s}\t40\tprotocol-native.c\ts16le 2ch 44100Hz\n"
+                              for i, s in self.sink_inputs.items())
+        if argv[:2] == ["pactl", "set-default-sink"]:
+            self.audio.sink = argv[2]
+            return 0, ""
+        if argv[:2] == ["pactl", "move-sink-input"]:
+            self.sink_inputs[argv[2]] = self.sink_index if argv[3] == BLUEZ_SINK else "0"
+            return 0, ""
+        return self.audio(argv, timeout)
+
+    def bluetoothctl(self, what):
+        return [c for c in self.calls if c[:2] == ["bluetoothctl", what]]
+
+    def pactl(self, what):
+        return [c for c in self.calls if c[:2] == ["pactl", what]]
+
+
+class FakeBtSession:
+    """An interactive bluetoothctl on two pipes: the commands the re-pair
+    flow writes, the lines a Bose answers with (ANSI prompts included)."""
+
+    def __init__(self, bt: FakeBluetooth, pair_ok=True, connect_ok=True, mute=()):
+        self.bt, self.pair_ok, self.connect_ok = bt, pair_ok, connect_ok
+        self.mute = mute                   # commands bluetoothctl never answers
+        self.commands: "list[str]" = []
+        self._out = queue.Queue()
+        self._buffer = b""
+        self.returncode = None
+        self.stdin = self.stdout = self
+        self.scanning = False
+
+    def write(self, data):
+        self._buffer += data
+        while b"\n" in self._buffer:
+            line, _, self._buffer = self._buffer.partition(b"\n")
+            self._handle(line.decode())
+
+    def flush(self):
+        pass
+
+    def readline(self):
+        return self._out.get()
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            raise TimeoutError("still running")      # a quit that was never honoured
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+        self._out.put(b"")
+
+    def close(self):                       # the pipes (both are this object)
+        self.closed = True
+        self._out.put(b"")
+
+    def _say(self, text):
+        self.said = getattr(self, "said", []) + [text]
+        self._out.put(f"\x1b[0;94m[bluetooth]\x1b[0m# {text}\n".encode())
+
+    def _handle(self, command):
+        self.commands.append(command)
+        bt = self.bt
+        if command.split()[0] in self.mute:
+            # bluetoothctl says nothing on this pipe - but BlueZ may still
+            # have done it (a silent, real pairing): `info` tells.
+            if command == f"pair {MAC}" and self.pair_ok and bt.pairing_mode:
+                bt.known = bt.paired = True
+            return
+        if command == f"remove {MAC}":
+            bt.known = bt.paired = bt.trusted = bt.connected = False
+            bt.audio.transport_fd = None
+            self._say(f"[DEL] Device {MAC} {bt.name}")
+            self._say("Device has been removed")
+        elif command == "scan on":
+            self.scanning = True
+            self._say("Discovery started")
+            self._say("[CHG] Controller 00:11:22:33:44:55 Discovering: yes")
+            self._say("[NEW] Device 11:22:33:44:55:66 LE-Bose Flex SoundLink")
+            if bt.pairing_mode:
+                self._say(f"[NEW] Device {MAC} {bt.name}")
+        elif command == f"pair {MAC}":
+            self._say(f"Attempting to pair with {MAC}")
+            if self.pair_ok and bt.pairing_mode:
+                bt.known = bt.paired = True
+                self._say(f"[CHG] Device {MAC} Paired: yes")
+                self._say("Pairing successful")
+            else:
+                self._say("Failed to pair: org.bluez.Error.AuthenticationFailed")
+        elif command == f"trust {MAC}":
+            bt.trusted = True
+            self._say(f"Changing {MAC} trust succeeded")
+        elif command == f"connect {MAC}":
+            self._say(f"Attempting to connect to {MAC}")
+            if self.connect_ok:
+                bt.connected = True
+                bt.audio.transport_fd = 5
+                self._say("Connection successful")
+            else:
+                self._say("Failed to connect: org.bluez.Error.Failed")
+        elif command == "scan off":
+            self.scanning = False
+            self._say("Discovery stopped")
+        elif command == "quit":
+            self.returncode = 0
+            self._out.put(b"")
+
+
+def _bt_speaker(bt, clock=None, run=None, session=None, **kw):
+    """A speaker with nothing to play (no track) and a Bluetooth speaker
+    to watch, on fast intervals unless the test says otherwise."""
+    sessions = []
+
+    def session_factory(argv):
+        assert argv == ["bluetoothctl"]
+        made = FakeBtSession(bt, **(session or {}))
+        sessions.append(made)
+        return made
+
+    options = dict(output="pulse", runner=bt, session_factory=session_factory,
+                   connection_check_s=0.05, connection_check_run_s=0.02,
+                   reconnect_first_s=0.1, reconnect_every_s=0.2, reconnect_backoff_s=1.0,
+                   pair_scan_s=1.0, pair_poll_s=0.05, pair_wait_s=1.0,
+                   pair_connect_wait_s=1.0, volume_check_s=0.05, tick_s=0.005)
+    options.update(kw)
+    speaker = Speaker(lambda: None, run or (lambda: (None, 0.0)),
+                      clock=clock or pc_clock, **options)
+    speaker._test_sessions = sessions
+    return speaker
+
+
+def _wait(predicate, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
+
+
+def test_the_paired_audio_sink_is_found_and_published_as_connected():
+    bt = FakeBluetooth()
+    bt.sink_inputs = {"35": "0"}                  # mpg123's stream, on the USB sink
+    sp = _bt_speaker(bt)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        status = sp.status()
+        assert status["bluetooth"] is True
+        device = status["device"]
+        assert device["mac"] == MAC and device["name"] == "Bose Flex SoundLink"
+        assert device["paired"] and device["trusted"] and device["connected"]
+        assert device["sink_present"] is True and device["last_error"] is None
+        assert abs(device["last_connected_at"] - time.time()) < 5
+        assert status["reconnect"] == {"attempts": 0, "next_in_s": None, "last_error": None}
+        assert status["pairing"] is None
+        assert any("found among the paired devices" in line for line in sp.log)
+        # Found once: paired-devices is not asked again while the MAC is known.
+        n = len(bt.bluetoothctl("paired-devices"))
+        time.sleep(0.2)
+        assert len(bt.bluetoothctl("paired-devices")) == n == 1
+        # The sound was routed to it: default sink, and the stream moved.
+        assert _wait(lambda: bt.audio.sink == BLUEZ_SINK and bt.sink_inputs == {"35": "1"})
+        assert bt.pactl("set-default-sink") == [["pactl", "set-default-sink", BLUEZ_SINK]]
+        assert bt.pactl("move-sink-input") == [["pactl", "move-sink-input", "35", BLUEZ_SINK]]
+        # ...once, not on every check.
+        time.sleep(0.2)
+        assert len(bt.pactl("move-sink-input")) == 1
+        # And the volume thread followed to the bluez transport.
+        assert _wait(lambda: sp.status()["applied"] == "bluez")
+    finally:
+        sp.stop()
+
+
+def test_a_configured_mac_wins_and_an_unknown_one_is_no_device():
+    bt = FakeBluetooth(known=False, paired=False)
+    sp = _bt_speaker(bt, speaker_mac="ac-bf-71-fa-8f-ab")     # cleaned to bluetoothctl's form
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["device"] is not None)
+        status = sp.status()
+        assert status["connection"] == "no_device"
+        assert status["device"]["mac"] == MAC and status["device"]["paired"] is False
+        assert "not paired: Re-pair" in status["device"]["last_error"]
+        assert bt.bluetoothctl("paired-devices") == [], "a configured MAC is never discovered"
+        # Nothing is tried against a device BlueZ does not know.
+        time.sleep(0.3)
+        assert bt.bluetoothctl("connect") == []
+        assert status["reconnect"]["next_in_s"] is None
+        # Someone pairs it by hand: known on the next check.
+        bt.known = bt.paired = bt.trusted = True
+        bt.connected = False
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+    finally:
+        sp.stop()
+
+
+def test_nothing_paired_is_no_device_and_looked_for_again():
+    bt = FakeBluetooth(paired=False, connected=False, known=False)
+    sp = _bt_speaker(bt)
+    sp.start()
+    try:
+        assert _wait(lambda: len(bt.bluetoothctl("paired-devices")) >= 2)
+        status = sp.status()
+        assert status["connection"] == "no_device" and status["device"] is None
+        # A wired speaker on pulse with nothing paired: not a Bluetooth
+        # Conductor at all as far as the page and the LCD are concerned.
+        assert status["bluetooth"] is False
+        bt.known = bt.paired = bt.trusted = bt.connected = True
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        assert sp.status()["bluetooth"] is True
+    finally:
+        sp.stop()
+
+
+def test_a_drop_is_reconnected_after_five_then_thirty_seconds_with_the_backoff():
+    """The timing, on a clock the test moves: 5 s after the drop, then
+    every 30 s, 120 s once three connects in a row were refused; on
+    success the stream is moved back and `reconnected after N s` said."""
+    clock = Clock(1000.0)
+    bt = FakeBluetooth()
+    bt.sink_inputs = {"35": "1"}                  # mpg123 playing into the Bose
+    sp = _bt_speaker(bt, clock=clock, connection_check_s=10.0, connection_check_run_s=2.0,
+                     reconnect_first_s=5.0, reconnect_every_s=30.0, reconnect_backoff_s=120.0)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        # The Bose goes away; pulse rescues the stream onto the USB sink.
+        bt.connected = False
+        bt.audio.transport_fd = None
+        bt.sink_inputs = {"35": "0"}
+        time.sleep(0.3)
+        assert sp.status()["connection"] == "connected", "checked every 10 s, not sooner"
+        clock.now += 10
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        status = sp.status()
+        assert status["device"]["connected"] is False and status["device"]["sink_present"] is False
+        assert status["reconnect"] == {"attempts": 0, "next_in_s": 5.0, "last_error": None}
+        assert bt.bluetoothctl("connect") == []
+        # 5 s: the first attempt - refused.
+        bt.connect_answer = "Failed to connect: org.bluez.Error.Failed"
+        clock.now += 5
+        assert _wait(lambda: len(bt.bluetoothctl("connect")) == 1)
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        rc = sp.status()["reconnect"]
+        assert rc["attempts"] == 1 and rc["next_in_s"] == 30.0
+        assert rc["last_error"] == "Failed to connect: org.bluez.Error.Failed"
+        assert bt.bluetoothctl("connect")[0] == ["bluetoothctl", "connect", MAC]
+        # 30 s, 30 s: the second and third - the backoff kicks in.
+        clock.now += 30
+        assert _wait(lambda: len(bt.bluetoothctl("connect")) == 2)
+        assert _wait(lambda: sp.status()["reconnect"]["next_in_s"] == 30.0)
+        clock.now += 30
+        assert _wait(lambda: len(bt.bluetoothctl("connect")) == 3)
+        assert _wait(lambda: sp.status()["reconnect"]["next_in_s"] == 120.0)
+        time.sleep(0.2)
+        assert len(bt.bluetoothctl("connect")) == 3
+        # Three failures, two log lines: the same error at the same interval
+        # is not said again; the change to 120 s is.
+        failed = [l for l in sp.log if "connect AC:BF:71:FA:8F:AB failed" in l]
+        assert len(failed) == 2 and failed[0].endswith("next try in 30 s") \
+            and failed[1].endswith("next try in 120 s"), failed
+        # 120 s: the speaker is back - connected, routed, said.
+        bt.connect_answer = "Connection successful"
+        bt.sink_lag = 1                           # pulse makes the sink a moment later
+        clock.now += 120
+        assert _wait(lambda: len(bt.bluetoothctl("connect")) == 4)
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        status = sp.status()
+        assert status["device"]["sink_present"] is False, "the sink is not there yet"
+        assert status["reconnect"]["attempts"] == 0 and status["reconnect"]["next_in_s"] is None
+        # 5 + 30 + 30 + 120, counted from the check that saw the drop.
+        assert any("reconnected after 185 s" in line for line in sp.log), sp.log
+        assert bt.sink_inputs == {"35": "0"}, "nothing to route to yet"
+        # Connected without a sink is looked at again soon (the run interval).
+        clock.now += 2
+        assert _wait(lambda: sp.status()["device"]["sink_present"] is True)
+        assert _wait(lambda: bt.sink_inputs == {"35": "1"}), bt.sink_inputs
+        assert bt.audio.sink == BLUEZ_SINK
+        assert any("sound routed to" in line and "1 stream(s) moved" in line for line in sp.log)
+    finally:
+        sp.stop()
+
+
+def test_the_check_runs_every_two_seconds_during_a_run():
+    clock = Clock(1000.0)
+    bt = FakeBluetooth()
+    run = {"r": None}
+    sp = _bt_speaker(bt, clock=clock, run=lambda: (run["r"], 60.0),
+                     connection_check_s=10.0, connection_check_run_s=2.0)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        n = len(bt.bluetoothctl("info"))          # discovery's + the first check's
+        clock.now += 2.5
+        time.sleep(0.3)
+        assert len(bt.bluetoothctl("info")) == n, "idle: every 10 s"
+        run["r"] = {"t0": clock.now, "state": "running", "held_at": None}
+        clock.now += 8                            # the 10 s check, which reads the run
+        assert _wait(lambda: len(bt.bluetoothctl("info")) == n + 1)
+        clock.now += 2.5
+        assert _wait(lambda: len(bt.bluetoothctl("info")) == n + 2), "a run: every 2 s"
+    finally:
+        sp.stop()
+
+
+def test_connect_is_a_request_the_connection_thread_serves_never_the_caller():
+    """The HTTP side only queues: request_connect answers at once while
+    bluetoothctl connect is stuck, and every tool runs on the speaker's
+    own threads - none on the caller's."""
+    bt = FakeBluetooth(connected=False)
+    bt.gate = threading.Event()
+    sp = _bt_speaker(bt, reconnect_first_s=100.0)             # no automatic attempt here
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        assert sp.status()["reconnect"]["next_in_s"] > 90
+        t0 = time.monotonic()
+        status, answer = sp.request_connect()
+        assert time.monotonic() - t0 < 0.2
+        assert (status, answer) == (200, {"ok": True, "connection": "connecting", "error": None})
+        assert _wait(lambda: len(bt.bluetoothctl("connect")) == 1)
+        time.sleep(0.1)
+        assert sp.status()["connection"] == "connecting", "stuck inside bluetoothctl connect"
+        # A second Connect while one is on its way is the same answer, not a second attempt.
+        assert sp.request_connect() == (200, {"ok": True, "connection": "connecting", "error": None})
+        bt.gate.set()
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        assert len(bt.bluetoothctl("connect")) == 1
+        assert sp.status()["reconnect"]["attempts"] == 0, "connected: the count starts over"
+        mine = threading.current_thread().name
+        assert all(name != mine for _, name in bt.threads), bt.threads
+        conn = sp._conn_thread.name
+        assert all(name == conn for tool, name in bt.threads if tool.startswith("bluetoothctl")), bt.threads
+        assert all(name == conn for tool, name in bt.threads
+                   if tool.startswith("pactl list") or tool.startswith("pactl move")
+                   or tool.startswith("pactl set-default-sink")), bt.threads
+        # Connected: a Connect is still honoured (one more bluetoothctl connect).
+        assert sp.request_connect()[0] == 200
+        assert _wait(lambda: len(bt.bluetoothctl("connect")) == 2)
+    finally:
+        bt.gate.set()
+        sp.stop()
+
+
+def test_re_pair_runs_the_whole_cure_in_one_bluetoothctl_session():
+    bt = FakeBluetooth(connected=False)
+    bt.connect_answer = "Failed to connect: org.bluez.Error.Failed"
+    sp = _bt_speaker(bt, reconnect_first_s=100.0, pairing_shown_s=0.4)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        status, answer = sp.request_pair()
+        assert status == 200 and answer == {"ok": True, "connection": "pairing", "error": None}
+        assert _wait(lambda: sp._test_sessions and "scan on" in sp._test_sessions[0].commands)
+        pairing = sp.status()["pairing"]
+        assert pairing["phase"] == "scanning" and "pairing mode" in pairing["note"]
+        assert abs(pairing["started_at"] - time.time()) < 5
+        # While it scans: a second Re-pair and a Connect are refused, 409.
+        assert sp.request_pair() == (409, {"ok": False, "connection": "pairing",
+                                           "error": "re-pairing is already in progress"})
+        status, answer = sp.request_connect()
+        assert status == 409 and "in progress" in answer["error"]
+        assert bt.bluetoothctl("connect") == [], "no automatic connect during a re-pair"
+        # The operator puts the Bose in pairing mode: found by the poll.
+        time.sleep(0.15)
+        bt.pairing_mode = True
+        assert _wait(lambda: sp.status()["pairing"]["phase"] == "done")
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        session = sp._test_sessions[0]
+        assert session.commands == [f"remove {MAC}", "scan on", f"pair {MAC}", f"trust {MAC}",
+                                    f"connect {MAC}", "scan off", "quit"]
+        assert len(sp._test_sessions) == 1
+        device = sp.status()["device"]
+        assert device["paired"] and device["trusted"] and device["connected"]
+        phases = [line.split("re-pair ")[1].split(" - ")[0] for line in sp.log if "re-pair " in line]
+        assert phases == [f"{MAC}: scanning", f"{MAC}: pairing", f"{MAC}: connecting", f"{MAC}: done"]
+        assert sp.status()["reconnect"]["attempts"] == 0
+        # The finished re-pair stays on show for PAIRING_SHOWN_S, then it is old news.
+        assert sp.status()["pairing"]["phase"] == "done"
+        assert _wait(lambda: sp.status()["pairing"] is None, 2.0)
+        assert sp.status()["connection"] == "connected"
+    finally:
+        sp.stop()
+
+
+def test_re_pair_is_refused_during_a_run_unless_forced_and_needs_a_mac():
+    bt = FakeBluetooth(paired=False, connected=False, known=False)
+    run = {"r": {"t0": 0.0, "state": "running", "held_at": None}}
+    sp = _bt_speaker(bt, run=lambda: (run["r"], 60.0))
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "no_device")
+        status, answer = sp.request_pair()
+        assert status == 409 and answer["ok"] is False
+        assert answer["error"] == ('show running - pairing drops the audio; '
+                                   'send {"force": true} to pair anyway')
+        run["r"] = None
+        status, answer = sp.request_pair()
+        assert status == 400 and "give its MAC" in answer["error"]
+        assert sp.request_pair("not-a-mac")[0] == 400
+        assert sp.request_connect()[0] == 400
+        # With the MAC and force, during a run: accepted, the Bose appears.
+        run["r"] = {"t0": 0.0, "state": "running", "held_at": None}
+        bt.pairing_mode = True
+        status, answer = sp.request_pair(MAC.lower(), force=True)
+        assert status == 200 and answer["connection"] == "pairing"
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        assert sp.status()["device"]["mac"] == MAC
+    finally:
+        sp.stop()
+
+
+def test_a_re_pair_that_finds_nothing_fails_and_the_automatic_connect_goes_on():
+    bt = FakeBluetooth(connected=False)
+    sp = _bt_speaker(bt, pair_scan_s=0.3, reconnect_first_s=100.0, reconnect_every_s=0.2)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        assert sp.request_pair()[0] == 200
+        assert _wait(lambda: sp.status()["pairing"]["phase"] == "failed", 3.0)
+        pairing = sp.status()["pairing"]
+        assert "did not appear" in pairing["note"] and "pairing mode" in pairing["note"]
+        assert _wait(lambda: sp._test_sessions[0].commands[-1] == "quit")
+        assert "pair" not in " ".join(sp._test_sessions[0].commands[2:])
+        # The old pairing is gone (remove ran): honestly no_device - but the
+        # address stays on show, so the next Re-pair needs no retyping, and
+        # nothing is tried against a device BlueZ no longer knows.
+        assert _wait(lambda: sp.status()["connection"] == "no_device")
+        device = sp.status()["device"]
+        assert device["mac"] == MAC and device["paired"] is False
+        assert "Re-pair" in device["last_error"]
+        time.sleep(0.3)
+        assert bt.bluetoothctl("connect") == []
+        assert sp.request_pair()[0] == 200, "the MAC is remembered"
+        bt.pairing_mode = True
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        assert len(sp._test_sessions) == 2
+    finally:
+        sp.stop()
+
+
+def test_a_pair_that_is_refused_by_the_speaker_is_a_failed_phase():
+    bt = FakeBluetooth(connected=False)
+    bt.pairing_mode = True
+    sp = _bt_speaker(bt, reconnect_first_s=100.0, session={"pair_ok": False})
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        sp.request_pair()
+        assert _wait(lambda: sp.status()["pairing"]["phase"] == "failed")
+        assert "AuthenticationFailed" in sp.status()["pairing"]["note"]
+        assert sp.status()["reconnect"]["last_error"].startswith("pair: ")
+    finally:
+        sp.stop()
+
+
+def test_a_silent_bluetoothctl_cannot_hang_the_re_pair():
+    """Every phase is bounded: a `pair` (or `connect`) that never answers
+    is a failed phase after its wait, with the wait in the note, and the
+    session is quit. The `quit` of a mute session is a close that falls
+    back to terminate()."""
+    bt = FakeBluetooth(connected=False)
+    bt.pairing_mode = True
+    sp = _bt_speaker(bt, reconnect_first_s=100.0, pair_wait_s=0.3,
+                     session={"mute": ("pair", "quit"), "pair_ok": False})
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        t0 = time.monotonic()
+        sp.request_pair()
+        assert _wait(lambda: (sp.status()["pairing"] or {}).get("phase") == "failed", 3.0)
+        assert time.monotonic() - t0 < 2.5
+        assert sp.status()["pairing"]["note"] == "pair: no answer in 0 s"
+        assert _wait(lambda: sp._test_sessions[0].commands[-1] == "quit"
+                     and getattr(sp._test_sessions[0], "closed", False))
+        assert sp._test_sessions[0].returncode == -15, "a quit never honoured is a terminate"
+        assert sp._conn_thread.is_alive()
+    finally:
+        sp.stop()
+
+
+def test_a_silent_pair_that_bluez_did_anyway_goes_on_by_its_info():
+    """LOW: bluetoothctl said nothing on the pipe, but `info` shows
+    Paired: yes - the flow trusts and connects instead of failing."""
+    bt = FakeBluetooth(connected=False)
+    bt.pairing_mode = True
+    saved = []
+    sp = _bt_speaker(bt, reconnect_first_s=100.0, pair_wait_s=0.3,
+                     session={"mute": ("pair",)}, save_mac=saved.append)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        sp.request_pair()
+        assert _wait(lambda: (sp.status()["pairing"] or {}).get("phase") == "done", 3.0)
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        assert f"trust {MAC}" in sp._test_sessions[0].commands
+        # The address that worked is saved to fleet.json (it was discovered,
+        # not configured): a lost pairing is redone from the page as it is.
+        assert saved == [MAC]
+        # A second re-pair with the same (now configured) MAC saves nothing new.
+        bt.connected = False
+        sp.request_pair()
+        assert _wait(lambda: len(sp._test_sessions) == 2 and sp.status()["connection"] == "connected")
+        assert saved == [MAC]
+    finally:
+        sp.stop()
+
+
+def test_a_device_bluez_still_lists_after_remove_is_not_paired_until_it_advertises():
+    """LOW: the remove's result is honoured - a cached device makes the
+    `devices` poll meaningless, so only a [NEW]/[CHG] line from the scan
+    counts, and the note says so."""
+    bt = FakeBluetooth(connected=False)
+    sp = _bt_speaker(bt, reconnect_first_s=100.0, pair_scan_s=0.6,
+                     session={"mute": ("remove",)})
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        sp.request_pair()
+        # (the muted remove is given its 3 s bound first)
+        assert _wait(lambda: "still lists" in (sp.status()["pairing"] or {}).get("note", ""), 6.0)
+        # `devices` lists it (cached) - but it is not advertising: no pair.
+        assert _wait(lambda: (sp.status()["pairing"] or {}).get("phase") == "failed", 3.0)
+        assert "did not appear" in sp.status()["pairing"]["note"]
+        assert f"pair {MAC}" not in sp._test_sessions[0].commands
+        # Now it advertises (the [NEW] line in the session): paired.
+        bt.pairing_mode = True
+        assert sp.request_pair()[0] == 200
+        assert _wait(lambda: (sp.status()["pairing"] or {}).get("phase") == "done", 6.0), \
+            (sp.status()["pairing"], [(s.commands, getattr(s, "said", None)) for s in sp._test_sessions])
+    finally:
+        sp.stop()
+
+
+def test_bluetoothctl_dying_mid_scan_is_a_failed_phase_not_a_hot_loop():
+    bt = FakeBluetooth(connected=False)
+    sp = _bt_speaker(bt, reconnect_first_s=100.0, pair_scan_s=2.0, pair_poll_s=0.2)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        sp.request_pair()
+        assert _wait(lambda: sp._test_sessions and "scan on" in sp._test_sessions[0].commands)
+        n = len(bt.bluetoothctl("devices"))
+        sp._test_sessions[0].terminate()               # bluetoothctl dies
+        assert _wait(lambda: (sp.status()["pairing"] or {}).get("phase") == "failed", 3.0)
+        assert "exited during the scan" in sp.status()["pairing"]["note"]
+        assert len(bt.bluetoothctl("devices")) - n <= 2, "no hot loop on a dead pipe"
+    finally:
+        sp.stop()
+
+
+def test_any_exception_inside_a_re_pair_still_ends_it():
+    bt = FakeBluetooth(connected=False)
+
+    def exploding_factory(argv):
+        raise ZeroDivisionError("boom")
+
+    sp = _bt_speaker(bt, reconnect_first_s=100.0, pairing_shown_s=0.3,
+                     session_factory=exploding_factory)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        sp.request_pair()
+        assert _wait(lambda: (sp.status()["pairing"] or {}).get("phase") == "failed")
+        assert sp.status()["pairing"]["note"] == "boom"
+        assert _wait(lambda: sp.status()["pairing"] is None, 2.0), "ended: it clears"
+        assert sp._conn_thread.is_alive()
+    finally:
+        sp.stop()
+
+
+def test_a_quick_drop_bluez_healed_itself_is_still_routed_by_the_new_sink_index():
+    """HIGH: the Bose drops and BlueZ reconnects it between two checks -
+    `Connected: yes` never flickered, but the recreated sink has a new
+    pulse index and mpg123's stream sits on the fallback sink. The index
+    is what the routing remembers; and once per connected check the
+    streams are verified and a strayed one moved."""
+    bt = FakeBluetooth()
+    bt.sink_inputs = {"35": "0"}
+    sp = _bt_speaker(bt)
+    sp.start()
+    try:
+        assert _wait(lambda: bt.sink_inputs == {"35": "1"} and bt.audio.sink == BLUEZ_SINK)
+        n_default, n_moves = len(bt.pactl("set-default-sink")), len(bt.pactl("move-sink-input"))
+        # The quick drop: new sink index, the stream rescued to USB, the
+        # default sink fallen back - and Connected: yes throughout.
+        bt.sink_index = "7"
+        bt.sink_inputs = {"35": "0"}
+        bt.audio.sink = USB_SINK
+        assert _wait(lambda: bt.sink_inputs == {"35": "7"}), bt.sink_inputs
+        assert bt.audio.sink == BLUEZ_SINK
+        assert len(bt.pactl("set-default-sink")) == n_default + 1
+        assert len(bt.pactl("move-sink-input")) == n_moves + 1
+        assert sp.status()["connection"] == "connected"
+        # A stream that strays with the SAME sink: moved by the per-check
+        # verification, without touching the default sink.
+        n_default = len(bt.pactl("set-default-sink"))
+        bt.sink_inputs["36"] = "0"
+        assert _wait(lambda: bt.sink_inputs == {"35": "7", "36": "7"}), bt.sink_inputs
+        assert len(bt.pactl("set-default-sink")) == n_default
+        # Nothing to move: nothing moved, nothing said, but still verified.
+        n_moves = len(bt.pactl("move-sink-input"))
+        n_lists = len([c for c in bt.calls if c[:4] == ["pactl", "list", "short", "sink-inputs"]])
+        time.sleep(0.25)
+        assert len(bt.pactl("move-sink-input")) == n_moves
+        assert len([c for c in bt.calls if c[:4] == ["pactl", "list", "short", "sink-inputs"]]) > n_lists
+        assert len([l for l in sp.log if "sound routed" in l]) == 3
+    finally:
+        sp.stop()
+
+
+def test_connected_without_a_sink_for_twenty_seconds_is_no_sink_and_the_link_is_cycled():
+    """MED-1: bluetoothctl says connected, PulseAudio never makes the A2DP
+    sink - after NO_SINK_S it is as good as lost: `no_sink`, said once,
+    one disconnect + connect, then the usual schedule."""
+    clock = Clock(1000.0)
+    bt = FakeBluetooth()
+    bt.no_sink = True
+    sp = _bt_speaker(bt, clock=clock, connection_check_s=10.0, connection_check_run_s=2.0,
+                     reconnect_every_s=30.0, no_sink_s=20.0)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        assert sp.status()["device"]["sink_present"] is False
+        for _ in range(9):                            # 18 s: still "connected" (rechecked every 2 s)
+            clock.now += 2
+            time.sleep(0.05)
+        assert sp.status()["connection"] == "connected"
+        assert bt.bluetoothctl("disconnect") == []
+        clock.now += 2                                # 20 s
+        assert _wait(lambda: sp.status()["connection"] == "no_sink")
+        assert sp.status()["device"]["last_error"] == "connected, no PulseAudio sink"
+        assert _wait(lambda: len(bt.bluetoothctl("disconnect")) == 1 and len(bt.bluetoothctl("connect")) == 1)
+        assert bt.calls.index(["bluetoothctl", "disconnect", MAC]) < bt.calls.index(["bluetoothctl", "connect", MAC])
+        assert _wait(lambda: sp.status()["connection"] == "no_sink")
+        assert sp.status()["reconnect"]["next_in_s"] == 30.0, sp.status()["reconnect"]
+        said = [l for l in sp.log if "no sink for it after 20 s" in l]
+        assert len(said) == 1
+        # Not cycled again before the interval.
+        clock.now += 10
+        time.sleep(0.3)
+        assert len(bt.bluetoothctl("disconnect")) == 1
+        clock.now += 20
+        assert _wait(lambda: len(bt.bluetoothctl("disconnect")) == 2)
+        assert len([l for l in sp.log if "no sink for it" in l]) == 1, "said once"
+        # The sink finally appears: connected, routed, the cycle forgotten.
+        bt.no_sink = False
+        clock.now += 2
+        assert _wait(lambda: sp.status()["connection"] == "connected"
+                     and sp.status()["device"]["sink_present"] is True)
+        assert sp.status()["device"]["last_error"] is None
+        assert sp.status()["reconnect"]["next_in_s"] is None
+    finally:
+        sp.stop()
+
+
+def test_the_connection_thread_survives_a_raising_runner():
+    bt = FakeBluetooth()
+    bt.raising = True
+    sp = _bt_speaker(bt)
+    sp.start()
+    try:
+        assert _wait(lambda: any("connection: OSError" in line for line in sp.log))
+        time.sleep(0.2)
+        assert sp._conn_thread.is_alive()
+        assert sp.status()["connection"] == "no_device" and sp.status()["device"] is None
+        assert sp.status()["error"] is None, "the connection never fails the speaker"
+        assert len([l for l in sp.log if "connection: OSError" in l]) == 1, "said once"
+        bt.raising = False
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+        # A raise in the middle of a manual connect: back to what the check says.
+        bt.connected = False
+        assert _wait(lambda: sp.status()["connection"] == "disconnected")
+        bt.raising = True
+        sp.request_connect()
+        assert _wait(lambda: len([l for l in sp.log if "connection: OSError" in l]) == 2)
+        assert sp.status()["connection"] in ("disconnected", "no_device")
+        bt.raising = False
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+    finally:
+        sp.stop()
+
+
+def test_without_pulse_output_nothing_watches_bluetooth():
+    bt = FakeBluetooth()
+    sp = _bt_speaker(bt, output=None)
+    sp.start()
+    try:
+        time.sleep(0.2)
+        status = sp.status()
+        assert status["bluetooth"] is False and status["connection"] == "no_device"
+        assert status["device"] is None and status["pairing"] is None
+        assert status["reconnect"] == {"attempts": 0, "next_in_s": None, "last_error": None}
+        assert bt.bluetoothctl("info") == [] and sp._conn_thread is None
+        assert sp.request_connect()[0] == 400 and sp.request_pair()[0] == 400
+        assert "--speaker-output pulse" in sp.request_connect()[1]["error"]
+    finally:
+        sp.stop()
+    # Asked for explicitly, it watches whatever the output.
+    sp = _bt_speaker(bt, output="alsa", bluetooth=True)
+    sp.start()
+    try:
+        assert _wait(lambda: sp.status()["connection"] == "connected")
+    finally:
+        sp.stop()
+
+
+def test_a_routing_failure_is_said_and_tried_again():
+    bt = FakeBluetooth()
+    bt.sink_inputs = {"35": "0"}
+    real = bt.__call__
+    broken = {"on": True}
+
+    def runner(argv, timeout=5.0):
+        if broken["on"] and argv[:2] == ["pactl", "move-sink-input"]:
+            bt.calls.append(list(argv))
+            return 1, "Failure: No such entity"
+        return real(argv, timeout)
+
+    sp = _bt_speaker(bt, runner=runner)
+    sp.start()
+    try:
+        assert _wait(lambda: "route to" in ((sp.status()["device"] or {}).get("last_error") or ""))
+        assert "move-sink-input 35" in sp.status()["device"]["last_error"]
+        assert sp.status()["connection"] == "connected"
+        n = len(bt.pactl("move-sink-input"))
+        assert _wait(lambda: len(bt.pactl("move-sink-input")) > n + 2), "retried on the interval"
+        # ...and said once, not once per retry.
+        assert len([l for l in sp.log if "could not route" in l]) == 1, sp.log
+        broken["on"] = False
+        assert _wait(lambda: bt.sink_inputs == {"35": "1"})
+        assert _wait(lambda: sp.status()["device"]["last_error"] is None)
+    finally:
+        sp.stop()
+
+
+def test_speaker_connect_and_pair_over_http_and_the_fleet_report(tmp_path, monkeypatch):
+    import conductor.server as srv
+
+    ws = _workspace(tmp_path / "ws", music=False)
+    (ws.root / "fleet.json").write_text(json.dumps({"speaker_mac": MAC.lower()}), encoding="utf-8")
+    bt = FakeBluetooth(connected=False)
+    sessions = []
+    made = {}
+
+    class Once(srv._Server):
+        def serve_forever(self, poll_interval=0.5):
+            handler = self.RequestHandlerClass
+            port = self.server_address[1]
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and handler.speaker.status()["device"] is None:
+                time.sleep(0.01)
+            # Fast intervals for the test; the thread reads them each tick.
+            handler.speaker._reconnect_first_s = 100.0
+            handler.speaker._pair_scan_s = handler.speaker._pair_wait_s = 1.0
+            handler.speaker._pair_connect_wait_s = 1.0
+            handler.speaker._pair_poll_s = 0.05
+            handler.speaker._conn_check_s = 0.05
+            threading.Thread(target=super().serve_forever, daemon=True).start()
+            made["fleet"] = json.loads(_get(port, "/api/fleet")[1])
+            made["bad_mac"] = _post(port, "/api/speaker/pair", {"mac": "nope"})
+            made["mac_type"] = _post(port, "/api/speaker/pair", {"mac": 5})[0]
+            made["connect"] = _post(port, "/api/speaker/connect", {})
+            _wait(lambda: handler.speaker.status()["connection"] == "connected")
+            made["after_connect"] = json.loads(_get(port, "/api/fleet")[1])["speaker"]
+            made["pair"] = _post(port, "/api/speaker/pair", {})
+            # The speaker is not in pairing mode yet: the scan waits, and
+            # meanwhile a second Re-pair and a Connect are refused.
+            made["pair_again"] = _post(port, "/api/speaker/pair", {})
+            made["connect_while_pairing"] = _post(port, "/api/speaker/connect", {})
+            made["while_pairing"] = json.loads(_get(port, "/api/fleet")[1])["speaker"]
+            bt.pairing_mode = True
+            _wait(lambda: (handler.speaker.status()["pairing"] or {}).get("phase") == "done", 5.0)
+            _wait(lambda: handler.speaker.status()["connection"] == "connected")
+            made["after_pair"] = json.loads(_get(port, "/api/fleet")[1])["speaker"]
+            self.shutdown()
+
+    monkeypatch.setattr(srv, "_Server", Once)
+    monkeypatch.setattr(srv, "already_serving", lambda port: False)
+
+    def session_factory(argv):
+        session = FakeBtSession(bt)
+        sessions.append(session)
+        return session
+
+    assert srv.serve(ws.root, port=0, speaker=True, speaker_lead_ms=0,
+                     speaker_output="pulse", speaker_factory=lambda argv: FakeMpg123(),
+                     speaker_runner=bt, speaker_session_factory=session_factory) == 0
+    speaker = made["fleet"]["speaker"]
+    assert speaker["bluetooth"] is True and speaker["connection"] == "disconnected"
+    assert speaker["device"]["mac"] == MAC and speaker["device"]["name"] == "Bose Flex SoundLink"
+    assert set(speaker["device"]) == {"mac", "name", "paired", "trusted", "connected",
+                                      "sink_present", "last_connected_at", "last_error"}
+    assert set(speaker["reconnect"]) == {"attempts", "next_in_s", "last_error"}
+    assert speaker["pairing"] is None
+    assert bt.bluetoothctl("paired-devices") == [], "fleet.json's speaker_mac was used"
+    assert made["bad_mac"] == (400, {"ok": False, "connection": "disconnected",
+                                     "error": "mac: not a Bluetooth address ('nope')"})
+    assert made["mac_type"] == 400
+    assert made["connect"] == (200, {"ok": True, "connection": "connecting", "error": None})
+    assert made["after_connect"]["connection"] == "connected"
+    assert made["pair"] == (200, {"ok": True, "connection": "pairing", "error": None})
+    assert made["pair_again"][0] == 409 and made["connect_while_pairing"][0] == 409
+    assert made["pair_again"][1]["ok"] is False and made["pair_again"][1]["connection"] == "pairing"
+    busy = made["while_pairing"]
+    assert busy["connection"] == "pairing" and busy["pairing"]["phase"] == "scanning"
+    after = made["after_pair"]
+    assert after["connection"] == "connected" and after["pairing"]["phase"] == "done"
+    assert set(after["pairing"]) == {"phase", "note", "started_at"}
+    assert sessions and sessions[0].commands[:2] == [f"remove {MAC}", "scan on"]
+
+
+def test_speaker_connect_without_a_speaker_is_a_400(tmp_path):
+    server = make_server(tmp_path, port=0, fleet=Fleet({}))
+    port = _serve(server)
+    try:
+        status, answer = _post(port, "/api/speaker/connect", {})
+        assert status == 400 and answer["ok"] is False and "no speaker" in answer["error"]
+        assert answer["connection"] == "no_device"
+        assert _post(port, "/api/speaker/pair", {"force": True})[0] == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _page_block(start_marker):
+    start = PAGE_TEXT.index(start_marker)
+    return PAGE_TEXT[start:PAGE_TEXT.index("\n}\n", start)]
+
+
+def test_the_page_has_the_speaker_connection_line_and_buttons():
+    assert 'id="spk-conn-text"' in PAGE_TEXT and 'id="spk-connect"' in PAGE_TEXT
+    assert 'id="spk-pair"' in PAGE_TEXT
+    assert 'api("/api/speaker/connect", {})' in PAGE_TEXT
+    assert 'api("/api/speaker/pair", body)' in PAGE_TEXT
+    pair = _page_block("async function speakerPair()")
+    assert "confirm(SPEAKER_PAIR_QUESTION)" in pair, "a re-pair drops the sound: ask first"
+    assert "body.force = true" in pair and "fleet.run" in pair
+    start = PAGE_TEXT.index("const SPEAKER_PAIR_QUESTION = ")
+    question = PAGE_TEXT[start:PAGE_TEXT.index(";\n", start)]
+    assert "pairing mode" in question and "Bluetooth OFF" in question
+    # Shown only where the host watches a Bluetooth speaker; the volume slider stays.
+    assert 'conn.style.display = sp && sp.bluetooth ? "" : "none"' in PAGE_TEXT
+    assert 'hostvol.style.display = sp ? "" : "none"' in PAGE_TEXT
+    text = _page_block("function speakerConnectionText(sp)")
+    for word in ("· connected", "· connecting…", "· not connected", "pairing: ", "retry in"):
+        assert word in text, word
+    assert ': "ok"' in text and 'tone: "err"' in text and 'tone: "busy"' in text
+    assert 'if (e.target.id === "spk-connect") { await speakerConnect(); return; }' in PAGE_TEXT
+    assert 'if (e.target.id === "spk-pair") { await speakerPair(); return; }' in PAGE_TEXT
 
 
 # ------------------------------------------------------------ the operator's 'start anyway', carried per unit

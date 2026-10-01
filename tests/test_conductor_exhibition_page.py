@@ -184,6 +184,40 @@ _RUNS = {
 }
 
 
+def _speaker_report(kind):
+    """/api/fleet's `speaker` as a speaker Conductor reports it: "1" a USB
+    speaker (no Bluetooth watched), "bt" a dropped Bose, "btok" a connected
+    one, "btpair" one being re-paired - the shapes conductor/speaker.py's
+    status() publishes (its API contract)."""
+    report = {"available": True, "error": None, "state": "loaded", "track": "show.mp3",
+              "latency_ms": 62.0, "playing": False, "log": [], "volume": 70,
+              "applied": "pulse", "volume_error": None, "bluetooth": False,
+              "device": None, "connection": "no_device",
+              "reconnect": {"attempts": 0, "next_in_s": None, "last_error": None},
+              "pairing": None}
+    if kind == "1":
+        return report
+    device = {"mac": "AC:BF:71:FA:8F:AB", "name": "Bose Flex SoundLink", "paired": True,
+              "trusted": True, "connected": kind == "btok", "sink_present": kind == "btok",
+              "last_connected_at": 1700000000.0, "last_error": None}
+    report.update(bluetooth=True, device=device, applied="bluez" if kind == "btok" else None)
+    if kind == "bt":
+        report.update(connection="disconnected",
+                      reconnect={"attempts": 2, "next_in_s": 17.4,
+                                 "last_error": "Failed to connect: org.bluez.Error.Failed"})
+    elif kind == "btok":
+        report.update(connection="connected")
+    elif kind == "btnosink":
+        device.update(connected=True, sink_present=False, last_error="connected, no PulseAudio sink")
+        report.update(connection="no_sink",
+                      reconnect={"attempts": 1, "next_in_s": 12.0, "last_error": None})
+    elif kind == "btpair":
+        report.update(connection="pairing",
+                      pairing={"phase": "scanning", "started_at": 1700000000.0,
+                               "note": "forgetting the old pairing, scanning - put the speaker in pairing mode"})
+    return report
+
+
 class _Stand:
     """index.html, a real /api/state, and a fleet that records what it is told."""
 
@@ -266,6 +300,11 @@ class _Stand:
                         return self._json({"error": str(exc)}, 400)
                     stand.sent.append(["loop", body])
                     return self._json(self._loop())
+                if path in ("/api/speaker/connect", "/api/speaker/pair"):
+                    kind = path.rsplit("/", 1)[1]
+                    stand.sent.append(["speaker_" + kind, body])
+                    return self._json({"ok": True, "error": None,
+                                       "connection": "connecting" if kind == "connect" else "pairing"})
                 if path == "/api/workspace/send":
                     stand.sent.append(["send", body])
                     job = {"job": "j1", "state": "sending", "to": body.get("to"),
@@ -338,10 +377,7 @@ class _Stand:
                         stand.passcode = None if args["passcode"] == "null" else args["passcode"]
                     if "speaker" in args:
                         stand.speaker = (None if args["speaker"] == "null" else
-                                         {"available": True, "error": None,
-                                          "state": "loaded", "track": "show.mp3",
-                                          "latency_ms": 62.0, "playing": False,
-                                          "log": []})
+                                         _speaker_report(args["speaker"]))
                     return self._json({"run": stand.run})
                 if path == "/test/sent":
                     return self._json(stand.sent)
@@ -476,9 +512,47 @@ _PAGE_PROBE = """
       applySpeakerDefault();
       out.staysUnmuted = player.muted;
       try { out.storedMuted = localStorage.getItem("show.muted"); } catch (e) { out.storedMuted = "n/a"; }
+      // 3b. The Bluetooth speaker's line: hidden for a USB speaker, red
+      //     with the reason and the retry while disconnected (Connect posts,
+      //     Re-pair asks first and posts), green connected, amber pairing.
+      out.btHiddenForUsb = $q("#spk-conn").style.display;
+      await fetch("/test/fleet?speaker=bt");
+      await refreshFleetNow();
+      out.btShown = $q("#spk-conn").style.display;
+      out.btDropped = { text: $q("#spk-conn-text").textContent, tone: $q("#spk-conn-text").className,
+                        connectDisabled: $q("#spk-connect").disabled, pairDisabled: $q("#spk-pair").disabled };
+      $q("#spk-connect").click();
+      await wait(600);
+      out.btConnectToast = $q("#toast").textContent;
+      // The reply's "connecting" is painted at once - both buttons grey
+      // out until the next poll says otherwise.
+      out.btAfterConnect = { text: $q("#spk-conn-text").textContent, pairDisabled: $q("#spk-pair").disabled };
+      await refreshFleetNow();
+      var pairConfirms = [];
+      window.confirm = function (msg) { pairConfirms.push(msg); return true; };
+      $q("#spk-pair").click();
+      await wait(600);
+      window.confirm = function () { return true; };
+      out.btPairConfirms = pairConfirms;
+      out.btPairToast = $q("#toast").textContent;
+      out.btSent = (await sent()).filter(function (s) { return s[0].indexOf("speaker_") === 0; });
+      await fetch("/test/fleet?speaker=btok");
+      await refreshFleetNow();
+      out.btOk = { text: $q("#spk-conn-text").textContent, tone: $q("#spk-conn-text").className,
+                   connectDisabled: $q("#spk-connect").disabled, pairDisabled: $q("#spk-pair").disabled };
+      await fetch("/test/fleet?speaker=btpair");
+      await refreshFleetNow();
+      out.btPairing = { text: $q("#spk-conn-text").textContent, tone: $q("#spk-conn-text").className,
+                        connectDisabled: $q("#spk-connect").disabled, pairDisabled: $q("#spk-pair").disabled };
+      out.btVolumeStays = $q("#show-music-hostvol").style.display;
+      await fetch("/test/fleet?speaker=btnosink");
+      await refreshFleetNow();
+      out.btNoSink = { text: $q("#spk-conn-text").textContent, tone: $q("#spk-conn-text").className,
+                       connectDisabled: $q("#spk-connect").disabled };
       await fetch("/test/fleet?speaker=null");
       await refreshFleetNow();
       out.noteHiddenWithout = $q("#show-music-host").style.display;
+      out.btHiddenWithout = $q("#spk-conn").style.display;
 
       // 4. The tiles' Wi-Fi rows, and the fleet-wide buttons.
       out.wifiRows = Array.prototype.slice.call(document.querySelectorAll("#tiles .row"))
@@ -613,6 +687,37 @@ def test_a_speaker_conductor_mutes_the_page_once_and_the_operator_wins(page):
     assert page["unmuted"] is False and page["staysUnmuted"] is False
     assert page["storedMuted"] == "0"
     assert page["noteHiddenWithout"] == "none"
+
+
+def test_the_bluetooth_speakers_line_says_the_state_and_the_buttons_post(page):
+    assert page["btHiddenForUsb"] == "none", "a USB speaker has no connection to show"
+    assert page["btShown"] == ""
+    dropped = page["btDropped"]
+    assert dropped["text"] == ("Bose Flex SoundLink · not connected (Failed to connect: "
+                               "org.bluez.Error.Failed - another phone? off?) · retry in 18 s"), dropped
+    assert dropped["tone"] == "err"
+    assert dropped["connectDisabled"] is False and dropped["pairDisabled"] is False
+    assert page["btConnectToast"] == "Speaker: connecting…"
+    assert page["btAfterConnect"] == {"text": "Bose Flex SoundLink · connecting…", "pairDisabled": True}
+    # Re-pair asks first - the operator has to put the speaker in pairing
+    # mode and switch the phones' Bluetooth off - then posts.
+    assert len(page["btPairConfirms"]) == 1, (page["btPairConfirms"], page["btPairToast"], page["btSent"])
+    assert "pairing mode" in page["btPairConfirms"][0] and "Bluetooth OFF" in page["btPairConfirms"][0]
+    assert page["btPairToast"].startswith("Speaker: re-pairing")
+    assert page["btSent"] == [["speaker_connect", {}], ["speaker_pair", {}]], page["btSent"]
+    ok = page["btOk"]
+    assert ok["text"] == "Bose Flex SoundLink · connected" and ok["tone"] == "ok"
+    assert ok["connectDisabled"] is True and ok["pairDisabled"] is False
+    pairing = page["btPairing"]
+    assert pairing["text"].startswith("Bose Flex SoundLink · pairing: scanning… forgetting the old pairing")
+    assert pairing["tone"] == "busy"
+    assert pairing["connectDisabled"] is True and pairing["pairDisabled"] is True
+    assert page["btVolumeStays"] == "", "the volume slider stays beside the connection line"
+    # no_sink: as good as lost - red, and Connect is still offered.
+    nosink = page["btNoSink"]
+    assert nosink["text"] == "Bose Flex SoundLink · connected but no PulseAudio sink · reconnecting in 12 s"
+    assert nosink["tone"] == "err" and nosink["connectDisabled"] is False
+    assert page["btHiddenWithout"] == "none"
 
 
 def test_the_tiles_show_the_units_wifi_and_the_buttons_switch_the_fleet(page):

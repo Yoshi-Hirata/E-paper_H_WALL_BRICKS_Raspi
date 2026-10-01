@@ -60,6 +60,34 @@ one that dies) is a status, not a failure - the run proceeds silently, the
 page says so (/api/fleet's `speaker`), and the speaker tries again every
 RETRY_S in case somebody installs it. The process factory is injectable so
 the tests drive a fake mpg123.
+
+The Bluetooth speaker's CONNECTION (--speaker-output pulse, the Bose over
+A2DP). Nothing used to watch it: a Bose that dropped (power, distance, a
+phone grabbing it) left the show running in silence with nothing on the
+page or the LCD to say so. A third thread of its own (never the music
+thread, never an HTTP thread) now reads `bluetoothctl info <MAC>` and
+`pactl list short sinks` every CONNECTION_CHECK_S (CONNECTION_CHECK_RUN_S
+while a run is active) and publishes the device and one word for the
+state - connected | disconnected | connecting | pairing | no_device. The
+MAC is fleet.json's "speaker_mac" or, when that is absent, the first
+`bluetoothctl paired-devices` entry whose info carries `UUID: Audio
+Sink`. Disconnected, it runs `bluetoothctl connect` RECONNECT_FIRST_S
+later, then every RECONNECT_EVERY_S, backing off to RECONNECT_BACKOFF_S
+after RECONNECT_BACKOFF_AFTER refusals in a row (bluetoothd's "Permission
+denied (13)" - the speaker is attached to another source or has dropped
+our pairing; bluetoothctl itself only says `org.bluez.Error.Failed`, so a
+speaker that is simply off reads the same here). Connected again: the
+bluez sink is made the default and every sink-input (mpg123's stream,
+which PulseAudio's module-rescue-streams had moved to the fallback sink
+when the bluez one vanished) is moved back onto it, the volume thread is
+poked so the AVRCP volume lands on the new transport, and one line says
+`Bose reconnected after N s`. The page's Connect button asks for an
+attempt now; Re-pair runs the whole cure in ONE interactive bluetoothctl
+session (remove, scan on, wait for the classic address - it appears only
+while the speaker is in pairing mode -, pair, trust, connect, quit; BlueZ
+forgets an unpaired scan result ~30 s after it was seen, hence the one
+session), with its progress in `pairing`. Both run on the connection
+thread; an HTTP thread only queues the request.
 """
 
 from __future__ import annotations
@@ -88,6 +116,45 @@ VOLUME_DEFAULT = 70
 VOLUME_CHECK_S = 5.0
 VOLUME_APPLY_TIMEOUT_S = 1.5    # how long a POST waits for the thread to apply
 _TRANSPORT_RE = r"/org/bluez/hci[0-9]+/dev_{mac}/sep[0-9]+/fd[0-9]+"
+# The Bluetooth speaker's connection (see the module doc).
+CONNECTION_CHECK_S = 10.0       # bluetoothctl info + pactl list, idle
+CONNECTION_CHECK_RUN_S = 2.0    # ...while a run is active
+RECONNECT_FIRST_S = 5.0         # a drop is given this long to come back by itself
+RECONNECT_EVERY_S = 30.0
+RECONNECT_BACKOFF_S = 120.0
+RECONNECT_BACKOFF_AFTER = 3     # refusals in a row before the long interval
+CONNECT_TIMEOUT_S = 20.0        # bluetoothctl connect has this long to answer
+PAIR_SCAN_S = 60.0              # the speaker has this long to show up in a scan
+PAIR_POLL_S = 2.0               # how often the scan is looked at
+PAIR_WAIT_S = 15.0              # `pair` has this long (measured ~8 s on the Bose)
+PAIR_CONNECT_WAIT_S = 15.0
+PAIRING_SHOWN_S = 60.0          # a finished re-pair stays in `pairing` this long
+NO_SINK_S = 20.0                # connected without an A2DP sink this long: cycle it
+REMIND_S = 3600.0               # a failure that goes on is said again this often
+# `no_sink` = bluetoothctl says connected but PulseAudio never made the A2DP
+# sink (NO_SINK_S): the LCD and the page treat it like disconnected.
+CONNECTION_STATES = ("connected", "disconnected", "connecting", "pairing", "no_device",
+                     "no_sink")
+LOST_STATES = ("disconnected", "no_sink")       # the automatic connect applies
+# bluetoothctl's words for a connect the speaker (or bluetoothd) refused -
+# "Permission denied (13)" is bluetoothd's own reason, seen in its journal;
+# bluetoothctl itself answers org.bluez.Error.Failed for it.
+_REFUSED_MARKS = ("Permission denied", "org.bluez.Error.Failed",
+                  "org.bluez.Error.NotAvailable")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Z0-9]|\r")
+_PROMPT_RE = re.compile(r"^(?:\[[^\]\n]*\]#\s*)+", re.M)   # "[bluetooth]# ", "[Bose Flex]# "
+_MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+
+def plain_lines(text: str) -> "list[str]":
+    """bluetoothctl's output without its colours and prompts, one line at
+    a time, blanks dropped."""
+    lines = []
+    for raw in _ANSI_RE.sub("", text).splitlines():
+        line = _PROMPT_RE.sub("", raw).strip()
+        if line:
+            lines.append(line)
+    return lines
 
 
 def default_runner(argv, timeout: float = 5.0):
@@ -99,6 +166,101 @@ def default_runner(argv, timeout: float = 5.0):
     except subprocess.SubprocessError as exc:
         return 1, str(exc)
     return done.returncode, done.stdout
+
+
+def default_session_factory(argv):
+    """An interactive bluetoothctl on two pipes (the re-pair flow)."""
+    return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
+
+
+def clean_mac(value) -> "str | None":
+    """A Bluetooth address as bluetoothctl prints it (upper case, colons),
+    or None for anything that is not one."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().replace("-", ":")
+    return text.upper() if _MAC_RE.match(text) else None
+
+
+def bluez_sink_name(mac: str) -> str:
+    """PulseAudio's name for the A2DP sink of a device."""
+    return f"bluez_sink.{mac.replace(':', '_')}.a2dp_sink"
+
+
+class _BtSession:
+    """One interactive bluetoothctl: commands on stdin, its lines (ANSI
+    stripped) collected by a reader thread, waited for by substring."""
+
+    def __init__(self, proc):
+        self.proc = proc
+        self.lines: "list[str]" = []
+        self.closed = False
+        self._cond = threading.Condition()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        try:
+            for raw in iter(self.proc.stdout.readline, b""):
+                for line in plain_lines(raw.decode("utf-8", "replace")):
+                    with self._cond:
+                        self.lines.append(line)
+                        del self.lines[:-200]
+                        self._cond.notify_all()
+        except (OSError, ValueError):
+            pass
+        with self._cond:
+            self.closed = True
+            self._cond.notify_all()
+
+    def send(self, text: str) -> None:
+        try:
+            self.proc.stdin.write((text + "\n").encode("utf-8"))
+            self.proc.stdin.flush()
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"bluetoothctl pipe: {exc}")
+
+    def mark(self) -> int:
+        with self._cond:
+            return len(self.lines)
+
+    def wait_for(self, marks, timeout: float, since: int = 0,
+                 stop: "threading.Event | None" = None) -> "str | None":
+        """The first line after `since` containing one of `marks`, or None
+        after `timeout` (or once `stop` is set / the process is gone)."""
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while True:
+                for line in self.lines[since:]:
+                    if any(mark in line for mark in marks):
+                        return line
+                since = len(self.lines)
+                left = deadline - time.monotonic()
+                if left <= 0 or self.closed or (stop is not None and stop.is_set()):
+                    return None
+                self._cond.wait(min(left, 0.25))
+
+    def close(self) -> None:
+        """`quit`, else terminate - and wait for it either way, then close
+        the pipes (the reader thread ends on the closed stdout)."""
+        try:
+            self.send("quit")
+        except RuntimeError:
+            pass
+        try:
+            self.proc.wait(timeout=2)
+        except Exception:                   # noqa: BLE001 - then it is killed
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=2)
+            except Exception:               # noqa: BLE001 - nothing more to do
+                pass
+        for pipe in (self.proc.stdin, self.proc.stdout):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except (OSError, ValueError):
+                pass
 TICK_S = 0.05              # how often the run is looked at between events
 LOAD_TIMEOUT_S = 5.0       # mpg123 has this long to report a loaded track
 REPLY_TIMEOUT_S = 2.0      # ...and to answer any other command
@@ -129,13 +291,79 @@ class Speaker:
                  tick_s: float = TICK_S, retry_s: float = RETRY_S,
                  track_check_s: float = TRACK_CHECK_S,
                  runner=None, volume: int = VOLUME_DEFAULT, save_volume=None,
-                 volume_check_s: float = VOLUME_CHECK_S):
+                 volume_check_s: float = VOLUME_CHECK_S,
+                 speaker_mac=None, bluetooth: "bool | None" = None,
+                 session_factory=None,
+                 connection_check_s: float = CONNECTION_CHECK_S,
+                 connection_check_run_s: float = CONNECTION_CHECK_RUN_S,
+                 reconnect_first_s: float = RECONNECT_FIRST_S,
+                 reconnect_every_s: float = RECONNECT_EVERY_S,
+                 reconnect_backoff_s: float = RECONNECT_BACKOFF_S,
+                 connect_timeout_s: float = CONNECT_TIMEOUT_S,
+                 pair_scan_s: float = PAIR_SCAN_S, pair_poll_s: float = PAIR_POLL_S,
+                 pair_wait_s: float = PAIR_WAIT_S,
+                 pair_connect_wait_s: float = PAIR_CONNECT_WAIT_S,
+                 pairing_shown_s: float = PAIRING_SHOWN_S,
+                 no_sink_s: float = NO_SINK_S, remind_s: float = REMIND_S,
+                 save_mac=None):
         self._track = track
         self._run = run
         self._clock = clock
         self._factory = factory or default_factory
         self._binary = binary
         self._output = output
+        # The Bluetooth speaker's connection (see the module doc): watched
+        # and reconnected only where the sound goes through PulseAudio
+        # (`bluetooth` None = "when output is pulse"; a USB speaker on alsa
+        # has no connection to watch). `speaker_mac` is fleet.json's, or
+        # None to find the paired Audio Sink. `session_factory(argv)` opens
+        # the interactive bluetoothctl the re-pair flow drives.
+        self._bluetooth = (output == "pulse") if bluetooth is None else bool(bluetooth)
+        self._mac_configured = clean_mac(speaker_mac)
+        self._session_factory = session_factory or default_session_factory
+        self._conn_check_s = connection_check_s
+        self._conn_check_run_s = connection_check_run_s
+        self._reconnect_first_s = reconnect_first_s
+        self._reconnect_every_s = reconnect_every_s
+        self._reconnect_backoff_s = reconnect_backoff_s
+        self._connect_timeout_s = connect_timeout_s
+        self._pair_scan_s = pair_scan_s
+        self._pair_poll_s = pair_poll_s
+        self._pair_wait_s = pair_wait_s
+        self._pair_connect_wait_s = pair_connect_wait_s
+        self._pairing_shown_s = pairing_shown_s
+        self._pairing_ended: "float | None" = None  # this clock, when done / failed
+        self._no_sink_s = no_sink_s
+        self._remind_s = remind_s
+        # `save_mac(mac)` persists the address a successful re-pair used
+        # (fleet.json "speaker_mac"), so a lost pairing can be redone from
+        # the page without retyping it, restart included.
+        self._save_mac = save_mac
+        self._no_sink_since: "float | None" = None  # connected, no A2DP sink, since
+        self._cycle = False                 # the next connect disconnects first
+        self._cycle_at: "float | None" = None       # the last such cycle, this clock
+        self._connect_said = None           # (error, wait, when) last logged
+        self._route_said = None             # (text, when) last logged
+        self._conn_thread: "threading.Thread | None" = None
+        self._conn_wake = threading.Event()
+        self._conn_mac: "str | None" = self._mac_configured
+        self._mac_hint: "str | None" = None     # the last MAC a re-pair was asked for
+        self._conn_due = -1e9               # the next check, this clock
+        self._conn_requests: "list[tuple]" = []    # ("connect",) / ("pair", mac)
+        self._device: "dict | None" = None
+        self._connection = "no_device"
+        self._reconnect_at: "float | None" = None   # the next auto connect
+        self._reconnect_attempts = 0
+        self._reconnect_error: "str | None" = None
+        self._refused = 0                   # refusals in a row (the backoff)
+        self._disconnected_since: "float | None" = None
+        # (name, pulse index) of the bluez sink the sound was last routed
+        # to: a sink that vanished and came back has a NEW index, even when
+        # BlueZ reconnected between two checks and `Connected: yes` never
+        # flickered - the index is what tells the two apart.
+        self._routed_sink: "tuple[str, str] | None" = None
+        self._pairing: "dict | None" = None
+        self._conn_said: "str | None" = None
         # The host's loudness (see VOLUME_DEFAULT): `runner(argv)` runs
         # pactl / busctl, `save_volume(v)` persists a change (fleet.json).
         self._runner = runner or default_runner
@@ -201,26 +429,56 @@ class Speaker:
         self._thread.start()
         self._volume_thread = threading.Thread(target=self._volume_loop, daemon=True)
         self._volume_thread.start()
+        if self._bluetooth:
+            self._conn_thread = threading.Thread(target=self._connection_loop, daemon=True)
+            self._conn_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._volume_wake.set()
-        for thread in (self._thread, self._volume_thread):
+        self._conn_wake.set()
+        for thread in (self._thread, self._volume_thread, self._conn_thread):
             if thread is not None:
                 thread.join(timeout=3)
         self._quit()
 
     def status(self) -> dict:
-        """What /api/fleet reports as `speaker` (any thread may call)."""
+        """What /api/fleet reports as `speaker` (any thread may call).
+        The Bluetooth half is the API contract the page and the unit LCD
+        read: `bluetooth` (true only when the sound goes through
+        PulseAudio AND a Bluetooth speaker is known - fleet.json's
+        speaker_mac, a paired Audio Sink, or a bluez default sink; false
+        for a wired speaker, so the LCD shows no LOST banner for a device
+        that was never there), `device` {mac, name, paired, trusted,
+        connected, sink_present, last_connected_at (epoch seconds),
+        last_error} or null, `connection` (CONNECTION_STATES),
+        `reconnect` {attempts, next_in_s, last_error}, `pairing` {phase,
+        note, started_at} or null (null again PAIRING_SHOWN_S after it
+        ended)."""
+        now = self._clock()
         with self._lock:
             loaded = self._loaded
+            bluetooth = self._bluetooth and (
+                self._conn_mac is not None or self._device is not None
+                or bool(self._volume_key and str(self._volume_key[0]).startswith("bluez_sink.")))
+            next_in = None
+            if (bluetooth and self._connection in LOST_STATES
+                    and self._reconnect_at is not None):
+                next_in = round(max(0.0, self._reconnect_at - now), 1)
             return {"available": self._proc is not None, "error": self.error,
                     "state": self.state,
                     "track": Path(loaded[0]).name if loaded else None,
                     "latency_ms": round(self._latency * 1000, 1),
                     "playing": self._pstate == PLAYING, "log": list(self.log[-5:]),
                     "volume": self._volume, "applied": self._applied,
-                    "volume_error": self.volume_error}
+                    "volume_error": self.volume_error,
+                    "bluetooth": bluetooth,
+                    "device": dict(self._device) if self._device else None,
+                    "connection": self._connection,
+                    "reconnect": {"attempts": self._reconnect_attempts,
+                                  "next_in_s": next_in,
+                                  "last_error": self._reconnect_error},
+                    "pairing": dict(self._pairing) if self._pairing else None}
 
     @property
     def playing(self) -> bool:
@@ -368,6 +626,562 @@ class Speaker:
             raise RuntimeError(f"busctl tree: exit {code} {out.strip()[:80]}")
         found = re.findall(_TRANSPORT_RE.format(mac=re.escape(mac)), out)
         return found[-1] if found else None
+
+    # ---- the Bluetooth speaker's connection ----
+
+    def request_connect(self) -> "tuple[int, dict]":
+        """POST /api/speaker/connect: a connect attempt now, on the
+        connection thread. Answers (HTTP status, body) - 409 while a
+        re-pair runs, 400 with nothing to connect to."""
+        with self._lock:
+            if not self._bluetooth:
+                return 400, self._answer(False, "no Bluetooth speaker on this Conductor "
+                                                "(serve --speaker-output pulse)")
+            if self._connection == "pairing":
+                return 409, self._answer(False, "re-pairing is in progress - wait for it")
+            if self._conn_mac is None:
+                return 400, self._answer(False, "no paired Bluetooth speaker known - "
+                                                "Re-pair (with the MAC), or fleet.json "
+                                                "\"speaker_mac\"")
+            if self._connection != "connecting":
+                self._connection = "connecting"
+                self._conn_requests.append(("connect",))
+            answer = self._answer(True, None)
+        self._conn_wake.set()
+        return 200, answer
+
+    def request_pair(self, mac=None, force: bool = False) -> "tuple[int, dict]":
+        """POST /api/speaker/pair: the whole cure (remove, scan, pair,
+        trust, connect) on the connection thread. 409 while one runs, 409
+        during a run unless `force` (pairing drops the audio), 400 with no
+        MAC (none given, none known)."""
+        if mac is not None and clean_mac(mac) is None:
+            return 400, self._answer(False, f"mac: not a Bluetooth address ({mac!r})")
+        run, _ = self._run()
+        with self._lock:
+            if not self._bluetooth:
+                return 400, self._answer(False, "no Bluetooth speaker on this Conductor "
+                                                "(serve --speaker-output pulse)")
+            if self._connection == "pairing" or any(r[0] == "pair" for r in self._conn_requests):
+                return 409, self._answer(False, "re-pairing is already in progress")
+            if run is not None and not force:
+                return 409, self._answer(False, "show running - pairing drops the audio; "
+                                                "send {\"force\": true} to pair anyway")
+            target = clean_mac(mac) or self._conn_mac or self._mac_hint
+            if target is None:
+                return 400, self._answer(False, "no Bluetooth speaker known - give its "
+                                                "MAC (bluetoothctl devices while it is "
+                                                "in pairing mode)")
+            self._mac_hint = target
+            self._connection = "pairing"
+            self._pairing = {"phase": "scanning", "note": "starting bluetoothctl",
+                             "started_at": time.time()}
+            self._pairing_ended = None
+            self._conn_requests.append(("pair", target))
+            answer = self._answer(True, None)
+        self._conn_wake.set()
+        return 200, answer
+
+    def _answer(self, ok: bool, error: "str | None") -> dict:
+        # Under self._lock (the caller's).
+        return {"ok": ok, "connection": self._connection, "error": error}
+
+    def _connection_loop(self) -> None:
+        """The connection's OWN thread: bluetoothctl / pactl (seconds each,
+        a re-pair a minute) never sit between the music thread and the
+        0:00 unpause, and never under an HTTP request."""
+        while not self._stop.is_set():
+            try:
+                wait = self._connection_tick(self._clock())
+            except Exception as exc:        # noqa: BLE001 - said, never fatal
+                self._connection_fail(f"{exc.__class__.__name__}: {exc}")
+                wait = self._conn_check_s
+            self._conn_wake.wait(max(0.001, min(wait, 0.25)))
+            self._conn_wake.clear()
+
+    def _connection_tick(self, now: float) -> float:
+        """A queued request first (Connect / Re-pair), then the check when
+        it is due, then the automatic connect when it is due. Returns how
+        long the loop may sleep."""
+        with self._lock:
+            request = self._conn_requests.pop(0) if self._conn_requests else None
+            if (self._pairing is not None and self._pairing_ended is not None
+                    and now - self._pairing_ended >= self._pairing_shown_s):
+                self._pairing, self._pairing_ended = None, None     # old news
+        if request is not None:
+            if request[0] == "pair":
+                self._pair(request[1])
+            else:
+                self._connect(now, manual=True)
+            self._conn_due = now
+            return 0.0
+        if now >= self._conn_due:
+            run, _ = self._run()
+            self._refresh(now)
+            interval = self._conn_check_run_s if run is not None else self._conn_check_s
+            with self._lock:
+                connected_no_sink = (self._connection in ("connected", "no_sink")
+                                     and self._device and not self._device["sink_present"])
+            if connected_no_sink:
+                # PulseAudio takes a moment to make the sink: look again soon.
+                interval = min(interval, self._conn_check_run_s)
+            self._conn_due = now + interval
+        with self._lock:
+            due = self._reconnect_at if self._connection in LOST_STATES else None
+        if due is not None and now >= due:
+            self._connect(now, manual=False)
+            self._conn_due = now                # the check that follows says connected
+            return 0.0
+        waits = [self._conn_due - now] + ([due - now] if due is not None else [])
+        return max(0.0, min(waits))
+
+    def _refresh(self, now: float) -> None:
+        """One look: the device (bluetoothctl info) and PulseAudio's sinks,
+        published as `device` and `connection`; a drop arms the automatic
+        connect, a return routes the sound back (see _route)."""
+        mac = self._conn_mac
+        if mac is None:
+            mac = self._discover()
+            if mac is None:
+                # Nothing paired. The address a re-pair was last asked for
+                # (and failed) is still shown, so Re-pair needs no retyping.
+                with self._lock:
+                    self._conn_mac = None
+                    hint = self._mac_hint
+                if hint is None:
+                    with self._lock:
+                        self._device = None
+                        self._set_connection("no_device")
+                        self._conn_said = None
+                    return
+                mac = hint
+            else:
+                with self._lock:
+                    self._conn_mac = mac
+        info = self._info(mac)
+        sinks = self._sinks()
+        sink = bluez_sink_name(mac)
+        index = sinks.get(sink)
+        present = index is not None
+        with self._lock:
+            self._conn_said = None          # the tools answer again: a later failure is news
+            if not present:
+                self._routed_sink = None    # whatever comes back is a new sink
+        if info is None:
+            # Configured, but BlueZ does not know it: not paired (any more).
+            with self._lock:
+                previous = self._device or {}
+                self._device = {"mac": mac, "name": previous.get("name"),
+                                "paired": False, "trusted": False, "connected": False,
+                                "sink_present": present,
+                                "last_connected_at": previous.get("last_connected_at"),
+                                "last_error": f"bluetoothctl does not know {mac} - "
+                                              "not paired: Re-pair"}
+                self._routed_sink = None
+                self._no_sink_since = None
+                if self._mac_configured is None:
+                    self._conn_mac = None         # discovered: look again
+                self._set_connection("no_device")
+            return
+        connected = info["connected"]
+        said = None
+        with self._lock:
+            previous = self._device or {}
+            self._device = {"mac": mac, "name": info["name"] or previous.get("name"),
+                            "paired": info["paired"], "trusted": info["trusted"],
+                            "connected": connected, "sink_present": present,
+                            "last_connected_at": (time.time() if connected
+                                                  else previous.get("last_connected_at")),
+                            "last_error": None}
+            # No attempt is ever in flight here: connects and re-pairs run
+            # on THIS thread, before a check - so what bluetoothctl says
+            # now is the word, "connecting" / "pairing" included.
+            route = verify = False
+            if connected:
+                if self._disconnected_since is not None:
+                    # Came back by itself (Trusted) or by our connect.
+                    said = (f"{info['name'] or 'speaker'} reconnected after "
+                            f"{now - self._disconnected_since:.0f} s")
+                    self._connect_said = None
+                self._disconnected_since = None
+                self._reconnect_attempts = 0
+                self._refused = 0
+                if present:
+                    self._no_sink_since, self._cycle_at, self._cycle = None, None, False
+                    self._reconnect_at = None
+                    self._set_connection("connected")
+                    # A new sink (a new index: it vanished and came back,
+                    # even if `Connected: yes` never flickered between two
+                    # checks) is routed to; a known one is only VERIFIED -
+                    # the streams are looked at, moved if one strayed.
+                    route = self._routed_sink != (sink, index)
+                    verify = not route
+                elif self._connection == "no_sink" or (
+                        self._no_sink_since is not None
+                        and now - self._no_sink_since >= self._no_sink_s):
+                    # Connected for NO_SINK_S and PulseAudio never made the
+                    # A2DP sink (the sddm / second-PulseAudio case, or a
+                    # transport that never opened): as good as lost - said
+                    # so, and the link is cycled (disconnect + connect) on
+                    # the usual schedule.
+                    self._device["last_error"] = "connected, no PulseAudio sink"
+                    if self._cycle_at is None and not self._cycle:    # the first time only
+                        said = (f"{info['name'] or mac} connected but PulseAudio has no "
+                                f"sink for it after {now - self._no_sink_since:.0f} s - "
+                                "disconnecting and connecting again")
+                    self._set_connection("no_sink")
+                    if self._reconnect_at is None:
+                        self._reconnect_at = (now if self._cycle_at is None
+                                              else max(now, self._cycle_at + self._reconnect_every_s))
+                        self._cycle = True
+                else:
+                    if self._no_sink_since is None:
+                        self._no_sink_since = now
+                    self._reconnect_at = None
+                    self._set_connection("connected")
+            else:
+                if self._disconnected_since is None:
+                    self._disconnected_since = now
+                    self._reconnect_attempts = 0
+                    self._refused = 0
+                    said = f"{info['name'] or mac} disconnected"
+                if self._reconnect_at is None:
+                    self._reconnect_at = now + self._reconnect_first_s
+                self._routed_sink = None
+                self._no_sink_since = None
+                self._set_connection("disconnected")
+        if said:
+            self._say(said)
+        if route or verify:
+            self._route(sink, index, verify_only=verify)
+
+    def _discover(self) -> "str | None":
+        """No "speaker_mac": the first paired device that is an A2DP sink."""
+        code, out = self._runner(["bluetoothctl", "paired-devices"])
+        if code != 0:
+            raise RuntimeError(f"bluetoothctl paired-devices: exit {code} "
+                               f"{out.strip()[:80]}")
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "Device" and clean_mac(parts[1]):
+                mac = clean_mac(parts[1])
+                info = self._info(mac)
+                if info is not None and info["audio_sink"]:
+                    self._say(f"Bluetooth speaker {info['name'] or mac} ({mac}) found "
+                              "among the paired devices")
+                    return mac
+        return None
+
+    def _info(self, mac: str) -> "dict | None":
+        """`bluetoothctl info <MAC>` read into a dict; None when BlueZ does
+        not know the device ("Device <MAC> not available")."""
+        code, out = self._runner(["bluetoothctl", "info", mac])
+        if "not available" in out:
+            return None
+        if code != 0:
+            raise RuntimeError(f"bluetoothctl info: exit {code} {out.strip()[:80]}")
+        found = {"name": None, "paired": False, "trusted": False, "connected": False,
+                 "audio_sink": False}
+        for raw in out.splitlines():
+            line = raw.strip()
+            key, _, value = line.partition(":")
+            key, value = key.strip(), value.strip()
+            if key == "Name":
+                found["name"] = value or None
+            elif key in ("Paired", "Trusted", "Connected"):
+                found[key.lower()] = value == "yes"
+            elif key == "UUID" and value.startswith("Audio Sink"):
+                found["audio_sink"] = True
+        return found
+
+    def _sinks(self) -> "dict[str, str]":
+        """`pactl list short sinks`: {name: index}. PulseAudio down is an
+        empty dict - the connection is still bluetoothctl's word."""
+        code, out = self._runner(["pactl", "list", "short", "sinks"])
+        if code != 0:
+            return {}
+        sinks = {}
+        for line in out.splitlines():
+            parts = line.split("\t") if "\t" in line else line.split()
+            if len(parts) >= 2:
+                sinks[parts[1]] = parts[0]
+        return sinks
+
+    def _route(self, sink: str, index: str, verify_only: bool = False) -> None:
+        """The bluez sink (pulse index `index`) is back: make it the
+        default, move every stream onto it (module-rescue-streams had
+        moved mpg123's to the fallback sink when it vanished - on this
+        headless host mpg123 is the only stream there is), and wake the
+        volume thread to apply the AVRCP volume to the new transport.
+        `verify_only` (a sink already routed to, once per check): just the
+        one `pactl list short sink-inputs`, and a move for a stream that
+        strayed. A failure is kept in the device's last_error, said when
+        it is news (REMIND_S), and tried again on the next check (the
+        routed sink is only remembered on success)."""
+        try:
+            if not verify_only:
+                code, out = self._runner(["pactl", "info"])
+                if code != 0:
+                    raise RuntimeError(f"pactl info: exit {code} {out.strip()[:80]}")
+                default = None
+                for line in out.splitlines():
+                    if line.startswith("Default Sink:"):
+                        default = line.partition(":")[2].strip()
+                if default != sink:
+                    code, out = self._runner(["pactl", "set-default-sink", sink])
+                    if code != 0:
+                        raise RuntimeError(f"pactl set-default-sink: exit {code} "
+                                           f"{out.strip()[:80]}")
+            code, out = self._runner(["pactl", "list", "short", "sink-inputs"])
+            if code != 0:
+                raise RuntimeError(f"pactl list sink-inputs: exit {code} {out.strip()[:80]}")
+            moved = 0
+            for line in out.splitlines():
+                parts = line.split("\t") if "\t" in line else line.split()
+                if len(parts) >= 2 and parts[1] != index:
+                    code, out = self._runner(["pactl", "move-sink-input", parts[0], sink])
+                    if code != 0:
+                        raise RuntimeError(f"pactl move-sink-input {parts[0]}: exit {code} "
+                                           f"{out.strip()[:80]}")
+                    moved += 1
+        except (RuntimeError, OSError) as exc:
+            text = f"route to {sink}: {exc}"
+            with self._lock:
+                if self._device:
+                    self._device["last_error"] = text
+                if not verify_only:
+                    self._routed_sink = None
+            self._say_change("_route_said", text, f"could not route the sound to {sink}: {exc}")
+            return
+        with self._lock:
+            self._routed_sink = (sink, index)
+            self._route_said = None
+            if self._device and (self._device.get("last_error") or "").startswith("route to "):
+                self._device["last_error"] = None
+        if verify_only and not moved:
+            return                              # all where it belongs: nothing to say
+        # The AVRCP volume goes to the transport's new fdN: now, not in
+        # VOLUME_CHECK_S. (_volume_done on its own - the volume thread takes
+        # it before _lock, never the other way round.)
+        with self._volume_done:
+            self._volume_dirty = True
+        self._volume_wake.set()
+        self._say(f"sound routed to {sink}" + (f", {moved} stream(s) moved" if moved else ""))
+
+    def _say_change(self, slot: str, key, message: str) -> None:
+        """Log `message` when `key` differs from what this slot last said,
+        or REMIND_S has passed since - never one line per attempt."""
+        now = self._clock()
+        with self._lock:
+            last = getattr(self, slot)
+            news = last is None or last[0] != key or now - last[1] >= self._remind_s
+            if news:
+                setattr(self, slot, (key, now))
+        if news:
+            self._say(message)
+
+    def _connect(self, now: float, manual: bool) -> None:
+        """One `bluetoothctl connect`. Success: the next check finds it
+        connected and routes the sound. Failure: said, counted, and the
+        next automatic attempt set - RECONNECT_EVERY_S, or the backoff
+        after RECONNECT_BACKOFF_AFTER refusals in a row."""
+        with self._lock:
+            mac = self._conn_mac
+            if mac is None:
+                self._set_connection("no_device")
+                return
+            self._set_connection("connecting")
+            cycle, self._cycle = self._cycle, False
+        if cycle:
+            # Connected without an A2DP sink for NO_SINK_S: the link is
+            # dropped first so BlueZ opens the transport anew.
+            self._cycle_at = now
+            self._runner(["bluetoothctl", "disconnect", mac], timeout=self._connect_timeout_s)
+        code, out = self._runner(["bluetoothctl", "connect", mac],
+                                 timeout=self._connect_timeout_s)
+        lines = plain_lines(out)
+        ok = code == 0 and any("Connection successful" in line for line in lines)
+        error = None
+        if not ok:
+            error = lines[-1] if lines else f"bluetoothctl connect: exit {code}"
+            if code == 127:
+                error = "bluetoothctl not found"
+        with self._lock:
+            self._reconnect_attempts += 1
+            self._reconnect_error = error
+            if ok:
+                self._refused = 0
+                self._reconnect_at = None
+                # `connected` is published by the check that follows at
+                # once (and it routes the sound); until then "connecting".
+                return
+            refused = any(mark in error for mark in _REFUSED_MARKS)
+            self._refused = self._refused + 1 if refused else 0
+            wait = (self._reconnect_backoff_s
+                    if self._refused >= RECONNECT_BACKOFF_AFTER
+                    else self._reconnect_every_s)
+            self._reconnect_at = now + wait
+            self._set_connection("disconnected")
+            if self._disconnected_since is None:
+                self._disconnected_since = now
+        why = ""
+        if any(mark in error for mark in _REFUSED_MARKS):
+            why = " (the speaker is off, out of range, on another phone, or has dropped this pairing)"
+        # One line when the error or the interval changes (and a reminder
+        # every REMIND_S) - a Bose left off overnight is not 1000 lines.
+        self._say_change("_connect_said", (error, wait),
+                         f"connect {mac}{' (manual)' if manual else ''} failed: {error}{why}"
+                         f" - next try in {wait:.0f} s")
+
+    def _pair(self, mac: str) -> None:
+        """The cure for a speaker that refuses us: remove, scan on, wait
+        for the classic address (pairing mode only), pair, trust, connect
+        - in ONE bluetoothctl session (see the module doc). Progress in
+        `pairing`; the connection word is "pairing" throughout."""
+        started = time.monotonic()
+
+        def phase(name, note):
+            ended = name in ("done", "failed")
+            with self._lock:
+                self._pairing = {"phase": name, "note": note,
+                                 "started_at": self._pairing["started_at"]
+                                 if self._pairing else time.time()}
+                self._pairing_ended = self._clock() if ended else None
+                if not ended:
+                    self._set_connection("pairing")
+            self._say(f"re-pair {mac}: {name} - {note}")
+
+        def known() -> bool:
+            code, out = self._runner(["bluetoothctl", "devices"])
+            return code == 0 and f"Device {mac}" in _ANSI_RE.sub("", out)
+
+        session = None
+        try:
+            phase("scanning", "forgetting the old pairing, scanning - put the speaker "
+                              "in pairing mode")
+            session = _BtSession(self._session_factory(["bluetoothctl"]))
+            session.send(f"remove {mac}")
+            session.wait_for(("removed", "not available"), 3.0, stop=self._stop)
+            # The remove's result is checked, not assumed: a device BlueZ
+            # still lists is one `bluetoothctl devices` would "find" at
+            # once without it advertising at all - then only the session's
+            # own [NEW] / [CHG] lines (an RSSI from a real scan) count.
+            cached = known()
+            if cached:
+                phase("scanning", f"BlueZ still lists {mac} - scanning until it really "
+                                  "advertises (pairing mode)")
+            since = session.mark()
+            session.send("scan on")
+            deadline = time.monotonic() + self._pair_scan_s
+            seen = False
+            while time.monotonic() < deadline and not self._stop.is_set():
+                began = time.monotonic()
+                # "[NEW] Device <MAC> <name>" in the session (a "[DEL]" from
+                # the remove above also names it - hence NEW / CHG only),
+                # or - for a device BlueZ had really forgotten - the address
+                # in `bluetoothctl devices`.
+                if session.wait_for((f"[NEW] Device {mac}", f"[CHG] Device {mac}"),
+                                    self._pair_poll_s, since=since, stop=self._stop):
+                    seen = True
+                    break
+                if session.closed:
+                    raise RuntimeError("bluetoothctl exited during the scan")
+                if not cached and known():
+                    seen = True
+                    break
+                # Never a hot loop, whatever the pipe does: one `devices`
+                # per PAIR_POLL_S at most.
+                self._stop.wait(max(0.0, self._pair_poll_s - (time.monotonic() - began)))
+            if not seen:
+                raise RuntimeError(f"{mac} did not appear in {self._pair_scan_s:.0f} s of "
+                                   "scanning - is the speaker in pairing mode (and every "
+                                   "phone's Bluetooth off)?")
+            phase("pairing", f"{mac} found - pairing")
+            since = session.mark()
+            session.send(f"pair {mac}")
+            line = session.wait_for(("Pairing successful", "Failed to pair",
+                                     "not available", "AuthenticationFailed",
+                                     "AlreadyExists"),
+                                    self._pair_wait_s, since=since, stop=self._stop)
+            if line is None:
+                # Silence is not failure yet: BlueZ may have paired without
+                # bluetoothctl saying so on this pipe - its info decides.
+                info = self._info(mac)
+                if not (info and info["paired"]):
+                    raise RuntimeError(f"pair: no answer in {self._pair_wait_s:.0f} s")
+            elif "Pairing successful" not in line and "AlreadyExists" not in line:
+                raise RuntimeError(f"pair: {line}")
+            since = session.mark()
+            session.send(f"trust {mac}")
+            session.wait_for(("trust succeeded", "not available"), 3.0, since=since,
+                             stop=self._stop)
+            phase("connecting", "paired and trusted - connecting")
+            since = session.mark()
+            session.send(f"connect {mac}")
+            line = session.wait_for(("Connection successful", "Failed to connect",
+                                     "not available"),
+                                    self._pair_connect_wait_s, since=since, stop=self._stop)
+            if line is None:
+                info = self._info(mac)
+                if not (info and info["connected"]):
+                    raise RuntimeError(f"connect: no answer in "
+                                       f"{self._pair_connect_wait_s:.0f} s")
+            elif "Connection successful" not in line:
+                raise RuntimeError(f"connect: {line}")
+            session.send("scan off")
+        except Exception as exc:            # noqa: BLE001 - a re-pair always ENDS
+            with self._lock:
+                self._connection = "disconnected"
+                self._reconnect_at = self._clock() + self._reconnect_every_s
+                self._reconnect_error = str(exc) or exc.__class__.__name__
+                self._disconnected_since = (self._disconnected_since
+                                            if self._disconnected_since is not None
+                                            else self._clock())
+            phase("failed", str(exc) or exc.__class__.__name__)
+            return
+        finally:
+            if session is not None:
+                session.close()
+        with self._lock:
+            self._conn_mac = mac
+            self._connection = "connecting"      # the check that follows says connected
+            self._reconnect_at = None
+            self._reconnect_attempts = 0
+            self._refused = 0
+            self._reconnect_error = None
+            self._routed_sink = None
+            save = self._save_mac is not None and mac != self._mac_configured
+        if save:
+            # The address that worked goes to fleet.json, so a pairing lost
+            # later (or a restart) can be redone from the page as it is.
+            try:
+                self._save_mac(mac)
+                with self._lock:
+                    self._mac_configured = mac
+            except (OSError, RuntimeError) as exc:
+                self._say(f"could not save speaker_mac {mac} to fleet.json: {exc}")
+        phase("done", f"paired, trusted and connected in {time.monotonic() - started:.0f} s")
+
+    def _set_connection(self, state: str) -> None:
+        # Under self._lock (the caller's).
+        self._connection = state
+
+    def _connection_fail(self, message: str) -> None:
+        """The thread's tool failed (bluetoothctl raising, say): said once,
+        kept in the device's last_error, retried on the interval."""
+        with self._lock:
+            if self._device is not None:
+                self._device["last_error"] = message
+            if self._connection in ("connecting", "pairing"):
+                self._connection = "disconnected" if self._device else "no_device"
+                if self._pairing is not None and self._pairing["phase"] not in ("done", "failed"):
+                    self._pairing = dict(self._pairing, phase="failed", note=message)
+                    self._pairing_ended = self._clock()
+            said = self._conn_said == message
+            self._conn_said = message
+        self._conn_due = self._clock() + self._conn_check_s
+        if not said:
+            self._say(f"connection: {message}")
 
     # ---- the thread ----
 

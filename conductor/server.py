@@ -2084,8 +2084,9 @@ class Workspace:
     def fleet_option(self, key: str, default=None):
         """One more key of fleet.json (EXHIBITION mode): "passcode" (the
         page's, see PASSCODE_HEADER), "hotspot" (the unit that is the
-        AZ-Epaper hotspot, radxa-05 unless said otherwise) or
-        "speaker_volume" (the host's loudness, conductor/speaker.py)."""
+        AZ-Epaper hotspot, radxa-05 unless said otherwise), "speaker_volume"
+        (the host's loudness, conductor/speaker.py) or "speaker_mac" (the
+        Bluetooth speaker's address; absent, the paired Audio Sink)."""
         value = self._fleet_json().get(key)
         return default if value in (None, "") else value
 
@@ -3640,6 +3641,27 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(self.speaker.set_volume(wanted))
                 except RuntimeError as exc:         # fleet.json unreadable: kept
                     return self._json({"error": str(exc)}, status=500)
+            if self.path in ("/api/speaker/connect", "/api/speaker/pair"):
+                # The Bluetooth speaker (conductor/speaker.py, the API
+                # contract the unit LCD reads too): connect = one attempt
+                # now; pair {"mac"?, "force"?} = the whole re-pair flow.
+                # Both are queued for the speaker's connection thread -
+                # nothing here waits on bluetoothctl. The reply is always
+                # {"ok", "connection", "error"}: 409 while a re-pair runs
+                # (pair: also during a run, unless force - it drops the
+                # audio), 400 with nothing to connect to.
+                if self.speaker is None:
+                    return self._json({"ok": False, "connection": "no_device",
+                                       "error": "no speaker on this Conductor "
+                                                "(serve --speaker)"}, status=400)
+                if self.path.endswith("/connect"):
+                    status, answer = self.speaker.request_connect()
+                else:
+                    mac = body.get("mac")
+                    if mac is not None and not isinstance(mac, str):
+                        raise ValueError("mac: a Bluetooth address, as a string")
+                    status, answer = self.speaker.request_pair(mac, bool(body.get("force")))
+                return self._json(answer, status=status)
             if self.path == "/api/files":
                 # A malformed body is the caller's mistake, not a 500:
                 # `files` as a list of bare strings used to reach
@@ -4379,12 +4401,16 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
           speaker_lead_ms: "float | None" = None,
           speaker_output: "str | None" = None, speaker_factory=None,
           speaker_runner=None, passcode: "str | None" = None,
-          adopt: bool = False, label: "str | None" = None) -> int:
+          adopt: bool = False, label: "str | None" = None,
+          speaker_session_factory=None) -> int:
     """`python -m conductor serve`. `host` is 127.0.0.1 unless asked
     (EXHIBITION mode: 0.0.0.0 on the unit that is also the hotspot);
     `speaker` plays the show's music through mpg123 on this host
     (conductor/speaker.py), `speaker_lead_ms` trims its output allowance,
-    `speaker_output` is mpg123's -o module ("alsa" under systemd);
+    `speaker_output` is mpg123's -o module ("alsa" under systemd; "pulse"
+    also watches and reconnects the Bluetooth speaker, fleet.json
+    "speaker_mac" or the paired Audio Sink; `speaker_runner` /
+    `speaker_session_factory` are the tests' fake bluetoothctl + pactl);
     `passcode` (or fleet.json's) gates the page from other hosts; `label`
     names a SEPARATE Conductor (the PC's exhibition one: its page wears
     the badge, and its workspace gets PC_FLEET_TEMPLATE whenever it has
@@ -4476,7 +4502,12 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
                          # The host's loudness lives in fleet.json (per host,
                          # never in the show), and a change goes back there.
                          volume=config.fleet_option("speaker_volume", 70),
-                         save_volume=lambda v: ws.set_fleet_option("speaker_volume", v))
+                         save_volume=lambda v: ws.set_fleet_option("speaker_volume", v),
+                         # The Bluetooth speaker's address, when fleet.json
+                         # names it; else the paired Audio Sink is found.
+                         speaker_mac=config.fleet_option("speaker_mac"),
+                         save_mac=lambda m: ws.set_fleet_option("speaker_mac", m),
+                         session_factory=speaker_session_factory)
         player.start()
         server.RequestHandlerClass.speaker = player
     if open_browser:
