@@ -343,6 +343,11 @@ button.small { font-size: 11px; padding: 1px 6px; vertical-align: baseline; }
 .musicbar #show-music-join:hover { filter: brightness(1.12); }
 .musicbar #show-music-mute.muted { background: var(--err); border-color: var(--err); color: var(--bg); font-weight: 600; }
 .musicbar #show-music-vol { width: 110px; }
+/* The Bluetooth speaker's connection (a speaker Conductor on pulse). */
+.musicbar #spk-conn { display: inline-flex; align-items: center; gap: 6px; }
+.musicbar #spk-conn-text.ok { color: var(--ok); font-weight: 600; }
+.musicbar #spk-conn-text.err { color: var(--err); font-weight: 600; }
+.musicbar #spk-conn-text.busy { color: var(--warn); font-weight: 600; }
 
 /* ---- the NOW -> NEXT board (THE SHOW panel, under the big clock) ----
    One header line saying what fires next, then one row per garment. The
@@ -2606,7 +2611,78 @@ function musicBlockHtml() {
       <input type="range" id="spk-vol" min="0" max="100" step="1" value="70">
       <button class="small" id="spk-up">+</button>
       <span class="meta" id="spk-vol-text"></span></span>
+    <span id="spk-conn" style="display:none" title="${esc(SPEAKER_CONN_TITLE)}">
+      <span id="spk-conn-text"></span>
+      <button class="small" id="spk-connect" title="Ask the Conductor host to connect to the speaker now (it also tries by itself every 30 s while disconnected).">Connect</button>
+      <button class="small" id="spk-pair" title="Forget the pairing and pair again - for a speaker that refuses to connect (it followed a phone, or dropped this pairing).">Re-pair…</button></span>
   </div>`;
+}
+// The Bluetooth speaker's connection (conductor/speaker.py's connection
+// thread; the same API contract the unit LCD reads): one line of state,
+// Connect for an attempt now, Re-pair… for the whole cure. Shown only on a
+// speaker Conductor that watches a Bluetooth speaker (`speaker.bluetooth`).
+const SPEAKER_CONN_TITLE = "The Bluetooth speaker as the Conductor host sees it (bluetoothctl + PulseAudio, "
+  + "checked every 10 s, every 2 s during a run). Disconnected, the host reconnects by itself: "
+  + "after 5 s, then every 30 s (every 2 min once the speaker has refused three times - it is off, "
+  + "out of range, on another phone, or has dropped this pairing: Re-pair).";
+const SPEAKER_PAIR_QUESTION = "Re-pair the Bluetooth speaker?\n\n"
+  + "1. Switch Bluetooth OFF on every phone and laptop nearby (the speaker follows them otherwise).\n"
+  + "2. Put the speaker in pairing mode (Bose: hold the Bluetooth button until it blinks blue / says \"Ready to connect\").\n"
+  + "3. OK - the host forgets the old pairing, scans for up to 60 s, pairs, trusts and connects. The sound is gone meanwhile.";
+function speakerConnectionText(sp) {
+  const dev = sp.device, name = (dev && dev.name) || (dev && dev.mac) || "Bluetooth speaker";
+  const pairing = sp.pairing;
+  if (sp.connection === "pairing" && pairing) return { text: `${name} · pairing: ${pairing.phase}… ${pairing.note || ""}`.trim(), tone: "busy" };
+  if (sp.connection === "connecting") return { text: `${name} · connecting…`, tone: "busy" };
+  if (sp.connection === "connected") {
+    return { text: `${name} · connected` + (dev && !dev.sink_present ? " (no PulseAudio sink yet)" : ""),
+             tone: dev && !dev.sink_present ? "busy" : "ok" };
+  }
+  if (sp.connection === "no_device") {
+    const why = (dev && dev.last_error) || "no paired Bluetooth speaker";
+    return { text: `${name} · ${why}`, tone: "err" };
+  }
+  // disconnected
+  const rc = sp.reconnect || {};
+  let why = rc.last_error ? ` (${rc.last_error}${/Failed|denied/i.test(rc.last_error) ? " - another phone? off?" : ""})` : "";
+  if (pairing && pairing.phase === "failed") why = ` (re-pair failed: ${pairing.note})`;
+  const next = typeof rc.next_in_s === "number" ? ` · retry in ${Math.ceil(rc.next_in_s)} s` : "";
+  return { text: `${name} · not connected${why}${next}`, tone: "err" };
+}
+let speakerConnInFlight = false;
+async function speakerConnect() {
+  if (speakerConnInFlight) return;
+  speakerConnInFlight = true;
+  try {
+    const answer = await api("/api/speaker/connect", {});
+    if (answer && answer.error) toast(`Speaker: ${answer.error}`, "warn");
+    else toast("Speaker: connecting…");
+    if (fleet && fleet.speaker && answer && answer.connection) fleet.speaker.connection = answer.connection;
+  } catch (err) { toast(`Speaker: ${err.message}`, "warn"); }
+  finally { speakerConnInFlight = false; paintShowMusic(); }
+}
+async function speakerPair() {
+  if (speakerConnInFlight) return;
+  const sp = fleet && fleet.speaker;
+  const body = {};
+  if (!(sp && sp.device && sp.device.mac)) {
+    const mac = prompt("No paired speaker is known. Its Bluetooth address (bluetoothctl devices on the host while it is in pairing mode):", "");
+    if (!mac) return;
+    body.mac = mac.trim();
+  }
+  if (!confirm(SPEAKER_PAIR_QUESTION)) return;
+  if (fleet && fleet.run) {
+    if (!confirm("A run is active: re-pairing drops the audio until it is done. Go ahead anyway?")) return;
+    body.force = true;
+  }
+  speakerConnInFlight = true;
+  try {
+    const answer = await api("/api/speaker/pair", body);
+    if (answer && answer.error) toast(`Speaker: ${answer.error}`, "warn");
+    else toast("Speaker: re-pairing - put it in pairing mode now");
+    if (fleet && fleet.speaker && answer && answer.connection) fleet.speaker.connection = answer.connection;
+  } catch (err) { toast(`Speaker: ${err.message}`, "warn"); }
+  finally { speakerConnInFlight = false; paintShowMusic(); }
 }
 // The Conductor host's own loudness (conductor/speaker.py): stored in that
 // host's fleet.json, applied to the bluez transport (a Bluetooth speaker -
@@ -2682,6 +2758,20 @@ function paintShowMusic() {
     if (sp && slider && document.activeElement !== slider && typeof sp.volume === "number") slider.value = sp.volume;
     if (sp && text) text.textContent = (typeof sp.volume === "number" ? sp.volume + "%" : "")
       + (sp.applied ? ` (${sp.applied})` : "") + (sp.volume_error ? ` — ${sp.volume_error}` : "");
+    // The Bluetooth connection line + buttons: only where the host watches
+    // one (an older Conductor has no `bluetooth` at all - hidden then too).
+    const conn = $("#spk-conn"), connText = $("#spk-conn-text");
+    if (conn) conn.style.display = sp && sp.bluetooth ? "" : "none";
+    if (sp && sp.bluetooth && connText) {
+      const line = speakerConnectionText(sp);
+      connText.textContent = line.text;
+      connText.className = line.tone;
+      const busy = sp.connection === "pairing" || sp.connection === "connecting";
+      const connectBtn = $("#spk-connect"), pairBtn = $("#spk-pair");
+      // Connect needs a pairing to connect with; an unpaired device is Re-pair's.
+      if (connectBtn) connectBtn.disabled = busy || sp.connection === "connected" || !(sp.device && sp.device.mac && sp.device.paired);
+      if (pairBtn) pairBtn.disabled = busy;
+    }
   }
 }
 const MAX_MUSIC = 64 * 1024 * 1024;
@@ -5888,6 +5978,8 @@ document.addEventListener("click", async e => {
     await setSpeakerVolume({ delta: e.target.id === "spk-up" ? 5 : -5 });
     return;
   }
+  if (e.target.id === "spk-connect") { await speakerConnect(); return; }
+  if (e.target.id === "spk-pair") { await speakerPair(); return; }
   if (e.target.id === "tl-simulator") { e.preventDefault(); downloadSimulator(); return; }
   if (e.target.id === "refresh-hint-hide") { dismissRefreshHint(); renderTimeline(); return; }
   if (e.target.id === "tl-simview") { ui.simView = !ui.simView; renderTimeline(); return; }

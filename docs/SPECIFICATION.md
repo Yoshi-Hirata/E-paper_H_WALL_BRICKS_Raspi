@@ -1234,6 +1234,37 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   → `{"volume", "applied": "bluez"|"pulse"|null, "error"}`(他の POST と同じ関門)。
   `/api/fleet.speaker` に `volume`・`applied`・`volume_error`。ページの MUSIC 行にスライダーと ±
   (`--speaker` のときだけ)。radxa-05 の LCD の EXHIBITION 画面の LEFT / RIGHT も同じ endpoint。
+  **Bluetooth スピーカーの接続**(`--speaker-output pulse` のとき、3 本目の**接続スレッド** ―
+  音楽スレッドも HTTP スレッドも bluetoothctl / pactl を待たない、2026-10-01): MAC は fleet.json
+  `"speaker_mac"`、無ければ `bluetoothctl paired-devices` のうち `info` に `UUID: Audio Sink` を
+  持つ最初の機器。`bluetoothctl info <MAC>` + `pactl list short sinks` を 10 秒ごと(ラン中 2 秒)に
+  読み、`/api/fleet.speaker` に **`bluetooth`**(bool。pulse で、かつ Bluetooth 機器を知っている
+  ― speaker_mac / ペアリング済み Audio Sink / bluez の既定 sink ― ときだけ true。有線なら false で
+  ページ・LCD は行を出さない)、**`device`** `{mac, name, paired, trusted, connected, sink_present,
+  last_connected_at(epoch 秒 | null), last_error}` | null、**`connection`** `connected | disconnected |
+  connecting | pairing | no_device`、**`reconnect`** `{attempts, next_in_s, last_error}`、**`pairing`**
+  `{phase: scanning|pairing|connecting|done|failed, note, started_at}` | null(done / failed の
+  60 秒後に null)。`disconnected` なら **5 秒後に `bluetoothctl connect`、以後 30 秒ごと**、
+  `org.bluez.Error.Failed` / `Permission denied` 系の拒否が 3 回続いたら **120 秒ごと**(bluetoothd の
+  `Permission denied (13)` = 別の音源についている / ペアリングを忘れた。bluetoothctl からは電源断と
+  区別できない)。つながったら `pactl set-default-sink <bluez sink>`(既定でなければ)、**sink-input を
+  すべて `pactl move-sink-input` で bluez sink へ**(sink が消えた間 module-rescue-streams が mpg123
+  のストリームを予備 sink へ移す。ヘッドレス機で鳴っているのは mpg123 だけ)、音量スレッドを起こして
+  AVRCP 音量を新しい transport に当て、`speaker: <name> reconnected after N s` を 1 行。
+  `POST /api/speaker/connect {}` → いますぐ 1 回(非同期、即 `{"ok": true, "connection":
+  "connecting", "error": null}`。ラン中でも 409 にしない。ペアリング中だけ 409 "re-pairing is in
+  progress - wait for it"。知っている機器が無ければ 400)。`POST /api/speaker/pair {"mac"?, "force"?}`
+  → 接続スレッドで **1 回の対話 bluetoothctl セッション**(`remove` → `scan on`、`[NEW] Device <MAC>`
+  か `bluetoothctl devices` に出るまで最長 60 秒 ― クラシックの MAC はペアリングモードのときだけ、
+  BlueZ は未ペアのスキャン結果を 30 秒ほどで忘れる ― → `pair`(最長 15 秒)→ `trust` → `connect`
+  (最長 15 秒)→ `scan off` → `quit`。各段は必ず終わり、失敗は `phase: failed` + 理由)。ラン中は
+  409 "show running - pairing drops the audio; send {\"force\": true} to pair anyway"、進行中は
+  409 "re-pairing is already in progress"、MAC が無ければ 400(最後に Re-pair した MAC は覚えて
+  いて、ペアリングが消えても `device` に出し続ける)。どちらも他の POST と同じ関門、答えは
+  `{"ok", "connection", "error"}`。ページの MUSIC 行: `Bose Flex SoundLink · connected`(緑)/
+  `· not connected (…) · retry in N s`(赤)/ `· connecting…` / `· pairing: scanning…`(琥珀)と
+  **Connect** / **Re-pair…**(確認ダイアログ: スマホの Bluetooth を切る、ペアリングモードに;
+  ラン中はもう 1 回聞いて force)。radxa/EXHIBITION.md 2.1b f。
   専用スレッド、HTTP スレッドは `status()` を読むだけ(待ちに使う Condition と status の
   ロックは別)。**再生状態は mpg123 が出す `@P n` そのもの**(連番付き。コマンドの返答は
   送信後に届いた行だけを見る)で、`P`(トグル)は**状態が目標と違うときだけ**送る。

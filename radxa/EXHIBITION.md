@@ -154,8 +154,40 @@ d. **テスト**: `mpg123 -o pulse <曲>` を 10 秒。sink-input は出てい�
    で radxa-05 が有効な音源になる。
 
 e. **注意**: A2DP は **100〜200 ms** 遅れる ― 測って `--speaker-lead-ms` に入れる(6 章)。
-   スピーカーの電源を入れ直したあとは自動で再接続するはず(Trusted)― 一度確かめる。
-   **スピーカーの自動オフのタイマーは切る**か、Loop の待ち時間をそれより短くしておく。
+   **スピーカーの自動オフのタイマーは切る**(Bose アプリの設定。切れないなら充電器につないだ
+   まま使う ― 電源が切れるたびに f の再接続と「音が途中から」になる)か、Loop の待ち時間を
+   それより短くしておく。
+
+f. **接続の監視と自動再接続**(Conductor が `--speaker-output pulse` のとき、`conductor/speaker.py`
+   の接続スレッド)。Bose が落ちる(電源・距離・**別のスマホが取る**)と以前は無音のまま誰も
+   気づけなかった。いまは Conductor が `bluetoothctl info <MAC>` と `pactl list short sinks` を
+   **10 秒ごと(ラン中は 2 秒ごと)**に読み、ページの MUSIC 行と radxa-05 の LCD の SPEAKER 行に
+   1 行で出す。MAC は `fleet.json` の `"speaker_mac"`(2.3。省略すると `bluetoothctl paired-devices`
+   のうち `UUID: Audio Sink` を持つ最初の機器)。
+
+   | 表示(`connection`) | 意味 | すること |
+   |---|---|---|
+   | `Bose Flex SoundLink · connected`(緑) | つながっていて pulse の sink もある | なし。`(no PulseAudio sink yet)` が数秒以上続くなら 2.1b a(sddm / PulseAudio) |
+   | `· not connected (Failed to connect: org.bluez.Error.Failed - another phone? off?) · retry in 23 s`(赤) | 落ちている。Conductor は **5 秒後、以後 30 秒ごと**に `bluetoothctl connect`。3 回続けて拒まれたら **2 分ごと**(bluetoothd の理由は `Permission denied (13)` = スピーカーが別の音源についている、またはこちらのペアリングを忘れた。bluetoothctl からは「電源が切れている」と同じ `org.bluez.Error.Failed` にしか見えない) | スピーカーの電源・距離・**近くのスマホの Bluetooth を切る**。すぐ試すなら **Connect**。何度も拒まれるなら **Re-pair…** |
+   | `· connecting…`(琥珀) | `bluetoothctl connect` の最中 | 待つ |
+   | `· pairing: scanning… / pairing… / connecting…`(琥珀) | Re-pair の進行(`pairing.phase`) | スピーカーをペアリングモードにしておく |
+   | `· bluetoothctl does not know <MAC> - not paired: Re-pair`(赤、`no_device`) | ペアリングが無い(再イメージ・Re-pair の失敗後。`speaker_mac` か、最後に Re-pair した MAC は覚えている) | **Re-pair…** |
+   | 行が出ない | `speaker.bluetooth` が false: `--speaker-output pulse` でないか、Bluetooth の機器を 1 台も知らない(`speaker_mac` 無し・ペアリング済みの Audio Sink 無し・既定 sink が bluez でない = 有線スピーカー)。LCD も SPEAKER 行を出さない | Bluetooth にしたいなら `fleet.json` に `"speaker_mac"` を書く(2.3)か b で一度手でペアリング |
+
+   **Connect** = `POST /api/speaker/connect {}`: いますぐ 1 回つなぐ(非同期。ペアリング中は 409)。
+   **Re-pair…** = `POST /api/speaker/pair {"mac"?, "force"?}`: 確認ダイアログ(スマホの Bluetooth を切り、
+   スピーカーをペアリングモードに)のあと、b の手順を Conductor が **1 回の bluetoothctl セッション**で
+   実行する ― `remove` → `scan on`(最長 60 秒。クラシックの MAC はペアリングモードのときしか
+   出ない)→ `pair`(約 8 秒)→ `trust` → `connect` → `quit`。**ラン中は音が消えるので 409**
+   (ページは「それでも」と聞いてから `force: true` で送る)。つながり直したら Conductor は
+   `pactl set-default-sink` で bluez の sink を既定にし、**鳴っている mpg123 のストリームを
+   `pactl move-sink-input` で戻し**(sink が消えた間 PulseAudio の module-rescue-streams が
+   予備の sink へ移している)、音量スレッドに AVRCP 音量を当て直させ、journal に
+   `speaker: Bose Flex SoundLink reconnected after 185 s` と 1 行書く。ランは止まらない:
+   音は**ショーの位置から**戻る(途中は無音)。Re-pair の結果(`done` / `failed` と理由)は
+   60 秒出たあと消える。LCD の SPEAKER 行は同じ `/api/fleet` の `speaker.connection` / `device` /
+   `reconnect` / `pairing` を読む(ジョイスティックで Connect / Re-pair。`speaker.bluetooth` が
+   false か無い(古い Conductor)なら行ごと出ない)。
 
 ### 2.2 ホットスポットと「展示モードの武装」
 
@@ -218,6 +250,11 @@ cp ~/E-paper_H_WALL_BRICKS_Raspi/radxa/exhibition/fleet.json /home/radxa/exhibit
 nano /home/radxa/exhibition/fleet.json      # "passcode" を決めて書き換える(必須)
 chmod 600 /home/radxa/exhibition/fleet.json
 ```
+
+`"speaker_mac"` は Bluetooth スピーカーの MAC(`bluetoothctl paired-devices`。うちの Bose は
+`AC:BF:71:FA:8F:AB`)。省略すると Conductor がペアリング済みの Audio Sink を探すので、
+Bose を一度手でペアリング(2.1b b)してあれば無くてもよい ― 書いておくと、ペアリングが
+消えたあとでもページ / LCD から **Re-pair** だけで戻せる(2.1b f)。
 
 **パスコードはこのファイルだけに置く**(サービスファイルには書かない ― `systemctl show` で
 見えてしまう)。`--host 0.0.0.0` の Conductor は、パスコードが無いか例の値
@@ -412,11 +449,15 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
 | パスコードを忘れた | radxa-05 の `/home/radxa/exhibition/fleet.json`(`sudo cat`)。ブラウザで入れ直したいときは `localStorage` の `conductor.passcode` を消す(または別のブラウザ) |
 | `epaper-conductor` が起動しない、journal に `refusing to serve on 0.0.0.0` | fleet.json の `"passcode"` が無い / 例の値のまま。2.3 |
 | 機体が offline | その機体の電源。`AZ-Epaper` に入っているか(LCD の上部バーの IP が 10.42.0.1NN か)。3 章のプロファイルが無い・番号違い。2.2 の予約に MAC が無い機体はスマホと番地がぶつかることがある |
-| 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。Bluetooth: `pactl list short sinks` に `bluez_sink.…a2dp_sink` が無ければ 2.1b の b〜c(スピーカーの電源、スマホの Bluetooth を切る)、sink はあるのに無音なら `bluetoothctl disconnect` → `connect`(2.1b d)。音量はページの MUSIC 行のスライダー(= fleet.json `speaker_volume`)。本体のボタンは効かない(2.1b c) |
+| 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。音量はページの MUSIC 行のスライダー(= fleet.json `speaker_volume`)。本体のボタンは効かない(2.1b c) |
+| Bluetooth スピーカーが鳴らない | MUSIC 行の **スピーカーの行**(radxa-05 の LCD の SPEAKER 行も同じ)。`· not connected … retry in N s`(赤)= 落ちている: Conductor が 5 秒後・以後 30 秒ごと(3 回拒まれたら 2 分ごと)につなぎ直す。**スピーカーの電源、距離、近くのスマホ・PC の Bluetooth を切る** → すぐ試すなら **Connect**。`Failed to connect` が何度も続く = スピーカーが別の音源についている / こちらのペアリングを忘れた → **Re-pair…**(ダイアログの手順どおり: スマホの Bluetooth を切り、スピーカーをペアリングモードに。ラン中は音が消えるので確認がもう 1 回)。`connected` なのに無音 → `(no PulseAudio sink yet)` が消えないなら 2.1b a、消えているなら `pactl list short sink-inputs` で mpg123 のストリームが bluez の sink(番号)にいるか ― いなければ `pactl move-sink-input <入力> bluez_sink.…a2dp_sink`(Conductor は再接続のたびに自動でやる)。行が出ない → `speaker_mac` を fleet.json に(2.3)。**Bose の自動オフ**(無音 20〜30 分で電源が切れる)は Bose アプリで切る、または充電器につないだまま(2.1b e)。詳しくは 2.1b f の表 |
 | 音が絵より遅れる / 早い | `--speaker-lead-ms`(既定 50 = 測ったパイプ往復 + 50 ms 早くアンパウズ。**50 は当て推量**、Bluetooth(A2DP)は 100〜200 ms 余計に遅れる: クリック音源で一度測って決める)を service の ExecStart で変えて `daemon-reload` + `restart` |
 | Loop が回らない | `Loop` のチェック、待ち時間が 40〜600 か。Units タブの `Corrected automatically:` の行に `Loop: …` の理由 |
 | 再起動後に START が `Upload again` / `Upload first` | 機体が持っているショーが今のタイムラインと違う(送り直した・編集した)。① Upload |
 | ショーを差し替えたい | 会場でも PC を `AZ-Epaper` に入れれば 4 章の手順で送れる(先に STOP) |
 
 ログ: `journalctl -u epaper-conductor -f`(`speaker: loaded xxx.mp3, unpause latency 12 ms`、
-`Loop: run 2 started` などが出る)、`journalctl -u epaper-exhibition-net`。
+`speaker: Bose Flex SoundLink disconnected` / `connect … failed: … - next try in 30 s` /
+`Bose Flex SoundLink reconnected after 185 s` / `sound routed to bluez_sink.…, 1 stream(s) moved` /
+`re-pair AC:…: scanning - …`、`Loop: run 2 started` などが出る)、`journalctl -u epaper-exhibition-net`。
+bluetoothd 側の理由(`Permission denied (13)` など)は `journalctl -u bluetooth -n 20`。
