@@ -368,23 +368,25 @@ def test_write_fleet_template_writes_once_and_never_over_anything(tmp_path):
     assert write_fleet_template(root) is False
     assert path.read_text(encoding="utf-8") == "{not json"
     # Exclusive create: a file that appears between the look and the write
-    # is kept too (open "x" - there is no look-then-write window).
+    # is kept too (the template is fsynced under a temp name and then
+    # hard-linked into place - os.link refuses an existing name, so there
+    # is no look-then-write window; conductor/durable.py).
     path.unlink()
-    real_open = open
+    from conductor import durable
+    real_link = durable.os.link
 
-    def racing_open(file, mode="r", *args, **kwargs):
-        if str(file) == str(path) and "x" in mode:
+    def racing_link(src, dst, *args, **kwargs):
+        if str(dst) == str(path):
             path.write_text('{"passcode": "raced in"}', encoding="utf-8")
-        return real_open(file, mode, *args, **kwargs)
+        return real_link(src, dst, *args, **kwargs)
 
-    import builtins
-    original = builtins.open
-    builtins.open = racing_open
+    durable.os.link = racing_link
     try:
         assert write_fleet_template(root) is False
     finally:
-        builtins.open = original
+        durable.os.link = real_link
     assert json.loads(path.read_text(encoding="utf-8")) == {"passcode": "raced in"}
+    assert sorted(p.name for p in root.iterdir()) == ["fleet.json"]   # no temp left
     # A folder that cannot be written raises: the caller (serve) warns.
     with pytest.raises(OSError):
         write_fleet_template(tmp_path / "no-such-folder")

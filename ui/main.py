@@ -624,7 +624,13 @@ def main() -> int:
             # No demo asked for, so put the panels into the agreed idle
             # state: factory autoplay stopped, every sector white.
             app.enter_standby()
-        app.run(max_ticks=args.max_ticks)
+        try:
+            app.run(max_ticks=args.max_ticks)
+        finally:
+            if remote is not None:
+                # The run record is written off the player's lock, by its
+                # own thread: what is queued goes to the card before exit.
+                player.close()
     return 0
 
 

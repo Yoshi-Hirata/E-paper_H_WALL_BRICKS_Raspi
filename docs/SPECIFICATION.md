@@ -1440,7 +1440,8 @@ radxa-05(Debian 11、SD/eMMC 上の ext4 `rw,relatime`)は 2026-10-01 に 2 回�
 30 秒ほどに書いたファイルが**空や古い中身で戻りうる**。
 
 - **書き方**: 永続ファイルはすべて `conductor/durable.py` を通す ― 同じフォルダの一時
-  ファイル(`.<名前>.<pid>-<thread>-<乱数>.tmp`)に書き、flush → `fsync(ファイル)` →
+  ファイル(`.<名前の先頭 40 文字>.<乱数 12 桁>.tmp` ― 長い CSV 名でも ENAMETOOLONG に
+  ならない)に書き、flush → `fsync(ファイル)` →
   元のファイルのモードを引き継ぐ(fleet.json の 0600 は 0600 のまま、新規は
   0666 & ~umask)→ `os.replace` → `fsync(フォルダ)`(POSIX のみ。Windows は黙って省く)。
   置き換え前に失敗したら一時ファイルを消し、古いファイルはそのまま。Windows(PC の
@@ -1450,14 +1451,33 @@ radxa-05(Debian 11、SD/eMMC 上の ext4 `rw,relatime`)は 2026-10-01 に 2 回�
   `from conductor import durable` で使う
 - **対象**: Conductor の `show.json` / `history.json`(`Workspace._write`)、アップロード
   した CSV(`_save_locked`)、マップの複製(`duplicate`)、`fleet.json` の 1 キー書き換え
-  (`set_fleet_option`、スピーカー音量)、PC 用 fleet.json の雛形(`write_fleet_template`、
-  排他作成のまま fsync)、音源(`save_music`、**チャンクごとではなく最後に 1 回** fsync
+  (`set_fleet_option`、スピーカー音量)、PC 用 fleet.json の雛形(`write_fleet_template`:
+  一時ファイルに書いて fsync してから `os.link` で置く ― 既にあれば何もしない排他のまま、
+  電源断で空の fleet.json が残ることはない。ハードリンクの無いファイルシステムでは
+  排他作成 + fsync)、音源(`save_music`、**チャンクごとではなく最後に 1 回** fsync
   してから置き換え、music フォルダも fsync)、ワークスペースの取り込み(`import_tar`、
   展開したステージングフォルダを `fsync_tree` してから入れ替え、入れ替え後にルートを
   fsync)。機体の `~/.epaper/show.json` / `show-run.json` / `show-burn.json`
   (`ShowPlayer._write`)、デモ(`demos/<slug>.json` と `.meta.json`)、
   `flash-log.json`(UPDATE FW の記録 ― **記録を書いてから DONE を出す**)。
   `raspi/runlog.py`(もとから fsync していた)もフォルダの fsync を足した
+- **機体の記録はプレーヤーの錠の外で書く**: SD カードの fsync は 5〜40 ms、裾は 1 秒を
+  超えるので、`ShowPlayer` は記録を錠の中で**スナップショットするだけ**にして、書き込みは
+  プレーヤーごとに 1 本の書き込みスレッド(`_DiskWriter`)がする。`/status`・LCD・
+  キューの発火(`_plan()` の cue ごとの verdict、ENDED)はカードを待たない。
+  同じファイルの書き待ちは**最新のものだけ**残す(遅い書き込みの後ろに並んだ run record は
+  上書きされ、2 回は書かない)。順序は保つ ― load は「古い burn record の削除 →
+  `show-run.json` → `show.json`」を 1 まとまりで、それより前に並んでいたものの後ろに置き、
+  あとから来た run record は**並んでいた位置のまま**差し替える(show.json を追い越さない)。
+  run record が書けなければ消し、同じまとまりの show.json は書かない(従来の規則)。
+  書き込みの失敗はプレーヤーに例外として返さず、stderr に 1 回だけ出して `note`
+  (`cannot save the show: …`)か burn の `record: unsaved: …` で言う。
+  **load と STOP の返事は自分の記録を待つ**(錠の外で): load は 3 ファイルが載るまで
+  (最大 10 秒、ショーの最中ではない Upload)、STOP は最大 2 秒(電源を抜く前に押すもの。
+  LCD の KEY2 もここを通るので、カードが詰まれば最大 2 秒 LCD が待つ)。run / SEEK /
+  hold / preset は待たない(発火と返事をカードの後ろに置かない)。終了時(`ShowPlayer.close()`、`ui/main.py` の終わり)は
+  並んでいる分を書いてから閉じる(最大 5 秒。SIGTERM で即死したときは並んでいた
+  ミリ秒分だけ失いうる)
 - **電源断で何が残るか**: 書いている最中のファイルは**古いか新しいかのどちらか**で、
   空や途中までにはならない。fsync が返ったあとの書き込みは失われない。
   2 ファイルにまたがる更新(`show-run.json` → `show.json`、show.json → 音源)は

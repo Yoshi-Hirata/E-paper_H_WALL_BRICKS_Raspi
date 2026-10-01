@@ -73,13 +73,20 @@ def _existing_mode(path: Path) -> "int | None":
         return None
 
 
+# The temp name carries at most this many characters of the real name, so a
+# long CSV name (up to 255 bytes itself) cannot push it past NAME_MAX
+# (ENAMETOOLONG): ".<first 40>.<12 hex>.tmp" is at most 58 characters.
+_TEMP_STEM = 40
+
+
 def _open_temp(path: Path) -> "tuple[int, Path]":
     """A fresh temp file beside `path`, created with 0666 & ~umask (what a
-    plain open(path, "w") would have made - unlike mkstemp's 0600)."""
+    plain open(path, "w") would have made - unlike mkstemp's 0600).
+    Unique by 48 random bits and O_EXCL (another writer, thread or
+    process, gets another name)."""
     for _ in range(100):
         scratch = path.with_name(
-            f".{path.name}.{os.getpid()}-{threading.get_ident()}-"
-            f"{secrets.token_hex(4)}.tmp")
+            f".{path.name[:_TEMP_STEM]}.{secrets.token_hex(6)}.tmp")
         try:
             fd = os.open(str(scratch),
                          os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o666)
@@ -141,11 +148,64 @@ def atomic_write_text(path, text: str, encoding: str = "utf-8",
     """atomic_write_bytes() for text. `newline` as open()'s: None writes
     "\\n" as os.linesep (what Path.write_text() did), "" or "\\n" writes
     it untranslated, anything else replaces it."""
+    atomic_write_bytes(path, _encode(text, encoding, newline), mode=mode)
+
+
+def _encode(text: str, encoding: str, newline: "str | None") -> bytes:
     if newline is None:
         newline = os.linesep
     if newline not in ("", "\n"):
         text = text.replace("\n", newline)
-    atomic_write_bytes(path, text.encode(encoding), mode=mode)
+    return text.encode(encoding)
+
+
+def atomic_create_bytes(path, data: bytes, mode: "int | None" = None) -> bool:
+    """Create `path` with `data` only if nothing is there - False (and
+    nothing touched) when something is, even something that appears
+    while this runs. Power-loss safe like atomic_write_bytes(): the bytes
+    are written and fsynced under a temp name and only then hard-linked
+    to `path` (os.link() fails if the name exists, so there is no
+    look-then-write window), never an empty file under the real name.
+    On a filesystem without hard links: exclusive create + fsync."""
+    path = Path(path)
+    if os.path.lexists(str(path)):
+        return False
+    fd, scratch = _open_temp(path)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            fsync_file(handle)
+        if mode is not None:
+            os.chmod(str(scratch), mode)
+        try:
+            os.link(str(scratch), str(path))
+        except FileExistsError:
+            return False
+        except (OSError, NotImplementedError, AttributeError) as exc:
+            if isinstance(exc, PermissionError) and os.path.lexists(str(path)):
+                return False            # Windows' word for "it is there"
+            try:
+                out = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                              | _O_BINARY, 0o666 if mode is None else mode)
+            except FileExistsError:
+                return False
+            with os.fdopen(out, "wb") as handle:
+                handle.write(data)
+                fsync_file(handle)
+    finally:
+        try:
+            os.unlink(str(scratch))
+        except OSError:
+            pass
+    fsync_dir(path.parent)
+    return True
+
+
+def atomic_create_text(path, text: str, encoding: str = "utf-8",
+                       newline: "str | None" = None,
+                       mode: "int | None" = None) -> bool:
+    """atomic_create_bytes() for text, newlines as atomic_write_text()."""
+    return atomic_create_bytes(path, _encode(text, encoding, newline), mode=mode)
 
 
 def atomic_write_json(path, payload, *, indent=None, sort_keys: bool = False,

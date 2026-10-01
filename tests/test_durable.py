@@ -609,3 +609,239 @@ def test_a_torn_flash_log_reads_as_empty_and_is_replaced_whole(tmp_path, capsys,
     assert "flash-log.json: unreadable" in capsys.readouterr().err
     flashlog.record("S", 1, "FW/x.bin", 1, 2, path=path, when=1.0)
     assert set(flashlog.load(path)) == {"S"}
+
+
+# ---- review of 411fd10: short temp names, the template never empty ----
+
+def test_a_long_name_gets_a_short_temp_name(tmp_path, monkeypatch):
+    long_name = "AZ271SD1306_" + "x" * 200 + "_grid.csv"         # 221 characters
+    seen = []
+    real = os.replace
+
+    def spy(src, dst):
+        seen.append(Path(src).name)
+        return real(src, dst)
+    monkeypatch.setattr(durable.os, "replace", spy)
+    durable.atomic_write_text(tmp_path / long_name, "a,b\n", newline="")
+    (temp,) = seen
+    assert len(temp) <= 1 + 40 + 1 + 12 + 4 and temp.startswith(".AZ271SD1306_")
+    assert (tmp_path / long_name).read_text(encoding="utf-8") == "a,b\n"
+
+
+def test_create_writes_once_and_never_over_anything(tmp_path, fsyncs, dir_syncs):
+    path = tmp_path / "fleet.json"
+    assert durable.atomic_create_text(path, '{"a": 1}') is True
+    assert len(fsyncs) == 1 and dir_syncs == [tmp_path]
+    assert durable.atomic_create_text(path, '{"b": 2}') is False
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
+    assert leftovers(tmp_path) == []
+
+
+def test_a_cut_before_the_link_leaves_no_file_at_all_never_an_empty_one(
+        tmp_path, monkeypatch):
+    path = tmp_path / "fleet.json"
+
+    def cut(src, dst):
+        raise KeyboardInterrupt("power cut")         # nothing after this runs
+    monkeypatch.setattr(durable.os, "link", cut)
+    with pytest.raises(KeyboardInterrupt):
+        durable.atomic_create_text(path, '{"a": 1}')
+    assert not path.exists() and leftovers(tmp_path) == []
+
+
+def test_create_without_hard_links_falls_back_to_an_exclusive_create(tmp_path,
+                                                                    monkeypatch):
+    path = tmp_path / "fleet.json"
+
+    def no_links(src, dst):
+        raise OSError(1, "Operation not permitted")
+    monkeypatch.setattr(durable.os, "link", no_links)
+    assert durable.atomic_create_text(path, '{"a": 1}') is True
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
+    assert durable.atomic_create_text(path, '{"b": 2}') is False
+    assert leftovers(tmp_path) == []
+
+
+# ---- review of 411fd10: the unit's records are written OFF the player's lock ----
+
+class Slow:
+    """A write that takes `delay` seconds (an SD card's fsync tail), and
+    records what it wrote, in order."""
+
+    def __init__(self, real, delay):
+        import threading
+        self.real, self.delay = real, delay
+        self.names, self.payloads = [], []
+        self.started = threading.Event()
+
+    def __call__(self, name, payload):
+        self.started.set()
+        time.sleep(self.delay)
+        self.names.append(name)
+        self.payloads.append(payload)
+        return self.real(name, payload)
+
+
+def _player(store):
+    from tests.test_ui_remote import make_session
+    from ui.showplay import ShowPlayer
+    session, runner, _ = make_session()
+    return ShowPlayer(session, store=store, tick_s=0.02), runner
+
+
+def wait_for(predicate, timeout=5.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_status_is_not_blocked_while_a_record_is_being_written(tmp_path):
+    from tests.test_showplay import make_show, wait_burned
+    player, runner = _player(tmp_path)
+    try:
+        player.load(make_show(duration=60))
+        assert wait_burned(player) and player.flush(timeout=5)
+        slow = Slow(player._write, 1.0)
+        player._write = slow
+        with player._lock:                     # e.g. _plan()'s per-cue verdict
+            player._persist()
+        assert slow.started.wait(2)
+        began = time.monotonic()
+        assert player.status() is not None
+        assert player._lock.acquire(timeout=0.1)       # the lock is free
+        player._lock.release()
+        assert time.monotonic() - began < 0.3, "status() waited on the card"
+        assert player.flush(timeout=5) and slow.names == ["show-run.json"]
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_only_the_latest_snapshot_of_a_file_is_written(tmp_path):
+    import threading
+    from ui.showplay import _DiskWriter
+    gate = threading.Event()
+    written = []
+
+    def write(name, payload):
+        written.append((name, payload))
+        gate.wait(5)                          # the first write is slow
+
+    writer = _DiskWriter(tmp_path, write, lambda *a: None)
+    try:
+        writer.submit([("show-run.json", {"n": 1})])
+        assert wait_for(lambda: written)
+        for n in (2, 3, 4):                    # queued behind it
+            writer.submit([("show-run.json", {"n": n})])
+        gate.set()
+        assert writer.wait(timeout=5)
+        assert [p["n"] for _, p in written] == [1, 4]
+    finally:
+        writer.close(timeout=5)
+
+
+def test_a_load_writes_burn_delete_then_run_record_then_show_whatever_was_queued(
+        tmp_path):
+    import threading
+    from ui.showplay import BURN_FILE, _DELETE, _DiskWriter
+    gate = threading.Event()
+    order = []
+
+    def write(name, payload):
+        gate.wait(5)
+
+    writer = _DiskWriter(tmp_path, write, lambda *a: None)
+    real_batch = writer._write_batch
+
+    def spy(batch):
+        order.append([(name, "DELETE" if p is _DELETE else p.get("v"))
+                      for name, p in batch.items()])
+        return real_batch(batch)
+    writer._write_batch = spy
+    try:
+        writer.submit([("busy.json", {"v": 0})])          # the card is busy...
+        assert wait_for(lambda: order)
+        writer.submit([("show-run.json", {"v": "X"})])     # ...a state change,
+        writer.submit([(BURN_FILE, {"v": "W"})], to_end=True)   # a burn record,
+        writer.submit([(BURN_FILE, _DELETE), ("show-run.json", {"v": "A"}),
+                       ("show.json", {"v": "S"})], to_end=True)  # then a load
+        writer.submit([("show-run.json", {"v": "B"})])     # and a change after it
+        gate.set()
+        assert writer.wait(timeout=5)
+        # The load's order holds, and the later run record replaced the
+        # queued one IN PLACE - it never overtakes the show.json behind it.
+        assert order[1] == [(BURN_FILE, "DELETE"), ("show-run.json", "B"),
+                            ("show.json", "S")]
+    finally:
+        writer.close(timeout=5)
+
+
+def test_load_answers_with_its_files_on_disk_in_order(tmp_path):
+    from tests.test_showplay import make_show, wait_burned
+    from ui.showplay import BURN_FILE
+    player, runner = _player(tmp_path)
+    try:
+        player.load(make_show(duration=60))
+        assert wait_burned(player) and player.flush(timeout=5)
+        assert (tmp_path / BURN_FILE).exists()
+        spy = Slow(player._write, 0.05)
+        player._write = spy
+        player.load(dict(make_show(duration=60), id="second0001"))
+        # load() returned: both files are on disk, run record first, and
+        # the first show's burn record is gone (deleted before them).
+        assert spy.names[:2] == ["show-run.json", "show.json"]
+        assert spy.payloads[0]["show"] == "second0001"
+        assert json.loads((tmp_path / "show.json").read_text(
+            encoding="utf-8"))["id"] == "second0001"
+        assert not (tmp_path / BURN_FILE).exists() or json.loads(
+            (tmp_path / BURN_FILE).read_text(encoding="utf-8"))["burned"] == "second0001"
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_close_writes_what_is_queued(tmp_path):
+    from tests.test_showplay import make_show
+    player, runner = _player(tmp_path)
+    try:
+        player.load(make_show(duration=60), demo=True, name="X", slug="x")
+        player._write = Slow(player._write, 0.3)
+        with player._lock:
+            player.demo_name = "LATEST"
+            player._persist()
+    finally:
+        player.close()                         # flushes before it returns
+        runner.stop()
+    run = json.loads((tmp_path / "show-run.json").read_text(encoding="utf-8"))
+    assert run["demo_name"] == "LATEST"
+
+
+def test_a_write_error_is_said_once_and_never_raised_into_the_player(tmp_path,
+                                                                     capsys):
+    from tests.test_showplay import make_show
+    player, runner = _player(tmp_path)
+    try:
+        player.load(make_show(duration=60))
+        assert player.flush(timeout=5)
+
+        def full(name, payload):
+            raise OSError("no space left on device")
+        player._write = full
+        for _ in range(3):
+            with player._lock:
+                player._persist()                  # never raises
+            assert player.flush(timeout=5)
+        err = capsys.readouterr().err
+        lines = [line for line in err.splitlines()
+                 if "could not write" in line and "show-run.json" in line]
+        assert len(lines) == 1 and "no space left" in lines[0]
+        assert "cannot save the show" in player.note
+        # No record is the honest state after a run record that would
+        # not go: restore() then waits for the PC.
+        assert not (tmp_path / "show-run.json").exists()
+    finally:
+        player.close()
+        runner.stop()

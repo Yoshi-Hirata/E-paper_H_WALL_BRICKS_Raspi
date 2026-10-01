@@ -4318,14 +4318,11 @@ def write_fleet_template(root: Path, template: dict = PC_FLEET_TEMPLATE) -> bool
     Conductor serves without the template, it does not stop."""
     path = Path(root) / "fleet.json"
     text = json.dumps(template, indent=1, ensure_ascii=False) + "\n"
-    try:
-        with open(path, "x", encoding="utf-8") as handle:
-            handle.write(text)
-            durable.fsync_file(handle)      # conductor/durable.py
-    except FileExistsError:
-        return False
-    durable.fsync_dir(path.parent)
-    return True
+    # Written and fsynced under a temp name, then hard-linked into place
+    # (conductor/durable.py): exclusive like open "x", and a power cut can
+    # never leave an EMPTY fleet.json - which this function would then
+    # keep for ever as "the operator's".
+    return durable.atomic_create_text(path, text)
 
 
 def conductor_info(port: int, timeout: float = 2.0) -> "dict | None":
