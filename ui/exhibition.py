@@ -51,7 +51,8 @@ Conductor: `device`, `connection`, `reconnect`, `pairing`): the
 SPEAKER row (ui/speaker.py) is a view over this same cache - no second
 poller - and while its screen is open the reader asks every
 POLL_SPEAKER_S instead. Here it only colours the speaker line: a
-`connection` of disconnected / no_device reads `speaker LOST - see
+`connection` other than connected / connecting / pairing (disconnected,
+no_device, no_sink, anything unknown) reads `speaker LOST - see
 SPEAKER`.
 
 The row is only useful where a Conductor answers, and the question is
@@ -99,17 +100,33 @@ POLL_OPEN_S = 5.0            # while the EXHIBITION screen is open
 POLL_SPEAKER_S = 2.0         # while the SPEAKER screen is open (pairing progress)
 POLL_IDLE_S = 30.0           # otherwise: only the menu label needs it
 
-# The speaker's `connection` values that mean the music is not playing.
-SPEAKER_LOST = ("disconnected", "no_device")
+# The speaker's `connection` values under which the music plays or is
+# about to: anything else (disconnected, no_device, no_sink - connected
+# but without a PulseAudio sink - or a value this UI has never heard
+# of) is the link lost.
+SPEAKER_LIVE = ("connected", "connecting", "pairing")
 SPEAKER_LOST_TEXT = "speaker LOST - see SPEAKER"
 
-# A Conductor that answered before is only GONE (present() False) after
-# this many probes in a row went unanswered, or this long after the
-# first miss - whichever comes first. One timed-out probe must not move
-# the screen to REMOTE, where KEY2 drops radxa-05 out of its own run
-# (review of 73c8fdc, HIGH-1).
+# A Conductor that answered before is only GONE (present() False) once
+# BOTH this many probes in a row went unanswered AND this long has
+# passed since the first miss: one timed-out probe must not move the
+# screen to REMOTE, where KEY2 drops radxa-05 out of its own run
+# (review of 73c8fdc, HIGH-1), and a Conductor restart watched from the
+# SPEAKER screen's 2 s polls still gets its 15 s of grace (re-review,
+# MED-A). While a miss stands the reader asks every POLL_OPEN_S, so the
+# return is noticed quickly (MED-B).
 LOST_MISSES = 3
 LOST_AFTER_S = 15.0
+
+
+def speaker_lost(speaker) -> bool:
+    """The Conductor's speaker object says the Bluetooth link is down:
+    it reports a `connection` outside SPEAKER_LIVE - and the output is
+    Bluetooth at all (`bluetooth` false is a wired sink, nothing to
+    lose)."""
+    return (isinstance(speaker, dict) and "connection" in speaker
+            and speaker.get("connection") not in SPEAKER_LIVE
+            and speaker.get("bluetooth") is not False)
 
 NO_CONDUCTOR = "no conductor"
 MENU_LABEL = "EXHIBITION"
@@ -273,8 +290,8 @@ class Exhibition:
             return True
         if self.lost_at is None:
             return False
-        return (self.misses < LOST_MISSES
-                and self._clock() - self.lost_at < LOST_AFTER_S)
+        return not (self.misses >= LOST_MISSES
+                    and self._clock() - self.lost_at >= LOST_AFTER_S)
 
     @property
     def active(self) -> bool:
@@ -407,11 +424,9 @@ class Exhibition:
         speaker = (self.fleet or {}).get("speaker")
         if not isinstance(speaker, dict) or "available" not in speaker:
             return "speaker ?"
-        if (speaker.get("connection") in SPEAKER_LOST
-                and speaker.get("bluetooth") is not False):
+        if speaker_lost(speaker):
             # The Bluetooth link is down: the volume figure is moot and
-            # the fix is on the SPEAKER screen (ui/speaker.py). A wired
-            # output (`bluetooth` false) has no link to lose.
+            # the fix is on the SPEAKER screen (ui/speaker.py).
             return SPEAKER_LOST_TEXT
         if speaker.get("available"):
             volume = _percent(speaker.get("volume"))
@@ -508,10 +523,15 @@ class Exhibition:
     def poll_interval(self) -> float:
         """How long the reader sleeps between polls right now: the
         SPEAKER screen's 2 s (a pairing's progress is read from here),
-        the EXHIBITION screen's 5 s, else the menu label's 30 s."""
+        the EXHIBITION screen's 5 s - also while a Conductor that
+        answered is missing, so its return is seen within the grace
+        (a garment unit never has lost_at set) - else the menu label's
+        30 s."""
         if self.speaker_open:
             return self.poll_speaker_s
-        return self.poll_open_s if self.is_open else self.poll_idle_s
+        if self.is_open or self.lost_at is not None:
+            return self.poll_open_s
+        return self.poll_idle_s
 
     def _get(self, path: str, timeout: float):
         code, payload = self._http("GET", self.base + path, None, timeout)
@@ -538,12 +558,15 @@ class Exhibition:
                 reason = _why(exc)
                 with self._lock:
                     was = self.available
-                    self.available = False
-                    self.fleet = None
-                    self.fleet_error = reason
+                    # The miss is booked BEFORE `available` flips, so a
+                    # present() racing this on the HAT thread never sees
+                    # False with no lost_at (re-review of e0f2c2e, LOW-C).
                     if was is True:
                         self.misses, self.lost_at = 0, self._clock()
                     self.misses += 1
+                    self.available = False
+                    self.fleet = None
+                    self.fleet_error = reason
                 if was is not False:
                     self.emit(f"exhibition: {NO_CONDUCTOR} ({reason})")
                 return

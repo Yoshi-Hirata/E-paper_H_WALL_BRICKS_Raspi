@@ -25,7 +25,7 @@ from ui.exhibition import SPEAKER_LOST_TEXT, VOLUME_UNSUPPORTED, Exhibition
 from ui.inputs import ScriptedInput
 from ui.speaker import (BUSY, CONNECTING, DONE, FAILED, IDLE, INSTRUCTION,
                         MENU_LABEL, MENU_LABEL_GONE, MENU_LABEL_NONE,
-                        MUSIC_LOST, NOT_BLUETOOTH, NOT_SUPPORTED, PAIR_CONFIRM,
+                        MUSIC_LOST, NO_SINK, NOT_BLUETOOTH, NOT_SUPPORTED, PAIR_CONFIRM,
                         PAIR_CONFIRM_S, PAIR_FORCE, PAIRING_STALE_S, WIRED,
                         Speaker, format_error)
 from tests.test_ui_app import FakeRunner
@@ -298,12 +298,27 @@ def test_the_texts_for_every_state():
     fake.speaker["volume"] = "loud"
     ex.poll()
     assert speaker.seen_text() == "never connected"
-    assert speaker.state_text() == "?"
+    # A connection value this UI has never heard of is the music NOT
+    # playing - red, banner, LOST line - never "fine" (re-review).
+    assert speaker.state_text() == "NOT CONNECTED"
+    assert ex.speaker_text() == SPEAKER_LOST_TEXT
     assert speaker.detail_text() == ("", "")
     assert speaker.key()
+    fake.connection = "some_new_state"
+    fake.run = {"t0": 0.0, "state": "running", "now": 42.0}
+    ex.poll()
+    assert speaker.state_text() == "NOT CONNECTED" and speaker.banner() == MUSIC_LOST
+    # no_sink: paired and connected, but no PulseAudio sink - no sound.
+    fake.connection = "no_sink"
+    ex.poll()
+    assert speaker.state_text() == NO_SINK == "connected, no sound output"
+    assert speaker.banner() == MUSIC_LOST
+    assert ex.speaker_text() == SPEAKER_LOST_TEXT
+    fake.run = None
     fake.connection = "connected"
     ex.poll()
     assert speaker.state_text() == "connected · vol ?"
+    assert ex.speaker_text() == "speaker ok · vol ?"
 
     # A `pairing` left over from long ago is not a pairing in progress:
     # the keys must not stay shut on it (review of 73c8fdc, LOW-4).
@@ -931,6 +946,8 @@ def test_the_screen_renders_every_state():
          ("Permission denied - another phone?", "err"), "connected 12 min ago",
          "show running - hold KEY3 again to pair anyway", "MUSIC LOST",
          INSTRUCTION, False),
+        ("ok", "READY", bose, NO_SINK, ("", ""), "connected 2 min ago", "",
+         "MUSIC LOST", "", False),
         ("wired", "READY", WIRED, "vol 70%", ("", ""), "", "", "", "", False),
         ("wired", "DONE", WIRED, "vol ?", ("", ""), "", NOT_BLUETOOTH, "", "",
          False),
@@ -982,6 +999,12 @@ def test_the_screen_renders_every_state():
     wired = render.speaker_screen("wired", "READY", WIRED, "vol 70%", ("", ""), "",
                                   host="radxa-05", volume_keys=True)
     assert wired.tobytes() != quiet.tobytes()
+    # "connected, no sound output" is red, not the green of "connected".
+    no_sink = render.speaker_screen("ok", "READY", bose, NO_SINK, ("", ""), "",
+                                    host="radxa-05")
+    rows = range(50, 70)
+    assert any(no_sink.getpixel((x, y)) == render.ERR for y in rows for x in range(8, 232))
+    assert not any(no_sink.getpixel((x, y)) == render.OK for y in rows for x in range(8, 232))
     # The EXHIBITION line goes red when the link is lost.
     show = ("AZ_show_2026", "18 cues · 10:54")
     ok = render.exhibition_screen(True, show, "idle", "units 7/7 online",

@@ -292,12 +292,17 @@ def enter(app):
 
 def gone(fake, ex):
     """The Conductor service stopped: LOST_MISSES probes in a row go
-    unanswered, which is what makes Exhibition.present() False (one
-    miss does not - review of 73c8fdc, HIGH-1)."""
+    unanswered AND LOST_AFTER_S pass, which is what makes
+    Exhibition.present() False (one miss does not - review of 73c8fdc,
+    HIGH-1; neither alone does - re-review, MED-A). The time is taken
+    by moving the first miss back, since most tests run on the real
+    clock."""
     fake.down = True
     for _ in range(LOST_MISSES):
         ex.poll()
-    assert ex.available is False and not ex.present()
+    assert ex.available is False and ex.present()      # the misses alone: no
+    ex.lost_at -= LOST_AFTER_S
+    assert not ex.present()
 
 
 # ---- the row ----
@@ -785,9 +790,10 @@ def test_one_missed_probe_does_not_move_exhibition_to_remote():
     # A timed-out probe used to flip the screen to REMOTE for a tick -
     # where KEY2 is release() = this unit out of its own run - and back
     # to EXHIBITION, where the same KEY1 hold is STOP (review of
-    # 73c8fdc, HIGH-1). The Conductor counts as present until
-    # LOST_MISSES probes in a row went unanswered, or LOST_AFTER_S after
-    # the first miss.
+    # 73c8fdc, HIGH-1). The Conductor counts as present until BOTH
+    # LOST_MISSES probes in a row went unanswered AND LOST_AFTER_S
+    # passed since the first miss (MED-A: a Conductor restart watched
+    # from SPEAKER's 2 s polls still gets its 15 s).
     clock = [1000.0]
     remote = FakeRemote()
     fake = FakeConductor(remote=remote)
@@ -799,6 +805,7 @@ def test_one_missed_probe_does_not_move_exhibition_to_remote():
     remote.active = True
     app.tick(wait=0.0)
     assert app.screen is Screen.EXHIBITION
+    assert ex.poll_interval() == 60.0            # the screen's own pace here
     fake.down = True
     for _ in range(LOST_MISSES - 1):
         ex.poll()                                # misses, short of the rule
@@ -810,34 +817,48 @@ def test_one_missed_probe_does_not_move_exhibition_to_remote():
     app.handle("key2")                           # back out meanwhile...
     assert app.screen is Screen.MENU and remote.released == 0
     assert app._remote_dismissed is True         # ...dismissed, not released
+    # While a miss stands the reader keeps the 5 s pace, screen or no
+    # screen, so the return is seen inside the grace (MED-B).
+    assert not ex.is_open and ex.lost_at is not None
+    assert ex.poll_interval() == ex.poll_open_s
     fake.down = False
     ex.poll()                                    # back: nothing happened
     assert ex.misses == 0 and ex.lost_at is None and ex.present()
+    assert ex.poll_interval() == ex.poll_idle_s
     app.tick(wait=0.0)
     assert app.screen is Screen.MENU and remote.released == 0
     enter(app)
     assert app.screen is Screen.EXHIBITION
-    # The third miss in a row: really gone.
+    # Three misses in a row within the 15 s (SPEAKER's 2 s polls do that
+    # in 6 s): still present - the time has to pass too (MED-A)...
     fake.down = True
-    for _ in range(LOST_MISSES):
+    for _ in range(LOST_MISSES + 2):
         ex.poll()
-    assert not ex.present()
+        clock[0] += 2.0
+    assert ex.misses == LOST_MISSES + 2 and ex.present()
     app.tick(wait=0.0)
-    assert app.screen is Screen.REMOTE           # the garment-unit rule again
-    # ...or the time: one miss, then LOST_AFTER_S without an answer.
+    assert app.screen is Screen.EXHIBITION
+    # ...and the time alone is not enough either: one miss, 15 s.
     fake.down = False
     ex.poll()
     fake.down = True
     ex.poll()
-    assert ex.present()
-    clock[0] += LOST_AFTER_S - 0.5
-    assert ex.present()
-    clock[0] += 1.0
-    assert not ex.present()
-    # Never answered at all (a garment unit): not present from the start.
+    clock[0] += LOST_AFTER_S + 1.0
+    assert ex.misses == 1 and ex.present()
+    app.tick(wait=0.0)
+    assert app.screen is Screen.EXHIBITION
+    # Both: really gone.
+    for _ in range(LOST_MISSES - 1):
+        ex.poll()
+    assert ex.misses == LOST_MISSES and not ex.present()
+    app.tick(wait=0.0)
+    assert app.screen is Screen.REMOTE           # the garment-unit rule again
+    # Never answered at all (a garment unit): not present from the
+    # start, and the reader's pace is the idle one (lost_at never set).
     fresh = Exhibition(http=fake, echo_log=False)
     fresh.poll()
     assert fresh.available is False and not fresh.present()
+    assert fresh.lost_at is None and fresh.poll_interval() == fresh.poll_idle_s
 
 
 def test_the_menu_refuses_the_port_taking_rows_while_the_session_is_armed():

@@ -66,8 +66,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from .exhibition import (SPEAKER_LOST, VOLUME_UNSUPPORTED, Exhibition,
-                         _first_line, _percent, _why)
+from .exhibition import (VOLUME_UNSUPPORTED, Exhibition, _first_line,
+                         _percent, _why)
 
 IDLE = "idle"                # nothing in flight
 BUSY = "busy"                # a request is on its way to the Conductor
@@ -90,6 +90,8 @@ CONNECTING = "connecting…"
 INSTRUCTION = ("put the Bose in pairing mode (hold its Bluetooth button) "
                "and switch off phones' Bluetooth")
 MUSIC_LOST = "MUSIC LOST"
+NO_SINK = "connected, no sound output"   # connection "no_sink": paired and
+                                         # connected, but no PulseAudio sink
 WIRED = "wired / not Bluetooth"
 PAIRING_PHASES = ("scanning", "pairing", "connecting")
 
@@ -261,9 +263,14 @@ class Speaker:
         return MODE_OK
 
     def connection(self) -> "str | None":
+        """The `connection` word, None when absent; a value that is not
+        even a string is reported as "?" (not None, so it counts as
+        lost - never as "not asked")."""
         speaker = self._speaker() or {}
         value = speaker.get("connection")
-        return value if isinstance(value, str) else None
+        if value is None:
+            return None
+        return value if isinstance(value, str) else "?"
 
     def device(self) -> "dict | None":
         device = (self._speaker() or {}).get("device")
@@ -350,9 +357,13 @@ class Speaker:
             return "connecting…"
         if connection == "pairing":
             return "pairing…"
-        if connection in SPEAKER_LOST:
-            return "NOT CONNECTED"
-        return str(connection or "?")
+        if connection == "no_sink":
+            return NO_SINK
+        if connection is None:
+            return "?"
+        # disconnected, no_device - and any value this UI has never
+        # heard of: the music is not playing, say so (the banner agrees).
+        return "NOT CONNECTED"
 
     def detail_text(self) -> "tuple[str, str]":
         """The small line under the state and its tone ("", "warn",

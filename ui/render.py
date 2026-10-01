@@ -928,10 +928,10 @@ def speaker_screen(mode: str, word: str, device: str, state: str,
     # Line 1: the device. Line 2: the state, large, in its colour.
     draw.text((8, 30), _ellipsize(device, FONT_M, WIDTH - 16), font=FONT_M,
               fill=DIM if device.startswith("no speaker") else FG)
-    if state.startswith(("connected", "vol ")):
+    if state.startswith(("NOT CONNECTED", "pairing failed")) or "no sound" in state:
+        tint = ERR                  # incl. "connected, no sound output"
+    elif state.startswith(("connected", "vol ")):
         tint = OK
-    elif state.startswith("NOT CONNECTED") or state.startswith("pairing failed"):
-        tint = ERR
     elif state.startswith(("connecting", "pairing", "reconnect")):
         tint = WARN
     else:

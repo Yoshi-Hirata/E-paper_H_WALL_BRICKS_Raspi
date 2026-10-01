@@ -1519,9 +1519,11 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   ソケットを開かない(`tests/test_ui_exhibition.py`)。`python -m ui.main --preview DIR` が
   `exhibition_idle.png` / `exhibition_running.png` / `exhibition_loop.png` /
   `exhibition_countdown.png` / `exhibition_refused.png` / `exhibition_none.png` を出す
-- **スピーカー行の色**(2026-10-01): `speaker` の `connection` が `disconnected` / `no_device`
-  なら `speaker ok · vol 70% (bluez)` の代わりに赤で **`speaker LOST - see SPEAKER`**
-  (`exhibition_speaker_lost.png`)。直すのは次の SPEAKER 画面
+- **スピーカー行の色**(2026-10-01): `speaker` の `connection` が connected / connecting /
+  pairing 以外(`disconnected` / `no_device` / `no_sink`、知らない値も)なら `speaker ok ·
+  vol 70% (bluez)` の代わりに赤で **`speaker LOST - see SPEAKER`**
+  (`exhibition_speaker_lost.png`。`bluetooth` が false の有線出力では出ない)。直すのは
+  次の SPEAKER 画面
 
 ### SPEAKER(Bluetooth スピーカーの状態・接続・再ペアリングを LCD から、2026-10-01)
 
@@ -1546,7 +1548,10 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   `available, state, track, volume, applied, error` に加えて):
   `device: {mac, name, paired, trusted, connected, sink_present, last_connected_at
   (epoch 秒), last_error} | null`、`connection: "connected" | "disconnected" |
-  "connecting" | "pairing" | "no_device"`、`reconnect: {attempts, next_in_s,
+  "connecting" | "pairing" | "no_device" | "no_sink"`(`no_sink` = 繋がっているのに
+  PulseAudio の sink が 20 秒以上無い。**connected / connecting / pairing 以外の値は
+  全て「音が出ていない」**として扱う ―― 知らない値も ―― 帯と赤、EXHIBITION の `speaker
+  LOST`。`no_sink` は赤で `connected, no sound output`)、`reconnect: {attempts, next_in_s,
   last_error}`、`pairing: {phase: "scanning" | "pairing" | "connecting" | "done" |
   "failed", note, started_at} | null`、`bluetooth`(bool。出力が Bluetooth かどうか ――
   `--speaker-output pulse` で有線 sink なら false)。命令は 2 つ、どちらも
@@ -1603,9 +1608,12 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   全要求はワーカースレッド(3 秒タイムアウト)、HTTP は Exhibition の差し替え可能な
   1 関数を通る ―― HAT のループは待たない
 - **follow と「Conductor が居る」の判定**: `App._local_conductor()` は `Exhibition.present()`
-  を読む ―― 最後のプローブが答えたか、**答えていた Conductor が消えてから 3 回連続の
-  不応答(`LOST_MISSES`)にも 15 秒(`LOST_AFTER_S`)にも達していない**間は「居る」。
-  以前は 1 回のタイムアウトで SPEAKER / EXHIBITION が 1 tick だけ REMOTE に飛び(そこの
+  を読む ―― 最後のプローブが答えたか、**答えていた Conductor が消えてから、3 回連続の
+  不応答(`LOST_MISSES`)と 15 秒(`LOST_AFTER_S`)の両方を満たすまで**は「居る」
+  (どちらか一方では消えない: SPEAKER 画面の 2 秒ポーリングで見た Conductor の再起動にも
+  15 秒の猶予がある)。不応答が続く間、読み手は画面を閉じていても 5 秒ごとに問い直す
+  (`lost_at` が立っている間 `poll_open_s`。一度も答えなかった服の機体では `lost_at` は
+  立たないので従来の 30 秒)。以前は 1 回のタイムアウトで SPEAKER / EXHIBITION が 1 tick だけ REMOTE に飛び(そこの
   KEY2 は `release()` = 自分の run からの脱落)、また EXHIBITION に戻って同じ KEY1 長押しが
   STOP になった(73c8fdc のレビュー HIGH-1)。Conductor が居る間、`App._follow_remote()`
   は EXHIBITION と同じく **SPEAKER 画面も離れない**(LOOP が次の run を始めてセッションが
