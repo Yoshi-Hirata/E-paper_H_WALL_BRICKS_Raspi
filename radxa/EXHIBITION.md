@@ -39,10 +39,11 @@ radxa-05  ─┬─  radxa-01  10.42.0.101:8787
   そのあとタイムラインを編集して ③ START を押すと従来どおり `Upload again` と断られる
   (古い絵で新しいタイムラインが走ることはない)。機体がショーを走らせていればランも引き取り、Loop はそのランの終わりから、
   または次の ③ START からまた回る。別のショーを持っている機体・絵の無い機体は
-  `… - Upload before START` と出るので **① Upload**。**引き取れるのは Conductor 側だけが
-  再起動したとき**: 機体ごと電源が落ちた(会場の停電・ブレーカー)あとは各機体のエージェントが
-  絵を `none`(再起動後は未書き込み)と報告するので、**radxa-05 の画面から ① Upload が必要**
-  (5 章)。radxa-05 の Conductor に送ったあとまだ Upload していないときも同じ
+  `… - Upload before START` と出るので **① Upload**。**会場の停電・ブレーカーで全部が一緒に
+  落ちても同じ**: 機体は再起動すると書き込み記録(`show-burn.json`)を読み直して絵を `burned` と
+  報告し、radxa-05 の Conductor がそれを引き取る(2026-10-01 に radxa-05・radxa-09 の電源断で
+  確認)。Upload が要るのは、記録が無い・読めない(`(the SD card did not take the show)` など)
+  ときと、radxa-05 に送ったあとまだ Upload していないときだけ
 - **Conductor は 1 台だけ**: PC の Conductor と radxa-05 の Conductor が同じネットワークで
   同じ機体を見ると、互いの T0 を「補正」し合って喧嘩する。会場では PC の Conductor を閉じる
   (事務所で radxa-05 に送るときも、送ったら PC 側は Units タブを開いたまま START しない)
@@ -492,9 +493,10 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
   基板で Loop が止まらない。再スタートのときに電源が落ちていた機体も、戻ったときに同じ失敗なら
   走行中のランへ押し切って入る。失敗が増えた機体は押し切らず上の 60 秒の扱いになる。再スタートが断られて再試行している間、画面は
   `Loop: waiting - radxa-10 not ready (retrying)` と出てカウントダウンはしない
-- **会場で停電したら**: 機体は再起動すると絵を `none` と報告する(Conductor が引き取れるのは
-  Conductor だけの再起動のとき)。Units タブで **① Upload** → `written` → ③ START(Loop は
-  入ったまま)
+- **会場で停電したら**: 電気が戻るのを待つだけ。radxa-05 は約 2 分でホットスポットになり、子機は
+  無限に再接続を試みるので自動で戻り(3 章 `autoconnect-retries 0`)、書き込み済みの絵は
+  そのまま引き取られる(1 章)。全台が戻ったら LCD の EXHIBITION で **KEY1 長押し = ③ START**
+  (自動では再開しない。Loop は入ったまま)。START が `Upload` を求めたときだけ ① Upload
 
 ## 6. 困ったとき
 
