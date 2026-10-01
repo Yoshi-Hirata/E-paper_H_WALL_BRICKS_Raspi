@@ -4065,14 +4065,20 @@ function startCountdown() {
 // presses itself, countdown included. Like the countdown it never reaches a
 // unit and asks for no Upload. Off by default: a rehearsal that loops on its
 // own would be a surprise, an exhibition that does not would be a fault.
-const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 40, LOOP_WAIT_MAX_S = 600;
+// The floor is the TIMELINE's (2026-10-01, 「LOOP はゼロ秒で再開」): the
+// server computes min_wait = max(0, 40 s - the tail after the last cue),
+// so a show whose last cue is well before its end may restart at 0 s (the
+// START countdown still applies). The field's min and tooltip say so.
+const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 0, LOOP_WAIT_MAX_S = 600;
 const LOOP_TITLE = "Loop(展示モード): ショーが終わったら、ここに書いた秒数待って "
   + "③ START をもう一度(カウントダウン込み。0:00 のキューが最初の絵に戻す)。"
-  + "STOP で止まる。ショーと一緒に保存、Upload 不要。"
+  + "STOP で止まる。ショーと一緒に保存、Upload 不要。下限は最後のキューから終わりまでの"
+  + "長さで決まる(40 秒の間を空ける)。"
   + "\n\nLoop (EXHIBITION mode): when a run reaches its end the Conductor waits "
   + "this long and presses ③ START again itself - countdown included, so the "
-  + "0:00 cue puts the first look back. STOP cancels the pending run. 40 to 600 s (shorter "
-  + "and the master can go over 60 s without a STOP between two runs), "
+  + "0:00 cue puts the first look back. STOP cancels the pending run. The least wait "
+  + "is this timeline's: 40 s between the last cue and the next run, minus the show's "
+  + "own tail after that cue (0 when the tail is 40 s or more). Up to 600 s, "
   + "stored with the show, no Upload needed. With \"Clear pictures after the show\" "
   + "on, the clear happens on STOP, never between runs.";
 function loopWait() {            // the wait the show holds, or null (off)
@@ -4080,14 +4086,29 @@ function loopWait() {            // the wait the show holds, or null (off)
   return state && state.show && state.show.loop_wait_s !== null && state.show.loop_wait_s !== undefined
     && Number.isFinite(s) && s >= LOOP_WAIT_MIN_S && s <= LOOP_WAIT_MAX_S ? s : null;
 }
+// The least wait THIS timeline allows (state.show.loop_min_wait_s), and why.
+function loopMinWait() {
+  const m = Number(state && state.show && state.show.loop_min_wait_s);
+  return Number.isFinite(m) && m >= 0 ? m : LOOP_WAIT_MIN_S;
+}
+function loopMinTitle() {
+  const why = state && state.show && state.show.loop_min_why;
+  return `min ${loopMinWait()} s` + (why ? ` - ${why}` : "");
+}
 // What the wait field shows: the show's wait while the Loop is on, else the
 // last value typed in this page (so unticking and ticking again keeps it), else 30.
 let loopWaitTyped = null;
-function loopWaitShown() { return loopWait() ?? loopWaitTyped ?? LOOP_WAIT_DEFAULT_S; }
+// While on, what the restart really waits: the stored value lifted to
+// the floor an edit may have raised since (the server does the same).
+function loopWaitShown() {
+  const stored = loopWait();
+  return stored !== null ? Math.max(stored, loopMinWait()) : (loopWaitTyped ?? LOOP_WAIT_DEFAULT_S);
+}
 async function saveLoop(waitS) {      // null = off; POST /api/loop answers the fleet's `loop` object
   try {
     const answer = await api("/api/loop", waitS === null ? { on: false } : { on: true, wait_s: waitS });
     if (answer && answer.error) toast(`Could not save it: ${answer.error}`);
+    else if (answer && answer.note) toast(`Loop: ${answer.note}`, "warn");
   } catch (err) {
     toast(`Could not save it: ${err.message}`);
   }
@@ -4099,6 +4120,20 @@ async function saveLoop(waitS) {      // null = off; POST /api/loop answers the 
 function runIsOver() {
   const run = fleet?.run, D = fleetDuration();
   return !!run && run.state === "running" && D > 0 && fleetShowPos() >= D;
+}
+// While a refused restart is retried (fleet.loop.retrying) there is no
+// countdown to show - a 5 s retry read as "next run in 0:03" over and over.
+// The words instead: "Loop: waiting - radxa-10 not ready (retrying)".
+function loopWaitingText() {
+  const loop = fleet && fleet.loop;
+  if (!loop || !loop.retrying) return null;
+  // "radxa-10: none of its 16 boards answered; radxa-03: not answering" ->
+  // the units named; a problem with no "unit:" prefix ("no unit is ready")
+  // is shown as it is.
+  const parts = String(loop.problem || "").split(";").map(p => p.trim()).filter(Boolean);
+  const named = parts.every(p => /^radxa-\d+:/.test(p));
+  const units = named ? parts.map(p => p.split(":")[0]) : [];
+  return "Loop: waiting - " + (units.length ? units.join(", ") + " not ready" : (parts.join("; ") || "not ready")) + " (retrying)";
 }
 // Seconds until the Loop's next run, carried forward from the last poll the
 // way the run position is - or null when no run is pending.
@@ -4366,6 +4401,8 @@ const SHOWBOARD = (() => {
   //             next run down instead of saying SHOW ENDED.
   //   loopProblem  why that next run has not gone out yet (a unit not
   //             answering), or null - said in the note.
+  //   loopWaiting  the words for a refused restart being retried, or
+  //             null: the header shows them instead of any countdown.
   function clearedNote(cleared) {
     if (cleared === "clearing") return "show ended — clearing the pictures";
     if (cleared === "cleared") return "show ended — pictures cleared";
@@ -4412,6 +4449,13 @@ const SHOWBOARD = (() => {
       return out;
     }
     if (now.phase === "ended") {
+      if (now.loopWaiting) {
+        // A refused restart being retried: words, no number - a retry
+        // every 5 s is not a countdown (it read as one, over and over).
+        out.cap = "LOOP WAITING";
+        out.note = out.note || now.loopWaiting;
+        return out;
+      }
       if (now.loopIn !== null && now.loopIn !== undefined) {
         // The Loop: the next run is what comes next, counted down in the
         // slot the countdown before START uses, in the same colours.
@@ -4914,7 +4958,8 @@ function paintBoard() {
                                leadLeft: leadMs > 0 ? leadMs / 1000 : null,
                                cleared: clearedPhase(),
                                loopIn: loopNextIn(),
-                               loopProblem: fleet?.loop?.problem || null });
+                               loopProblem: fleet?.loop?.problem || null,
+                               loopWaiting: loopWaitingText() });
   const H = BOARD.head;
   if (H) {
     H.cap.textContent = h.cap;
@@ -5057,7 +5102,7 @@ function renderFleet() {
         <label class="meta" title="${esc(LOOP_TITLE)}"><input type="checkbox"
           id="show-loop" ${loopWait() !== null ? "checked" : ""}>
           Loop: next run after <input type="text" id="show-loop-wait"
-          value="${loopWaitShown()}" style="width:46px"> s</label>
+          value="${loopWaitShown()}" title="${esc(loopMinTitle())}" style="width:46px"> s</label>
         <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
           id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
           Clear pictures after the show
@@ -5172,8 +5217,9 @@ function showClockText() {
     if (run.state === "running" && now > fleetDuration()) word = "ENDED";
     // The Loop between runs: the next START is the one thing worth saying,
     // and the number is the wait, not the position (the show is over).
-    const loopIn = loopNextIn();
-    if (run.state === "running" && loopIn !== null) {
+    const loopIn = loopNextIn(), waiting = loopWaitingText();
+    if (run.state === "running" && waiting) word = waiting;
+    else if (run.state === "running" && loopIn !== null) {
       // `runs` counts the Loop's own restarts so far; the START press was
       // run 1, so the one coming is runs + 2.
       word = "ENDED · NEXT RUN IN " + clock(loopIn)
@@ -5255,7 +5301,8 @@ function showClockText() {
     // runs is found rather than wondered about.
     : fleet.loop && fleet.loop.problem
       ? `Loop: the next run could not start yet — ${fleet.loop.problem}. `
-        + "Trying again every few seconds; STOP ends the loop."
+        + (fleet.loop.retrying ? "Retrying every few seconds (no countdown until it can); " : "")
+        + "STOP ends the loop."
     // A HOLD or a RESUME in the final second cannot be played past, so the
     // end of THIS run will not clear anything. Said out loud: otherwise the
     // pictures simply stay and nothing on the page explains why.
@@ -6339,9 +6386,12 @@ document.addEventListener("change", async e => {
   // show (show.json's loop_wait_s), like the countdown.
   if (id === "show-loop" || id === "show-loop-wait") {
     const field = $("#show-loop-wait");
-    const seconds = parseSeconds(field ? field.value : "", LOOP_WAIT_MIN_S, LOOP_WAIT_MAX_S);
+    // Unticking saves off without reading the field: a stored wait an
+    // edit has pulled below the floor must never make the box un-untickable.
+    if (id === "show-loop" && !e.target.checked) { if (loopWait() !== null) await saveLoop(null); return; }
+    const seconds = parseSeconds(field ? field.value : "", loopMinWait(), LOOP_WAIT_MAX_S);
     if (seconds === null) {
-      toast(`Enter ${LOOP_WAIT_MIN_S} to ${LOOP_WAIT_MAX_S} seconds`);
+      toast(`Enter ${loopMinWait()} to ${LOOP_WAIT_MAX_S} seconds (${loopMinTitle()})`);
       if (field) field.value = loopWaitShown();
       if (id === "show-loop") e.target.checked = loopWait() !== null;
       return;

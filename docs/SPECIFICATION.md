@@ -1153,10 +1153,33 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   (ループバックか、パスコード付き)で、送り先が **`/api/fleet` に fleet として答える
   Conductor** のときだけ送る
 - **Loop**(THE SHOW の `Loop: next run after [45] s`): `show.json` の `loop_wait_s`(秒、
-  **40〜600**、0.1 秒単位。**キーが無ければ off**、off にするとキーを消す)。40 秒未満に
-  しない理由: 最後のキュー L のあと機体の待機 STOP は max(L+15, ガード床 L+30..41) に出て、
-  次のトリガまで 5 秒空ける必要がある ― 短いとラン間で親基板が 60 秒以上 STOP 無しになり
-  得る(4.6)。undo / redo、ショーの書き出し(常に入る。off は `null`)・読み込み(**`null` は
+  **0〜600**、0.1 秒単位。**キーが無ければ off**、off にするとキーを消す)。**下限はタイムライン
+  が決める**(2026-10-01、依頼者「LOOP はゼロ秒で再開」): 最後のキュー L のあと機体の待機
+  STOP は max(L+15, ガード床 L+30..41) に出て次のトリガまで 5 秒要るので、最後のキューと
+  次のランの最初のトリガの間に `LOOP_SEAM_S` = 40 秒が要る(4.6)― ショー自身の尻尾
+  (長さ − 最後のキューの時刻)がその一部なので `min_wait = max(0, 40 − tail)`、秒に切り上げ
+  (`loop_floor_of`)。展示のショー(最後のキュー 9:37、終わり 10:54、尻尾 77 秒)は **0**
+  = 終わった直後に再開、最後のキューが終わりの 10 秒前なら 30。次のランの最初のトリガ
+  (0:00 のプリセット)は T0 の complete_s 前 ≈ カウントダウンの長さぶん前に出るので、間は
+  尻尾 + 待ち ≈ 最後のキューから**再開そのもの**まで 40 秒(0:00 までではない)。尻尾の中で
+  遅れて合流した機体(`started late`)は次のプリセット時にまだ最後のキューを描いていることが
+  ある(まれ、その機体だけ)。`POST /api/loop` / `set_loop` は床未満を **400**(数値と理由つき:
+  `loop_wait_s: 30 to 600 seconds here (the last cue is 10 s before the end, 40 s are needed …)`)。
+  編集で尻尾が縮んで床が保存値を超えたら保存値はそのまま、Timeline の warnings に
+  `Loop: the wait of 0 s is below the 30 s this timeline needs … - the loop waits 30 s`、
+  再開は `max(保存値, 床)`(`loop_effective_wait`)。`/api/state.show` に `loop_min_wait_s` /
+  `loop_tail_s` / `loop_min_why`、`/api/fleet.loop` に `min_wait_s` と `stored_wait_s`
+  (`wait_s` は再開が使う実効値)、ページの欄は実効値を表示しツールチップ
+  `min 0 s - the last cue is 77 s before the end`;Loop のチェックを外すのは欄を読まずに保存
+  (床未満の保存値でも外せる)。素の `{"on": true}` は max(保存値 or 45, 床)。LCD は変更なし。
+  **Loop + Clear pictures after the show**: Loop が on のとき機体に送るショーファイルの
+  `clear_after_show` は **false**(機体が自分の ENDED で消すと再開が `cleared` に当たって
+  止まる)、操作者のフラグは `conductor_clear_after_show` に持ち Conductor が **STOP で**消す
+  (どちらも id の digest の後に付くので id も「changed since」も変わらない)。Loop を入れる前に
+  Upload していた機体は自分で消すコピーを持っているので、`POST /api/loop` on は `note`
+  (`the units hold a show that clears its own pictures … Upload again before START`)と
+  corrections で言う。**古い radxa-05**(40 秒床の版)は 40 未満の `loop_wait_s` を読めず
+  Loop が黙って off になる ― 40 未満のワークスペースを送る前に radxa-05 を更新。undo / redo、ショーの書き出し(常に入る。off は `null`)・読み込み(**`null` は
   off にする**、キーの無いファイルは今の値を変えない ― null に意味があるのは off を
   radxa-05 へ運べなくてはならないため)。`_REVISION_IGNORES` に入り、機体のショーファイルにも
   id にも入らない(Upload を求めない)。
@@ -1169,8 +1192,21 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   countdown)を読み、on なら `next_in_s = wait` をアームする。待ちが尽きたらもう一度読み
   (**待ちの間に off にしたら再開しない**)、`start_show(lead = countdown, at = 0,
   loop=True, expect_gen=そのときの世代)` ― ③ START を押したのと同じ(カウントダウン込み、
-  0:00 のキューが最初の絵を戻す)。**`force` は使わない**(基板の書き込み失敗を押し切るのは
-  人の ③ START だけ)。ランの `loops` が 1, 2, … と増え、③ START を押すと 0 に戻る。
+  0:00 のキューが最初の絵を戻す)。**艦隊全体の `force` は使わない**が、**人の ③ START が
+  押し切った機体はその機体だけ引き継ぐ**(2026-10-01、radxa-10 の 1 枚死んだ基板で Loop が
+  run 1 で止まった): forced START のとき機体ごとの焼き込み失敗(失敗した (board, slot)、理由、
+  total)を覚え(`_waved`)、再開時に**同じまま**の機体だけ `forced_units` として関門を通し
+  `/show/run` に `force: true`(`run["forced"]`)、corrections には**押し切る機体の集合が
+  変わったときだけ** `radxa-10: started again with the operator's 'start anyway' (same N boards)`
+  (毎ランではない ― 20 行のバッファが埋まる)。再開のとき offline だった機体は署名が取れず
+  外れるが、ラン途中で戻ったときの supervision の `/show/run` は署名を見直して同じ失敗なら
+  `force: true`(`_rejoin_force`)― そのランじゅう断られない。署名にはショー id も入る
+  (別のコンパイルの救済 Upload は引き継がない)。失敗が変わった
+  (基板が増えた、理由が違う)機体は押し切らず、通常の 60 秒猶予 / `started without X` へ。
+  素の START のあとは何も引き継がない。再開が断られて再試行している間は `loop.next_in_s` は
+  **null**、`retrying: true`・`waiting: true`(LCD の語。`retry_in_s` は診断用)― 5 秒の再試行をカウントダウンとして
+  出すと LCD とページが「next run in 0:03」を繰り返す。ページは
+  `Loop: waiting - radxa-10 not ready (retrying)`、ボードは `LOOP WAITING`。ランの `loops` が 1, 2, … と増え、③ START を押すと 0 に戻る。
   **STOP と、どの T0 移動(HOLD / RESUME / SEEK / NEXT / START)も**保留中の再開を取り消す
   (`_t0_moved`)。再開の窓の中で STOP されたときは `start_show` がロック下で世代と
   `_stopped` を見て断る(STOP が勝つ)。再開が断られたとき(機体が落ちている、絵が

@@ -20,6 +20,7 @@ import http.server
 import json
 import re
 import threading
+import urllib.parse
 from html import unescape
 
 import pytest
@@ -44,9 +45,14 @@ def test_the_loop_control_sits_with_the_countdown_and_posts_api_loop():
     assert "localStorage" not in body, "the Loop is the show's, not the browser's"
     handler = PAGE[PAGE.index('if (id === "show-loop" || id === "show-loop-wait")'):]
     handler = handler[:handler.index("return;\n  }\n") + 20]
-    assert "parseSeconds(field ? field.value : \"\", LOOP_WAIT_MIN_S, LOOP_WAIT_MAX_S)" in handler
-    assert "const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 40, LOOP_WAIT_MAX_S = 600;" in PAGE
-    for fine in (40, 600, 45):
+    assert "parseSeconds(field ? field.value : \"\", loopMinWait(), LOOP_WAIT_MAX_S)" in handler
+    assert "const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 0, LOOP_WAIT_MAX_S = 600;" in PAGE
+    assert "parseSeconds(field ? field.value : \"\", loopMinWait(), LOOP_WAIT_MAX_S)" in PAGE
+    assert 'title="${esc(loopMinTitle())}"' in PAGE
+    # Unticking saves off without reading the field (a stored wait below
+    # the floor must not make the box un-untickable).
+    assert 'if (id === "show-loop" && !e.target.checked) { if (loopWait() !== null) await saveLoop(null); return; }' in PAGE
+    for fine in (0, 600, 45):
         assert check_loop_wait(fine) == fine
     assert "state.show.loop_wait_s" in _function_body("loopWait")
 
@@ -229,6 +235,8 @@ class _Stand:
         page = INDEX_HTML.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1)
         self.run = "none"
         self.loop_next = None                # next_in_s the stand-in reports
+        self.loop_retrying = False           # a refused restart being retried
+        self.loop_problem = "radxa-10: none of its 16 boards answered"
         self.speaker = None
         self.passcode = None                 # set: POSTs need X-Passcode
         self.sent = []                       # [command, body] as they arrived
@@ -260,8 +268,12 @@ class _Stand:
             def _loop(self):
                 wait = stand.ws.loop_wait()
                 return {"on": wait is not None, "wait_s": int(wait or 45),
-                        "next_in_s": stand.loop_next, "runs": 0,
-                        "problem": None}
+                        "next_in_s": None if stand.loop_retrying else stand.loop_next,
+                        "runs": 0, "retrying": stand.loop_retrying,
+                        "retry_in_s": stand.loop_next if stand.loop_retrying else None,
+                        "waiting": stand.loop_retrying,
+                        "problem": (stand.loop_problem if stand.loop_retrying else None),
+                        "min_wait_s": 0}
 
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
@@ -353,6 +365,10 @@ class _Stand:
                     if "loop_next" in args:
                         stand.loop_next = (None if args["loop_next"] == "null"
                                            else float(args["loop_next"]))
+                    if "retrying" in args:
+                        stand.loop_retrying = args["retrying"] == "1"
+                    if "problem" in args:
+                        stand.loop_problem = urllib.parse.unquote(args["problem"])
                     if "passcode" in args:
                         stand.passcode = None if args["passcode"] == "null" else args["passcode"]
                     if "speaker" in args:
@@ -423,7 +439,7 @@ _PAGE_PROBE = """
       type("show-loop-wait", "60");
       await wait(1200);
       out.loopWait = { field: $q("#show-loop-wait").value, state: state.show.loop_wait_s };
-      type("show-loop-wait", "30");
+      type("show-loop-wait", "-5");
       await wait(600);
       out.loopBad = { field: $q("#show-loop-wait").value, toast: $q("#toast").textContent };
       tick("show-loop", false);
@@ -445,6 +461,18 @@ _PAGE_PROBE = """
       $q("#nn-stage-btn").click();
       await wait(400);
       out.stopQuestion = stopQuestion();
+      // A refused restart being retried: words, never a countdown.
+      await fetch("/test/fleet?run=ended&loop_next=3&retrying=1");
+      await refreshFleetNow();
+      out.retryClock = clockNow();
+      out.retryHead = { cap: head("[data-cap]"), count: head("[data-count]"), note: head("[data-note]") };
+      out.retryHint = $q("#show-hint").textContent;
+      // A problem with no "unit:" prefix is shown verbatim.
+      await fetch("/test/fleet?run=ended&loop_next=3&retrying=1&problem=" + encodeURIComponent("no unit is ready"));
+      await refreshFleetNow();
+      out.retryPlain = clockNow().word;
+      await fetch("/test/fleet?retrying=0&loop_next=25&problem=" + encodeURIComponent("radxa-10: none of its 16 boards answered"));
+      await refreshFleetNow();
       // (3) START during the wait: the next run, asked about like a first
       // one, sent WITHOUT force (M5).
       out.overDuringWait = runIsOver();
@@ -589,7 +617,8 @@ def test_the_loop_control_talks_to_api_loop(page):
     assert page["loopOffAtStart"] == {"checked": False, "wait": "45"}
     assert page["loopOn"] == {"checked": True, "state": 45}
     assert page["loopWait"] == {"field": "60", "state": 60}
-    assert page["loopBad"]["field"] == "60" and "40 to 600" in page["loopBad"]["toast"]
+    assert page["loopBad"]["field"] == "60" and "0 to 600" in page["loopBad"]["toast"]
+    assert "120 s before the end" in page["loopBad"]["toast"]       # the stand's 180 s show, last cue 1:00
     assert page["loopOff"] == {"checked": False, "state": None, "field": "60"}
     assert page["loopSent"][:3] == [["loop", {"on": True, "wait_s": 45}],
                                     ["loop", {"on": True, "wait_s": 60}],
@@ -630,6 +659,15 @@ def test_the_passcode_is_asked_once_and_sent_ever_after(page):
     # The next request carries it without asking.
     assert [s[0] for s in page["passcodeNext"]] == ["loop"], page["passcodeNext"]
     assert page["passcodePromptsAfter"] == 2
+
+
+def test_a_refused_restart_shows_words_not_a_countdown(page):
+    assert page["retryClock"]["word"] == "Loop: waiting - radxa-10 not ready (retrying)", page["retryClock"]
+    head = page["retryHead"]
+    assert head["cap"] == "LOOP WAITING" and head["count"] in ("", None), head
+    assert head["note"] == "Loop: waiting - radxa-10 not ready (retrying)"
+    assert "Retrying every few seconds (no countdown until it can)" in page["retryHint"]
+    assert page["retryPlain"] == "Loop: waiting - no unit is ready (retrying)"
 
 
 def test_a_speaker_conductor_mutes_the_page_once_and_the_operator_wins(page):
