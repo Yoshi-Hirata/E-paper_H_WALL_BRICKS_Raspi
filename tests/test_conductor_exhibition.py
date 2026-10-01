@@ -221,7 +221,7 @@ def test_the_loop_wait_is_validated_against_this_timelines_floor(tmp_path):
     ws = _workspace(tmp_path / "ws", music=False)       # 120 s, last cue at 60: tail 60
     assert ws.loop_floor()[0] == 0.0
     ws.set_loop(0)                                        # "LOOP はゼロ秒で再開"
-    assert ws.loop_wait() == 0.0 and ws.loop_settings() == (0.0, 11.0, True)
+    assert ws.loop_wait() == 0.0 and ws.loop_settings() == (0.0, 11.0, False)
     assert ws.state()["show"]["loop_min_wait_s"] == 0.0
     assert ws.state()["show"]["loop_tail_s"] == 60.0
     # The last cue moves to 10 s before the end: the floor is 30 now. The
@@ -229,7 +229,7 @@ def test_the_loop_wait_is_validated_against_this_timelines_floor(tmp_path):
     ws.set_timeline(120, _show_with_tail(120.0, 110.0)["cues"])
     assert ws.loop_floor()[0] == 30.0
     assert ws.loop_wait() == 0.0
-    assert ws.loop_settings() == (30.0, 11.0, True)
+    assert ws.loop_settings() == (30.0, 11.0, False)
     state = ws.state()
     assert state["show"]["loop_min_wait_s"] == 30.0
     assert any("Loop: the wait of 0 s is below the 30 s" in w for w in state["show"]["warnings"])
@@ -264,9 +264,9 @@ def test_loop_is_stored_with_the_show_off_as_no_key_and_undoable(tmp_path):
     assert "loop_wait_s" not in ws._load_show()
     ws.set_loop(45)
     assert ws.loop_wait() == 45.0
-    assert ws.loop_settings() == (45.0, 11.0, True)    # the wait, the countdown, preset first
+    assert ws.loop_settings() == (45.0, 11.0, False)   # the wait, the countdown, preset first (off)
     ws.set_start_countdown(20)
-    assert ws.loop_settings() == (45.0, 20.0, True)
+    assert ws.loop_settings() == (45.0, 20.0, False)
     assert ws.state()["show"]["loop_wait_s"] == 45.0
     assert ws.state()["show"]["loop_default_s"] == LOOP_WAIT_S
     ws.set_loop(None)
@@ -2930,9 +2930,11 @@ def test_stop_during_the_preset_cancels_the_start():
     clock.now += 60.0
     fleet._staging_tick()
     assert fleet.run is None and _posted(fleet, "/show/run") == []
-    # ...and a START pressed during the preset is told so by the server.
+    # The next START: both garments show the look that (cancelled) stage
+    # put up, painted long ago - no second preset, the countdown at once.
     fleet.start_show(lead_s=3.0, preset_first=True)
-    assert fleet.preset_state() is not None
+    assert fleet.preset_state() is None and fleet.run["t0"] == clock.now + 3.0
+    assert len(_posted(fleet, "/show/preset")) == 2
 
 
 def test_with_the_flag_off_start_is_exactly_as_before():
@@ -2990,29 +2992,43 @@ def test_a_waved_unit_is_preset_with_force_too():
     assert fleet.run["force"] is True and fleet._waved
 
 
-def test_preset_before_start_is_a_show_setting_on_by_default(tmp_path):
+def test_preset_before_start_is_a_show_setting_off_by_default(tmp_path):
+    # OFF unless the show says true (review of d64e6e0, HIGH-2): the PC's
+    # show files have no key and keep (2) preset -> (3) START -> countdown.
     ws = _workspace(tmp_path / "ws", music=False)
-    assert ws.preset_before_start() is True
+    assert ws.preset_before_start() is False
     assert "preset_before_start" not in ws._load_show()
-    assert ws.state()["show"]["preset_before_start"] is True
+    assert ws.state()["show"]["preset_before_start"] is False
     rev = ws.revision()
-    ws.set_preset_before_start(False)
-    assert ws.preset_before_start() is False and ws._load_show()["preset_before_start"] is False
+    ws.set_preset_before_start(True)
+    assert ws.preset_before_start() is True and ws._load_show()["preset_before_start"] is True
     assert ws.revision() == rev                          # never a "changed since"
-    assert ws.undo() and ws.preset_before_start() is True
+    assert ws.undo() and ws.preset_before_start() is False
+    assert "preset_before_start" not in ws._load_show()
+    ws.set_preset_before_start(True)
     ws.set_preset_before_start(False)
+    assert "preset_before_start" not in ws._load_show()  # off is no key
+    ws.set_preset_before_start(True)
     exported = ws.export_show()
-    assert exported["preset_before_start"] is False
+    assert exported["preset_before_start"] is True
     b = _workspace(tmp_path / "b", music=False)
     b.import_show(exported)
-    assert b.preset_before_start() is False
+    assert b.preset_before_start() is True and b._load_show()["preset_before_start"] is True
+    # A file saying false turns it off - and leaves no key (LOW-6).
+    b.import_show(dict(exported, preset_before_start=False))
+    assert b.preset_before_start() is False and "preset_before_start" not in b._load_show()
+    # A show.json an older build wrote `false` into still reads off.
+    legacy = dict(ws._load_show(), preset_before_start=False)
+    from conductor.server import preset_before_start_of
+    assert preset_before_start_of(legacy) is False
+    assert preset_before_start_of({}) is False
     with pytest.raises(ValueError):
         ws.set_preset_before_start("yes")
     # ...and the loop settings carry it as the third member.
     ws.set_loop(0)
-    assert ws.loop_settings() == (0.0, 11.0, False)
-    ws.set_preset_before_start(True)
     assert ws.loop_settings() == (0.0, 11.0, True)
+    ws.set_preset_before_start(False)
+    assert ws.loop_settings() == (0.0, 11.0, False)
 
 
 def test_start_over_http_is_staged_only_from_zero_and_only_with_the_flag(tmp_path):
@@ -3022,6 +3038,13 @@ def test_start_over_http_is_staged_only_from_zero_and_only_with_the_flag(tmp_pat
     server = make_server(ws.root, port=0, fleet=fleet)
     port = _serve(server)
     try:
+        # The default (no key): the START of main, byte for byte.
+        status, answer = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert status == 200 and "staged" not in answer and fleet.run is not None
+        assert _posted(fleet, "/show/preset") == []
+        fleet.stop_show()
+        # Ticked on (the exhibition): staged.
+        _post(port, "/api/show/preset_before", {"on": True})
         status, answer = _post(port, "/api/fleet/start", {"lead_s": 3})
         assert status == 200 and answer["staged"] is True, answer
         assert "Preset first" in answer["note"] and fleet.run is None
@@ -3030,12 +3053,6 @@ def test_start_over_http_is_staged_only_from_zero_and_only_with_the_flag(tmp_pat
         assert "preset first" in again["note"] and fleet.preset_state() is not None
         assert _post(port, "/api/fleet/stop", {})[0] == 200
         assert fleet.preset_state() is None
-        # The flag off: the START of main, byte for byte.
-        _post(port, "/api/show/preset_before", {"on": False})
-        status, answer = _post(port, "/api/fleet/start", {"lead_s": 3})
-        assert status == 200 and "staged" not in answer and fleet.run is not None
-        fleet.stop_show()
-        _post(port, "/api/show/preset_before", {"on": True})
         # From a mark: never staged.
         fleet.start_at = 30.0
         status, answer = _post(port, "/api/fleet/start", {"lead_s": 3, "manual": True})
@@ -3053,3 +3070,282 @@ def test_the_page_shows_the_preset_stage():
     assert 'if (run.state === "preset") return "loaded";' in PAGE_TEXT
     assert 'word = `PRESET… ${painted}/${total} painted`' in PAGE_TEXT
     assert 'fleet.run.state !== "preset" && !runIsOver()' in PAGE_TEXT
+
+
+# ---- review of d64e6e0: the PRESET stage's fixes ----
+
+class RefusingPresetLink(StubLink):
+    """A unit that answers everything but refuses /show/preset (409)."""
+
+    def __init__(self, name, show_state, why="the show is running"):
+        super().__init__(name, show_state)
+        self.why = why
+
+    def post(self, path, body, learn=True, timeout=None):
+        if path == "/show/preset":
+            self.posted.append((path, body))
+            raise RuntimeError(self.why)
+        return super().post(path, body, learn, timeout)
+
+
+def _start_after_paint(fleet, clock, *names):
+    """Paint `names` and tick past their 8 s paint + 0.5 s settle."""
+    _paint(fleet, *names)
+    fleet._staging_tick()
+    clock.now += 8.6
+    fleet._staging_tick()
+
+
+def test_a_staged_start_after_a_stop_still_starts():
+    # HIGH-1: STOP sets _stopped; the stage must clear it like START does,
+    # or every staged START after any STOP is dropped at its first tick.
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.start_show(lead_s=3.0)                         # an ordinary START...
+    fleet.stop_show()                                    # ...and a STOP
+    assert fleet._stopped
+    fleet.start_show(lead_s=3.0, preset_first=True)
+    assert fleet.preset_state() is not None and not fleet._stopped
+    _start_after_paint(fleet, clock, "radxa-01", "radxa-02")
+    assert fleet.run is not None and fleet.run["t0"] == clock.now + 3.0
+    # ...and again after a second STOP (the run moved the garments on).
+    fleet.stop_show()
+    for link in fleet.links.values():
+        link.status["show"]["applied"] = "q09"
+    fleet.start_show(lead_s=3.0, preset_first=True)
+    assert fleet.preset_state() is not None
+    _start_after_paint(fleet, clock, "radxa-01", "radxa-02")
+    assert fleet.run is not None and fleet.run["t0"] == clock.now + 3.0
+    assert len(_posted(fleet, "/show/preset")) == 4      # two per unit, one per START
+
+
+def test_a_manual_preset_already_painted_starts_the_countdown_at_once():
+    # HIGH-2 (b): the PC's (2) Show preset -> (3) START with the flag on is
+    # the old timing exactly - no second /show/preset, no stage.
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.preset()
+    assert len(_posted(fleet, "/show/preset")) == 2
+    clock.now += 4.0
+    _paint(fleet, "radxa-01", "radxa-02")
+    clock.now += 6.0                                     # 10 s since (2): > 8 + 0.5
+    results = fleet.start_show(lead_s=11.0, preset_first=True)
+    assert fleet.preset_state() is None and fleet.run["t0"] == clock.now + 11.0
+    assert not any(r.get("preset") for r in results.values())
+    assert len(_posted(fleet, "/show/preset")) == 2      # no second paint
+    assert any("already shows the 0:00 look" in c for c in fleet.corrections)
+    # The run moves the garments on: the next staged START presets again.
+    fleet.stop_show()
+    fleet.start_show(lead_s=11.0, preset_first=True)
+    assert fleet.preset_state() is not None
+    assert len(_posted(fleet, "/show/preset")) == 4
+
+
+def test_start_pressed_right_after_a_manual_preset_waits_without_a_second_preset():
+    # (3) two seconds after (2): the look is still going up. The stage waits
+    # for it (no second /show/preset - that would paint it twice).
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.preset()
+    clock.now += 2.0
+    results = fleet.start_show(lead_s=11.0, preset_first=True)
+    assert results == {n: {"ok": True, "preset": True, "already": True}
+                       for n in ("radxa-01", "radxa-02")}
+    assert fleet.preset_state()["already"] == ["radxa-01", "radxa-02"]
+    assert len(_posted(fleet, "/show/preset")) == 2
+    _start_after_paint(fleet, clock, "radxa-01", "radxa-02")
+    assert fleet.run["t0"] == clock.now + 11.0
+    assert len(_posted(fleet, "/show/preset")) == 2
+
+
+def test_a_mixed_fleet_presets_only_the_units_not_showing_the_look():
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.preset()
+    clock.now += 10.0
+    _paint(fleet, "radxa-01")                            # 02 shows something else
+    fleet.links["radxa-02"].status["show"]["applied"] = "q09"
+    results = fleet.start_show(lead_s=11.0, preset_first=True)
+    assert results["radxa-01"] == {"ok": True, "preset": True, "already": True}
+    assert results["radxa-02"]["preset"] is True and "already" not in results["radxa-02"]
+    assert sorted(n for n, _ in _posted(fleet, "/show/preset")) == [
+        "radxa-01", "radxa-02", "radxa-02"]
+    assert fleet.preset_state()["painted"] == ["radxa-01"]
+    _start_after_paint(fleet, clock, "radxa-02")
+    assert fleet.run["t0"] == clock.now + 11.0
+
+
+def test_a_status_from_before_the_preset_reply_is_not_counted():
+    # LOW-2: a poll already in flight reports the look from before.
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    for link in fleet.links.values():
+        link.status_sent = clock.now - 1.0               # asked before the preset
+    _paint(fleet, "radxa-01", "radxa-02")                # ...says q00 (the old look)
+    fleet.start_show(lead_s=3.0, preset_first=True)
+    clock.now += 9.0
+    fleet._staging_tick()
+    assert fleet.preset_state()["painted"] == []
+    for link in fleet.links.values():
+        link.status_sent = clock.now                     # a poll after the reply
+    _start_after_paint(fleet, clock)
+    assert fleet.run is not None
+
+
+def test_a_refused_preset_is_not_waited_for_but_gets_the_start():
+    # MED-1: the unit that refused is named, left out of the wait, and still
+    # sent /show/run - the others start after their paint, not at 45 s.
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.links["radxa-02"] = RefusingPresetLink("radxa-02", "loaded", "unit is busy")
+    fleet.links["radxa-02"].status["show"].update(id="showA", burn={"state": "burned"},
+                                                  applied=None, dirty=False)
+    results = fleet.start_show(lead_s=3.0, preset_first=True)
+    assert results["radxa-02"] == {"ok": False, "error": "unit is busy", "preset": True}
+    state = fleet.preset_state()
+    assert state["refused"] == {"radxa-02": "unit is busy"}
+    assert state["waiting_for"] == ["radxa-01"]
+    assert any("radxa-02 refused the preset (unit is busy) - not waited for" in c
+               for c in fleet.corrections)
+    _start_after_paint(fleet, clock, "radxa-01")
+    assert fleet.run is not None and fleet.run["t0"] == clock.now + 3.0
+    assert sorted(n for n, _ in _posted(fleet, "/show/run")) == ["radxa-01", "radxa-02"]
+
+
+def test_a_forced_start_over_a_running_show_is_not_staged():
+    # MED-1: the units would refuse a preset while running - START at once.
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.start_show(lead_s=3.0)
+    clock.now += 20.0                                    # mid-show
+    fleet.start_show(lead_s=11.0, force=True, preset_first=True)
+    assert fleet.preset_state() is None and fleet.run["t0"] == clock.now + 11.0
+    assert _posted(fleet, "/show/preset") == []
+    # A run that has reached its END is not running: that START is staged.
+    clock.now = fleet.run["t0"] + 100.0
+    fleet.start_show(lead_s=11.0, preset_first=True)
+    assert fleet.preset_state() is not None
+
+
+def test_a_loop_stage_starts_without_a_unit_that_went_offline_during_it():
+    # MED-2: the stage's end works out who is ready THEN - not the burn gate
+    # refusing "not answering" and the whole loop re-arming wait + 60 s.
+    clock = Clock()
+    fleet = _preset_fleet(clock, settings=lambda: (0.0, 3.0, True), loop_retry_s=5.0)
+    fleet.start_show(lead_s=3.0)
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()                                   # end -> arms the wait (0 s)
+    fleet._loop_tick()                                   # the preset goes out
+    assert fleet.preset_state()["loop"] is True
+    _paint(fleet, "radxa-01")
+    fleet.links["radxa-02"].online = False               # unplugged mid-stage
+    for _ in range(46):
+        clock.now += 1.0
+        fleet._loop_tick()
+    assert fleet.run["loops"] == 1 and fleet.preset_state() is None
+    assert [n for n, _ in _posted(fleet, "/show/run")].count("radxa-02") == 1   # run 0 only
+    assert fleet._loop_skipped == {"radxa-02": "radxa-02: not answering"}
+    assert "started without radxa-02" in fleet.loop_state()["problem"]
+    assert any("Loop: run 1 started without radxa-02 (not ready: radxa-02: not answering)"
+               in c for c in fleet.corrections)
+
+
+def test_an_operator_stage_starts_without_a_unit_that_went_offline_during_it():
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.start_show(lead_s=3.0, preset_first=True)
+    fleet.links["radxa-02"].online = False
+    _start_after_paint(fleet, clock, "radxa-01")
+    clock.now += 45.0
+    fleet._staging_tick()
+    assert fleet.run is not None
+    assert [n for n, _ in _posted(fleet, "/show/run")] == ["radxa-01"]
+    assert any("countdown running without radxa-02 (not ready: radxa-02: not answering)"
+               in c for c in fleet.corrections)
+
+
+def test_a_seek_during_the_stage_says_so_once():
+    # LOW-3
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    fleet.start_show(lead_s=3.0, preset_first=True)
+    fleet.seek(30.0)
+    assert fleet.preset_state() is None
+    assert len([c for c in fleet.corrections if "preset stage was called off" in c]) == 1
+    _start_after_paint(fleet, clock, "radxa-01", "radxa-02")
+    assert fleet.run is None
+    assert len([c for c in fleet.corrections if "preset stage was called off" in c]) == 1
+
+
+def test_two_starts_together_do_not_both_stage():
+    # LOW-7: the check-and-set is under the run lock, before the posts.
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    gate = threading.Event()
+    entered = threading.Event()
+    link = fleet.links["radxa-01"]
+    real_post = link.post
+
+    def slow_post(path, body, learn=True, timeout=None):
+        entered.set()
+        gate.wait(5)
+        return real_post(path, body, learn, timeout)
+    link.post = slow_post
+    first = threading.Thread(target=fleet.start_show,
+                             kwargs={"lead_s": 3.0, "preset_first": True})
+    first.start()
+    try:
+        assert entered.wait(5)
+        with pytest.raises(ValueError, match="preset first"):
+            fleet.start_show(lead_s=3.0, preset_first=True)
+    finally:
+        gate.set()
+        first.join(5)
+    assert len(_posted(fleet, "/show/preset")) == 2      # one stage's worth
+
+
+def test_the_end_of_show_clear_waits_for_a_loop_stage():
+    # During a Loop restart's PRESET stage the ended run is still `run` and
+    # the Loop wait is over: the end's clear must not empty the slots the
+    # countdown's 0:00 is about to read.
+    clock = Clock()
+    fleet = _preset_fleet(clock, settings=lambda: (0.0, 3.0, True))
+    for show in fleet.shows.values():
+        show["clear_after_show"] = True
+    fleet.start_show(lead_s=3.0)
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    fleet._loop_tick()
+    assert fleet.preset_state() is not None
+    clock.now += 10.0
+    link = fleet.links["radxa-01"]
+    assert fleet._clear_after_end(link, dict(fleet.run), fleet.shows["radxa-01"]) is False
+    assert _posted(fleet, "/show/clear") == []
+
+
+def test_server_gates_refuse_during_the_stage(tmp_path):
+    # LOW-4: Upload, demo save, Clear pictures and the tar import refuse
+    # while a START is presetting, as they do during a run.
+    ws = _workspace(tmp_path / "ws", music=False)
+    ws.set_preset_before_start(True)
+    clock = Clock()
+    fleet = _preset_fleet(clock)
+    server = make_server(ws.root, port=0, fleet=fleet)
+    port = _serve(server)
+    try:
+        status, answer = _post(port, "/api/fleet/start", {"lead_s": 3})
+        assert answer.get("staged") is True, answer
+        for path, body in (("/api/fleet/upload", {"force": True}),
+                           ("/api/fleet/write_demo", {"name": "demo", "loop": False}),
+                           ("/api/fleet/clear_pictures", {})):
+            status, answer = _post(port, path, body)
+            assert status == 400 and answer["error"] == (
+                "the show is starting (preset first) - STOP it first"), (path, answer)
+        packed = io.BytesIO()
+        ws.export_tar(packed)
+        status, answer = _post(port, "/api/workspace/import", packed.getvalue())
+        assert status == 409 and "preset first" in answer["error"]
+        assert fleet.preset_state() is not None
+    finally:
+        server.shutdown()
+        server.server_close()

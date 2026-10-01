@@ -59,8 +59,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import sequence, showfile, timeline
-from .fleet import (DEFAULT_HOTSPOT_UNIT, DEFAULT_LEAD_S, WIFI_SWITCH_RANGE_S,
-                    Fleet, default_units)
+from .fleet import (DEFAULT_HOTSPOT_UNIT, DEFAULT_LEAD_S, STAGING_BUSY,
+                    WIFI_SWITCH_RANGE_S, Fleet, default_units)
 from .look import (MAX_BOARD_ID, PALETTE, UNRELIABLE_DIP_NOTE, Design,
                    LookError, LookMap, check, compile_design, default_shift,
                    resolve_dips, unit_board_ids, unreliable_dip)
@@ -252,10 +252,25 @@ def preset_before_start_of(show: dict) -> bool:
     the live exhibition test: with a 3 s countdown the 0:00 look had no
     time to paint before the music): ③ START - and every Loop restart -
     sends the 0:00 look first, waits for every garment to have painted
-    it, THEN counts down to 0:00. ON unless the show says `false`: a show
-    written before the key existed starts this way too, which is what the
-    operator asked for; the old behaviour is one tick away."""
-    return show.get("preset_before_start") is not False
+    it, THEN counts down to 0:00.
+
+    OFF unless the show says `true` (PM, review of d64e6e0, HIGH-2): every
+    show file written before the key existed - the PC's fashion-show
+    workspaces - keeps its ② preset -> ③ START -> 11 s countdown exactly;
+    the exhibition workspace ticks it on (the page's checkbox)."""
+    return show.get("preset_before_start") is True
+
+
+def _staging(fleet) -> bool:
+    """Is a START in its PRESET stage on this fleet (Fleet._staging)? The
+    gates that refuse during a run (Upload, demo save, Clear pictures, the
+    workspace tar import) refuse then too: the run is about to begin and
+    reads those slots (review of d64e6e0, LOW-4)."""
+    return getattr(fleet, "_staging", None) is not None
+
+
+# What those gates answer during the stage.
+STAGING_REFUSAL = "the show is starting (preset first) - STOP it first"
 
 
 def loop_wait_of(show: dict) -> "float | None":
@@ -1116,7 +1131,7 @@ class Workspace:
 
     def set_preset_before_start(self, on) -> None:
         """"Preset before START" (show.json's `preset_before_start`,
-        undoable). Default ON is stored as no key; off is `false` - the
+        undoable). Default OFF is stored as no key; on is `true` - the
         file says only what somebody chose. Never part of what reaches a
         unit (_REVISION_IGNORES)."""
         if not isinstance(on, bool):
@@ -1127,9 +1142,9 @@ class Workspace:
                 return                          # nothing changed: not a step
             after = dict(before)
             if on:
-                after.pop("preset_before_start", None)
+                after["preset_before_start"] = True
             else:
-                after["preset_before_start"] = False
+                after.pop("preset_before_start", None)
             self._commit(before, after)
 
     def preset_before_start(self) -> bool:
@@ -1454,7 +1469,13 @@ class Workspace:
         with self._lock:
             paths = sorted(self.files.glob("*.csv"))
             before = self._load_show()
-            self._commit(before, dict(before, **changes))
+            after = dict(before, **changes)
+            # "Preset before START" is stored only as `true`, whoever writes
+            # it (set_preset_before_start's rule): a file saying false
+            # leaves no key behind (review of d64e6e0, LOW-6).
+            if after.get("preset_before_start") is not True:
+                after.pop("preset_before_start", None)
+            self._commit(before, after)
         warnings: "list[str]" = []
         if cues is not None:
             items = {(_MAP_ITEM.match(p.name).group(1).lower())
@@ -2691,8 +2712,6 @@ class Workspace:
                          # How ③ START begins: PRESET -> countdown -> 0:00
                          # (Workspace.set_preset_before_start).
                          "preset_before_start": preset_before_start_of(show),
-            # ...and how START begins (preset first, or straight to the countdown).
-            "preset_before_start": preset_before_start_of(show),
                          "loop_default_s": LOOP_WAIT_S,
                          # The least wait THIS timeline allows, and why
                          # (loop_floor_of): the field's min and tooltip.
@@ -3434,6 +3453,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._refuse_early({"error": f"the workspace is at most "
                                        f"{WORKSPACE_TAR_MAX // (1024 * 1024)} MB"},
                                       413)
+        if self.fleet is not None and _staging(self.fleet):
+            return self._refuse_early({"error": STAGING_REFUSAL}, 409,
+                                      drain_all=True)
         if self.fleet is not None and self.fleet.run is not None:
             # Drained WHOLE: this client passed the token and is sending a
             # real workspace; it must read "STOP it first", not a reset.
@@ -3466,6 +3488,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(exc)}, status=400)
             # Checked again with the tar in hand: a START may have landed
             # while the body was on its way.
+            if self.fleet is not None and _staging(self.fleet):
+                return self._json({"error": STAGING_REFUSAL}, status=409)
             if self.fleet is not None and self.fleet.run is not None:
                 return self._json({"error": "a run is active on this Conductor "
                                             "- STOP it first"}, status=409)
@@ -3920,6 +3944,10 @@ class Handler(BaseHTTPRequestHandler):
             # Every picture is written at Upload time now: doing that while
             # a show is running would rewrite slots a unit may be reading
             # from for its next trigger (found in review).
+            # ...nor while a START is presetting (no `force` past that: the
+            # 0:00 look it waits for is in those slots).
+            if _staging(fleet):
+                raise ValueError(STAGING_REFUSAL)
             if fleet.run is not None and not body.get("force"):
                 raise ValueError("stop the show first")
             # Taken BEFORE the show is compiled: that and the writing
@@ -3958,6 +3986,8 @@ class Handler(BaseHTTPRequestHandler):
             # choice; this is the same rule where every client meets it.
             # Unlike Upload there is no `force`: a demo is never the way
             # back into a running show.
+            if _staging(fleet):
+                raise ValueError(STAGING_REFUSAL)
             if fleet.run is not None:
                 raise ValueError("stop the show first")
             # The same "whole show or not at all" rule as Upload, and the
@@ -3984,6 +4014,8 @@ class Handler(BaseHTTPRequestHandler):
             # run - those slots are what the next trigger reads from, and
             # unlike Upload there is no `force`: a clear is never a way
             # back into a running show. The units refuse it too.
+            if _staging(fleet):
+                raise ValueError(STAGING_REFUSAL)
             if fleet.run is not None:
                 raise ValueError("stop the show first")
             # No compile: nothing is built or written here, and the units
@@ -4063,10 +4095,8 @@ class Handler(BaseHTTPRequestHandler):
                 # A run that has reached its end (ENDED, a Loop wait) is
                 # not running: START then is the next run, no `force`
                 # asked for and none implied.
-                if fleet.preset_state() is not None:
-                    return self._json({"units": {}, "note":
-                                       "The show is starting (preset first) - "
-                                       "wait for the countdown, or STOP."})
+                if _staging(fleet):
+                    return self._json({"units": {}, "note": STAGING_BUSY})
                 if (fleet.run is not None and not body.get("force")
                         and not fleet.run_is_over()):
                     return self._json({"units": {}, "note":
@@ -4114,10 +4144,20 @@ class Handler(BaseHTTPRequestHandler):
                 # follows once every garment shows it (Fleet._staging_tick).
                 # A start from a mark never presets.
                 preset_first = at == 0.0 and self.workspace.preset_before_start()
-                results = fleet.start_show(lead, at, force=bool(body.get("force")),
-                                           preset_first=preset_first)
+                try:
+                    results = fleet.start_show(lead, at, force=bool(body.get("force")),
+                                               preset_first=preset_first)
+                except ValueError as exc:
+                    if str(exc) == STAGING_BUSY:
+                        # The other of two STARTs landing together staged
+                        # first (Fleet._stage_start's check-and-set, LOW-7).
+                        return self._json({"units": {}, "note": STAGING_BUSY})
+                    raise
                 response = {"units": results, "lead_s": lead, "from_s": at}
-                if preset_first:
+                # Staged unless every garment already showed this
+                # Conductor's 0:00 look, painted (or the START went over a
+                # running show): then it is counting down already.
+                if results and all(r.get("preset") is True for r in results.values()):
                     response["staged"] = True
                     response["note"] = ("Preset first: the countdown starts once "
                                         "every garment shows the 0:00 look.")

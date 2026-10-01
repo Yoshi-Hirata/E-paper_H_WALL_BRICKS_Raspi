@@ -4055,16 +4055,20 @@ function loopNextIn() {
 }
 const NEXT_NOT_YET = "The show has not started yet";
 // "Preset before START" (2026-10-01, from the live exhibition test: with a
-// 3 s countdown the 0:00 look had no time to paint before the music). ON by
-// default; stored with the show (show.json's preset_before_start, false
-// only); never part of what a unit is sent.
+// 3 s countdown the 0:00 look had no time to paint before the music). OFF by
+// default - the PC's fashion show keeps ② preset → ③ START → countdown; the
+// exhibition workspace ticks it on. Stored with the show (show.json's
+// preset_before_start, true only); never part of what a unit is sent.
 const PRESET_BEFORE_TITLE = "③ START の前にプリセット: まず 0:00 の絵を全衣装に出し、"
   + "描き終わるのを待ってからカウントダウン → 0:00(曲とショー)。Loop の再スタートも同じ順。"
-  + "ショーと一緒に保存、Upload 不要。"
+  + "② でプリセット済み・描き終わった衣装には二度送らず、全員そうなら即カウントダウン。"
+  + "既定 off(展示ではオンにする)。ショーと一緒に保存、Upload 不要。"
   + "\n\nPreset before START: the 0:00 look goes up on every garment first; the "
   + "countdown begins once every one has painted it (at most 45 s, then anyway), and "
-  + "the music starts at 0:00. Loop restarts do the same. The unit never repaints a "
-  + "0:00 look that already stands. Stored with the show, no Upload needed.";
+  + "the music starts at 0:00. Loop restarts do the same. A garment that already shows "
+  + "the look from ② Show preset is not preset again - if all do, the countdown starts "
+  + "at once. Off by default (tick it for the exhibition). Stored with the show, no "
+  + "Upload needed.";
 // A typed number of seconds, read the way the server reads it: NFKC first (so
 // full-width "１１" is 11), then rounded to a tenth exactly as Python's
 // round(x, 1) does - to the nearest tenth of the double's exact value, an
@@ -5029,7 +5033,7 @@ function renderFleet() {
           Loop: next run after <input type="text" id="show-loop-wait"
           value="${loopWaitShown()}" title="${esc(loopMinTitle())}" style="width:46px"> s</label>
         <label class="meta" title="${esc(PRESET_BEFORE_TITLE)}"><input type="checkbox"
-          id="show-preset-before" ${state.show.preset_before_start !== false ? "checked" : ""}>
+          id="show-preset-before" ${state.show.preset_before_start === true ? "checked" : ""}>
           Preset before START</label>
         <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
           id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
