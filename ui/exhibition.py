@@ -46,6 +46,21 @@ to the menu leaves a run running. What it calls:
                               `volume` shows `vol ?`, and LEFT / RIGHT
                               only say so
 
+    GET  /api/backups         the BACKUPS page's list (DOWN from the
+                              EXHIBITION screen; asked only while that
+                              page is open, on the reader's poll):
+                              {"enabled", "backups": [{name, at, reason,
+                              revision, uploaded, cues, size}], "why"}
+                              newest first - conductor/backups.py
+    POST /api/backups/restore {"name": ...}
+                              KEY1 *held* TWICE on the BACKUPS page (the
+                              first hold only arms it, RESTORE_ARM_S): the
+                              chosen generation back into the workspace. 409
+                              while a run is active (shown verbatim); the
+                              answer's `note` is "restored - Upload
+                              needed" or "restored - units already hold
+                              it". KEY2 goes back to the EXHIBITION page
+
 The speaker object also carries the Bluetooth side (Coder AC's
 Conductor: `device`, `connection`, `reconnect`, `pairing`): the
 SPEAKER row (ui/speaker.py) is a view over this same cache - no second
@@ -93,9 +108,24 @@ LOOP_PATH = "/api/loop"
 VOLUME_PATH = "/api/speaker/volume"
 VOLUME_STEP = 5              # joystick LEFT / RIGHT, per press
 VOLUME_UNSUPPORTED = "volume: not supported by this conductor"
+BACKUPS_PATH = "/api/backups"
+RESTORE_PATH = "/api/backups/restore"
+BACKUPS_UNSUPPORTED = "backups: not supported by this conductor"
+
+# The EXHIBITION screen's two pages: the run (MAIN) and, DOWN from it,
+# the Conductor's workspace backups (BACKUPS).
+MAIN = "main"
+BACKUPS = "backups"
 
 PROBE_TIMEOUT_S = 1.0        # /api/fleet must answer within this
 COMMAND_TIMEOUT_S = 3.0      # START / STOP / loop, and the show's name
+# A restore swaps the workspace (a music file of tens of MB) and compiles
+# every unit's show before it answers - seconds on radxa-05, not 3.
+RESTORE_TIMEOUT_S = 180.0
+# A restore takes TWO holds of KEY1: the first only arms it ("hold KEY1
+# again to restore ..."), for this long; UP/DOWN/KEY2 disarm. A stray DOWN
+# then a hold meant as START must never replace the show.
+RESTORE_ARM_S = 5.0
 POLL_OPEN_S = 5.0            # while the EXHIBITION screen is open
 POLL_SPEAKER_S = 2.0         # while the SPEAKER screen is open (pairing progress)
 POLL_IDLE_S = 30.0           # otherwise: only the menu label needs it
@@ -227,8 +257,10 @@ class Exhibition:
                  probe_timeout: float = PROBE_TIMEOUT_S,
                  command_timeout: float = COMMAND_TIMEOUT_S,
                  clock=time.monotonic, echo_log: bool = True,
-                 poll_speaker_s: float = POLL_SPEAKER_S):
+                 poll_speaker_s: float = POLL_SPEAKER_S,
+                 restore_timeout: float = RESTORE_TIMEOUT_S):
         self._http = http
+        self.restore_timeout = restore_timeout
         self.base = base.rstrip("/")
         self.poll_open_s = poll_open_s
         self.poll_idle_s = poll_idle_s
@@ -266,6 +298,17 @@ class Exhibition:
         self._volume_inflight = False
         self._volume_wanted = 0
         self._volume_thread: "threading.Thread | None" = None
+        # The BACKUPS page: which page is up, the list as last read (None:
+        # not read yet), why it could not be, and the cursor - kept on
+        # the same generation (by name) when a refresh moves the list.
+        self.page = MAIN
+        self.backups: "list[dict] | None" = None
+        self.backups_error: "str | None" = None
+        self.backups_enabled: "bool | None" = None
+        self.backup_choice = 0
+        self._backup_name: "str | None" = None
+        # The first KEY1 hold on BACKUPS: (generation name, clock(), label).
+        self._armed: "tuple[str, float, str] | None" = None
 
     # ---- facts for the screen ----
 
@@ -474,20 +517,189 @@ class Exhibition:
     def status_text(self) -> str:
         """The line under the state: what a command is doing or did."""
         if self.phase == SENDING:
-            return "sending…"
+            return "restoring…" if self.command == "restore" else "sending…"
+        armed = self.armed_text()
+        if armed:
+            return armed
         if self.phase in (DONE, FAILED):
             return self.note
         if self.available is False and self.fleet_error:
             return f"{NO_CONDUCTOR}: {self.fleet_error}"
         return ""
 
+    # ---- the BACKUPS page ----
+
+    def backup_rows(self) -> "list[tuple[str, bool]]":
+        """(`10-01 15:20 upload *`, uploaded) per generation, newest first
+        - the `*` marks the one the last Upload put on the units."""
+        rows = []
+        for backup in self.backups or []:
+            at = str(backup.get("at") or "")
+            when = f"{at[5:10]} {at[11:16]}" if len(at) >= 16 else at
+            text = f"{when} {backup.get('reason') or '?'}".strip()
+            uploaded = bool(backup.get("uploaded"))
+            rows.append((text + (" *" if uploaded else ""), uploaded))
+        return rows
+
+    def chosen_backup(self) -> "dict | None":
+        rows = self.backups or []
+        if 0 <= self.backup_choice < len(rows):
+            return rows[self.backup_choice]
+        return None
+
+    def backup_detail(self) -> str:
+        """The chosen generation: `18 cues · 31.2 MB · 1a2b3c4d`."""
+        backup = self.chosen_backup()
+        if backup is None:
+            return ""
+        parts = []
+        cues = backup.get("cues")
+        if isinstance(cues, int) and not isinstance(cues, bool):
+            parts.append(f"{cues} cue{'s' if cues != 1 else ''}")
+        size = backup.get("size")
+        if isinstance(size, (int, float)) and not isinstance(size, bool):
+            parts.append(f"{size / (1024 * 1024):.1f} MB")
+        revision = backup.get("revision")
+        if isinstance(revision, str) and revision:
+            parts.append(revision[:8])
+        return " · ".join(parts)
+
+    def backups_text(self) -> str:
+        """The line above the list: what it is, or why there is none."""
+        if self.backups_error:
+            return self.backups_error
+        if self.backups_enabled is False:
+            return "backups are off on this conductor"
+        if self.backups is None:
+            return "reading…"
+        if not self.backups:
+            return "no backups yet"
+        return "newest first  * = on the units"
+
     def key(self) -> tuple:
         """Everything the screen shows, for the App's redraw check - the
         run clock to the second, so a running show repaints once a
         second and an idle one not at all."""
+        if self.page == BACKUPS:
+            return (self.available, self.page, self.phase, self.note,
+                    self.command, tuple(self.backup_rows()), self.backup_choice,
+                    self.backup_detail(), self.backups_text(), self.armed_text())
         return (self.available, self.phase, self.note, self.run_text(),
                 self.fleet_text(), self.loop_text(), self.speaker_text(),
                 self.show_lines(), self.active)
+
+    def open_backups(self) -> None:
+        """DOWN on the EXHIBITION page: the list, read now (on the
+        reader's thread) and on every poll while the page is open."""
+        if not self.available or self.busy:
+            return
+        self.reset()
+        with self._lock:
+            self.page = BACKUPS
+            self.backups = None
+            self.backups_error = None
+            self.backups_enabled = None
+            self.backup_choice = 0
+            self._backup_name = None
+        self.refresh()
+
+    def close_backups(self) -> None:
+        """KEY2 on the BACKUPS page: back to EXHIBITION; the list is not
+        asked for again until the page reopens. A restore in flight
+        completes, its verdict shown on the EXHIBITION page."""
+        self._armed = None
+        with self._lock:
+            self.page = MAIN
+            self.backups = None
+            self.backups_error = None
+            self.backups_enabled = None
+        self.reset()
+
+    def move_backup(self, delta: int) -> None:
+        """UP / DOWN on the list - and a verdict read away, as on WIFI."""
+        self.reset()
+        with self._lock:
+            rows = self.backups or []
+            if not rows:
+                return
+            self.backup_choice = max(0, min(len(rows) - 1,
+                                            self.backup_choice + delta))
+            self._backup_name = rows[self.backup_choice].get("name")
+
+    def armed_text(self) -> str:
+        """`hold KEY1 again to restore <10-01 15:20 edit>` while the first
+        hold's arming stands, else ""."""
+        armed = self._armed
+        if armed is None or self._clock() - armed[1] > RESTORE_ARM_S:
+            return ""
+        return f"hold KEY1 again to restore <{armed[2]}>"
+
+    def disarm(self) -> None:
+        self._armed = None
+
+    def restore_backup(self) -> None:
+        """KEY1 held on the BACKUPS page. The FIRST hold only arms the
+        restore of the chosen generation (RESTORE_ARM_S); a second hold
+        on the same one, within that, sends it. The Conductor decides (409
+        during a run); its answer, or its refusal, is the verdict."""
+        backup = self.chosen_backup()
+        if backup is None or not backup.get("name"):
+            return
+        name = backup["name"]
+        if not (self.armed_text() and self._armed[0] == name):
+            rows = self.backup_rows()
+            label = rows[self.backup_choice][0] if self.backup_choice < len(rows) else name
+            if label.endswith(" *"):
+                label = label[:-2]
+            with self._lock:
+                if self.phase != SENDING:
+                    self.phase = IDLE
+                    self.note = ""
+            self._armed = (name, self._clock(), label)
+            return
+        self._armed = None
+        self._send("restore", RESTORE_PATH, {"name": name},
+                   timeout=self.restore_timeout)
+
+    def _read_backups(self) -> None:
+        """GET /api/backups into the page's cache. Never raises."""
+        try:
+            code, payload = self._http("GET", self.base + BACKUPS_PATH, None,
+                                       self.command_timeout)
+        except Exception as exc:            # noqa: BLE001 - shown, not raised
+            with self._lock:
+                self.backups_error = f"ERROR {_why(exc)}"
+            return
+        if code == 404:
+            with self._lock:
+                self.backups_error = BACKUPS_UNSUPPORTED
+                self.backups = []
+            return
+        if code != 200 or not isinstance(payload, dict):
+            with self._lock:
+                self.backups_error = f"ERROR {self._reason(code, payload)}"
+            return
+        rows = payload.get("backups")
+        rows = [row for row in rows if isinstance(row, dict)] \
+            if isinstance(rows, list) else []
+        with self._lock:
+            if self.page != BACKUPS:
+                return                      # closed while the answer was on its way
+            self.backups_enabled = payload.get("enabled") is not False
+            self.backups_error = None
+            self.backups = rows
+            names = [row.get("name") for row in rows]
+            if self._backup_name in names:
+                self.backup_choice = names.index(self._backup_name)
+            elif self._backup_name is None and rows:
+                # The page opens on the generation the units hold (`*`),
+                # not the newest: the likeliest one to want back.
+                marked = [i for i, row in enumerate(rows) if row.get("uploaded")]
+                self.backup_choice = marked[0] if marked else 0
+                self._backup_name = names[self.backup_choice]
+            else:
+                self.backup_choice = max(0, min(self.backup_choice, len(rows) - 1))
+                self._backup_name = names[self.backup_choice] if rows else None
 
     # ---- the screen opening and closing ----
 
@@ -503,11 +715,16 @@ class Exhibition:
         """KEY2: back to the slow poll. A command in flight completes;
         a run on the Conductor is none of this screen's business."""
         self.is_open = False
+        with self._lock:
+            self.page = MAIN
+            self.backups = None
         if not self.busy:
             self.reset()
 
     def reset(self) -> None:
-        """A verdict was read (UP/DOWN, or the screen re-opened)."""
+        """A verdict was read (UP/DOWN, or the screen re-opened) - and an
+        armed restore is disarmed."""
+        self._armed = None
         with self._lock:
             if self.phase == SENDING:
                 return
@@ -603,6 +820,8 @@ class Exhibition:
                 self.emit(f"exhibition: conductor at {self.base}")
             if want_show:
                 self._read_show()
+            if self.page == BACKUPS:
+                self._read_backups()
 
     def _read_show(self) -> None:
         try:
@@ -720,7 +939,8 @@ class Exhibition:
             self.note = note
             self.phase = FAILED if error else DONE
 
-    def _send(self, command: str, path: str, body: dict) -> None:
+    def _send(self, command: str, path: str, body: dict,
+              timeout: "float | None" = None) -> None:
         with self._lock:
             if self.phase == SENDING:
                 return
@@ -729,7 +949,7 @@ class Exhibition:
             self.note = ""
         try:
             self._thread = threading.Thread(target=self._command,
-                                            args=(command, path, body),
+                                            args=(command, path, body, timeout),
                                             daemon=True, name="exhibition-cmd")
             self._thread.start()
         except Exception as exc:            # noqa: BLE001 - never stuck SENDING
@@ -744,11 +964,12 @@ class Exhibition:
         if thread is not None:
             thread.join(timeout)
 
-    def _command(self, command: str, path: str, body: dict) -> None:
+    def _command(self, command: str, path: str, body: dict,
+                 timeout: "float | None" = None) -> None:
         self.emit(f"exhibition: {command} -> {path} {json.dumps(body)}")
         try:
             code, payload = self._http("POST", self.base + path, body,
-                                       self.command_timeout)
+                                       timeout or self.command_timeout)
         except Exception as exc:            # noqa: BLE001 - a verdict, not a crash
             self._verdict(FAILED, f"ERROR {_why(exc)}")
             return
@@ -780,6 +1001,10 @@ class Exhibition:
                         self.fleet = dict(self.fleet, loop=payload)
                 return f"LOOP {'on' if payload.get('on') else 'off'}"
             return "LOOP sent"
+        if command == "restore":
+            # The Conductor's own words: "restored - Upload needed" or
+            # "restored - units already hold it".
+            return _first_line(payload.get("note") or "restored")
         if payload.get("note"):
             # A soft refusal ("Nothing uploaded yet - Upload first.") or
             # a remark ("Started from 1:30.") - the Conductor's words.

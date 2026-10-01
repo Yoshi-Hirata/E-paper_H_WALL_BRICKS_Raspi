@@ -218,6 +218,30 @@ def preview(directory: str) -> int:
                              "speaker LOST - see SPEAKER", "idle",
                              active=True, host="radxa-05", volume_keys=True
                              ).save(out / "exhibition_speaker_lost.png")
+    render.exhibition_screen(True, show, "idle", "units 7/7 online",
+                             "LOOP off", "speaker ok · vol 70% (bluez)", "idle",
+                             host="radxa-05", volume_keys=True, backups_key=True
+                             ).save(out / "exhibition_backups_key.png")
+    backups = [("10-01 16:02 prerestore", False), ("10-01 15:20 upload *", True),
+               ("10-01 14:00 edit", False), ("09-30 18:41 edit", False),
+               ("09-30 09:00 import", False), ("09-29 17:12 start", False)]
+    render.backups_screen(backups, 1, "idle", info="newest first  * = on the units",
+                          detail="18 cues · 31.0 MB · 1a2b3c4d", host="radxa-05"
+                          ).save(out / "backups_list.png")
+    render.backups_screen(backups, 2, "done", status="restored - Upload needed",
+                          info="newest first  * = on the units",
+                          detail="18 cues · 31.0 MB · 9f8e7d6c", host="radxa-05"
+                          ).save(out / "backups_restored.png")
+    render.backups_screen(backups, 1, "failed",
+                          status="ERROR a run is active on this Conductor - STOP it first",
+                          info="newest first  * = on the units",
+                          detail="18 cues · 31.0 MB · 1a2b3c4d", host="radxa-05"
+                          ).save(out / "backups_refused.png")
+    render.backups_screen(backups, 2, "idle",
+                          status="hold KEY1 again to restore <10-01 14:00 edit>",
+                          info="newest first  * = on the units",
+                          detail="17 cues · 30.0 MB · 9f8e7d6c", host="radxa-05"
+                          ).save(out / "backups_armed.png")
     bose = "Bose Flex SoundLink"
     render.speaker_screen("ok", "READY", bose, "connected · vol 70%", ("", ""),
                           "connected 12 min ago", host="radxa-05",

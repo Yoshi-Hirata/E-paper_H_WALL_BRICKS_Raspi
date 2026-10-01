@@ -731,9 +731,11 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
                       run: str, fleet: str, loop: str, speaker: str,
                       phase: str, status: str = "", active: bool = False,
                       locked: bool = False, host: str | None = None,
-                      volume_keys: bool = False) -> Image.Image:
+                      volume_keys: bool = False,
+                      backups_key: bool = False) -> Image.Image:
     """EXHIBITION: the Conductor on this unit, run from the HAT
-    (ui/exhibition.py).
+    (ui/exhibition.py). `backups_key` adds `DOWN backups` to the key line
+    (the second page, backups_screen()).
 
     `available` is whether a Conductor answers on 127.0.0.1 (None: not
     asked yet); `show` is Exhibition.show_lines() - the timeline's name
@@ -832,7 +834,16 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
     keys = "hold KEY3 = LOOP on/off"
     if volume_keys:
         keys = "hold KEY3 = LOOP   < > volume"
-    draw.text((8, 204), _ellipsize(keys, FONT_S, WIDTH - 16), font=FONT_S,
+    right = WIDTH - 8
+    if backups_key:
+        # The second page, BACKUPS: said on the key line, the shorter
+        # spelling of the rest so both fit DejaVu 12 px.
+        more = "DOWN backups"
+        keys = "KEY3 LOOP  < > vol" if volume_keys else "hold KEY3 = LOOP"
+        right -= int(FONT_S.getlength(more))
+        draw.text((right, 204), more, font=FONT_S, fill=ACCENT)
+        right -= 8
+    draw.text((8, 204), _ellipsize(keys, FONT_S, right - 8), font=FONT_S,
               fill=DIM)
     if locked:
         hint = "buttons locked"
@@ -848,6 +859,73 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
         hint = "hold KEY1 = STOP  KEY2 back"
     else:
         hint = "hold KEY1 = START  KEY2 back"
+    _hint(draw, hint)
+    return image
+
+
+BACKUP_ROWS = 5             # generations that fit between the info and detail lines
+
+
+def backups_screen(rows: "list[tuple[str, bool]]", choice: int, phase: str,
+                   status: str = "", info: str = "", detail: str = "",
+                   locked: bool = False, host: str | None = None) -> Image.Image:
+    """BACKUPS: the Conductor's workspace generations, the EXHIBITION
+    screen's second page (ui/exhibition.py, conductor/backups.py).
+
+    `rows` is Exhibition.backup_rows() - (`10-01 15:20 upload *`,
+    uploaded) newest first, `choice` highlighted like a menu row and the
+    uploaded one in green; `info` the line above the list (what it is, or
+    why it is empty), `detail` the chosen one's `18 cues · 31.2 MB ·
+    1a2b3c4d`; `phase`/`status` as on the EXHIBITION page (`restoring…`,
+    then the Conductor's answer - red when it starts with ERROR).
+    """
+    image, draw = _blank()
+    word, color = _EXHIBITION_STATUS.get(phase, (phase.upper(), DIM))
+    if phase == "sending":
+        word, color = "RESTORING", WARN
+    _header(draw, "BACKUPS", status=word, status_color=color, host=host)
+
+    draw.text((8, 30), _ellipsize(info, FONT_S, WIDTH - 16), font=FONT_S,
+              fill=ERR if info.startswith("ERROR") else DIM)
+    row_h = 20
+    first = max(0, min(choice - BACKUP_ROWS // 2, len(rows) - BACKUP_ROWS))
+    for row, index in enumerate(range(first, min(first + BACKUP_ROWS, len(rows)))):
+        y = 50 + row * row_h
+        text, uploaded = rows[index]
+        chosen = index == choice
+        if chosen:
+            draw.rectangle((4, y - 2, WIDTH - 4, y + row_h - 4), fill=SELECT)
+            draw.rectangle((4, y - 2, 7, y + row_h - 4), fill=ACCENT)
+        tint = OK if uploaded else (FG if chosen else DIM)
+        draw.text((14, y), _ellipsize(text, FONT_M, WIDTH - 14 - 8), font=FONT_M,
+                  fill=tint)
+    if detail:
+        draw.text((8, 152), _ellipsize(detail, FONT_S, WIDTH - 16), font=FONT_S,
+                  fill=DIM)
+
+    armed = status.startswith("hold KEY1 again")
+    if status:
+        if status.startswith("ERROR"):
+            tint = ERR
+        elif armed:
+            tint = WARN             # the first hold: one more restores
+        elif phase == "done":
+            tint = OK
+        else:
+            tint = DIM
+        y = 170
+        for line in _wrap(status, FONT_S, WIDTH - 16)[:3]:
+            draw.text((8, y), line, font=FONT_S, fill=tint)
+            y += 14
+
+    if locked:
+        hint = "buttons locked"
+    elif phase == "sending":
+        hint = "restoring - KEY2 back"
+    elif armed:
+        hint = "hold KEY1 again  UP/DOWN cancel"
+    else:
+        hint = "hold KEY1 twice = restore  KEY2"
     _hint(draw, hint)
     return image
 

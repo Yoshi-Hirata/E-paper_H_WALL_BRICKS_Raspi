@@ -281,10 +281,13 @@ journalctl -u epaper-conductor -n 20 --no-pager
 IPv4 ― ルータのクライアントなら `192.168.51.105`、ホットスポットなら `10.42.0.1`):
 
 ```
+  backups: /home/radxa/exhibition-backups (the newest 5, and the one last uploaded)
 conductor UI: http://127.0.0.1:8765
 conductor UI: http://192.168.51.105:8765
   workspace /home/radxa/exhibition  speaker: mpg123 on this host  passcode: set
 ```
+
+(`backups:` の行は `--backups` の印 ― 7 章。)
 
 `speaker: mpg123 not found` と出たら 2.1 をやり直す(Conductor は止まらない。
 音が出ないだけ)。`epaper-ui`(LCD のメニュー)はそのまま動かしておく。
@@ -507,9 +510,68 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
 | Loop が回らない | `Loop` のチェック、待ち時間が下限〜600 か(欄のツールチップ)。Units タブの `Corrected automatically:` の行に `Loop: …` の理由 |
 | 再起動後に START が `Upload again` / `Upload first` | 機体が持っているショーが今のタイムラインと違う(送り直した・編集した)。① Upload |
 | ショーを差し替えたい | 会場でも PC を `AZ-Epaper` に入れれば 4 章の手順で送れる(先に STOP) |
+| ショーが壊れた・消えた・間違えて編集した(停電のあとなど) | PC なしで戻せる: 7 章(LCD の EXHIBITION → DOWN → BACKUPS で KEY1 長押しを 2 回、またはページの Units タブ → BACKUPS ON THIS CONDUCTOR → Restore…) |
 
 ログ: `journalctl -u epaper-conductor -f`(`speaker: loaded xxx.mp3, unpause latency 12 ms`、
 `speaker: Bose Flex SoundLink disconnected` / `connect … failed: … - next try in 30 s` /
 `Bose Flex SoundLink reconnected after 185 s` / `sound routed to bluez_sink.…, 1 stream(s) moved` /
 `re-pair AC:…: scanning - …`、`Loop: run 2 started` などが出る)、`journalctl -u epaper-exhibition-net`。
 bluetoothd 側の理由(`Permission denied (13)` など)は `journalctl -u bluetooth -n 20`。
+
+## 7. バックアップと復元
+
+会場は 1 日に何度も停電する。停電の瞬間に書いていたショーが壊れた、CSV が消えた、間違えて
+編集して戻せない ― そういうときに **PC なしで、その場で**前の状態に戻すための仕組み
+(`conductor/backups.py`。radxa-05 のサービスは `--backups` 付き ― 2.4 のサービスファイル。
+`git pull` 後にサービスファイルをコピーし直して `daemon-reload` + `restart`)。
+
+- **どこに**: `/home/radxa/exhibition-backups/`(ワークスペース `/home/radxa/exhibition` の**隣**。
+  ワークスペースの中ではないので、Send workspace や復元で消えることはない)。1 つの
+  バックアップ(世代)は `20261001-152003-upload-1a2b3c4d.tar` のような素の tar で、中身は
+  4 章で送るものと同じ(CSV・タイムライン・曲・履歴)。journal に `backups: 2026…tar (18 cues,
+  31.2 MB)` と出る
+- **いつ取られるか**: Conductor の起動時、**Send workspace** を受け取ったあと、**① Upload** の
+  あと、**編集のあと 1 分静かになったとき**、それと**復元の直前**(`prerestore` ― 間違えて
+  戻したら、これを戻せば元どおり)。中身が一番新しい世代と同じなら増えない。**ショーが
+  動いている間(プリセット中も)は編集の世代を書かず**、ランが終わってから(Loop の待ち時間は
+  可)取る。SD の空きが 200 MB を切るときも書かない
+- **いくつ残るか**: 新しい順に **5 個**(`fleet.json` の `"backup_keep": 10` のように 1〜50 で
+  変えられる)と、**最後に Upload した世代**(古くても必ず残る。一覧で `*` / ★)
+- **戻らないもの**: **`fleet.json`(パスコード・機体の番地・ホットスポット・音量・スピーカー)は
+  バックアップにも入らず、復元でも決して変わらない**
+- **ショー中は戻せない**: ランが動いている(Loop の待ち時間中も、プリセット中も)と
+  `a run is active on this Conductor - STOP it first` で断られる。先に STOP
+
+**LCD から**(radxa-05、ブラウザも PC も無いとき):
+
+1. メニューの **EXHIBITION** に入り、ショーが動いていれば **KEY1 長押しで STOP**
+2. **DOWN** で **BACKUPS** ページ(キー行の右に `DOWN backups`)。新しい順に
+   `10-01 15:20 upload *` のように並ぶ(`*` と緑 = 機体が持っている世代。ページは**この行を
+   選んだ状態で開く**)。下の行に選んだ世代の `18 cues · 31.0 MB · 1a2b3c4d`
+3. UP / DOWN で選んで **KEY1 長押しを 2 回**: 1 回目は `hold KEY1 again to restore <10-01 14:00
+   edit>`(琥珀色)と出るだけで何も起きない ― 5 秒以内にもう一度長押しすると送る(UP / DOWN /
+   KEY2 で取り消し。間違えて DOWN を押してから START のつもりで長押ししてもショーは
+   置き換わらない)→ `restoring…` → 結果:
+   - `restored - units already hold it` … 機体はもうこのショーを持っている(Conductor が数秒で
+     引き取る)。そのまま ③ START でよい
+   - `restored - Upload needed` … 機体の絵は別のショーのもの。ページの **① Upload** が要る
+     (LCD からは Upload できないので、スマホで 10.42.0.1:8765 を開く)
+   - `already the workspace - nothing restored` … 今のショーがもうその世代と同じ(何も変えない)
+   - `ERROR …` … 断られた理由がそのまま出る(ラン中なら STOP してからもう一度。`could not keep
+     the current state first` は今の状態の控えが取れなかった ― 1 分ほど待ってもう一度)
+4. **KEY2** で EXHIBITION ページへ戻り、もう一度 KEY2 でメニュー
+
+**ページから**: Units タブの **BACKUPS ON THIS CONDUCTOR**(SEND THIS WORKSPACE の下)。
+取った時刻・理由・キュー数・サイズの表と **Restore…**(確認ダイアログ付き)。結果は表の下に
+出て、Upload が要るときはトーストが琥珀色になる。PC の Conductor(`--backups` 無し)では
+「Off on this Conductor」と出るだけ。
+
+コマンドラインなら(radxa-05 の上で。ループバックはパスコード不要):
+
+```bash
+curl -s http://127.0.0.1:8765/api/backups | python3 -m json.tool
+curl -s -X POST -H "Content-Type: application/json" -d '{"name": "20261001-152003-upload-1a2b3c4d.tar"}' http://127.0.0.1:8765/api/backups/restore
+```
+
+手で戻すこともできる(Conductor を止めずに、PC から): その tar を 4 章のコマンドラインの
+`/api/workspace/import` に送れば同じこと。

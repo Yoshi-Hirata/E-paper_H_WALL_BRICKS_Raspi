@@ -59,6 +59,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import durable, sequence, showfile, timeline
+from .backups import (BACKUPS_OFF, RESTORE_WAIT_S, backup_listing,
+                      content_revision, restore_note, start_backups)
 from .fleet import (DEFAULT_HOTSPOT_UNIT, DEFAULT_LEAD_S, STAGING_BUSY,
                     WIFI_SWITCH_RANGE_S, Fleet, default_units)
 from .look import (MAX_BOARD_ID, PALETTE, UNRELIABLE_DIP_NOTE, Design,
@@ -3009,7 +3011,7 @@ PASSCODE_COOKIE = "passcode"
 # hosts refuses to start with it, or with no passcode at all (serve()).
 PASSCODE_EXAMPLE = "CHANGE-ME-2026"
 _PASSCODE_GETS = {"/api/workspace/export", "/api/music/file", "/api/show/export",
-                  "/api/simulator"}
+                  "/api/simulator", "/api/backups"}
 _PASSCODE_COOKIE_PATHS = {"/api/music/file"}      # the <audio> element's route
 _LOCAL_HOSTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
@@ -3029,6 +3031,7 @@ class Handler(BaseHTTPRequestHandler):
     prepared: "dict[str, str]" = {}        # unit -> the cue it was last sent
     prepared_lock = threading.Lock()       # request threads share the dict
     send_jobs: "dict[str, SendJob]" = {}   # id -> a workspace transfer
+    backups = None                         # conductor/backups.py, with --backups
     server_version = "conductor"
 
     def _client_local(self) -> bool:
@@ -3291,6 +3294,8 @@ class Handler(BaseHTTPRequestHandler):
                 # The identity keys (see /api/conductor) ride on the state
                 # too, so the page's first paint has them.
                 return self._json(dict(self.workspace.state(), **self._identity()))
+            if path == "/api/backups":
+                return self._json(backup_listing(self.backups))
             if path == "/api/conductor":
                 # Which Conductor this is, and whether the OTHER launcher's
                 # is up. `label` is this Conductor's name when it is a
@@ -3517,6 +3522,14 @@ class Handler(BaseHTTPRequestHandler):
                                   status=400)
         finally:
             spool_path.unlink(missing_ok=True)
+        reply, _ = self._imported(counts)
+        if self.backups is not None:
+            self.backups.after_import()     # a generation, on its worker
+        return self._json(reply)
+
+    def _imported(self, counts: dict) -> "tuple[dict, dict[str, dict]]":
+        """What follows a workspace swap (an import, a restore): the
+        reply and the shows it compiles to."""
         if self.fleet is not None:
             # What the units hold is the OLD show now. The fleet forgets it
             # (and the startup offer), and the units it knew are marked as
@@ -3531,11 +3544,97 @@ class Handler(BaseHTTPRequestHandler):
         shows, problems = self.workspace.compile_show()
         with self.prepared_lock:
             self.prepared.clear()           # manual cues of the old workspace
-        return self._json({"ok": True, **counts,
-                           "cues": len(self.workspace.state()["show"]["cues"]),
-                           "revision": self.workspace.revision(),
-                           "shows": {unit: show["id"] for unit, show in shows.items()},
-                           "problems": problems + ([dropped] if dropped else [])})
+        return ({"ok": True, **counts,
+                 "cues": len(self.workspace.state()["show"]["cues"]),
+                 "revision": self.workspace.revision(),
+                 "shows": {unit: show["id"] for unit, show in shows.items()},
+                 "problems": problems + ([dropped] if dropped else [])}, shows)
+
+    def _restore_backup(self, body: dict) -> None:
+        """POST /api/backups/restore {"name"} - put one of this Conductor's
+        own generations back (conductor/backups.py), through the import's
+        own swap: whole or not at all, fleet.json (passcode, units,
+        hotspot) never touched. 409 while a run or a START's preset stage
+        is active, like the import. The state just before is kept as a
+        `prerestore` generation first. Answers what the import answers,
+        plus `restored`, `units_hold` (the restored generation is what
+        the last whole Upload put on the units, and no online unit says
+        otherwise) and `note` - "restored - Upload needed" or "restored -
+        units already hold it". On the exhibition's Conductor (--adopt)
+        the compiled shows are offered to the units again, so the ones
+        that hold them are adopted on their next poll, as after a
+        restart."""
+        backups = self.backups
+        if backups is None:
+            return self._json({"error": BACKUPS_OFF}, status=400)
+        name = body.get("name")
+        try:
+            record = backups.find(name)
+        except KeyError:
+            return self._json({"error": f"{name}: no such backup on this Conductor"},
+                              status=404)
+        fleet = self.fleet
+        if fleet is not None and _staging(fleet):
+            return self._json({"error": STAGING_REFUSAL}, status=409)
+        if fleet is not None and fleet.run is not None:
+            return self._json({"error": "a run is active on this Conductor "
+                                        "- STOP it first"}, status=409)
+        try:
+            same = content_revision(self.workspace) == record.get("revision")
+        except OSError:
+            same = False
+        if same:
+            # Nothing to put back: no swap, so nothing the units hold is
+            # forgotten and no Upload is asked for.
+            return self._json({"ok": True, "restored": record["name"],
+                               "unchanged": True, "units_hold": None,
+                               "note": "already the workspace - nothing restored"})
+        safety = backups.request("prerestore", wait=RESTORE_WAIT_S,
+                                 protect=(record["name"],))
+        if not safety.done.is_set() and safety.cancel():
+            # Still queued behind a long generation: refused, and the copy
+            # is never taken after all - it must not land after a swap.
+            return self._json({"error": "could not keep the current state first "
+                                        "- not restored (try again in a minute)"},
+                              status=503)
+        safety.done.wait(RESTORE_WAIT_S)
+        if not safety.done.is_set():
+            return self._json({"error": "could not keep the current state first "
+                                        "- not restored (try again in a minute)"},
+                              status=503)
+        # Asked again: a START may have landed while the safety copy was written.
+        if fleet is not None and (_staging(fleet) or fleet.run is not None):
+            return self._json({"error": STAGING_REFUSAL if _staging(fleet) else
+                               "a run is active on this Conductor - STOP it first"},
+                              status=409)
+        try:
+            counts = self.workspace.import_tar(backups.path(record["name"]))
+        except (KeyError, tarfile.TarError, ValueError, OSError) as exc:
+            return self._json({"error": f"{record['name']} could not be restored: "
+                                        f"{exc} - the workspace is unchanged"},
+                              status=400)
+        backups.settle()                    # no "edit" generation for this
+        reply, shows = self._imported(counts)
+        if self.adopt and fleet is not None and shows and not reply["problems"]:
+            rev = self.workspace.revision()
+            everyone = sorted(set(shows) | self.workspace.timeline_units())
+            fleet.offer_shows(shows, on_adopt=lambda unit: self.workspace.mark_written(
+                "upload", rev, units=[unit], all_units=everyone))
+        units_hold = bool(self.adopt and fleet is not None and shows
+                          and backups.holds_upload(record))
+        if units_hold:
+            for unit, show in shows.items():
+                link = fleet.links.get(unit)
+                held = (((getattr(link, "status", None) or {}).get("show") or {})
+                        .get("id") if link is not None else None)
+                if link is not None and link.online and held != show["id"]:
+                    units_hold = False      # it says it holds something else
+        if safety.error or safety.not_taken:
+            reply["problems"] = reply["problems"] + [
+                "the state before the restore was not kept "
+                f"({safety.error or safety.not_taken})"]
+        return self._json(dict(reply, restored=record["name"],
+                               units_hold=units_hold, note=restore_note(units_hold)))
 
     def _send_workspace(self, body: dict) -> None:
         """POST /api/workspace/send {"to": "radxa-05:8765"} -> {"job": id};
@@ -3711,6 +3810,8 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             if self.path == "/api/workspace/send":
                 return self._send_workspace(body)
+            if self.path == "/api/backups/restore":
+                return self._restore_backup(body)
             if self.path == "/api/loop":
                 return self._set_loop(body)
             if self.path == "/api/speaker/volume":
@@ -4008,6 +4109,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.workspace.mark_written("upload", rev, units=written,
                                             all_units=self._all_units(shows),
                                             whole=not warnings)
+                if self.backups is not None:
+                    self.backups.after_upload(
+                        rev, whole=self.workspace.marks.get("upload") == rev)
             return self._json({"units": results, "problems": problems,
                                "warnings": warnings,
                                "shows": {u: s["id"] for u, s in shows.items()}})
@@ -4525,7 +4629,7 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
           speaker_output: "str | None" = None, speaker_factory=None,
           speaker_runner=None, passcode: "str | None" = None,
           adopt: bool = False, label: "str | None" = None,
-          speaker_session_factory=None) -> int:
+          speaker_session_factory=None, backups: bool = False) -> int:
     """`python -m conductor serve`. `host` is 127.0.0.1 unless asked
     (EXHIBITION mode: 0.0.0.0 on the unit that is also the hotspot);
     `speaker` plays the show's music through mpg123 on this host
@@ -4537,7 +4641,8 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
     `passcode` (or fleet.json's) gates the page from other hosts; `label`
     names a SEPARATE Conductor (the PC's exhibition one: its page wears
     the badge, and its workspace gets PC_FLEET_TEMPLATE whenever it has
-    no fleet.json)."""
+    no fleet.json); `backups` (or fleet.json "backups": true) keeps
+    generations of the workspace beside it (conductor/backups.py)."""
     import webbrowser
 
     label = clean_label(label)
@@ -4610,6 +4715,7 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
         compiled, problems = offer_startup_shows(fleet, ws)
     fleet.start()
     server.RequestHandlerClass.fleet = fleet
+    keeper = start_backups(server.RequestHandlerClass, config, backups)
     player = None
     if speaker:
         from .speaker import DEVICE_LATENCY_S, Speaker
@@ -4667,6 +4773,8 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
         pass
     finally:
         watch.stop()
+        if keeper is not None:
+            keeper.stop()
         if player is not None:
             player.stop()
         fleet.stop()

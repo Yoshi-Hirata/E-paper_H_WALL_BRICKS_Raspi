@@ -142,11 +142,14 @@ def cmd_send(args) -> int:
 def cmd_serve(args) -> int:
     from .server import serve
 
+    # Only said when asked for: the PC's default `serve` calls exactly
+    # what it always has.
+    extra = {"backups": True} if args.backups else {}
     return serve(args.workspace, args.port, open_browser=args.open,
                  host=args.host, speaker=args.speaker,
                  speaker_lead_ms=args.speaker_lead_ms,
                  speaker_output=args.speaker_output, passcode=args.passcode,
-                 adopt=args.adopt, label=args.label)
+                 adopt=args.adopt, label=args.label, **extra)
 
 
 def main(argv=None) -> int:
@@ -215,6 +218,13 @@ def main(argv=None) -> int:
                         "written) as holding it, so a restart of this "
                         "headless Conductor needs no Upload. Never on the "
                         "show PC. fleet.json's \"adopt\": true does the same")
+    p.add_argument("--backups", action="store_true",
+                   help="EXHIBITION mode: keep generations of the workspace "
+                        "beside it (<workspace>-backups/: after an import, "
+                        "an Upload and 60 s after edits; the newest 5 and "
+                        "the one last uploaded), restorable from the page "
+                        "and the unit's LCD. fleet.json's \"backups\": true "
+                        "does the same, \"backup_keep\" sets how many (1-50)")
     p.add_argument("--passcode", default=None,
                    help="required from every other host for anything that "
                         "changes the show or hands out its material "
