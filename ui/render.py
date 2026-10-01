@@ -878,7 +878,8 @@ def speaker_screen(mode: str, word: str, device: str, state: str,
     """SPEAKER: the Bluetooth speaker as the Conductor on this unit sees
     it, and the keys that connect / re-pair it (ui/speaker.py).
 
-    `mode` is Speaker.mode() - "ok", or why the screen is only a note
+    `mode` is Speaker.mode() - "ok", "wired" (not a Bluetooth output:
+    the volume alone, no holds), or why the screen is only a note
     (checking / missing / none / old); `word` is the header's READY /
     BUSY / DONE / FAILED; `device`, `state`, `detail` (text, tone) and
     `seen` are lines 1-3 (device_text() and friends - the state's tint
@@ -927,7 +928,7 @@ def speaker_screen(mode: str, word: str, device: str, state: str,
     # Line 1: the device. Line 2: the state, large, in its colour.
     draw.text((8, 30), _ellipsize(device, FONT_M, WIDTH - 16), font=FONT_M,
               fill=DIM if device.startswith("no speaker") else FG)
-    if state.startswith("connected"):
+    if state.startswith(("connected", "vol ")):
         tint = OK
     elif state.startswith("NOT CONNECTED") or state.startswith("pairing failed"):
         tint = ERR
@@ -938,34 +939,40 @@ def speaker_screen(mode: str, word: str, device: str, state: str,
     draw.text((8, 50), _ellipsize(state or "…", FONT_L, WIDTH - 16),
               font=FONT_L, fill=tint)
     text, tone = detail
-    if text:
-        y = 74
-        for line in _wrap(text, FONT_S, WIDTH - 16)[:2]:
-            draw.text((8, y), line, font=FONT_S, fill=_TONE.get(tone, DIM)
-                      if tone else DIM)
-            y += 14
+    detail_tint = _TONE.get(tone, DIM) if tone else DIM
 
     if status:
         if status.startswith("ERROR"):
             status_tint = ERR
-        elif status.startswith("show running") or status == "hold KEY3 again = pair":
+        elif (status.startswith(("show running", "connecting"))
+                or status == "hold KEY3 again = pair"):
             status_tint = WARN
         elif word == "DONE":
             status_tint = OK
         else:
             status_tint = DIM
     if instruction:
-        # Pairing: the instruction needs the room. The "last connected"
-        # line gives way to the verdict (two lines, it is what asks for
-        # the second hold), and the instruction takes up to four lines
-        # above the keys - DejaVu 12 px on the Radxa is wider than the
-        # preview font, so three may not do.
+        # Pairing: the instruction needs the room. The detail keeps one
+        # line, the "last connected" line gives way to the verdict (two
+        # lines - it is what asks for the second hold - both above the
+        # MUSIC LOST strip at 122; review of 73c8fdc, LOW-6), and the
+        # instruction takes up to four lines above the keys - DejaVu
+        # 12 px on the Radxa is wider than the preview font, so three
+        # may not do.
+        if text:
+            draw.text((8, 74), _ellipsize(text, FONT_S, WIDTH - 16),
+                      font=FONT_S, fill=detail_tint)
         if status:
-            y = 102
+            y = 88
             for line in _wrap(status, FONT_S, WIDTH - 16)[:2]:
                 draw.text((8, y), line, font=FONT_S, fill=status_tint)
                 y += 14
     else:
+        if text:
+            y = 74
+            for line in _wrap(text, FONT_S, WIDTH - 16)[:2]:
+                draw.text((8, y), line, font=FONT_S, fill=detail_tint)
+                y += 14
         draw.text((8, 102), _ellipsize(seen, FONT_S, WIDTH - 16), font=FONT_S,
                   fill=DIM)
     draw.line((8, 118, WIDTH - 8, 118), fill=BAR, width=1)
@@ -987,7 +994,8 @@ def speaker_screen(mode: str, word: str, device: str, state: str,
             draw.text((8, y), line, font=FONT_S, fill=status_tint)
             y += 14
 
-    keys = "hold KEY1 connect · hold KEY3 pair"
+    keys = ("< > volume only" if mode == "wired"
+            else "hold KEY1 connect · hold KEY3 pair")
     draw.text((8, 204), _ellipsize(keys, FONT_S, WIDTH - 16), font=FONT_S,
               fill=DIM)
     if locked:

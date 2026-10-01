@@ -21,14 +21,15 @@ from ui import render
 from ui.app import App, Screen
 from ui.config import HEIGHT, WIDTH
 from ui.display import NullDisplay
-from ui.exhibition import SPEAKER_LOST_TEXT, Exhibition
+from ui.exhibition import SPEAKER_LOST_TEXT, VOLUME_UNSUPPORTED, Exhibition
 from ui.inputs import ScriptedInput
-from ui.speaker import (BUSY, DONE, FAILED, IDLE, INSTRUCTION, MENU_LABEL,
-                        MENU_LABEL_NONE, MUSIC_LOST, NOT_SUPPORTED,
-                        PAIR_CONFIRM, PAIR_CONFIRM_S, PAIR_FORCE, Speaker,
-                        format_error)
+from ui.speaker import (BUSY, CONNECTING, DONE, FAILED, IDLE, INSTRUCTION,
+                        MENU_LABEL, MENU_LABEL_GONE, MENU_LABEL_NONE,
+                        MUSIC_LOST, NOT_BLUETOOTH, NOT_SUPPORTED, PAIR_CONFIRM,
+                        PAIR_CONFIRM_S, PAIR_FORCE, PAIRING_STALE_S, WIRED,
+                        Speaker, format_error)
 from tests.test_ui_app import FakeRunner
-from tests.test_ui_exhibition import FakeConductor, FakeRemote
+from tests.test_ui_exhibition import FakeConductor, FakeRemote, gone
 from tests.test_ui_runner import wait_until
 
 
@@ -56,7 +57,7 @@ def enter(app):
 
 # ---- the row ----
 
-def test_the_row_follows_exhibition_only_while_the_conductor_reports_a_speaker():
+def test_the_row_appears_after_exhibition_once_seen_and_its_label_follows():
     from ui.boardinfo import BoardInfo
     from ui.puller import RepoPuller
     from ui.rebooter import Rebooter
@@ -70,6 +71,11 @@ def test_the_row_follows_exhibition_only_while_the_conductor_reports_a_speaker()
     keys = [p.key for p in app.patterns]
     # Nothing asked yet: no row (a garment unit never grows one).
     assert keys[-5:] == ["pull", "reboot", "wifi", "exhibition", "boardinfo"], keys
+    fake.down = True
+    ex.poll()
+    app.tick(wait=0.0)
+    assert "speaker" not in [p.key for p in app.patterns]
+    fake.down = False
     before = app._display_key()
     ex.poll()
     app.tick(wait=0.0)                           # _idle_tasks puts it in
@@ -80,7 +86,7 @@ def test_the_row_follows_exhibition_only_while_the_conductor_reports_a_speaker()
     assert row.label == MENU_LABEL == "SPEAKER"
     assert row.detail == "connect / re-pair the Bluetooth speaker"
     assert app._display_key() != before
-    # The cursor stays on its row while the list changes under it.
+    # The cursor stays on its row while the label changes under it.
     app.select("boardinfo")
     fake.no_speaker = True                       # started without --speaker
     ex.poll()
@@ -89,23 +95,24 @@ def test_the_row_follows_exhibition_only_while_the_conductor_reports_a_speaker()
     assert row.label == MENU_LABEL_NONE == "SPEAKER  (no speaker)"
     assert row.detail == "the Conductor runs without --speaker"
     assert speaker.present and not speaker.configured
-    # A Conductor from before `speaker` existed at all: no row.
+    # The Conductor goes: the row stays, like EXHIBITION's, and says so
+    # (no flapping list, no cursor drift - review of 73c8fdc, LOW-1).
     fake.no_speaker = False
-    fake.old = True
-    ex.poll()
+    gone(fake, ex)
     app.tick(wait=0.0)
-    assert "speaker" not in [p.key for p in app.patterns]
-    assert app.patterns[app.selected].key == "boardinfo"
-    # The Conductor goes: the row goes with it; back: the row is back.
-    fake.old = False
-    ex.poll()
-    app.tick(wait=0.0)
-    assert "speaker" in [p.key for p in app.patterns]
-    fake.down = True
-    ex.poll()
-    app.tick(wait=0.0)
-    assert "speaker" not in [p.key for p in app.patterns]
+    assert [p.key for p in app.patterns][-3:] == ["exhibition", "speaker",
+                                                  "boardinfo"]
+    assert row.label == MENU_LABEL_GONE == "SPEAKER  (no conductor)"
+    assert row.detail == "needs the Conductor on this unit"
     assert speaker.mode() == "missing"
+    assert app.patterns[app.selected].key == "boardinfo"
+    fake.down = False
+    ex.poll()
+    assert row.label == MENU_LABEL
+    # A wired output: the row is there, the detail says volume only.
+    fake.bluetooth = False
+    ex.poll()
+    assert row.label == MENU_LABEL and row.detail == "wired speaker: volume only"
     # Without a Speaker wired in, nothing of this exists.
     plain = App(NullDisplay(), ScriptedInput(()), FakeRunner(), exhibition=ex)
     ex.poll()
@@ -139,6 +146,31 @@ def test_the_reader_polls_every_two_seconds_while_the_screen_is_open():
         assert ex.poll_interval() == 0.05
     finally:
         ex.shutdown()
+
+
+def test_a_screen_left_by_any_path_gives_up_its_fast_poll():
+    # The follow (or anything that sets the screen) can leave SPEAKER /
+    # EXHIBITION without their close(): _idle_tasks brings the reader's
+    # pace back in line (review of 73c8fdc, LOW-3).
+    speaker, ex, fake = make_speaker()
+    ex.poll()
+    app, _ = make_app(speaker, ex)
+    app.tick(wait=0.0)
+    enter(app)
+    assert ex.speaker_open and speaker.is_open
+    app.screen = Screen.MENU                     # no KEY2
+    app.tick(wait=0.0)
+    assert not ex.speaker_open and not speaker.is_open
+    app.select("exhibition")
+    app.handle("key1")
+    assert ex.is_open
+    app.screen = Screen.MENU
+    app.tick(wait=0.0)
+    assert not ex.is_open
+    # ...and the screens themselves are left alone while they are up.
+    enter(app)
+    app.tick(wait=0.0)
+    assert ex.speaker_open and app.screen is Screen.SPEAKER
 
 
 # ---- what the screen says ----
@@ -207,7 +239,7 @@ def test_the_texts_for_every_state():
 
     # Pairing, phase by phase - from the poll, the keys shut meanwhile.
     fake.pairing = {"phase": "scanning", "note": "looking for the Bose",
-                    "started_at": 0.0}
+                    "started_at": wall[0] - 3}
     fake.connection = "pairing"
     ex.poll()
     assert speaker.state_text() == "pairing: scanning…"
@@ -272,6 +304,60 @@ def test_the_texts_for_every_state():
     fake.connection = "connected"
     ex.poll()
     assert speaker.state_text() == "connected · vol ?"
+
+    # A `pairing` left over from long ago is not a pairing in progress:
+    # the keys must not stay shut on it (review of 73c8fdc, LOW-4).
+    fake.speaker["volume"] = 70
+    fake.pairing = {"phase": "scanning", "note": "old", "started_at": None}
+    ex.poll()
+    assert speaker.pairing_active                # no stamp: trusted
+    fake.pairing["started_at"] = wall[0] - PAIRING_STALE_S + 5
+    ex.poll()
+    assert speaker.pairing_active and speaker.busy
+    fake.pairing["started_at"] = wall[0] - PAIRING_STALE_S - 1
+    ex.poll()
+    assert not speaker.pairing_active and not speaker.busy
+    assert speaker.state_text() == "connected · vol 70%"
+    assert speaker.status_word() == "READY" and not speaker.show_instruction()
+
+
+def test_a_wired_output_is_the_volume_alone():
+    # speaker.bluetooth false (--speaker-output pulse with a wired sink):
+    # no link to lose, nothing to connect or pair (review of 73c8fdc,
+    # MED-2).
+    speaker, ex, fake = make_speaker()
+    fake.bluetooth = False
+    fake.connection = "no_device"
+    fake.device = None
+    fake.run = {"t0": 0.0, "state": "running", "now": 42.0}
+    fake.pairing = {"phase": "scanning", "note": "", "started_at": time.time()}
+    ex.poll()
+    assert speaker.mode() == "wired" and not speaker.bluetooth
+    assert speaker.device_text() == WIRED == "wired / not Bluetooth"
+    assert speaker.state_text() == "vol 70%"
+    assert speaker.detail_text() == ("", "") and speaker.seen_text() == ""
+    assert speaker.banner() == ""                # never MUSIC LOST
+    assert not speaker.busy and not speaker.show_instruction()
+    assert speaker.volume_keys()
+    assert ex.speaker_text() == "speaker ok · vol 70% (bluez)"   # never LOST
+    app, _ = make_app(speaker, ex)
+    app.tick(wait=0.0)
+    enter(app)
+    for event in ("key1_hold", "key3_hold", "key3_hold", "key1", "up"):
+        app.handle(event)
+    speaker.join(0.2)
+    assert fake.posts() == []                    # no holds
+    app.handle("key1_hold")
+    assert speaker.status_text() == NOT_BLUETOOTH
+    assert not speaker.confirming
+    app.handle("right")                          # the volume still works
+    assert wait_until(lambda: not ex._volume_inflight)
+    ex.join_volume(2.0)
+    assert fake.posts() == [("/api/speaker/volume", {"delta": 5})]
+    assert speaker.state_text() == "vol 75%"
+    app.draw()
+    app.handle("key2")
+    assert app.screen is Screen.MENU
 
 
 def test_last_connected_at_reads_numbers_and_iso_strings():
@@ -378,25 +464,76 @@ def test_only_a_held_key1_connects_and_the_answer_is_shown():
     speaker.join(0.2)
     assert fake.posts() == []                    # nothing sent
     app.handle("key1_hold")
-    assert wait_until(lambda: speaker.phase == DONE)
+    # The Conductor answers "connecting" and gets on with it: the verdict
+    # is amber `connecting…`, never a green DONE - the poll decides
+    # (review of 73c8fdc, MED-1).
+    assert wait_until(lambda: speaker.note == CONNECTING)
     assert fake.posts() == [("/api/speaker/connect", {})]
-    assert speaker.note == "connected" and speaker.status_text() == "connected"
-    assert speaker.status_word() == "DONE"
-    assert speaker.state_text() == "connected · vol 70%"   # the poll after
+    assert speaker.phase == IDLE and speaker.status_word() == "READY"
+    assert speaker.status_text() == "connecting…"
+    assert speaker.state_text() == "connecting…"            # the poll after
+    assert not speaker.busy                      # the keys are back
+    fake.finish_connect(ok=False, error="Permission denied")
+    ex.poll()
+    assert speaker.state_text() == "NOT CONNECTED"
+    assert speaker.detail_text() == ("Permission denied - another phone?", "err")
+    app.handle("key1_hold")
+    assert wait_until(lambda: len(fake.posts()) == 2)
+    assert wait_until(lambda: speaker.note == CONNECTING)
+    fake.finish_connect()
+    ex.poll()
+    assert speaker.state_text() == "connected · vol 70%"
     assert speaker.detail_text() == ("", "")
     assert fake.connection == "connected"
     # Moving reads the verdict away.
     app.handle("down")
     assert speaker.phase == IDLE and speaker.status_text() == ""
-    # A refusal with the Conductor's words, red.
-    fake.connect_error = "Device 2C:41:A1:0B:7E:19 not available"
+    # Never refused for a run (connecting is harmless; no force path)...
+    fake.run = {"t0": 0.0, "state": "running", "now": 42.0}
+    ex.poll()
     app.handle("key1_hold")
+    assert wait_until(lambda: speaker.note == CONNECTING)
+    assert fake.posts()[-1] == ("/api/speaker/connect", {})
+    assert not speaker.forcing
+    # ...but 409 while a pairing is in progress: the words, verbatim, red.
+    fake.run = None
+    fake.pairing = {"phase": "scanning", "note": "", "started_at": time.time()}
+    fake.connection = "pairing"
+    ex.poll()
+    assert speaker.busy                          # the poll says pairing
+    speaker.connect()                            # (the App would not even ask)
+    speaker.join(0.2)
+    assert len(fake.posts()) == 3
+    fake.pairing = None
+    fake.connection = "disconnected"
+    ex.poll()
+    fake.pairing = {"phase": "scanning", "note": "", "started_at": time.time()}
+    app.handle("key1_hold")                      # the cache lagged: 409
     assert wait_until(lambda: speaker.phase == FAILED)
-    assert speaker.note == "ERROR Device 2C:41:A1:0B:7E:19 not available"
+    assert speaker.note == "ERROR re-pairing is in progress - wait for it"
+    assert speaker.status_word() == "BUSY"        # the poll after saw the pairing
+    assert not speaker.forcing
+    fake.pairing = None
+    ex.poll()
     assert speaker.status_word() == "FAILED"
-    assert speaker.state_text() == "NOT CONNECTED"
+    # A connected answer straight away is a plain DONE.
+    fake.pairing = None
+    fake.connection = "disconnected"
+    ex.poll()
+    original = fake.__call__
+
+    def direct(method, url, body, timeout):
+        if url.endswith("/api/speaker/connect"):
+            fake.finish_connect()
+            return 200, {"ok": True, "connection": "connected", "error": None}
+        return original(method, url, body, timeout)
+    ex._http = direct
+    app.handle("up")
+    app.handle("key1_hold")
+    assert wait_until(lambda: speaker.phase == DONE)
+    assert speaker.note == "connected" and speaker.status_word() == "DONE"
+    ex._http = original
     # ...and a dead Conductor is the socket's own reason.
-    fake.connect_error = None
     fake.down = True
     app.handle("up")
     app.handle("key1_hold")
@@ -498,9 +635,9 @@ def test_a_409_during_a_run_asks_for_one_more_hold_and_then_forces():
     enter(app)
     assert speaker.banner() == "MUSIC LOST"
     app.handle("key3_hold")                      # ask
-    app.handle("key3_hold")                      # pair -> 409
+    app.handle("key3_hold")                      # pair -> 409 "show running"
     assert wait_until(lambda: len(fake.posts()) == 1)
-    assert wait_until(lambda: speaker.forcing == "pair")
+    assert wait_until(lambda: speaker.forcing)
     assert fake.posts() == [("/api/speaker/pair", {})]
     assert speaker.phase == IDLE and speaker.status_word() == "READY"
     assert speaker.status_text() == PAIR_FORCE
@@ -514,40 +651,59 @@ def test_a_409_during_a_run_asks_for_one_more_hold_and_then_forces():
     assert fake.posts()[-1] == ("/api/speaker/pair", {"force": True})
     assert wait_until(lambda: speaker.phase == DONE)
     assert speaker.note == "pairing started" and speaker.busy
-    assert speaker.forcing is None
+    assert not speaker.forcing
     fake.advance_pairing("done")
     ex.poll()
     assert speaker.banner() == ""                # music back
-    # After the window the hold is a plain first hold again.
+    # After the window the hold is a plain first hold again - and the
+    # prompt goes with the window (review of 73c8fdc, LOW-5).
     fake.connection = "disconnected"
     ex.poll()
     app.handle("up")
     app.handle("key3_hold")
     app.handle("key3_hold")
-    assert wait_until(lambda: speaker.forcing == "pair")
+    assert wait_until(lambda: speaker.forcing)
+    assert speaker.status_text() == PAIR_FORCE
     clock[0] += PAIR_CONFIRM_S + 1.0
-    assert speaker.forcing is None
+    assert not speaker.forcing
+    assert speaker.status_text() == "" and not speaker.show_instruction()
     app.handle("key3_hold")
     speaker.join(0.2)
     assert len(fake.posts()) == 3 and speaker.confirming
-    # KEY1 has the same two-step under a run.
-    app.handle("up")
+    assert speaker.status_text() == PAIR_CONFIRM
+    clock[0] += PAIR_CONFIRM_S + 1.0
+    assert speaker.status_text() == "" and not speaker.show_instruction()
+    # KEY1 meanwhile is no force path: connect is never refused for a run.
     app.handle("key1_hold")
-    assert wait_until(lambda: speaker.forcing == "connect")
+    assert wait_until(lambda: speaker.note == CONNECTING)
     assert fake.posts()[-1] == ("/api/speaker/connect", {})
-    assert speaker.status_text() == "show running - hold KEY1 again to connect anyway"
-    assert not speaker.show_instruction()        # a connect, not a pair
-    # A KEY3 hold now is a first pair hold, not a forced connect.
-    app.handle("key3_hold")
-    speaker.join(0.2)
-    assert speaker.confirming and speaker.forcing is None
+    assert not speaker.forcing and not speaker.show_instruction()
+    fake.finish_connect()
+    ex.poll()
+    # A pair 409 that is not the run ("re-pairing is already in
+    # progress"): verbatim, red, no force.
+    fake.run = None
+    fake.connection = "disconnected"
+    ex.poll()
     app.handle("up")
-    app.handle("key1_hold")
-    assert wait_until(lambda: speaker.forcing == "connect")
-    app.handle("key1_hold")
-    assert wait_until(lambda: speaker.phase == DONE)
-    assert fake.posts()[-1] == ("/api/speaker/connect", {"force": True})
-    assert speaker.note == "connected" and fake.connection == "connected"
+    app.handle("key3_hold")
+    fake.pairing = {"phase": "pairing", "note": "", "started_at": time.time()}
+    app.handle("key3_hold")                      # the cache lagged: 409
+    assert wait_until(lambda: speaker.phase == FAILED)
+    assert speaker.note == "ERROR re-pairing is already in progress"
+    assert not speaker.forcing
+    fake.pairing = None
+    ex.poll()
+    # A run-409 is told apart by the Conductor's words, and failing those
+    # by the cache's run.
+    assert speaker._run_refusal("show running - STOP it first")
+    assert speaker._run_refusal("Show running")
+    assert not speaker._run_refusal("re-pairing is already in progress")
+    assert not speaker._run_refusal("a pairing is on")
+    assert not speaker._run_refusal("busy")      # no run in the cache
+    fake.run = {"t0": 0.0, "state": "running", "now": 42.0}
+    ex.poll()
+    assert speaker._run_refusal("busy")
 
 
 def test_only_key2_is_heard_while_a_request_is_in_flight():
@@ -569,11 +725,21 @@ def test_only_key2_is_heard_while_a_request_is_in_flight():
     assert app.screen is Screen.MENU and speaker.busy
     assert not speaker.is_open and not ex.speaker_open
     fake.release.set()
-    assert wait_until(lambda: speaker.phase == DONE)
-    assert speaker.note == "connected"
+    assert wait_until(lambda: speaker.note == CONNECTING)
+    assert speaker.phase == IDLE
     # Re-opening reads the old verdict away.
     enter(app)
     assert speaker.phase == IDLE and speaker.note == ""
+    # A verdict whose own poll raises still frees the keys (LOW-7).
+    fake.release.clear()
+    app.handle("key1_hold")
+    assert speaker.busy
+    original_poll = ex.poll
+    ex.poll = lambda: (_ for _ in ()).throw(RuntimeError("poll broke"))
+    fake.release.set()
+    assert wait_until(lambda: speaker.phase != BUSY)
+    ex.poll = original_poll
+    assert speaker.note == CONNECTING and not speaker.busy
 
 
 def test_left_and_right_are_the_volume_as_on_exhibition():
@@ -593,6 +759,28 @@ def test_left_and_right_are_the_volume_as_on_exhibition():
                       fake.speaker["volume"] == 65)
     assert speaker.state_text() == "connected · vol 65%"
     assert speaker.phase == IDLE                 # the volume is not a verdict here
+    assert speaker.status_text() == ""
+    # A volume ERROR, though, is shown here - this screen has the keys
+    # (review of 73c8fdc, LOW-8) - and the redraw key sees it.
+    key = speaker.key()
+    fake.down = True
+    app.handle("right")
+    assert wait_until(lambda: not ex._volume_inflight)
+    ex.join_volume(2.0)
+    assert speaker.status_text() == "ERROR volume: Connection refused"
+    assert speaker.key() != key
+    fake.down = False
+    ex.poll()
+    fake.no_volume = True
+    ex.poll()
+    app.handle("right")
+    ex.join_volume(0.2)
+    assert speaker.status_text() == VOLUME_UNSUPPORTED
+    assert not speaker.volume_keys()
+    fake.no_volume = False
+    ex.poll()
+    app.handle("up")                             # read away, the volume's too
+    assert speaker.status_text() == "" and ex.note == ""
     # Back on EXHIBITION the volume verdict is not left lying around.
     app.handle("key2")
     app.select("exhibition")
@@ -620,7 +808,7 @@ def test_the_hat_loop_never_waits_on_http():
     assert time.monotonic() - started < 0.5
     assert speaker.busy
     fake.release.set()
-    assert wait_until(lambda: speaker.phase == DONE)
+    assert wait_until(lambda: speaker.note == CONNECTING and not speaker.busy)
     ex.shutdown()
 
 
@@ -737,6 +925,15 @@ def test_the_screen_renders_every_state():
          "connected 12 min ago", "ERROR Connection refused", "", "", False),
         ("ok", "READY", "2C:41:A1:0B:7E:19", "?", ("", ""), "never connected",
          "", "", "", False),
+        ("ok", "READY", bose, "connecting…", ("", ""), "connected 12 min ago",
+         "connecting…", "", "", False),
+        ("ok", "READY", bose, "NOT CONNECTED",
+         ("Permission denied - another phone?", "err"), "connected 12 min ago",
+         "show running - hold KEY3 again to pair anyway", "MUSIC LOST",
+         INSTRUCTION, False),
+        ("wired", "READY", WIRED, "vol 70%", ("", ""), "", "", "", "", False),
+        ("wired", "DONE", WIRED, "vol ?", ("", ""), "", NOT_BLUETOOTH, "", "",
+         False),
         ("old", "DONE", "speaker ?", "speaker ok · vol 70% (bluez)", ("", ""), "",
          "connect: not supported by this conductor", "", "", False),
         ("none", "READY", "", "", ("", ""), "", "", "", "", False),
@@ -768,6 +965,23 @@ def test_the_screen_renders_every_state():
     keyed = render.speaker_screen("ok", "READY", bose, "connected · vol 70%",
                                   ("", ""), "", host="radxa-05", volume_keys=True)
     assert quiet.tobytes() != keyed.tobytes()
+    # Instruction + two-line status + banner: the status sits above the
+    # strip, nothing of it under the red (review of 73c8fdc, LOW-6) -
+    # the rows just above the strip are the divider and black only.
+    crowded = render.speaker_screen(
+        "ok", "READY", bose, "NOT CONNECTED", ("reconnect in 25 s (3 tries)", "warn"),
+        "connected 12 min ago", status="show running - hold KEY3 again to pair anyway",
+        banner="MUSIC LOST", instruction=INSTRUCTION, host="radxa-05")
+    for y in range(119, 122):
+        assert all(crowded.getpixel((x, y)) == render.BG for x in range(8, 232)), y
+    status_rows = [y for y in range(88, 118)
+                   if any(crowded.getpixel((x, y)) == render.WARN
+                          for x in range(8, 232))]
+    assert status_rows and min(status_rows) >= 88 and max(status_rows) <= 117
+    # The wired screen has no hold keys and a volume hint.
+    wired = render.speaker_screen("wired", "READY", WIRED, "vol 70%", ("", ""), "",
+                                  host="radxa-05", volume_keys=True)
+    assert wired.tobytes() != quiet.tobytes()
     # The EXHIBITION line goes red when the link is lost.
     show = ("AZ_show_2026", "18 cues · 10:54")
     ok = render.exhibition_screen(True, show, "idle", "units 7/7 online",
@@ -813,5 +1027,6 @@ def test_preview_writes_the_speaker_screens(tmp_path):
     assert preview(str(tmp_path)) == 0
     for name in ("speaker_connected.png", "speaker_lost.png",
                  "speaker_pairing.png", "speaker_reconnect.png",
-                 "speaker_none.png", "exhibition_speaker_lost.png"):
+                 "speaker_none.png", "speaker_wired.png",
+                 "exhibition_speaker_lost.png"):
         assert (tmp_path / name).is_file(), name

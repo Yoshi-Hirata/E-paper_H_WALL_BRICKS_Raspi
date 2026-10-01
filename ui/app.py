@@ -99,19 +99,23 @@ are refused with a note (_remote_holds), as demo rows are.
 
 SPEAKER (ui/speaker.py, the row right after EXHIBITION) is the
 Bluetooth speaker as the Conductor on this unit sees it - a view over
-the EXHIBITION row's cache, no second poller. The row is on the menu
-only while that Conductor answers and reports a `speaker` key
-(_refresh_speaker_row adds and removes it; `SPEAKER  (no speaker)` on a
-Conductor without --speaker). The screen: the device's name, its state
-(`connected · vol 70%`, `NOT CONNECTED` + the last error, `connecting…`,
-`reconnect in 25 s (3 tries)`, `pairing: scanning…`), when it was last
-connected, and a red MUSIC LOST strip while a run is on without it.
-KEY1 *held* connects (POST /api/speaker/connect), KEY3 *held* twice
-within 15 s pairs again (the first hold shows the instruction; after a
-409 "run active" the next hold sends force), LEFT/RIGHT are the volume
-as on EXHIBITION, KEY2 goes back; while a request or a pairing is in
-flight only KEY2 is heard. Like EXHIBITION it is never left by the
-follow while the Conductor is local, and KEY2 leaves the session alone.
+the EXHIBITION row's cache, no second poller. The row joins the menu
+once that Conductor has reported a `speaker` key and stays, its label
+following the cache (_refresh_speaker_row; `SPEAKER  (no conductor)`,
+`SPEAKER  (no speaker)` on a Conductor without --speaker). The screen:
+the device's name, its state (`connected · vol 70%`, `NOT CONNECTED` +
+the last error, `connecting…`, `reconnect in 25 s (3 tries)`, `pairing:
+scanning…`; `wired / not Bluetooth` and the volume alone when the
+output is not Bluetooth), when it was last connected, and a red MUSIC
+LOST strip while a run is on without it. KEY1 *held* connects (POST
+/api/speaker/connect - never refused for a run; the verdict is an amber
+`connecting…` and the poll shows the outcome), KEY3 *held* twice within
+15 s pairs again (the first hold shows the instruction; after the run's
+409 the next hold sends force), LEFT/RIGHT are the volume as on
+EXHIBITION, KEY2 goes back; while a request or a pairing is in flight
+only KEY2 is heard. Like EXHIBITION it is never left by the follow
+while the Conductor is local - and "local" survives a missed probe
+(Exhibition.present()) - and KEY2 leaves the session alone.
 
 The screen also blanks itself after BLANK_AFTER_S without input. Any
 press wakes it and does nothing else - waking must never move the state
@@ -681,40 +685,42 @@ class App:
         self._dirty = True
 
     def _refresh_speaker_row(self) -> None:
-        """Put the SPEAKER row on the menu right after EXHIBITION while
-        the Conductor here reports a speaker key, take it off when it
-        stops answering - cheap enough to ask every tick (a bool off the
-        cache), and the cursor stays on the row it was on."""
+        """Put the SPEAKER row on the menu right after EXHIBITION once
+        the Conductor here has reported a speaker key - and keep it: its
+        label follows the cache afterwards (`SPEAKER  (no conductor)`,
+        `(no speaker)`), like ExhibitionRow's, so the list never flaps
+        under the cursor (review of 73c8fdc, LOW-1). Cheap enough to ask
+        every tick - a bool off the cache."""
         speaker = self.speaker
-        if speaker is None:
-            return
-        wanted = speaker.present
-        have = self._speaker_row is not None
-        if wanted == have:
+        if speaker is None or self._speaker_row is not None or not speaker.seen:
             return
         selected_key = (self.patterns[self.selected].key
                         if self.patterns else None)
-        if wanted:
-            row = speaker.menu_entry
-            after = next((i + 1 for i, p in enumerate(self.patterns)
-                          if getattr(p, "key", None) == "exhibition"),
-                         len(self.patterns))
-            self.patterns.insert(after, row)
-            self._speaker_row = row
-        else:
-            # (A SPEAKER screen that is open stays open as a note with
-            # KEY2 the way back - a jump to the menu could land a blind
-            # press on a row.)
-            self.patterns = [p for p in self.patterns
-                             if p is not self._speaker_row]
-            self._speaker_row = None
+        row = speaker.menu_entry
+        after = next((i + 1 for i, p in enumerate(self.patterns)
+                      if getattr(p, "key", None) == "exhibition"),
+                     len(self.patterns))
+        self.patterns.insert(after, row)
+        self._speaker_row = row
         for index, pattern in enumerate(self.patterns):
             if pattern.key == selected_key:
                 self.selected = index
                 break
-        else:
-            self.selected = min(self.selected, len(self.patterns) - 1)
         self._dirty = True
+
+    def _settle_conductor_polls(self) -> None:
+        """The reader's fast polls belong to an open screen: whatever
+        path led off SPEAKER or EXHIBITION (the follow, a demo adopting
+        the screen), the flags are brought back in line here so the
+        reader never keeps the 2 s / 5 s pace for a screen nobody looks
+        at (review of 73c8fdc, LOW-3)."""
+        if (self.speaker is not None and self.exhibition is not None
+                and self.exhibition.speaker_open
+                and self.screen is not Screen.SPEAKER):
+            self.speaker.close()
+        if (self.exhibition is not None and self.exhibition.is_open
+                and self.screen is not Screen.EXHIBITION):
+            self.exhibition.close()
 
     def _wifi_locked(self) -> "str | None":
         """Why the WIFI switch is refused right now, or None
@@ -1570,13 +1576,18 @@ class App:
             self._dirty = True
 
     def _local_conductor(self) -> bool:
-        """A Conductor answers on this unit (the EXHIBITION cache)."""
-        return self.exhibition is not None and bool(self.exhibition.available)
+        """A Conductor is on this unit (the EXHIBITION cache's steadier
+        answer, Exhibition.present(): one missed probe does not count -
+        it used to move SPEAKER / EXHIBITION to REMOTE for a tick, where
+        KEY2 drops the unit out of its own run, and back to EXHIBITION
+        where the same KEY1 hold is STOP; review of 73c8fdc, HIGH-1)."""
+        return self.exhibition is not None and self.exhibition.present()
 
     def _idle_tasks(self) -> None:
         self._follow_remote()
         self._track_demo()
         self._refresh_speaker_row()
+        self._settle_conductor_polls()
         now = self._clock()
         if (self.demo_store is not None
                 and now - self._last_demo_poll >= DEMO_POLL_S):

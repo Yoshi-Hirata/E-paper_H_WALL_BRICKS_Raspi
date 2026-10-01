@@ -103,6 +103,14 @@ POLL_IDLE_S = 30.0           # otherwise: only the menu label needs it
 SPEAKER_LOST = ("disconnected", "no_device")
 SPEAKER_LOST_TEXT = "speaker LOST - see SPEAKER"
 
+# A Conductor that answered before is only GONE (present() False) after
+# this many probes in a row went unanswered, or this long after the
+# first miss - whichever comes first. One timed-out probe must not move
+# the screen to REMOTE, where KEY2 drops radxa-05 out of its own run
+# (review of 73c8fdc, HIGH-1).
+LOST_MISSES = 3
+LOST_AFTER_S = 15.0
+
 NO_CONDUCTOR = "no conductor"
 MENU_LABEL = "EXHIBITION"
 MENU_LABEL_NONE = "EXHIBITION  (no conductor)"
@@ -222,6 +230,9 @@ class Exhibition:
         self.fleet_error: "str | None" = None
         self.show: "dict | None" = None           # {"name", "cues", "duration"}
         self._want_show = False
+        # Misses since the last answer, and when the first of them was.
+        self.misses = 0
+        self.lost_at: "float | None" = None
 
         self.phase = IDLE
         self.command: "str | None" = None         # start / stop / loop
@@ -250,6 +261,20 @@ class Exhibition:
         """True while a command is on its way. KEY2 still leaves the
         screen then; the command completes on its own."""
         return self.phase == SENDING
+
+    def present(self) -> bool:
+        """A Conductor is on this unit, for the App's follow and its
+        KEY2 rule: it answered the last probe - or it answered before
+        and has been missing for fewer than LOST_MISSES probes and less
+        than LOST_AFTER_S. `available` is the last probe alone (the menu
+        label and the screens read that); this is the steadier answer
+        the decisions that can drop the unit out of its run need."""
+        if self.available:
+            return True
+        if self.lost_at is None:
+            return False
+        return (self.misses < LOST_MISSES
+                and self._clock() - self.lost_at < LOST_AFTER_S)
 
     @property
     def active(self) -> bool:
@@ -382,9 +407,11 @@ class Exhibition:
         speaker = (self.fleet or {}).get("speaker")
         if not isinstance(speaker, dict) or "available" not in speaker:
             return "speaker ?"
-        if speaker.get("connection") in SPEAKER_LOST:
+        if (speaker.get("connection") in SPEAKER_LOST
+                and speaker.get("bluetooth") is not False):
             # The Bluetooth link is down: the volume figure is moot and
-            # the fix is on the SPEAKER screen (ui/speaker.py).
+            # the fix is on the SPEAKER screen (ui/speaker.py). A wired
+            # output (`bluetooth` false) has no link to lose.
             return SPEAKER_LOST_TEXT
         if speaker.get("available"):
             volume = _percent(speaker.get("volume"))
@@ -514,6 +541,9 @@ class Exhibition:
                     self.available = False
                     self.fleet = None
                     self.fleet_error = reason
+                    if was is True:
+                        self.misses, self.lost_at = 0, self._clock()
+                    self.misses += 1
                 if was is not False:
                     self.emit(f"exhibition: {NO_CONDUCTOR} ({reason})")
                 return
@@ -523,6 +553,7 @@ class Exhibition:
                 self.fleet = fleet
                 self.fleet_at = self._clock()
                 self.fleet_error = None
+                self.misses, self.lost_at = 0, None
                 want_show = self._want_show
             if was is not True:
                 self.emit(f"exhibition: conductor at {self.base}")

@@ -237,6 +237,9 @@ def preview(directory: str) -> int:
                           host="radxa-05").save(out / "speaker_pairing.png")
     render.speaker_screen("none", "NONE", "", "", ("", ""), "", host="radxa-05"
                           ).save(out / "speaker_none.png")
+    render.speaker_screen("wired", "READY", "wired / not Bluetooth", "vol 70%",
+                          ("", ""), "", host="radxa-05", volume_keys=True
+                          ).save(out / "speaker_wired.png")
     print(f"wrote preview screens to {out}")
     return 0
 

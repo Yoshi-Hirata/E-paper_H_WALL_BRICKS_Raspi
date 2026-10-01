@@ -21,23 +21,41 @@ error`, the Bluetooth side (Coder AC's Conductor):
     pairing     {phase: scanning | pairing | connecting | done | failed,
                  note, started_at} | null
 
-and the two commands this screen sends (409 while a run is on, unless
-the body says {"force": true}; both answer {"ok", "connection", "error"}):
+    bluetooth   false when the output is not Bluetooth at all
+                (--speaker-output pulse with a wired sink): then there
+                is no link to lose or to pair - the screen says `wired /
+                not Bluetooth` and offers the volume only
 
-    POST /api/speaker/connect {}     KEY1 held
-    POST /api/speaker/pair    {}     KEY3 held twice within PAIR_CONFIRM_S
+and the two commands this screen sends, both answering {"ok",
+"connection", "error"}:
 
-The row exists only where the Conductor answers and its fleet carries a
-`speaker` key; a Conductor started without --speaker (speaker null)
-shows the row as `SPEAKER  (no speaker)` and the screen only says so.
-An older Conductor whose speaker object has no `connection` degrades:
-the screen reads `speaker ?` and the holds say `not supported by this
-conductor`. While the screen is open the reader polls every 2 s (a
-pairing's progress - scanning… / pairing… / connecting… - comes from the
-poll), and while a request or a pairing is in flight only KEY2 is heard.
-Every request runs on a worker thread through the Exhibition's one
-injectable HTTP function, so the tests run against a fake Conductor and
-the HAT loop never waits on a socket.
+    POST /api/speaker/connect {}     KEY1 held. Never refused for a run
+                                     (connecting is harmless); 409 only
+                                     while a pairing is in progress, no
+                                     force. Answers "connecting" - the
+                                     poll shows the outcome, so the
+                                     verdict is amber `connecting…`,
+                                     never a green DONE
+    POST /api/speaker/pair    {}     KEY3 held twice within
+                                     PAIR_CONFIRM_S. 409 "show running -
+                                     …" during a run, which {"force":
+                                     true} overrides (the next hold); 409
+                                     "re-pairing is already in progress"
+                                     has no force. Every refusal is shown
+                                     verbatim
+
+The row appears once the Conductor here has reported a `speaker` key
+and then stays, its label following the cache: `SPEAKER  (no
+conductor)` while nothing answers, `SPEAKER  (no speaker)` on a
+Conductor started without --speaker (speaker null; the screen only says
+so). An older Conductor whose speaker object has no `connection`
+degrades: the screen reads `speaker ?` and the holds say `not supported
+by this conductor`. While the screen is open the reader polls every 2 s
+(a pairing's progress - scanning… / pairing… / connecting… - comes from
+the poll), and while a request or a pairing is in flight only KEY2 is
+heard. Every request runs on a worker thread through the Exhibition's
+one injectable HTTP function, so the tests run against a fake Conductor
+and the HAT loop never waits on a socket.
 """
 
 from __future__ import annotations
@@ -48,7 +66,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from .exhibition import SPEAKER_LOST, Exhibition, _first_line, _percent, _why
+from .exhibition import (SPEAKER_LOST, VOLUME_UNSUPPORTED, Exhibition,
+                         _first_line, _percent, _why)
 
 IDLE = "idle"                # nothing in flight
 BUSY = "busy"                # a request is on its way to the Conductor
@@ -58,16 +77,20 @@ FAILED = "failed"            # refused, or no answer within the timeout
 CONNECT_PATH = "/api/speaker/connect"
 PAIR_PATH = "/api/speaker/pair"
 PAIR_CONFIRM_S = 15.0        # the second KEY3 hold must land within this
+PAIRING_STALE_S = 300.0      # a `pairing` older than this is not in progress
 
 MENU_LABEL = "SPEAKER"
 MENU_LABEL_NONE = "SPEAKER  (no speaker)"
+MENU_LABEL_GONE = "SPEAKER  (no conductor)"
 NOT_SUPPORTED = "not supported by this conductor"
+NOT_BLUETOOTH = "wired speaker - nothing to connect"
 PAIR_CONFIRM = "hold KEY3 again = pair"
 PAIR_FORCE = "show running - hold KEY3 again to pair anyway"
-CONNECT_FORCE = "show running - hold KEY1 again to connect anyway"
+CONNECTING = "connecting…"
 INSTRUCTION = ("put the Bose in pairing mode (hold its Bluetooth button) "
                "and switch off phones' Bluetooth")
 MUSIC_LOST = "MUSIC LOST"
+WIRED = "wired / not Bluetooth"
 PAIRING_PHASES = ("scanning", "pairing", "connecting")
 
 # Where the screen is, in one word (render.speaker_screen's `mode`).
@@ -75,13 +98,15 @@ MODE_CHECKING = "checking"   # the reader has not answered yet
 MODE_MISSING = "missing"     # no Conductor on this unit
 MODE_NONE = "none"           # the Conductor runs without --speaker
 MODE_OLD = "old"             # a Conductor from before the Bluetooth keys
+MODE_WIRED = "wired"         # the output is not Bluetooth: volume only
 MODE_OK = "ok"
 
 
 class SpeakerRow:
-    """The menu row: `SPEAKER`, or `SPEAKER  (no speaker)` on a Conductor
-    without --speaker. The App adds and removes it as the Conductor
-    comes and goes (App._refresh_speaker_row)."""
+    """The menu row: `SPEAKER`, `SPEAKER  (no speaker)` on a Conductor
+    without --speaker, `SPEAKER  (no conductor)` while none answers.
+    The App adds it once the Conductor has reported a speaker key and
+    keeps it (App._refresh_speaker_row)."""
 
     key = "speaker"
 
@@ -90,13 +115,19 @@ class SpeakerRow:
 
     @property
     def label(self) -> str:
+        if not self._speaker.present:
+            return MENU_LABEL_GONE
         return MENU_LABEL if self._speaker.configured else MENU_LABEL_NONE
 
     @property
     def detail(self) -> str:
-        if self._speaker.configured:
-            return "connect / re-pair the Bluetooth speaker"
-        return "the Conductor runs without --speaker"
+        if not self._speaker.present:
+            return "needs the Conductor on this unit"
+        if not self._speaker.configured:
+            return "the Conductor runs without --speaker"
+        if not self._speaker.bluetooth:
+            return "wired speaker: volume only"
+        return "connect / re-pair the Bluetooth speaker"
 
 
 def _ago(seconds: float) -> str:
@@ -159,13 +190,15 @@ class Speaker:
         self.command: "str | None" = None         # connect / pair
         self.note = ""                            # the line under the state
         self.is_open = False
+        # The Conductor here has reported a speaker key at least once:
+        # the row exists from then on (its label follows the cache).
+        self._seen = False
         self._lock = threading.Lock()
         self._thread: "threading.Thread | None" = None
         # KEY3 twice: the first hold opens this window, the second pairs.
         self._confirm_until = 0.0
-        # A 409 (run active): the next hold of the same key sends force.
+        # A pair 409 (run active): the next KEY3 hold sends force.
         self._force_until = 0.0
-        self._force_command: "str | None" = None
 
     # ---- facts for the row and the screen ----
 
@@ -179,11 +212,20 @@ class Speaker:
 
     @property
     def present(self) -> bool:
-        """The row belongs on the menu: a Conductor answers here and its
-        fleet carries the `speaker` key (null or not)."""
+        """A Conductor answers here and its fleet carries the `speaker`
+        key (null or not)."""
         fleet = self._ex.fleet
-        return bool(self._ex.available) and isinstance(fleet, dict) \
-            and "speaker" in fleet
+        if bool(self._ex.available) and isinstance(fleet, dict) \
+                and "speaker" in fleet:
+            self._seen = True
+            return True
+        return False
+
+    @property
+    def seen(self) -> bool:
+        """The row belongs on the menu: a speaker key was reported at
+        least once (and stays, whatever the cache says since)."""
+        return self._seen or self.present
 
     @property
     def configured(self) -> bool:
@@ -197,6 +239,14 @@ class Speaker:
         speaker = self._speaker()
         return speaker is not None and "connection" in speaker
 
+    @property
+    def bluetooth(self) -> bool:
+        """The output is Bluetooth (speaker.bluetooth is not false): a
+        link to lose, a device to connect and pair. Wired (pulse with a
+        wired sink): the screen is the volume alone."""
+        speaker = self._speaker()
+        return speaker is not None and speaker.get("bluetooth") is not False
+
     def mode(self) -> str:
         if self._ex.available is None:
             return MODE_CHECKING
@@ -204,6 +254,8 @@ class Speaker:
             return MODE_MISSING
         if not self.configured:
             return MODE_NONE
+        if not self.bluetooth:
+            return MODE_WIRED
         if not self.supported:
             return MODE_OLD
         return MODE_OK
@@ -224,9 +276,16 @@ class Speaker:
     @property
     def pairing_active(self) -> bool:
         """The Conductor is scanning / pairing / connecting right now
-        (read from the poll): the keys stay shut until it is done."""
+        (read from the poll): the keys stay shut until it is done. A
+        `pairing` whose started_at is older than PAIRING_STALE_S is a
+        leftover, not a pairing - the keys must not stay shut on it
+        (review of 73c8fdc, LOW-4)."""
         pairing = self.pairing()
-        return pairing is not None and pairing.get("phase") in PAIRING_PHASES
+        if (pairing is None or not self.bluetooth
+                or pairing.get("phase") not in PAIRING_PHASES):
+            return False
+        started = _epoch(pairing.get("started_at"))
+        return started is None or self._wall() - started < PAIRING_STALE_S
 
     @property
     def busy(self) -> bool:
@@ -239,11 +298,9 @@ class Speaker:
         return self._confirm_until > self._clock()
 
     @property
-    def forcing(self) -> "str | None":
-        """The command whose next hold sends {"force": true}, or None."""
-        if self._force_until > self._clock():
-            return self._force_command
-        return None
+    def forcing(self) -> bool:
+        """The next KEY3 hold sends {"force": true} (a run-409 came)."""
+        return self._force_until > self._clock()
 
     def reconnect_in_s(self) -> "float | None":
         """Seconds until the Conductor's next reconnect attempt, moved
@@ -264,6 +321,8 @@ class Speaker:
 
     def device_text(self) -> str:
         """Line 1: the speaker's name, or that none is paired."""
+        if not self.bluetooth:
+            return WIRED
         if not self.supported:
             return "speaker ?"
         device = self.device()
@@ -275,12 +334,14 @@ class Speaker:
     def state_text(self) -> str:
         """Line 2: `connected · vol 70%` / `NOT CONNECTED` / `connecting…`
         / `pairing: scanning…` (the render tints by the words)."""
+        if not self.bluetooth:
+            volume = _percent((self._speaker() or {}).get("volume"))
+            return "vol ?" if volume is None else f"vol {volume}%"
         if not self.supported:
             return self._ex.speaker_text()
         connection = self.connection()
-        pairing = self.pairing()
-        if pairing is not None and pairing.get("phase") in PAIRING_PHASES:
-            return f"pairing: {pairing['phase']}…"
+        if self.pairing_active:
+            return f"pairing: {self.pairing()['phase']}…"
         if connection == "connected":
             volume = _percent((self._speaker() or {}).get("volume"))
             return "connected · vol ?" if volume is None \
@@ -297,14 +358,14 @@ class Speaker:
         """The small line under the state and its tone ("", "warn",
         "err"): a failed pairing's note, the reconnect countdown, or the
         last error (`Permission denied - another phone?`)."""
-        if not self.supported:
+        if not self.supported or not self.bluetooth:
             return "", ""
         speaker = self._speaker() or {}
         pairing = self.pairing()
         if pairing is not None and pairing.get("phase") == "failed":
             note = format_error(pairing.get("note"))
             return (f"pairing failed - {note}" if note else "pairing failed"), "err"
-        if pairing is not None and pairing.get("phase") in PAIRING_PHASES:
+        if self.pairing_active:
             note = _first_line(pairing.get("note") or "")
             return note, ""
         connection = self.connection()
@@ -333,7 +394,7 @@ class Speaker:
     def seen_text(self) -> str:
         """Line 3: `connected 12 min ago` from device.last_connected_at."""
         device = self.device()
-        if device is None or not self.supported:
+        if device is None or not self.supported or not self.bluetooth:
             return ""
         when = _epoch(device.get("last_connected_at"))
         if when is None:
@@ -344,25 +405,37 @@ class Speaker:
         """`MUSIC LOST` while a run is on and the speaker is not
         connected - the one thing to read from across the room."""
         fleet = self._ex.fleet or {}
-        if not self.supported or fleet.get("run") is None:
+        if not self.supported or not self.bluetooth or fleet.get("run") is None:
             return ""
         return MUSIC_LOST if self.connection() != "connected" else ""
 
     def show_instruction(self) -> bool:
         """The pairing instruction belongs on the screen from the first
         KEY3 hold until the pairing is over."""
-        if not self.supported:
+        if not self.supported or not self.bluetooth:
             return False
-        return (self.confirming or self.forcing == "pair"
-                or self.pairing_active
+        return (self.confirming or self.forcing or self.pairing_active
                 or (self.phase == BUSY and self.command == "pair"))
 
     def status_text(self) -> str:
+        """The verdict line. The "hold KEY3 again" prompts go with their
+        15 s window (review of 73c8fdc, LOW-5); a volume error (the
+        Exhibition's own verdict, LEFT/RIGHT are its request) shows here
+        too, since this screen has the keys (LOW-8)."""
         if self.phase == BUSY:
             return "sending…"
         if self.mode() == MODE_MISSING and self._ex.fleet_error:
             return f"no conductor: {self._ex.fleet_error}"
-        return self.note
+        note = self.note
+        if note == PAIR_CONFIRM and not self.confirming:
+            note = ""
+        elif note == PAIR_FORCE and not self.forcing:
+            note = ""
+        if not note and self._ex.phase != "sending":
+            volume = self._ex.note
+            if volume == VOLUME_UNSUPPORTED or volume.startswith("ERROR volume"):
+                note = volume
+        return note
 
     def volume_keys(self) -> bool:
         return (self.configured and self._ex.speaker_available()
@@ -370,10 +443,10 @@ class Speaker:
 
     def key(self) -> tuple:
         """Everything the screen shows, for the App's redraw check."""
-        return (self.mode(), self.status_word(), self.note, self.device_text(),
-                self.state_text(), self.detail_text(), self.seen_text(),
-                self.banner(), self.show_instruction(), self.volume_keys(),
-                self.busy)
+        return (self.mode(), self.status_word(), self.status_text(),
+                self._ex.fleet_error, self.device_text(), self.state_text(),
+                self.detail_text(), self.seen_text(), self.banner(),
+                self.show_instruction(), self.volume_keys(), self.busy)
 
     # ---- the screen opening and closing ----
 
@@ -394,7 +467,9 @@ class Speaker:
 
     def reset(self) -> None:
         """A verdict was read (UP/DOWN, or the screen re-opened): the
-        note goes, and so do the confirm and force windows."""
+        note goes, and so do the confirm and force windows - and the
+        volume verdict, which is the Exhibition's (status_text shows
+        its errors here)."""
         with self._lock:
             if self.phase == BUSY:
                 return
@@ -403,38 +478,38 @@ class Speaker:
             self.note = ""
             self._confirm_until = 0.0
             self._force_until = 0.0
-            self._force_command = None
+        self._ex.reset()
 
     # ---- the commands ----
 
     def connect(self) -> None:
-        """KEY1 held: connect the paired speaker. After a 409 (a run is
-        on) the next hold sends {"force": true}."""
+        """KEY1 held: connect the paired speaker. The Conductor never
+        refuses it for a run; it answers "connecting" and the poll
+        shows the outcome."""
         if not self._ready("connect"):
             return
         with self._lock:
-            force = self.forcing == "connect"
             self._confirm_until = 0.0
-        self._send("connect", CONNECT_PATH, {"force": True} if force else {})
+            self._force_until = 0.0
+        self._send("connect", CONNECT_PATH, {})
 
     def pair(self) -> None:
         """KEY3 held: the first hold shows the instruction and asks for
         a second within PAIR_CONFIRM_S; the second sends the pair; after
-        a 409 the next one sends {"force": true}."""
+        a run-409 the next one sends {"force": true}."""
         if not self._ready("pair"):
             return
         now = self._clock()
         with self._lock:
             if self.phase == BUSY:
                 return
-            if self._force_until > now and self._force_command == "pair":
+            if self._force_until > now:
                 body = {"force": True}
             elif self._confirm_until > now:
                 body = {}
             else:
                 self._confirm_until = now + PAIR_CONFIRM_S
                 self._force_until = 0.0
-                self._force_command = None
                 self.phase = IDLE
                 self.command = None
                 self.note = PAIR_CONFIRM
@@ -445,11 +520,12 @@ class Speaker:
     def _ready(self, command: str) -> bool:
         if not self.configured or self.busy:
             return False
-        if not self.supported:
+        if not self.bluetooth or not self.supported:
             with self._lock:
                 if self.phase != BUSY:
                     self.phase = DONE
-                    self.note = f"{command}: {NOT_SUPPORTED}"
+                    self.note = (NOT_BLUETOOTH if not self.bluetooth
+                                 else f"{command}: {NOT_SUPPORTED}")
             return False
         return True
 
@@ -462,7 +538,6 @@ class Speaker:
             self.note = ""
             self._confirm_until = 0.0
             self._force_until = 0.0
-            self._force_command = None
         try:
             self._thread = threading.Thread(target=self._command,
                                             args=(command, path, body),
@@ -478,6 +553,16 @@ class Speaker:
             thread.join(timeout)
 
     def _command(self, command: str, path: str, body: dict) -> None:
+        # Whatever happens on this thread ends in a verdict: the phase
+        # must never stick at BUSY with the keys shut (review of 73c8fdc,
+        # LOW-7).
+        try:
+            self._request(command, path, body)
+        except Exception as exc:            # noqa: BLE001 - the keys come back
+            self._verdict(FAILED, f"ERROR {_first_line(str(exc)) or exc.__class__.__name__}",
+                          poll=False)
+
+    def _request(self, command: str, path: str, body: dict) -> None:
         ex = self._ex
         ex.emit(f"speaker: {command} -> {path} {json.dumps(body)}")
         try:
@@ -487,9 +572,15 @@ class Speaker:
             self._verdict(FAILED, f"ERROR {_why(exc)}")
             return
         if code == 409:
-            # A run is on: the Conductor wants to be told twice.
-            self._verdict(IDLE, CONNECT_FORCE if command == "connect"
-                          else PAIR_FORCE, force=command)
+            reason = ex._reason(code, payload)
+            if command == "pair" and self._run_refusal(reason):
+                # A run is on: the Conductor wants to be told twice. The
+                # next hold within the window sends {"force": true}.
+                self._verdict(IDLE, PAIR_FORCE, force=True)
+                return
+            # Any other 409 (a pairing already in progress - for connect,
+            # the only one there is): the Conductor's words, no force.
+            self._verdict(FAILED, f"ERROR {reason}")
             return
         if code >= 400:
             self._verdict(FAILED, f"ERROR {ex._reason(code, payload)}")
@@ -511,26 +602,47 @@ class Speaker:
             self._verdict(FAILED, f"ERROR {command} refused")
             return
         if connection == "connected":
-            note = "connected" if command == "connect" else "paired · connected"
-        elif connection == "pairing":
-            note = "pairing started"
+            self._verdict(DONE, "connected" if command == "connect"
+                          else "paired · connected")
         elif connection == "connecting":
-            note = "connecting…"
+            # Async: the poll decides. Amber `connecting…`, never a
+            # green DONE (review of 73c8fdc, MED-1).
+            self._verdict(IDLE, CONNECTING)
+        elif connection == "pairing":
+            self._verdict(DONE, "pairing started")
         else:
-            note = f"{command} sent" if not connection else str(connection)
-        self._verdict(DONE, note)
+            self._verdict(DONE, f"{command} sent" if not connection
+                          else str(connection))
 
-    def _verdict(self, phase: str, note: str, force: "str | None" = None,
+    def _run_refusal(self, reason: str) -> bool:
+        """Is this pair-409 the "show running" one (which force
+        overrides), as opposed to "re-pairing is already in progress"
+        (which nothing does)? By the Conductor's words; and if they say
+        neither, by whether the cache has a run."""
+        text = reason.lower()
+        if text.startswith("show running") or "run is on" in text:
+            return True
+        if "progress" in text or "pairing" in text:
+            return False
+        return (self._ex.fleet or {}).get("run") is not None
+
+    def _verdict(self, phase: str, note: str, force: bool = False,
                  poll: bool = True) -> None:
         # The cache is read again BEFORE the verdict shows, so the DONE
         # screen already carries the new connection (or the pairing's
-        # first phase).
-        if poll:
-            self._ex.poll()
-        self._ex.emit(f"speaker: {note}", error=phase == FAILED)
-        with self._lock:
-            self.note = note
-            self.phase = phase
-            if force is not None:
-                self._force_until = self._clock() + PAIR_CONFIRM_S
-                self._force_command = force
+        # first phase) - and whatever that read does, the phase is
+        # written (LOW-7).
+        try:
+            if poll:
+                try:
+                    self._ex.poll()         # "never raises" - but the
+                except Exception as exc:    # noqa: BLE001 - verdict stands
+                    self._ex.emit(f"speaker: re-read failed ({_why(exc)})",
+                                  error=True)
+            self._ex.emit(f"speaker: {note}", error=phase == FAILED)
+        finally:
+            with self._lock:
+                self.note = note
+                self.phase = phase
+                if force:
+                    self._force_until = self._clock() + PAIR_CONFIRM_S
