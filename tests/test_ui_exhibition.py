@@ -23,8 +23,9 @@ from ui import render
 from ui.app import App, Screen
 from ui.config import EVENTS, HEIGHT, WIDTH
 from ui.display import NullDisplay
-from ui.exhibition import (CONDUCTOR_URL, DONE, FAILED, IDLE, MENU_LABEL,
-                           MENU_LABEL_NONE, SENDING, Exhibition, format_clock)
+from ui.exhibition import (CONDUCTOR_URL, DONE, FAILED, IDLE, LOST_AFTER_S,
+                           LOST_MISSES, MENU_LABEL, MENU_LABEL_NONE, SENDING,
+                           Exhibition, format_clock)
 from ui.inputs import ScriptedInput
 from tests.test_ui_app import FakeRunner
 from tests.test_ui_runner import wait_until
@@ -55,6 +56,21 @@ class FakeConductor:
         self.loop = {"on": False, "wait_s": 30.0, "next_in_s": None}
         self.speaker = {"available": True, "error": None, "volume": 70,
                         "applied": "bluez"}
+        # The Bluetooth side (Coder AC's Conductor), merged into `speaker`
+        # unless `no_bluetooth` (a Conductor from before those keys).
+        self.device = {"mac": "2C:41:A1:0B:7E:19", "name": "Bose Flex SoundLink",
+                       "paired": True, "trusted": True, "connected": True,
+                       "sink_present": True,
+                       "last_connected_at": time.time() - 12 * 60,
+                       "last_error": None}
+        self.connection = "connected"
+        self.reconnect = {"attempts": 0, "next_in_s": None, "last_error": None}
+        self.pairing = None
+        self.bluetooth = True           # speaker.bluetooth: False = a wired sink
+        self.no_bluetooth = False       # an older Conductor: none of these keys
+        self.no_speaker = False         # started without --speaker: speaker null
+        self.connect_error = None       # a 200 {"ok": false, "error": ...}
+        self.pair_error = None
         self.down = False
         self.old = False
         self.no_volume = False          # a Conductor without /api/speaker/volume
@@ -90,7 +106,83 @@ class FakeConductor:
             if self.no_volume:
                 snap["speaker"].pop("volume", None)
                 snap["speaker"].pop("applied", None)
+            if not self.no_bluetooth:
+                # (Garbage a test plants - a string for `reconnect` - is
+                # served as-is, so the UI side is what has to cope.)
+                copy = lambda v: dict(v) if isinstance(v, dict) else v  # noqa: E731
+                snap["speaker"].update({
+                    "device": copy(self.device), "connection": self.connection,
+                    "reconnect": copy(self.reconnect),
+                    "pairing": copy(self.pairing), "bluetooth": self.bluetooth})
+            if self.no_speaker:
+                snap["speaker"] = None
         return snap
+
+    def _pairing_active(self):
+        return (isinstance(self.pairing, dict)
+                and self.pairing.get("phase") in ("scanning", "pairing", "connecting"))
+
+    def _speaker_command(self, command, body):
+        """Coder AC's contract. connect: never refused for a run, 409 only
+        while a pairing is in progress (no force), answers "connecting"
+        (async - `finish_connect` is the outcome the poll then shows).
+        pair: 409 "show running - …" during a run unless forced, 409
+        "re-pairing is already in progress" (no force), else the pairing
+        starts and the poll shows its phases (`advance_pairing`)."""
+        if self.no_bluetooth or self.no_speaker:
+            return 404, "not found"
+        if command == "connect":
+            if self._pairing_active():
+                return 409, {"error": "re-pairing is in progress - wait for it"}
+            self.connection = "connecting"
+            return 200, {"ok": True, "connection": "connecting", "error": None}
+        if self._pairing_active():
+            return 409, {"error": "re-pairing is already in progress"}
+        if self.run is not None and not body.get("force"):
+            return 409, {"error": "show running - STOP it first, or force"}
+        if self.pair_error:
+            self.connection = "disconnected"
+            return 200, {"ok": False, "connection": "disconnected",
+                         "error": self.pair_error}
+        self.pairing = {"phase": "scanning", "note": "looking for the Bose",
+                        "started_at": time.time()}
+        self.connection = "pairing"
+        return 200, {"ok": True, "connection": "pairing", "error": None}
+
+    def finish_connect(self, ok=True, error="Permission denied"):
+        """The async connect came to its end: connected, or back to
+        disconnected with the error on the device."""
+        if ok:
+            self.connection = "connected"
+            if self.device is None:
+                self.device = {"mac": "2C:41:A1:0B:7E:19", "name": "Bose Flex SoundLink",
+                               "paired": True, "trusted": True, "connected": True,
+                               "sink_present": True, "last_connected_at": time.time(),
+                               "last_error": None}
+            self.device["connected"] = True
+            self.device["last_error"] = None
+            self.device["last_connected_at"] = time.time()
+            self.reconnect = {"attempts": 0, "next_in_s": None, "last_error": None}
+        else:
+            self.connection = "disconnected"
+            if self.device is not None:
+                self.device["connected"] = False
+                self.device["last_error"] = error
+
+    def advance_pairing(self, phase, note=None):
+        """The Conductor's pairing moved on: pairing… / connecting… /
+        done (connected) / failed (back to disconnected)."""
+        self.pairing = {"phase": phase, "note": note, "started_at": time.time()}
+        if phase == "done":
+            self.connection = "connected"
+            self.device = {"mac": "2C:41:A1:0B:7E:19", "name": "Bose Flex SoundLink",
+                           "paired": True, "trusted": True, "connected": True,
+                           "sink_present": True, "last_connected_at": time.time(),
+                           "last_error": None}
+        elif phase == "failed":
+            self.connection = "no_device" if self.device is None else "disconnected"
+        else:
+            self.connection = "pairing"
 
     def __call__(self, method, url, body, timeout):
         assert url.startswith(CONDUCTOR_URL)
@@ -145,6 +237,10 @@ class FakeConductor:
             self.speaker["volume"] = max(0, min(100, volume))
             return 200, {"volume": self.speaker["volume"],
                          "applied": self.speaker["applied"], "error": None}
+        if method == "POST" and path == "/api/speaker/connect":
+            return self._speaker_command("connect", body)
+        if method == "POST" and path == "/api/speaker/pair":
+            return self._speaker_command("pair", body)
         return 404, "not found"
 
 
@@ -192,6 +288,21 @@ def make_app(ex, locked=False, remote=None):
 def enter(app):
     app.select("exhibition")
     app.handle("key1")
+
+
+def gone(fake, ex):
+    """The Conductor service stopped: LOST_MISSES probes in a row go
+    unanswered AND LOST_AFTER_S pass, which is what makes
+    Exhibition.present() False (one miss does not - review of 73c8fdc,
+    HIGH-1; neither alone does - re-review, MED-A). The time is taken
+    by moving the first miss back, since most tests run on the real
+    clock."""
+    fake.down = True
+    for _ in range(LOST_MISSES):
+        ex.poll()
+    assert ex.available is False and ex.present()      # the misses alone: no
+    ex.lost_at -= LOST_AFTER_S
+    assert not ex.present()
 
 
 # ---- the row ----
@@ -600,9 +711,14 @@ def test_the_follow_shows_exhibition_not_remote_where_the_conductor_is_local():
     app.handle("key2")
     assert remote.released == 0 and remote.active is True
     # Only with no Conductor on this unit does KEY2 release, as it
-    # always did on the garment units.
+    # always did on the garment units - and one missed probe is not
+    # "no Conductor" (HIGH-1): it takes LOST_MISSES in a row.
     fake.down = True
     ex.poll()
+    app.screen = Screen.REMOTE
+    app.handle("key2")
+    assert remote.released == 0 and remote.active is True
+    gone(fake, ex)
     app.screen = Screen.REMOTE
     app.handle("key2")
     assert remote.released == 1 and remote.active is False
@@ -656,14 +772,93 @@ def test_a_session_armed_before_the_first_probe_moves_to_exhibition_once_known()
     assert app.screen is Screen.MENU and remote.released == 0
     app.tick(wait=0.0)
     assert app.screen is Screen.MENU             # dismissed
-    # The Conductor service stopped: REMOTE and its release() come back.
+    # The Conductor service stopped: REMOTE and its release() come back
+    # - after LOST_MISSES unanswered probes, not on the first (HIGH-1).
     fake.down = True
     ex.poll()
+    app.tick(wait=0.0)
+    assert app._remote_dismissed is True and app.screen is Screen.MENU
+    gone(fake, ex)
     app.tick(wait=0.0)
     assert app._remote_dismissed is False
     assert app.screen is Screen.REMOTE
     app.handle("key2")
     assert remote.released == 1
+
+
+def test_one_missed_probe_does_not_move_exhibition_to_remote():
+    # A timed-out probe used to flip the screen to REMOTE for a tick -
+    # where KEY2 is release() = this unit out of its own run - and back
+    # to EXHIBITION, where the same KEY1 hold is STOP (review of
+    # 73c8fdc, HIGH-1). The Conductor counts as present until BOTH
+    # LOST_MISSES probes in a row went unanswered AND LOST_AFTER_S
+    # passed since the first miss (MED-A: a Conductor restart watched
+    # from SPEAKER's 2 s polls still gets its 15 s).
+    clock = [1000.0]
+    remote = FakeRemote()
+    fake = FakeConductor(remote=remote)
+    ex = Exhibition(http=fake, clock=lambda: clock[0], poll_open_s=60.0,
+                    poll_idle_s=60.0, echo_log=False)
+    fake.run = {"t0": 0.0, "state": "running", "now": 12.0}
+    ex.poll()
+    app, _ = make_app(ex, remote=remote)
+    remote.active = True
+    app.tick(wait=0.0)
+    assert app.screen is Screen.EXHIBITION
+    assert ex.poll_interval() == 60.0            # the screen's own pace here
+    fake.down = True
+    for _ in range(LOST_MISSES - 1):
+        ex.poll()                                # misses, short of the rule
+        clock[0] += 1.0
+        app.tick(wait=0.0)
+        assert ex.present() and app._local_conductor()
+        assert app.screen is Screen.EXHIBITION
+        assert app._remote_dismissed is False
+    app.handle("key2")                           # back out meanwhile...
+    assert app.screen is Screen.MENU and remote.released == 0
+    assert app._remote_dismissed is True         # ...dismissed, not released
+    # While a miss stands the reader keeps the 5 s pace, screen or no
+    # screen, so the return is seen inside the grace (MED-B).
+    assert not ex.is_open and ex.lost_at is not None
+    assert ex.poll_interval() == ex.poll_open_s
+    fake.down = False
+    ex.poll()                                    # back: nothing happened
+    assert ex.misses == 0 and ex.lost_at is None and ex.present()
+    assert ex.poll_interval() == ex.poll_idle_s
+    app.tick(wait=0.0)
+    assert app.screen is Screen.MENU and remote.released == 0
+    enter(app)
+    assert app.screen is Screen.EXHIBITION
+    # Three misses in a row within the 15 s (SPEAKER's 2 s polls do that
+    # in 6 s): still present - the time has to pass too (MED-A)...
+    fake.down = True
+    for _ in range(LOST_MISSES + 2):
+        ex.poll()
+        clock[0] += 2.0
+    assert ex.misses == LOST_MISSES + 2 and ex.present()
+    app.tick(wait=0.0)
+    assert app.screen is Screen.EXHIBITION
+    # ...and the time alone is not enough either: one miss, 15 s.
+    fake.down = False
+    ex.poll()
+    fake.down = True
+    ex.poll()
+    clock[0] += LOST_AFTER_S + 1.0
+    assert ex.misses == 1 and ex.present()
+    app.tick(wait=0.0)
+    assert app.screen is Screen.EXHIBITION
+    # Both: really gone.
+    for _ in range(LOST_MISSES - 1):
+        ex.poll()
+    assert ex.misses == LOST_MISSES and not ex.present()
+    app.tick(wait=0.0)
+    assert app.screen is Screen.REMOTE           # the garment-unit rule again
+    # Never answered at all (a garment unit): not present from the
+    # start, and the reader's pace is the idle one (lost_at never set).
+    fresh = Exhibition(http=fake, echo_log=False)
+    fresh.poll()
+    assert fresh.available is False and not fresh.present()
+    assert fresh.lost_at is None and fresh.poll_interval() == fresh.poll_idle_s
 
 
 def test_the_menu_refuses_the_port_taking_rows_while_the_session_is_armed():
@@ -725,8 +920,7 @@ def test_the_menu_refuses_the_port_taking_rows_while_the_session_is_armed():
         app.handle("key2")
     assert runner.stops == 0
     # Without a local Conductor the words name the PC...
-    fake.down = True
-    ex.poll()
+    gone(fake, ex)
     app._remote_dismissed = True
     app.select("standby")
     app.handle("key1")
