@@ -235,6 +235,11 @@ def preview(directory: str) -> int:
                           info="newest first  * = on the units",
                           detail="18 cues · 31.0 MB · 1a2b3c4d", host="radxa-05"
                           ).save(out / "backups_refused.png")
+    render.backups_screen(backups, 2, "idle",
+                          status="hold KEY1 again to restore <10-01 14:00 edit>",
+                          info="newest first  * = on the units",
+                          detail="17 cues · 30.0 MB · 9f8e7d6c", host="radxa-05"
+                          ).save(out / "backups_armed.png")
     bose = "Bose Flex SoundLink"
     render.speaker_screen("ok", "READY", bose, "connected · vol 70%", ("", ""),
                           "connected 12 min ago", host="radxa-05",

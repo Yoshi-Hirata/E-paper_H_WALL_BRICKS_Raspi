@@ -1439,9 +1439,13 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   show.json / history.json が読めない(停電で壊れた)ワークスペースは世代にしない(良い世代を
   押し出さない。`problem` に理由)。**残すのは新しい順に N 個**(fleet.json `"backup_keep"`、
   1〜50、既定 5。範囲外は警告して 5)**+ `uploaded` の世代**。
+  **ラン中(終わっていない run)とプリセット段階中は `edit` / `start` を書かない**(`fleet_busy`:
+  SD とCPU はショーのもの。変化は覚えておき、ランが終わったら ― Loop の待ち時間は「終わった」
+  扱い ― すぐ取る)。**空きが 200 MB(`MIN_FREE_BYTES`)を切るなら書かない**(`problem` に理由)。
   **電源断に強く**: tar はフォルダ内の `.….part` に書いて flush + fsync → **全メンバーを最後まで
   読み、終端の 2 ブロック(ゼロ 1024 バイト)まで確かめて**(メンバー境界で切れた tar は tarfile
-  だけでは「短い正しい tar」に読める)から `os.replace` → フォルダを fsync → それから index.json
+  だけでは「短い正しい tar」に読める。この読み戻しはたぶんページキャッシュから ― tar が
+  **正しい形で書けた**ことの確認で、カードに載ったことの証明は fsync の役目)から `os.replace` → フォルダを fsync → それから index.json
   (同じ手順の `_durable_write`。`conductor/durable.py` が入ったら置き換える TODO)。起動時は
   `.part` を消し、index に無い名前どおりの tar は全部読めれば(書いた時刻順に)取り込み、
   読めなければ消し、ファイルの無い項目は落とす(index.json が壊れていればフォルダから作り直す。
@@ -1449,8 +1453,12 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   `GET /api/backups` → `{"enabled", "folder", "keep", "uploaded", "problem", "backups": [{name, at,
   reason, revision, uploaded, cues, size}](新しい順)}`(無効なら `{"enabled": false, "backups": [],
   "why"}`)。`POST /api/backups/restore {"name"}` → **ラン中・プリセット段階中は 409**(取り込みと
-  同じ文言)、知らない名前は 404、無効なら 400 → `prerestore` を取ってから(対象の世代は剪定から
-  守る)**取り込みと同じ `import_tar`**(差し替えは全部か無し、fleet.json = パスコード・units・
+  同じ文言)、知らない名前は 404、無効なら 400 → 対象の中身が今のワークスペースと同じなら
+  **差し替えずに** `{"ok", "restored", "unchanged": true, "note": "already the workspace - nothing
+  restored"}` → `prerestore` を取ってから(対象の世代は剪定から守る。ワーカーが 120 秒以内に
+  取りかかれなければ **503** `could not keep the current state first - not restored` で、待っていた
+  `prerestore` は取り消す ― 差し替えのあとに走らせない。ワークスペースが壊れていて取れなかった
+  ときは返答の `problems` に `the state before the restore was not kept (…)`)**取り込みと同じ `import_tar`**(差し替えは全部か無し、fleet.json = パスコード・units・
   hotspot は**決して戻さない**)→ 取り込みと同じ後処理(fleet の shows を忘れ、知っていた機体は
   `before-import`、コンパイル)→ 取り込みの返答 + `restored`・`units_hold`・`note`。**`units_hold`** =
   `--adopt` の Conductor で、復元した世代の中身が最後の whole な Upload の世代と同じ
@@ -1713,9 +1721,12 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   2 ページ目(Screen は EXHIBITION のまま ― follow の規則は変わらない。UP は従来どおり判定文を
   消すだけ。キー行の右に `DOWN backups`)。`GET /api/backups` を**このページが開いている間だけ**
   リーダーのポールで読む(開いた瞬間に 1 回)。新しい順に `10-01 15:20 upload *`(`*` と緑 =
-  最後の Upload の世代)、選んだ世代の `18 cues · 31.0 MB · 1a2b3c4d`。UP/DOWN で選ぶ(読み直しで
-  列がずれてもカーソルは同じ世代に残る)、**KEY1 長押し = 復元**(`POST /api/backups/restore
-  {"name"}`、タイムアウト 120 秒、`restoring…`)→ Conductor の `note` そのまま(`restored - Upload
+  最後の Upload の世代。**ページはこの `*` の行で開く** ― 無ければ一番新しい行)、選んだ世代の
+  `18 cues · 31.0 MB · 1a2b3c4d`。UP/DOWN で選ぶ(読み直しで列がずれてもカーソルは同じ世代に
+  残る)、**KEY1 長押し 2 回 = 復元**: 1 回目は琥珀で `hold KEY1 again to restore <10-01 14:00 edit>`
+  と構えるだけ(5 秒で消える。UP/DOWN/KEY2 で取り消し ― うっかり DOWN のあとの START の
+  つもりの長押しでショーが置き換わらない)、同じ世代に 5 秒以内の 2 回目で送る(`POST
+  /api/backups/restore {"name"}`、タイムアウト 180 秒、`restoring…`)→ Conductor の `note` そのまま(`restored - Upload
   needed` / `restored - units already hold it`)、断り(ラン中の 409 `a run is active on this
   Conductor - STOP it first`)は `ERROR …` で**そのまま**。KEY2 で EXHIBITION ページへ(送信中も ―
   復元は完了し、判定は EXHIBITION ページに出る)。このページでは KEY3 長押し・LEFT/RIGHT・短押しの

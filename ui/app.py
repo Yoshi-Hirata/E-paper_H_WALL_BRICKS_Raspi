@@ -82,8 +82,10 @@ presses meanwhile add up), UP only reads a verdict away (the
 Conductor has one timeline; there is nothing to choose), DOWN opens the
 second page, BACKUPS - the Conductor's workspace generations
 (conductor/backups.py, `10-01 15:20 upload *`, the `*` on the one the
-units hold; read only while the page is open): UP/DOWN choose, KEY1
-*held* restores (the Conductor's refusal - 409 during a run - shown
+units hold; read only while the page is open; it opens on the `*`
+row): UP/DOWN choose, KEY1 *held* arms a restore for 5 s (`hold KEY1
+again to restore <10-01 15:20 edit>`; UP/DOWN/KEY2 disarm) and a second
+hold sends it (the Conductor's refusal - 409 during a run - shown
 verbatim; then `restored - Upload needed` or `restored - units already
 hold it`), KEY2 back to the EXHIBITION page - and KEY2 goes
 back to the menu - the show keeps running,
@@ -646,8 +648,10 @@ class App:
 
     def _handle_backups(self, event: str) -> None:
         """The BACKUPS page (DOWN from EXHIBITION): UP/DOWN choose a
-        generation, KEY1 *held* restores it (the REBOOT gesture - a plain
-        press does nothing), KEY2 goes back to the EXHIBITION page. KEY3
+        generation, KEY1 *held* arms its restore and a second hold within
+        5 s sends it (a stray DOWN then a hold meant as START must never
+        replace the show; a plain press does nothing), KEY2 goes back to
+        the EXHIBITION page. KEY3
         held and LEFT/RIGHT do nothing here: nothing on this page may
         flip the Loop or the volume unseen."""
         exhibition = self.exhibition

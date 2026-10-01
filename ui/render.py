@@ -903,9 +903,12 @@ def backups_screen(rows: "list[tuple[str, bool]]", choice: int, phase: str,
         draw.text((8, 152), _ellipsize(detail, FONT_S, WIDTH - 16), font=FONT_S,
                   fill=DIM)
 
+    armed = status.startswith("hold KEY1 again")
     if status:
         if status.startswith("ERROR"):
             tint = ERR
+        elif armed:
+            tint = WARN             # the first hold: one more restores
         elif phase == "done":
             tint = OK
         else:
@@ -919,8 +922,10 @@ def backups_screen(rows: "list[tuple[str, bool]]", choice: int, phase: str,
         hint = "buttons locked"
     elif phase == "sending":
         hint = "restoring - KEY2 back"
+    elif armed:
+        hint = "hold KEY1 again  UP/DOWN cancel"
     else:
-        hint = "hold KEY1 = restore  KEY2 back"
+        hint = "hold KEY1 twice = restore  KEY2"
     _hint(draw, hint)
     return image
 

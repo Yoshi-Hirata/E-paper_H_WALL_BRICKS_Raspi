@@ -40,14 +40,22 @@ Workspace.revision(), which reads mtimes and so changes on every import).
 The newest `keep` (fleet.json "backup_keep", 1-50, default 5) are kept,
 plus the uploaded one.
 
+`edit` and `start` generations are never written while a run is going
+or a START is presetting (`busy`: the SD card and the CPU belong to the
+show then) - the change is remembered and taken once the run has ended
+(the Loop's wait counts as ended), and none is written when the disk
+would be left with less than MIN_FREE_BYTES.
+
 Power-safe: each tar is written to a dot-named temp file in the folder,
-flushed and fsync'ed, then OPENED AND READ IN FULL (every member, and the
+flushed and fsync'ed, then read back in full (every member, and the
 end-of-archive blocks - a tar cut at a member boundary still reads as a
-shorter valid tar otherwise) before it is renamed into place, the folder
-fsync'ed, and only then entered in index.json (written the same way). A
-temp file left by a power cut is deleted at the next start; a tar the
-index does not know is read in full and adopted, or deleted if it does
-not read.
+shorter valid tar otherwise). That read is likely served from the page
+cache, so it proves the tar is WELL-FORMED as written, not that the card
+holds it - the fsync is what asks for that. Only then is it renamed into
+place, the folder fsync'ed, and the generation entered in index.json
+(written the same way). A temp file left by a power cut is deleted at
+the next start; a tar the index does not know is read in full and
+adopted, or deleted if it does not read.
 """
 
 from __future__ import annotations
@@ -58,11 +66,13 @@ import json
 import os
 import queue
 import re
+import shutil
 import tarfile
 import threading
 import time
 from pathlib import Path
 
+MIN_FREE_BYTES = 200 * 1024 * 1024   # what a generation must leave free on the disk
 BACKUP_KEEP = 5
 BACKUP_KEEP_RANGE = (1, 50)
 EDIT_QUIET_S = 60.0          # quiet after the last change before an "edit" generation
@@ -108,7 +118,8 @@ def start_backups(handler, config, flag: bool) -> "Backups | None":
         low, high = BACKUP_KEEP_RANGE
         print(f"warning: fleet.json \"backup_keep\" is {raw!r} - a whole number "
               f"{low}-{high}; keeping {keep}", flush=True)
-    keeper = Backups(handler.workspace, keep=keep).start()
+    keeper = Backups(handler.workspace, keep=keep,
+                     busy=lambda: fleet_busy(getattr(handler, "fleet", None))).start()
     handler.backups = keeper
     print(f"  backups: {keeper.folder} (the newest {keep}, and the one last "
           "uploaded)", flush=True)
@@ -289,6 +300,20 @@ def _at_of(name: str) -> str:
             f"{clock[:2]}:{clock[2:4]}:{clock[4:]}")
 
 
+def fleet_busy(fleet) -> bool:
+    """A run is going (not merely ended - the Loop's wait is free) or a
+    START is presetting: no `edit` / `start` generation now."""
+    if fleet is None:
+        return False
+    if getattr(fleet, "_staging", None) is not None:
+        return True
+    return fleet.run is not None and not fleet.run_is_over()
+
+
+class _NotTaken(Exception):
+    """A generation deliberately not taken (busy, damaged, no space)."""
+
+
 class _Job:
     def __init__(self, reason: str, upload: "dict | None", protect):
         self.reason = reason
@@ -297,6 +322,27 @@ class _Job:
         self.done = threading.Event()
         self.result: "dict | None" = None
         self.error: "str | None" = None
+        self.not_taken: "str | None" = None    # why none was taken, on purpose
+        self.state = "queued"                  # queued / running / done / cancelled
+        self._state_lock = threading.Lock()
+
+    def cancel(self) -> bool:
+        """Never run it (a restore that gave up waiting for its safety
+        copy must not have that copy taken AFTER some later swap). False
+        when it is already running or done."""
+        with self._state_lock:
+            if self.state != "queued":
+                return False
+            self.state = "cancelled"
+        self.done.set()
+        return True
+
+    def begin(self) -> bool:
+        with self._state_lock:
+            if self.state != "queued":
+                return False
+            self.state = "running"
+            return True
 
 
 class Backups:
@@ -307,8 +353,12 @@ class Backups:
     def __init__(self, workspace, folder=None, keep: int = BACKUP_KEEP,
                  clock=time.monotonic, wall=time.time,
                  quiet_s: float = EDIT_QUIET_S, poll_s: float = POLL_S,
-                 log=None):
+                 log=None, busy=None, min_free: int = MIN_FREE_BYTES):
         self.ws = workspace
+        # () -> bool: the show is running now (fleet_busy over the
+        # server's fleet) - no edit / start generation then.
+        self._busy = busy or (lambda: False)
+        self.min_free = int(min_free)
         self.folder = Path(folder) if folder else backups_folder(workspace.root)
         self.keep = clean_keep(keep)
         self.quiet_s = float(quiet_s)
@@ -394,12 +444,18 @@ class Backups:
         self.request("upload", upload={"rev": rev, "whole": bool(whole)})
 
     def _run(self, job: _Job) -> None:
+        if not job.begin():
+            return                              # cancelled while it waited
         try:
             job.result = self._snapshot(job.reason, job.upload, job.protect)
+        except _NotTaken as why:
+            job.not_taken = str(why)
         except Exception as exc:                # noqa: BLE001 - reported
             job.error = f"{exc.__class__.__name__}: {exc}"
             self._fail(f"{job.reason}: {job.error}")
         finally:
+            with job._state_lock:
+                job.state = "done"
             job.done.set()
 
     def _fail(self, text: str) -> None:
@@ -443,6 +499,10 @@ class Backups:
         if self._baseline is None:
             self._baseline = seen           # nothing to compare with yet
             return None
+        if self._is_busy():
+            # The show is running: nothing written now. `_changed_at`
+            # stays, so the generation is taken as soon as it has ended.
+            return None
         if (seen != self._baseline and self._changed_at is not None
                 and now - self._changed_at >= self.quiet_s):
             # Restarted first: a generation that fails (a full disk) is
@@ -451,6 +511,12 @@ class Backups:
             job = self.request("edit")
             return job.result
         return None
+
+    def _is_busy(self) -> bool:
+        try:
+            return bool(self._busy())
+        except Exception:                       # noqa: BLE001 - never stops the worker
+            return False
 
     def settle(self) -> None:
         """The workspace as it is now is accounted for (a restore just put
@@ -504,7 +570,11 @@ class Backups:
                 if path is None:
                     changed = True
                     continue
-                if path.stat().st_size != record.get("size"):
+                if (path.stat().st_size != record.get("size")
+                        or not isinstance(record.get("revision"), str)
+                        or not record["revision"]):
+                    # A size that moved, or an entry missing what a restore
+                    # compares by: read the tar again rather than trust it.
                     try:
                         record.update(inspect_tar(path), size=path.stat().st_size)
                     except ValueError as exc:
@@ -585,6 +655,11 @@ class Backups:
                 return f"{name} does not parse ({exc})"
         return None
 
+    def _estimate(self) -> int:
+        """About how big the next tar is: what it would hold, plus the
+        tar's own headers and padding."""
+        return sum(size for _, size, _ in self._fingerprint()) + 64 * 1024
+
     def _empty(self) -> bool:
         root = Path(self.ws.root)
         return (not (root / "show.json").is_file()
@@ -600,11 +675,19 @@ class Backups:
     def _snapshot_locked(self, reason: str, upload: "dict | None",
                          protect) -> "dict | None":
         seen = self._fingerprint()
+        if reason in ("edit", "start") and self._is_busy():
+            if reason == "start":
+                # Not lost: a baseline nothing matches makes the first
+                # quiet tick after the run take it (as an `edit`).
+                self._baseline = ()
+                self._seen = seen
+                self._changed_at = self._clock()
+            raise _NotTaken("the show is running - taken once it has ended")
         damaged = self._damaged()
         if damaged:
             self._baseline = seen           # not again until it changes
             self._fail(f"{reason}: not backed up - {damaged}")
-            return None
+            raise _NotTaken(f"the workspace is damaged - {damaged}")
         if reason == "start" and self._empty():
             self._baseline = seen
             return None
@@ -622,6 +705,17 @@ class Backups:
             return dict(newest, skipped=True)
         # The tar itself, with no index lock held.
         self.folder.mkdir(parents=True, exist_ok=True)
+        need = self._estimate()
+        try:
+            free = shutil.disk_usage(str(self.folder)).free
+        except OSError:
+            free = None
+        if free is not None and free - need < self.min_free:
+            why = (f"not enough free space ({free // (1024 * 1024)} MB free, "
+                   f"{need // (1024 * 1024) + 1} MB needed, "
+                   f"{self.min_free // (1024 * 1024)} MB must stay free)")
+            self._fail(f"{reason}: not backed up - {why}")
+            raise _NotTaken(why)
         stamp = datetime.datetime.fromtimestamp(self._wall())
         scratch = self.folder / (f".{stamp:%Y%m%d-%H%M%S}-{reason}-"
                                  f"{os.getpid()}{TEMP_SUFFIX}")

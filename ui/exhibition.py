@@ -53,8 +53,9 @@ to the menu leaves a run running. What it calls:
                               revision, uploaded, cues, size}], "why"}
                               newest first - conductor/backups.py
     POST /api/backups/restore {"name": ...}
-                              KEY1 *held* on the BACKUPS page: the chosen
-                              generation back into the workspace. 409
+                              KEY1 *held* TWICE on the BACKUPS page (the
+                              first hold only arms it, RESTORE_ARM_S): the
+                              chosen generation back into the workspace. 409
                               while a run is active (shown verbatim); the
                               answer's `note` is "restored - Upload
                               needed" or "restored - units already hold
@@ -120,7 +121,11 @@ PROBE_TIMEOUT_S = 1.0        # /api/fleet must answer within this
 COMMAND_TIMEOUT_S = 3.0      # START / STOP / loop, and the show's name
 # A restore swaps the workspace (a music file of tens of MB) and compiles
 # every unit's show before it answers - seconds on radxa-05, not 3.
-RESTORE_TIMEOUT_S = 120.0
+RESTORE_TIMEOUT_S = 180.0
+# A restore takes TWO holds of KEY1: the first only arms it ("hold KEY1
+# again to restore ..."), for this long; UP/DOWN/KEY2 disarm. A stray DOWN
+# then a hold meant as START must never replace the show.
+RESTORE_ARM_S = 5.0
 POLL_OPEN_S = 5.0            # while the EXHIBITION screen is open
 POLL_SPEAKER_S = 2.0         # while the SPEAKER screen is open (pairing progress)
 POLL_IDLE_S = 30.0           # otherwise: only the menu label needs it
@@ -302,6 +307,8 @@ class Exhibition:
         self.backups_enabled: "bool | None" = None
         self.backup_choice = 0
         self._backup_name: "str | None" = None
+        # The first KEY1 hold on BACKUPS: (generation name, clock(), label).
+        self._armed: "tuple[str, float, str] | None" = None
 
     # ---- facts for the screen ----
 
@@ -511,6 +518,9 @@ class Exhibition:
         """The line under the state: what a command is doing or did."""
         if self.phase == SENDING:
             return "restoring…" if self.command == "restore" else "sending…"
+        armed = self.armed_text()
+        if armed:
+            return armed
         if self.phase in (DONE, FAILED):
             return self.note
         if self.available is False and self.fleet_error:
@@ -573,7 +583,7 @@ class Exhibition:
         if self.page == BACKUPS:
             return (self.available, self.page, self.phase, self.note,
                     self.command, tuple(self.backup_rows()), self.backup_choice,
-                    self.backup_detail(), self.backups_text())
+                    self.backup_detail(), self.backups_text(), self.armed_text())
         return (self.available, self.phase, self.note, self.run_text(),
                 self.fleet_text(), self.loop_text(), self.speaker_text(),
                 self.show_lines(), self.active)
@@ -597,6 +607,7 @@ class Exhibition:
         """KEY2 on the BACKUPS page: back to EXHIBITION; the list is not
         asked for again until the page reopens. A restore in flight
         completes, its verdict shown on the EXHIBITION page."""
+        self._armed = None
         with self._lock:
             self.page = MAIN
             self.backups = None
@@ -615,14 +626,39 @@ class Exhibition:
                                             self.backup_choice + delta))
             self._backup_name = rows[self.backup_choice].get("name")
 
+    def armed_text(self) -> str:
+        """`hold KEY1 again to restore <10-01 15:20 edit>` while the first
+        hold's arming stands, else ""."""
+        armed = self._armed
+        if armed is None or self._clock() - armed[1] > RESTORE_ARM_S:
+            return ""
+        return f"hold KEY1 again to restore <{armed[2]}>"
+
+    def disarm(self) -> None:
+        self._armed = None
+
     def restore_backup(self) -> None:
-        """KEY1 held on the BACKUPS page: the chosen generation back into
-        the Conductor's workspace. The Conductor decides (409 during a
-        run); its answer, or its refusal, is the verdict."""
+        """KEY1 held on the BACKUPS page. The FIRST hold only arms the
+        restore of the chosen generation (RESTORE_ARM_S); a second hold
+        on the same one, within that, sends it. The Conductor decides (409
+        during a run); its answer, or its refusal, is the verdict."""
         backup = self.chosen_backup()
         if backup is None or not backup.get("name"):
             return
-        self._send("restore", RESTORE_PATH, {"name": backup["name"]},
+        name = backup["name"]
+        if not (self.armed_text() and self._armed[0] == name):
+            rows = self.backup_rows()
+            label = rows[self.backup_choice][0] if self.backup_choice < len(rows) else name
+            if label.endswith(" *"):
+                label = label[:-2]
+            with self._lock:
+                if self.phase != SENDING:
+                    self.phase = IDLE
+                    self.note = ""
+            self._armed = (name, self._clock(), label)
+            return
+        self._armed = None
+        self._send("restore", RESTORE_PATH, {"name": name},
                    timeout=self.restore_timeout)
 
     def _read_backups(self) -> None:
@@ -655,6 +691,12 @@ class Exhibition:
             names = [row.get("name") for row in rows]
             if self._backup_name in names:
                 self.backup_choice = names.index(self._backup_name)
+            elif self._backup_name is None and rows:
+                # The page opens on the generation the units hold (`*`),
+                # not the newest: the likeliest one to want back.
+                marked = [i for i, row in enumerate(rows) if row.get("uploaded")]
+                self.backup_choice = marked[0] if marked else 0
+                self._backup_name = names[self.backup_choice]
             else:
                 self.backup_choice = max(0, min(self.backup_choice, len(rows) - 1))
                 self._backup_name = names[self.backup_choice] if rows else None
@@ -680,7 +722,9 @@ class Exhibition:
             self.reset()
 
     def reset(self) -> None:
-        """A verdict was read (UP/DOWN, or the screen re-opened)."""
+        """A verdict was read (UP/DOWN, or the screen re-opened) - and an
+        armed restore is disarmed."""
+        self._armed = None
         with self._lock:
             if self.phase == SENDING:
                 return

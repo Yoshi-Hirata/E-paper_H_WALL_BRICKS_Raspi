@@ -397,7 +397,109 @@ def test_a_damaged_show_json_is_not_backed_up_over_a_good_one(tmp_path):
     assert len(_names(keeper)) == 1 and "show.json does not parse" in keeper.problem
 
 
+def test_no_edit_or_start_generation_while_the_show_runs(tmp_path):
+    """MED-2: the SD card and the CPU are the show's during a run or a
+    preset stage; the change is kept and taken once the run has ended."""
+    clock = Clock(1000.0)
+    busy = [True]
+    ws = _workspace(tmp_path / "exhibition")
+    keeper = _keeper(ws, clock=clock, busy=lambda: busy[0])
+    job = keeper.request("start")
+    assert job.result is None and "running" in job.not_taken
+    assert not keeper.folder.exists()
+    ws.set_label("Look23", "LOOK 23", "during the run")
+    for _ in range(4):
+        clock.now += QUIET
+        assert keeper.tick() is None
+    assert keeper.request("edit").result is None
+    assert not keeper.folder.exists()
+    # Imports and Uploads are not held back (they are refused during a run
+    # anyway, or are the operator's own forced write).
+    busy[0] = False
+    clock.now += 1
+    taken = keeper.tick()                         # quiet long since: taken at once
+    assert taken is not None and taken["reason"] == "edit"
+    assert keeper.listing()["backups"][0]["revision"] == content_revision(ws)
+    # What `busy` is on the server: a run that has not ended, or a stage.
+    fleet = Fleet({}, clock=lambda: 2000.0)
+    assert backups_mod.fleet_busy(None) is False and backups_mod.fleet_busy(fleet) is False
+    fleet.shows = {"radxa-01": {"id": "a", "cues": [], "duration": 100.0}}
+    fleet.run = {"t0": 1950.0, "state": "running", "held_at": None}
+    assert backups_mod.fleet_busy(fleet) is True
+    fleet.run = {"t0": 1800.0, "state": "running", "held_at": None}    # ENDED / Loop wait
+    assert backups_mod.fleet_busy(fleet) is False
+    fleet.run = None
+    fleet._staging = {"gen": 1}
+    assert backups_mod.fleet_busy(fleet) is True
+
+
+def test_no_generation_when_the_disk_would_be_left_nearly_full(tmp_path, monkeypatch):
+    ws = _workspace(tmp_path / "exhibition")
+    keeper = _keeper(ws)
+    usage = shutil.disk_usage(str(tmp_path))
+    monkeypatch.setattr(backups_mod.shutil, "disk_usage",
+                        lambda path: usage._replace(free=150 * 1024 * 1024))
+    job = keeper.request("edit")
+    assert job.result is None and "not enough free space" in job.not_taken
+    assert "200 MB must stay free" in keeper.problem
+    assert not list(keeper.folder.glob("*.tar"))
+
+
+def test_an_index_entry_without_a_revision_is_read_again(tmp_path):
+    ws = _workspace(tmp_path / "exhibition")
+    keeper = _keeper(ws)
+    record = keeper.request("edit").result
+    index_path = keeper.folder / INDEX_NAME
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    del index["generations"][0]["revision"]
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    again = _keeper(ws)
+    assert again.find(record["name"])["revision"] == record["revision"]
+    index["generations"][0]["revision"] = None
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    assert _keeper(ws).find(record["name"])["revision"] == record["revision"]
+
+
 # ------------------------------------------------------------ restore
+
+def test_a_restore_that_cannot_keep_the_current_state_first_is_refused(tmp_path, monkeypatch):
+    """MED-3: the prerestore copy still queued after the wait -> 503, and
+    that copy is never taken later (it would land after the swap)."""
+    import conductor.server as server_mod
+
+    monkeypatch.setattr(server_mod, "RESTORE_WAIT_S", 0.2)
+    ws, fleet, server, handler, keeper, port = _upload_server(tmp_path)
+    try:
+        first = keeper.request("edit").result
+        handler.workspace.set_label("Look23", "LOOK 23", "now")
+        before = content_revision(handler.workspace)
+        keeper._thread = threading.Thread()      # a worker that never gets to it
+        status, answer = _post(port, "/api/backups/restore", {"name": first["name"]})
+        assert status == 503
+        assert answer["error"].startswith("could not keep the current state first - not restored")
+        assert content_revision(handler.workspace) == before
+        queued = keeper._jobs.get_nowait()
+        assert queued.state == "cancelled"
+        keeper._run(queued)                       # the worker reaching it at last
+        assert queued.result is None and _names(keeper) == [first["name"]]
+    finally:
+        _stop(server)
+
+
+def test_a_restore_over_a_damaged_workspace_says_no_copy_was_kept(tmp_path):
+    ws, fleet, server, handler, keeper, port = _upload_server(tmp_path)
+    try:
+        first = keeper.request("edit").result
+        (handler.workspace.root / "show.json").write_text('{"cues": [', encoding="utf-8")
+        status, answer = _post(port, "/api/backups/restore", {"name": first["name"]})
+        assert status == 200, answer
+        assert any(p.startswith("the state before the restore was not kept (the "
+                                "workspace is damaged - show.json does not parse")
+                   for p in answer["problems"]), answer["problems"]
+        assert content_revision(handler.workspace) == first["revision"]
+    finally:
+        _stop(server)
+
 
 def test_restore_round_trip_keeps_fleet_json_and_the_state_before(tmp_path):
     ws, fleet, server, handler, keeper, port = _upload_server(tmp_path)
@@ -505,11 +607,16 @@ def test_restoring_what_the_units_hold_needs_no_upload_on_the_exhibition_conduct
         assert status == 200
         assert answer["units_hold"] is False and answer["note"] == "restored - Upload needed"
         # A unit that says it holds something else vetoes the claim.
-        status, answer = _post(port, "/api/backups/restore", {"name": uploaded})
-        assert answer["units_hold"] is True
         link.status = {"show": {"id": "someone-elses", "state": "stopped"}}
         status, answer = _post(port, "/api/backups/restore", {"name": uploaded})
         assert answer["units_hold"] is False
+        # Restoring what the workspace already is: no swap at all - the
+        # units' adoption and marks are left exactly as they are.
+        marks = dict(workspace.unit_marks.get("upload", {}))
+        status, answer = _post(port, "/api/backups/restore", {"name": uploaded})
+        assert status == 200 and answer["unchanged"] is True
+        assert answer["note"] == "already the workspace - nothing restored"
+        assert dict(workspace.unit_marks.get("upload", {})) == marks
     finally:
         _stop(server)
 
@@ -777,12 +884,17 @@ def test_a_held_key1_restores_the_chosen_one_and_says_what_the_units_need():
     app.handle("down")
     assert wait_until(lambda: ex.backups)
     app.handle("down")                             # the edit one
+    app.handle("key1_hold")                        # the first hold only arms it
+    ex.join(0.2)
+    assert fake.posts() == []
+    assert ex.status_text() == "hold KEY1 again to restore <10-01 14:00 edit>"
+    assert app.frame().size == (WIDTH, HEIGHT)
     app.handle("key1_hold")
     assert wait_until(lambda: ex.phase == DONE)
     assert fake.posts() == [("/api/backups/restore",
                              {"name": "20261001-140000-edit-9f8e7d6c.tar"})]
     restore = [c for c in fake.calls if c[1] == "/api/backups/restore"][0]
-    assert restore[3] >= 60                        # a restore is given time
+    assert restore[3] >= 180                       # a restore is given time
     assert ex.status_text() == "restored - Upload needed"
     # The list was read again after the answer: the prerestore is there.
     assert ex.backup_rows()[0][0] == "10-01 16:00 prerestore"
@@ -794,8 +906,58 @@ def test_a_held_key1_restores_the_chosen_one_and_says_what_the_units_need():
     app.handle("down")
     assert ex.chosen_backup()["uploaded"] is True
     app.handle("key1_hold")
+    app.handle("key1_hold")
     assert wait_until(lambda: ex.phase == DONE)
     assert ex.status_text() == "restored - units already hold it"
+
+
+def test_a_stray_down_and_one_hold_never_restore():
+    """MED-1 (review of 795bb0e): DOWN by mistake, then the hold meant as
+    START - only arms. The arming lasts 5 s and UP/DOWN/KEY2 drop it."""
+    now = [1000.0]
+    fake = BackupConductor()
+    # The units hold the middle one: the page opens on it, not the newest.
+    fake.generations = [dict(GENERATIONS[1]), dict(GENERATIONS[0]), dict(GENERATIONS[2])]
+    ex = Exhibition(http=fake, poll_open_s=60.0, poll_idle_s=60.0, echo_log=False,
+                    clock=lambda: now[0])
+    ex.poll()
+    app, _ = make_app(ex)
+    app.select("exhibition")
+    app.handle("key1")
+    app.handle("down")
+    assert wait_until(lambda: ex.backups)
+    assert ex.backup_choice == 1 and ex.chosen_backup()["uploaded"] is True
+    app.handle("key1_hold")
+    ex.join(0.2)
+    assert fake.posts() == [] and ex.armed_text()
+    # Expired: the next hold arms again, it does not restore.
+    now[0] += 5.1
+    assert ex.armed_text() == "" and ex.status_text() == ""
+    app.handle("key1_hold")
+    ex.join(0.2)
+    assert fake.posts() == []
+    # UP / DOWN / KEY2 disarm.
+    for cancel in ("up", "down", "key2"):
+        assert ex.armed_text()                     # (armed by the hold before)
+        app.handle(cancel)
+        assert ex.armed_text() == ""
+        if cancel == "key2":
+            assert ex.page == MAIN
+            app.handle("down")
+            assert wait_until(lambda: ex.backups)
+        app.handle("key1_hold")                    # arms again, nothing sent
+        ex.join(0.2)
+        assert fake.posts() == []
+    # Armed on one generation, moved to another: that one is not restored.
+    app.handle("down")
+    app.handle("key1_hold")
+    ex.join(0.2)
+    assert fake.posts() == []
+    # ...and two holds on the same one, within 5 s, do.
+    now[0] += 2.0
+    app.handle("key1_hold")
+    assert wait_until(lambda: ex.phase == DONE)
+    assert len(fake.posts()) == 1
 
 
 def test_a_refused_restore_is_shown_verbatim_and_the_keys_wait_while_it_runs():
@@ -805,6 +967,7 @@ def test_a_refused_restore_is_shown_verbatim_and_the_keys_wait_while_it_runs():
     app.handle("down")
     assert wait_until(lambda: ex.backups)
     app.handle("key1_hold")
+    app.handle("key1_hold")
     assert wait_until(lambda: ex.phase == FAILED)
     assert ex.status_text() == "ERROR a run is active on this Conductor - STOP it first"
     # While a restore is on its way only KEY2 is heard - back to EXHIBITION.
@@ -812,6 +975,7 @@ def test_a_refused_restore_is_shown_verbatim_and_the_keys_wait_while_it_runs():
     fake.release.clear()
     fake.hold_paths = {"/api/backups/restore"}
     try:
+        app.handle("key1_hold")
         app.handle("key1_hold")
         assert wait_until(lambda: ex.phase == SENDING)
         assert ex.status_text() == "restoring…"
@@ -894,7 +1058,8 @@ def test_the_lcd_restores_through_a_real_conductor(tmp_path):
         ex.open_backups()
         ex.poll()
         assert [row["name"] for row in ex.backups] == [first["name"]]
-        ex.restore_backup()
+        ex.restore_backup()                       # arms
+        ex.restore_backup()                       # sends
         ex.join(30)
         assert ex.phase == DONE and ex.status_text() == "restored - Upload needed"
         assert content_revision(handler.workspace) == first["revision"]

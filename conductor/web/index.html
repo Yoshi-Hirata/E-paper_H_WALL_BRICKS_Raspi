@@ -3911,6 +3911,7 @@ async function restoreBackup(name, at) {
   try {
     const r = await api("/api/backups/restore", { name });
     if (!r || r.error) { backupLog(`Restore ${at} REFUSED (${when}): ${r?.error || "no answer"}`); return; }
+    if (r.unchanged) { backupLog(`Restore ${at} (${when}): ${r.note}`); toast(r.note); return; }
     backupLog(`Restored ${at} (${when}): ${r.files ?? 0} CSV file(s), ${r.cues ?? 0} cue(s), music ${r.music || "none"}.\n`
       + `${r.note}${r.units_hold ? "" : " — ① Upload before START."}`
       + (r.problems && r.problems.length ? `\nProblems: ${r.problems.join(" · ")}` : ""));

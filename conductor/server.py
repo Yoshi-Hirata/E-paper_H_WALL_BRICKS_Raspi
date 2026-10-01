@@ -60,7 +60,7 @@ from pathlib import Path
 
 from . import sequence, showfile, timeline
 from .backups import (BACKUPS_OFF, RESTORE_WAIT_S, backup_listing,
-                      restore_note, start_backups)
+                      content_revision, restore_note, start_backups)
 from .fleet import (DEFAULT_HOTSPOT_UNIT, DEFAULT_LEAD_S, STAGING_BUSY,
                     WIFI_SWITCH_RANGE_S, Fleet, default_units)
 from .look import (MAX_BOARD_ID, PALETTE, UNRELIABLE_DIP_NOTE, Design,
@@ -3563,8 +3563,29 @@ class Handler(BaseHTTPRequestHandler):
         if fleet is not None and fleet.run is not None:
             return self._json({"error": "a run is active on this Conductor "
                                         "- STOP it first"}, status=409)
+        try:
+            same = content_revision(self.workspace) == record.get("revision")
+        except OSError:
+            same = False
+        if same:
+            # Nothing to put back: no swap, so nothing the units hold is
+            # forgotten and no Upload is asked for.
+            return self._json({"ok": True, "restored": record["name"],
+                               "unchanged": True, "units_hold": None,
+                               "note": "already the workspace - nothing restored"})
         safety = backups.request("prerestore", wait=RESTORE_WAIT_S,
                                  protect=(record["name"],))
+        if not safety.done.is_set() and safety.cancel():
+            # Still queued behind a long generation: refused, and the copy
+            # is never taken after all - it must not land after a swap.
+            return self._json({"error": "could not keep the current state first "
+                                        "- not restored (try again in a minute)"},
+                              status=503)
+        safety.done.wait(RESTORE_WAIT_S)
+        if not safety.done.is_set():
+            return self._json({"error": "could not keep the current state first "
+                                        "- not restored (try again in a minute)"},
+                              status=503)
         # Asked again: a START may have landed while the safety copy was written.
         if fleet is not None and (_staging(fleet) or fleet.run is not None):
             return self._json({"error": STAGING_REFUSAL if _staging(fleet) else
@@ -3592,9 +3613,10 @@ class Handler(BaseHTTPRequestHandler):
                         .get("id") if link is not None else None)
                 if link is not None and link.online and held != show["id"]:
                     units_hold = False      # it says it holds something else
-        if safety.error:
+        if safety.error or safety.not_taken:
             reply["problems"] = reply["problems"] + [
-                f"the state before the restore was not kept ({safety.error})"]
+                "the state before the restore was not kept "
+                f"({safety.error or safety.not_taken})"]
         return self._json(dict(reply, restored=record["name"],
                                units_hold=units_hold, note=restore_note(units_hold)))
 
