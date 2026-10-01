@@ -300,13 +300,20 @@ class Exhibition:
         fleet = self.fleet
         if not fleet:
             return False
-        return fleet.get("run") is not None or self.next_in_s() is not None
+        return fleet.get("run") is not None or self.waiting
 
     @property
     def waiting(self) -> bool:
         """LOOP is between runs: the Conductor will start the next one by
         itself, and STOP is what cancels that."""
-        return self.next_in_s() is not None
+        return self.next_in_s() is not None or self.loop_waiting()
+
+    def loop_waiting(self) -> bool:
+        """`loop.waiting`: the loop's restart is being retried (a unit
+        not ready yet) - STOP is still what ends it."""
+        loop = (self.fleet or {}).get("loop")
+        return isinstance(loop, dict) and bool(loop.get("on")) \
+            and bool(loop.get("waiting"))
 
     def next_in_s(self) -> "float | None":
         """Seconds until the loop's next run, moved on by the time since
@@ -375,18 +382,32 @@ class Exhibition:
         return name, " · ".join(parts)
 
     def run_text(self) -> str:
-        """idle / countdown -0:11 / 0:00 / 10:54 running / hold ... /
-        ended ... / next run in 0:25 (the loop's wait)."""
+        """idle / preset… 5/7 painted / countdown -0:11 / 0:00 / 10:54
+        running / hold ... / ended ... / next run in 0:25 (the loop's
+        wait) / loop waiting (the loop's restart being retried)."""
         fleet = self.fleet
         if not fleet:
             return ""
         left = self.next_in_s()
         if left is not None:
             return f"next run in {format_clock(math.ceil(left))}"
+        if self.loop_waiting():
+            return "loop waiting"
         run = fleet.get("run")
         duration = self._duration()
         if run is None:
             return "idle"
+        if run.get("state") == "preset":
+            # START's first stage: the first picture goes onto every
+            # unit before the countdown. `preset` (top level) says who
+            # has painted it.
+            preset = fleet.get("preset")
+            if isinstance(preset, dict):
+                targets = preset.get("targets")
+                painted = preset.get("painted")
+                if isinstance(targets, list) and isinstance(painted, list):
+                    return f"preset… {len(painted)}/{len(targets)} painted"
+            return "preset…"
         now = self._run_now(run)
         if now is None:
             return str(run.get("state") or "running")
