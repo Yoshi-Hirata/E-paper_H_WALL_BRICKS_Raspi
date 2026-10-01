@@ -46,6 +46,14 @@ to the menu leaves a run running. What it calls:
                               `volume` shows `vol ?`, and LEFT / RIGHT
                               only say so
 
+The speaker object also carries the Bluetooth side (Coder AC's
+Conductor: `device`, `connection`, `reconnect`, `pairing`): the
+SPEAKER row (ui/speaker.py) is a view over this same cache - no second
+poller - and while its screen is open the reader asks every
+POLL_SPEAKER_S instead. Here it only colours the speaker line: a
+`connection` of disconnected / no_device reads `speaker LOST - see
+SPEAKER`.
+
 The row is only useful where a Conductor answers, and the question is
 asked by a daemon thread (every POLL_OPEN_S while the screen is open,
 POLL_IDLE_S otherwise, one PROBE_TIMEOUT_S request), never on the HAT
@@ -88,7 +96,12 @@ VOLUME_UNSUPPORTED = "volume: not supported by this conductor"
 PROBE_TIMEOUT_S = 1.0        # /api/fleet must answer within this
 COMMAND_TIMEOUT_S = 3.0      # START / STOP / loop, and the show's name
 POLL_OPEN_S = 5.0            # while the EXHIBITION screen is open
+POLL_SPEAKER_S = 2.0         # while the SPEAKER screen is open (pairing progress)
 POLL_IDLE_S = 30.0           # otherwise: only the menu label needs it
+
+# The speaker's `connection` values that mean the music is not playing.
+SPEAKER_LOST = ("disconnected", "no_device")
+SPEAKER_LOST_TEXT = "speaker LOST - see SPEAKER"
 
 NO_CONDUCTOR = "no conductor"
 MENU_LABEL = "EXHIBITION"
@@ -188,11 +201,15 @@ class Exhibition:
                  poll_idle_s: float = POLL_IDLE_S,
                  probe_timeout: float = PROBE_TIMEOUT_S,
                  command_timeout: float = COMMAND_TIMEOUT_S,
-                 clock=time.monotonic, echo_log: bool = True):
+                 clock=time.monotonic, echo_log: bool = True,
+                 poll_speaker_s: float = POLL_SPEAKER_S):
         self._http = http
         self.base = base.rstrip("/")
         self.poll_open_s = poll_open_s
         self.poll_idle_s = poll_idle_s
+        self.poll_speaker_s = poll_speaker_s
+        # The SPEAKER screen (ui/speaker.py) is open: the fast poll.
+        self.speaker_open = False
         self.probe_timeout = probe_timeout
         self.command_timeout = command_timeout
         self._clock = clock
@@ -365,6 +382,10 @@ class Exhibition:
         speaker = (self.fleet or {}).get("speaker")
         if not isinstance(speaker, dict) or "available" not in speaker:
             return "speaker ?"
+        if speaker.get("connection") in SPEAKER_LOST:
+            # The Bluetooth link is down: the volume figure is moot and
+            # the fix is on the SPEAKER screen (ui/speaker.py).
+            return SPEAKER_LOST_TEXT
         if speaker.get("available"):
             volume = _percent(speaker.get("volume"))
             if volume is None:
@@ -454,9 +475,16 @@ class Exhibition:
     def _loop(self) -> None:
         while not self._stop.is_set():
             self.poll()
-            self._wake.wait(self.poll_open_s if self.is_open
-                            else self.poll_idle_s)
+            self._wake.wait(self.poll_interval())
             self._wake.clear()
+
+    def poll_interval(self) -> float:
+        """How long the reader sleeps between polls right now: the
+        SPEAKER screen's 2 s (a pairing's progress is read from here),
+        the EXHIBITION screen's 5 s, else the menu label's 30 s."""
+        if self.speaker_open:
+            return self.poll_speaker_s
+        return self.poll_open_s if self.is_open else self.poll_idle_s
 
     def _get(self, path: str, timeout: float):
         code, payload = self._http("GET", self.base + path, None, timeout)

@@ -808,8 +808,14 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
               fill=fleet_tint)
     draw.text((8, 120), _ellipsize(loop, FONT_S, WIDTH - 16), font=FONT_S,
               fill=OK if loop == "LOOP on" else DIM)
+    if speaker.startswith("speaker LOST"):
+        speaker_tint = ERR          # the Bluetooth link is down (SPEAKER row)
+    elif speaker.startswith("no speaker"):
+        speaker_tint = WARN
+    else:
+        speaker_tint = DIM
     draw.text((8, 136), _ellipsize(speaker, FONT_S, WIDTH - 16), font=FONT_S,
-              fill=WARN if speaker.startswith("no speaker") else DIM)
+              fill=speaker_tint)
 
     if status:
         if status.startswith("ERROR"):
@@ -840,6 +846,159 @@ def exhibition_screen(available: "bool | None", show: "tuple[str, str]",
         hint = "hold KEY1 = STOP  KEY2 back"
     else:
         hint = "hold KEY1 = START  KEY2 back"
+    _hint(draw, hint)
+    return image
+
+
+_SPEAKER_STATUS = {
+    "READY": ACCENT, "BUSY": OK, "DONE": OK, "FAILED": ERR,
+}
+_SPEAKER_MODE_TEXT = {
+    "checking": ("checking for a conductor…", ""),
+    "missing": ("no conductor on this unit",
+                "SPEAKER needs the Conductor service running here "
+                "(127.0.0.1:8765), the one that plays the music."),
+    "none": ("no speaker on this conductor",
+             "The Conductor here runs without --speaker: it plays no "
+             "music, so there is nothing to connect. Start it with "
+             "--speaker to use this screen."),
+    "old": ("speaker ?",
+            "This Conductor reports a speaker but not its Bluetooth "
+            "link: connect and pair need a newer Conductor (git pull "
+            "on this unit)."),
+}
+
+
+def speaker_screen(mode: str, word: str, device: str, state: str,
+                   detail: "tuple[str, str]", seen: str, status: str = "",
+                   banner: str = "", instruction: str = "",
+                   busy: bool = False, volume_keys: bool = False,
+                   locked: bool = False, host: str | None = None
+                   ) -> Image.Image:
+    """SPEAKER: the Bluetooth speaker as the Conductor on this unit sees
+    it, and the keys that connect / re-pair it (ui/speaker.py).
+
+    `mode` is Speaker.mode() - "ok", or why the screen is only a note
+    (checking / missing / none / old); `word` is the header's READY /
+    BUSY / DONE / FAILED; `device`, `state`, `detail` (text, tone) and
+    `seen` are lines 1-3 (device_text() and friends - the state's tint
+    follows its words: connected green, NOT CONNECTED red, connecting /
+    reconnect / pairing amber); `status` is the verdict line (red when
+    it starts with ERROR, amber for the "hold again" prompts); `banner`
+    is `MUSIC LOST` or ""; `instruction` is the pairing instruction when
+    it is due; `busy` picks the hint, `volume_keys` adds `< > volume`.
+    """
+    image, draw = _blank()
+    if mode == "missing":
+        color = ERR
+        word = "MISSING"
+    elif mode == "checking":
+        color = DIM
+        word = "CHECKING"
+    elif mode == "none":
+        color = WARN
+        word = "NONE"
+    else:
+        color = _SPEAKER_STATUS.get(word, DIM)
+    _header(draw, "SPEAKER", status=word, status_color=color, host=host)
+
+    if mode in _SPEAKER_MODE_TEXT:
+        title, body = _SPEAKER_MODE_TEXT[mode]
+        draw.text((8, 40), _ellipsize(title, FONT_M, WIDTH - 16),
+                  font=FONT_M, fill=DIM if mode == "checking" else WARN)
+        y = 66
+        for line in _wrap(body, FONT_S, WIDTH - 16)[:5]:
+            draw.text((8, y), line, font=FONT_S, fill=DIM)
+            y += 14
+        if mode == "old" and state:
+            # What the old Conductor does say (the EXHIBITION line).
+            draw.text((8, y + 6), _ellipsize(state, FONT_S, WIDTH - 16),
+                      font=FONT_S, fill=DIM)
+            y += 20
+        if status:
+            y += 6
+            tint = ERR if status.startswith(("ERROR", "no conductor")) else DIM
+            for line in _wrap(status, FONT_S, WIDTH - 16)[:2]:
+                draw.text((8, y), line, font=FONT_S, fill=tint)
+                y += 14
+        _hint(draw, "buttons locked" if locked else "KEY2 back")
+        return image
+
+    # Line 1: the device. Line 2: the state, large, in its colour.
+    draw.text((8, 30), _ellipsize(device, FONT_M, WIDTH - 16), font=FONT_M,
+              fill=DIM if device.startswith("no speaker") else FG)
+    if state.startswith("connected"):
+        tint = OK
+    elif state.startswith("NOT CONNECTED") or state.startswith("pairing failed"):
+        tint = ERR
+    elif state.startswith(("connecting", "pairing", "reconnect")):
+        tint = WARN
+    else:
+        tint = DIM
+    draw.text((8, 50), _ellipsize(state or "…", FONT_L, WIDTH - 16),
+              font=FONT_L, fill=tint)
+    text, tone = detail
+    if text:
+        y = 74
+        for line in _wrap(text, FONT_S, WIDTH - 16)[:2]:
+            draw.text((8, y), line, font=FONT_S, fill=_TONE.get(tone, DIM)
+                      if tone else DIM)
+            y += 14
+
+    if status:
+        if status.startswith("ERROR"):
+            status_tint = ERR
+        elif status.startswith("show running") or status == "hold KEY3 again = pair":
+            status_tint = WARN
+        elif word == "DONE":
+            status_tint = OK
+        else:
+            status_tint = DIM
+    if instruction:
+        # Pairing: the instruction needs the room. The "last connected"
+        # line gives way to the verdict (two lines, it is what asks for
+        # the second hold), and the instruction takes up to four lines
+        # above the keys - DejaVu 12 px on the Radxa is wider than the
+        # preview font, so three may not do.
+        if status:
+            y = 102
+            for line in _wrap(status, FONT_S, WIDTH - 16)[:2]:
+                draw.text((8, y), line, font=FONT_S, fill=status_tint)
+                y += 14
+    else:
+        draw.text((8, 102), _ellipsize(seen, FONT_S, WIDTH - 16), font=FONT_S,
+                  fill=DIM)
+    draw.line((8, 118, WIDTH - 8, 118), fill=BAR, width=1)
+
+    if banner:
+        # A red strip, black caps: readable from the wall, not the HAT.
+        draw.rectangle((8, 122, WIDTH - 8, 142), fill=ERR)
+        draw.text(((WIDTH - FONT_M.getlength(banner)) / 2, 124), banner,
+                  font=FONT_M, fill=BG)
+
+    if instruction:
+        y = 146
+        for line in _wrap(instruction, FONT_S, WIDTH - 16)[:4]:
+            draw.text((8, y), line, font=FONT_S, fill=WARN)
+            y += 14
+    elif status:
+        y = 146
+        for line in _wrap(status, FONT_S, WIDTH - 16)[:3]:
+            draw.text((8, y), line, font=FONT_S, fill=status_tint)
+            y += 14
+
+    keys = "hold KEY1 connect · hold KEY3 pair"
+    draw.text((8, 204), _ellipsize(keys, FONT_S, WIDTH - 16), font=FONT_S,
+              fill=DIM)
+    if locked:
+        hint = "buttons locked"
+    elif busy:
+        hint = ("pairing - KEY2 menu" if state.startswith("pairing")
+                else "sending - KEY2 menu")
+    elif volume_keys:
+        hint = "< > volume  KEY2 back"
+    else:
+        hint = "KEY2 back"
     _hint(draw, hint)
     return image
 

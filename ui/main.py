@@ -34,6 +34,7 @@ from .updater import (FirmwareUpdater, find_firmware, find_firmware_images,
 from .versions import BoardVersions
 from .boardinfo import BoardInfo
 from .exhibition import Exhibition
+from .speaker import INSTRUCTION as SPEAKER_INSTRUCTION, Speaker
 from .wifi import Wifi
 
 
@@ -210,6 +211,32 @@ def preview(directory: str) -> int:
     render.exhibition_screen(False, ("", ""), "", "", "", "", "idle",
                              status="no conductor: Connection refused",
                              host="radxa-03").save(out / "exhibition_none.png")
+    render.exhibition_screen(True, show, "3:20 / 10:54 running",
+                             "units 7/7 online", "LOOP off",
+                             "speaker LOST - see SPEAKER", "idle",
+                             active=True, host="radxa-05", volume_keys=True
+                             ).save(out / "exhibition_speaker_lost.png")
+    bose = "Bose Flex SoundLink"
+    render.speaker_screen("ok", "READY", bose, "connected · vol 70%", ("", ""),
+                          "connected 12 min ago", host="radxa-05",
+                          volume_keys=True).save(out / "speaker_connected.png")
+    render.speaker_screen("ok", "READY", bose, "NOT CONNECTED",
+                          ("Permission denied - another phone?", "err"),
+                          "connected 12 min ago", banner="MUSIC LOST",
+                          host="radxa-05", volume_keys=True
+                          ).save(out / "speaker_lost.png")
+    render.speaker_screen("ok", "READY", bose, "NOT CONNECTED",
+                          ("reconnect in 25 s (3 tries)", "warn"),
+                          "connected 12 min ago",
+                          status="show running - hold KEY3 again to pair anyway",
+                          instruction=SPEAKER_INSTRUCTION, host="radxa-05",
+                          volume_keys=True).save(out / "speaker_reconnect.png")
+    render.speaker_screen("ok", "BUSY", "no speaker paired", "pairing: scanning…",
+                          ("looking for the Bose", ""), "", status="pairing started",
+                          instruction=SPEAKER_INSTRUCTION, busy=True,
+                          host="radxa-05").save(out / "speaker_pairing.png")
+    render.speaker_screen("none", "NONE", "", "", ("", ""), "", host="radxa-05"
+                          ).save(out / "speaker_none.png")
     print(f"wrote preview screens to {out}")
     return 0
 
@@ -537,6 +564,9 @@ def main() -> int:
     # menu label and the screen only ever read the cache.
     exhibition = Exhibition()
     exhibition.start_reader()
+    # SPEAKER (ui/speaker.py) is a view over that same cache - no reader
+    # of its own; the App adds its row while the Conductor reports one.
+    speaker = Speaker(exhibition)
     host = socket.gethostname() or None
 
     remote = agent = demo_store = None
@@ -575,7 +605,7 @@ def main() -> int:
                       "updater": updater, "puller": puller, "host": host,
                       "versions": versions, "rebooter": rebooter,
                       "boardinfo": boardinfo, "wifi": wifi,
-                      "exhibition": exhibition,
+                      "exhibition": exhibition, "speaker": speaker,
                       "remote": remote,
                       "player": player if remote is not None else None,
                       "demos": demo_store}

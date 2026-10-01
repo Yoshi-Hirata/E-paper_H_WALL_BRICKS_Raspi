@@ -1519,6 +1519,79 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   ソケットを開かない(`tests/test_ui_exhibition.py`)。`python -m ui.main --preview DIR` が
   `exhibition_idle.png` / `exhibition_running.png` / `exhibition_loop.png` /
   `exhibition_countdown.png` / `exhibition_refused.png` / `exhibition_none.png` を出す
+- **スピーカー行の色**(2026-10-01): `speaker` の `connection` が `disconnected` / `no_device`
+  なら `speaker ok · vol 70% (bluez)` の代わりに赤で **`speaker LOST - see SPEAKER`**
+  (`exhibition_speaker_lost.png`)。直すのは次の SPEAKER 画面
+
+### SPEAKER(Bluetooth スピーカーの状態・接続・再ペアリングを LCD から、2026-10-01)
+
+- radxa-05 は Conductor の `--speaker` で Bose に Bluetooth で音楽を流す。展示中に
+  リンクが落ちたとき(Bose がスリープ、誰かのスマホが掴んだ、bluez が sink を見失った)、
+  これまでの直し方はホットスポットに乗せたスマホか PC だった。**SPEAKER** 行
+  (EXHIBITION の直後、BOARD INFO はあくまで最後 ―― 行順は … WIFI、EXHIBITION、SPEAKER、
+  BOARD INFO)がそれを HAT でやる(`ui/speaker.py`)
+- **行の出し方**: EXHIBITION の読み手(`Exhibition` のキャッシュ、`GET /api/fleet`)を
+  そのまま読む **ビュー**で、2 本目のポーラーは作らない。この機体で Conductor が応答し、
+  その fleet に `speaker` キーがある間だけ `App._refresh_speaker_row()` が行を差し込み
+  (毎 tick、キャッシュの bool を見るだけ)、Conductor が消えれば行も消える(カーソルは
+  元の行に留まる)。`--speaker` 無しの Conductor(`speaker: null`)では `SPEAKER  (no
+  speaker)` と読め、入っても `no speaker on this conductor` と言うだけ。`speaker` キー
+  自体の無い古い Conductor では行は出ない。画面を開いている間、読み手は **2 秒ごと**に
+  問い合わせる(`Exhibition.speaker_open` → `poll_speaker_s`。EXHIBITION 画面の 5 秒、
+  それ以外の 30 秒より優先) ―― ペアリングの進み具合はポーリングから来る
+- **頼る契約**(Coder AC の Conductor。`/api/fleet` の `speaker` に既存の
+  `available, state, track, volume, applied, error` に加えて):
+  `device: {mac, name, paired, trusted, connected, sink_present, last_connected_at,
+  last_error} | null`、`connection: "connected" | "disconnected" | "connecting" |
+  "pairing" | "no_device"`、`reconnect: {attempts, next_in_s, last_error}`、
+  `pairing: {phase: "scanning" | "pairing" | "connecting" | "done" | "failed", note,
+  started_at} | null`。命令は `POST /api/speaker/connect {}` と `POST /api/speaker/pair
+  {}`(走行中は 409、`{"force": true}` で押し切る)→ `{"ok", "connection", "error"}`。
+  `connection` キーの無い古い Conductor では**劣化**: 画面は `speaker ?`(と EXHIBITION
+  と同じスピーカー行)、長押しは `connect: not supported by this conductor` /
+  `pair: …` と言うだけで何も送らない。`last_connected_at` は epoch 秒でも ISO 8601 でも読む
+- **画面**: 見出し `SPEAKER` + ホスト名 + 状態語(READY / BUSY / DONE / FAILED。BUSY は
+  要求送信中か Conductor がペアリング中)。1 行目 = 機器名(`Bose Flex SoundLink`。名前が
+  空なら MAC、`device` が null なら `no speaker paired`)。2 行目 = 状態: 緑 `connected ·
+  vol 70%`、赤 `NOT CONNECTED`、琥珀 `connecting…` / `pairing…` / `pairing: scanning…`
+  / `pairing: pairing…` / `pairing: connecting…`。その下の小さい行 = 赤で
+  `last_error` の 1 行目(`Permission denied` を含めば **`Permission denied - another
+  phone?`** ―― bluez のその言葉は他の機器が Bose を握っている意味。device → reconnect →
+  speaker.error の順に最初の非空)、または琥珀で **`reconnect in 25 s (3 tries)`**
+  (`reconnect.next_in_s` を機体の時計で進める)、ペアリング中は `pairing.note`、失敗なら
+  赤で `pairing failed - <note>`。3 行目 = `connected 12 min ago`(`just now` / `N min
+  ago` / `N h ago` / `N d ago`、`last_connected_at` が null なら `never connected`)。
+  **走行中(`fleet.run` が非 null)で `connection` が `connected` でなければ赤い帯
+  `MUSIC LOST`**。ペアリングの手順文 **`put the Bose in pairing mode (hold its Bluetooth
+  button) and switch off phones' Bluetooth`** は最初の KEY3 長押しからペアリングが
+  終わるまで琥珀で出る(そのあいだ「最後に繋がった時刻」の行は判定文に席を譲る)
+- **操作**: **KEY1 を 1 秒長押し = Connect**(`POST /api/speaker/connect {}`)。**KEY3 を
+  1 秒長押し = Re-pair** ―― 確認付き: 1 回目は手順文と `hold KEY3 again = pair` を出す
+  だけ、**15 秒以内**の 2 回目が `POST /api/speaker/pair {}` を送る(15 秒を過ぎた長押しは
+  また 1 回目)。Conductor が **409**(走行中)で断れば `show running - hold KEY3 again to
+  pair anyway`(KEY1 なら `… hold KEY1 again to connect anyway`)と出て、15 秒以内の
+  同じキーの次の長押しが `{"force": true}` を送る(別のキーの長押しは別の命令の 1 回目)。
+  **LEFT / RIGHT = 音量**(EXHIBITION と同じ `Exhibition.adjust_volume()`、同じ「同時に
+  1 要求」の規則。判定文は出さず 2 行目の `vol` が追従する)。UP / DOWN は判定文(と確認・
+  force の窓)を消すだけ。KEY2 でメニューへ(送信中・ペアリング中も。命令は完了する。
+  radxa-05 の自分のセッションは EXHIBITION と同じく `release()` しない)。**要求送信中か
+  ペアリング中(`pairing.phase` が scanning / pairing / connecting)は KEY2 しか効かない**。
+  短押しは何もしない。返事: `connected` / `paired · connected` / `pairing started`
+  / `connecting…`(DONE。返事の `connection` は次のポーリングを待たずキャッシュに反映)、
+  `{"ok": false}` や 4xx/5xx、接続不能は `ERROR <1 行目>`(FAILED)。返事のあとに
+  `/api/fleet` を読み直してから出すので DONE の画面にはもう新しい状態が載っている。
+  全要求はワーカースレッド(3 秒タイムアウト)、HTTP は Exhibition の差し替え可能な
+  1 関数を通る ―― HAT のループは待たない
+- **follow**: Conductor がこの機体で応答している間、`App._follow_remote()` は EXHIBITION
+  と同じく **SPEAKER 画面も離れない**(LOOP が次の run を始めてセッションが armed に
+  なっても、再ペアリング中の画面を奪わない)。SPEAKER の KEY2 もセッションを dismiss
+  するだけ
+- テストは `tests/test_ui_speaker.py`(偽の Conductor に Bluetooth 側のキーと
+  connect / pair を足したもの。行の出入り、全状態の文言、KEY1 長押し、KEY3 の 2 回押し、
+  409 → force、古い Conductor の劣化、送信中は KEY2 だけ、MUSIC LOST、HAT ループが
+  待たないこと、`--preview`)。`python -m ui.main --preview DIR` が `speaker_connected.png`
+  / `speaker_lost.png` / `speaker_reconnect.png` / `speaker_pairing.png` /
+  `speaker_none.png` を出す
 
 ## 6. ソフトウェア構成
 

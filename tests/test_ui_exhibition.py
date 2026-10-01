@@ -55,6 +55,20 @@ class FakeConductor:
         self.loop = {"on": False, "wait_s": 30.0, "next_in_s": None}
         self.speaker = {"available": True, "error": None, "volume": 70,
                         "applied": "bluez"}
+        # The Bluetooth side (Coder AC's Conductor), merged into `speaker`
+        # unless `no_bluetooth` (a Conductor from before those keys).
+        self.device = {"mac": "2C:41:A1:0B:7E:19", "name": "Bose Flex SoundLink",
+                       "paired": True, "trusted": True, "connected": True,
+                       "sink_present": True,
+                       "last_connected_at": time.time() - 12 * 60,
+                       "last_error": None}
+        self.connection = "connected"
+        self.reconnect = {"attempts": 0, "next_in_s": None, "last_error": None}
+        self.pairing = None
+        self.no_bluetooth = False
+        self.no_speaker = False         # started without --speaker: speaker null
+        self.connect_error = None       # a 200 {"ok": false, "error": ...}
+        self.pair_error = None
         self.down = False
         self.old = False
         self.no_volume = False          # a Conductor without /api/speaker/volume
@@ -90,7 +104,64 @@ class FakeConductor:
             if self.no_volume:
                 snap["speaker"].pop("volume", None)
                 snap["speaker"].pop("applied", None)
+            if not self.no_bluetooth:
+                # (Garbage a test plants - a string for `reconnect` - is
+                # served as-is, so the UI side is what has to cope.)
+                copy = lambda v: dict(v) if isinstance(v, dict) else v  # noqa: E731
+                snap["speaker"].update({
+                    "device": copy(self.device), "connection": self.connection,
+                    "reconnect": copy(self.reconnect),
+                    "pairing": copy(self.pairing)})
+            if self.no_speaker:
+                snap["speaker"] = None
         return snap
+
+    def _speaker_command(self, command, body):
+        """connect / pair: 409 while a run is on unless forced; the
+        answer is {"ok", "connection", "error"} and the cache follows."""
+        if self.no_bluetooth or self.no_speaker:
+            return 404, "not found"
+        if self.run is not None and not body.get("force"):
+            return 409, {"error": "a run is on - STOP it first, or force"}
+        error = self.connect_error if command == "connect" else self.pair_error
+        if error:
+            self.connection = "disconnected"
+            if self.device is not None:
+                self.device["connected"] = False
+                self.device["last_error"] = error
+            return 200, {"ok": False, "connection": "disconnected", "error": error}
+        if command == "pair":
+            # Pairing runs on: the poll shows its phases (the test moves
+            # them along with `advance_pairing`).
+            self.pairing = {"phase": "scanning", "note": "looking for the Bose",
+                            "started_at": time.time()}
+            self.connection = "pairing"
+            return 200, {"ok": True, "connection": "pairing", "error": None}
+        self.connection = "connected"
+        if self.device is None:
+            self.device = {"mac": "2C:41:A1:0B:7E:19", "name": "Bose Flex SoundLink",
+                           "paired": True, "trusted": True, "connected": True,
+                           "sink_present": True, "last_connected_at": time.time(),
+                           "last_error": None}
+        self.device["connected"] = True
+        self.device["last_error"] = None
+        self.reconnect = {"attempts": 0, "next_in_s": None, "last_error": None}
+        return 200, {"ok": True, "connection": "connected", "error": None}
+
+    def advance_pairing(self, phase, note=None):
+        """The Conductor's pairing moved on: pairing… / connecting… /
+        done (connected) / failed (back to disconnected)."""
+        self.pairing = {"phase": phase, "note": note, "started_at": 0.0}
+        if phase == "done":
+            self.connection = "connected"
+            self.device = {"mac": "2C:41:A1:0B:7E:19", "name": "Bose Flex SoundLink",
+                           "paired": True, "trusted": True, "connected": True,
+                           "sink_present": True, "last_connected_at": time.time(),
+                           "last_error": None}
+        elif phase == "failed":
+            self.connection = "no_device" if self.device is None else "disconnected"
+        else:
+            self.connection = "pairing"
 
     def __call__(self, method, url, body, timeout):
         assert url.startswith(CONDUCTOR_URL)
@@ -145,6 +216,10 @@ class FakeConductor:
             self.speaker["volume"] = max(0, min(100, volume))
             return 200, {"volume": self.speaker["volume"],
                          "applied": self.speaker["applied"], "error": None}
+        if method == "POST" and path == "/api/speaker/connect":
+            return self._speaker_command("connect", body)
+        if method == "POST" and path == "/api/speaker/pair":
+            return self._speaker_command("pair", body)
         return 404, "not found"
 
 
