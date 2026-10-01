@@ -207,6 +207,10 @@ def _speaker_report(kind):
                                  "last_error": "Failed to connect: org.bluez.Error.Failed"})
     elif kind == "btok":
         report.update(connection="connected")
+    elif kind == "btnosink":
+        device.update(connected=True, sink_present=False, last_error="connected, no PulseAudio sink")
+        report.update(connection="no_sink",
+                      reconnect={"attempts": 1, "next_in_s": 12.0, "last_error": None})
     elif kind == "btpair":
         report.update(connection="pairing",
                       pairing={"phase": "scanning", "started_at": 1700000000.0,
@@ -541,6 +545,10 @@ _PAGE_PROBE = """
       out.btPairing = { text: $q("#spk-conn-text").textContent, tone: $q("#spk-conn-text").className,
                         connectDisabled: $q("#spk-connect").disabled, pairDisabled: $q("#spk-pair").disabled };
       out.btVolumeStays = $q("#show-music-hostvol").style.display;
+      await fetch("/test/fleet?speaker=btnosink");
+      await refreshFleetNow();
+      out.btNoSink = { text: $q("#spk-conn-text").textContent, tone: $q("#spk-conn-text").className,
+                       connectDisabled: $q("#spk-connect").disabled };
       await fetch("/test/fleet?speaker=null");
       await refreshFleetNow();
       out.noteHiddenWithout = $q("#show-music-host").style.display;
@@ -705,6 +713,10 @@ def test_the_bluetooth_speakers_line_says_the_state_and_the_buttons_post(page):
     assert pairing["tone"] == "busy"
     assert pairing["connectDisabled"] is True and pairing["pairDisabled"] is True
     assert page["btVolumeStays"] == "", "the volume slider stays beside the connection line"
+    # no_sink: as good as lost - red, and Connect is still offered.
+    nosink = page["btNoSink"]
+    assert nosink["text"] == "Bose Flex SoundLink · connected but no PulseAudio sink · reconnecting in 12 s"
+    assert nosink["tone"] == "err" and nosink["connectDisabled"] is False
     assert page["btHiddenWithout"] == "none"
 
 

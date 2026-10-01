@@ -167,7 +167,8 @@ f. **接続の監視と自動再接続**(Conductor が `--speaker-output pulse` 
 
    | 表示(`connection`) | 意味 | すること |
    |---|---|---|
-   | `Bose Flex SoundLink · connected`(緑) | つながっていて pulse の sink もある | なし。`(no PulseAudio sink yet)` が数秒以上続くなら 2.1b a(sddm / PulseAudio) |
+   | `Bose Flex SoundLink · connected`(緑) | つながっていて pulse の sink もある。Conductor は毎回の確認で mpg123 のストリームがその sink にいるかも見て、外れていれば戻す(sink が一瞬消えて BlueZ が自分でつなぎ直した ― `Connected: yes` のまま sink の番号だけ変わった ― 場合も、番号の違いで気づいて戻す) | なし。`(no PulseAudio sink yet)` は数秒で消えるのが普通 |
+   | `· connected but no PulseAudio sink · reconnecting in N s`(赤、`no_sink`) | つながっているのに **20 秒**たっても pulse に A2DP の sink が出ない(2.1b a の sddm / 2 つ目の PulseAudio、transport が開かない)。Conductor は `bluetoothctl disconnect` → `connect` でつなぎ直し、以後は 30 秒ごと。LCD は「失った」扱い | 2.1b a(`systemctl --user status pulseaudio`、`pactl list short sinks`)。直らなければ **Re-pair…** |
    | `· not connected (Failed to connect: org.bluez.Error.Failed - another phone? off?) · retry in 23 s`(赤) | 落ちている。Conductor は **5 秒後、以後 30 秒ごと**に `bluetoothctl connect`。3 回続けて拒まれたら **2 分ごと**(bluetoothd の理由は `Permission denied (13)` = スピーカーが別の音源についている、またはこちらのペアリングを忘れた。bluetoothctl からは「電源が切れている」と同じ `org.bluez.Error.Failed` にしか見えない) | スピーカーの電源・距離・**近くのスマホの Bluetooth を切る**。すぐ試すなら **Connect**。何度も拒まれるなら **Re-pair…** |
    | `· connecting…`(琥珀) | `bluetoothctl connect` の最中 | 待つ |
    | `· pairing: scanning… / pairing… / connecting…`(琥珀) | Re-pair の進行(`pairing.phase`) | スピーカーをペアリングモードにしておく |
@@ -184,8 +185,13 @@ f. **接続の監視と自動再接続**(Conductor が `--speaker-output pulse` 
    `pactl move-sink-input` で戻し**(sink が消えた間 PulseAudio の module-rescue-streams が
    予備の sink へ移している)、音量スレッドに AVRCP 音量を当て直させ、journal に
    `speaker: Bose Flex SoundLink reconnected after 185 s` と 1 行書く。ランは止まらない:
-   音は**ショーの位置から**戻る(途中は無音)。Re-pair の結果(`done` / `failed` と理由)は
-   60 秒出たあと消える。LCD の SPEAKER 行は同じ `/api/fleet` の `speaker.connection` / `device` /
+   音は**ショーの位置から**戻る(途中は無音)。journal は**変化したときだけ**(つなぎ直しの失敗は
+   理由か間隔が変わったとき、それと 1 時間ごとの 1 行。試行ごとには書かない)。Re-pair の結果
+   (`done` / `failed` と理由)は 60 秒出たあと消える。Re-pair がつないだ MAC は `fleet.json` の
+   `"speaker_mac"` に保存される(次からは MAC を聞かれない。再起動後も)。`remove` の結果も見る:
+   BlueZ がまだその機器を覚えているときは、スキャンで本当に電波が見えた(`[NEW]` / `[CHG]` 行)
+   ときだけ `pair` する(ペアリングモードでない機器に pair を投げない)。`pair` / `connect` が
+   黙ったままなら `bluetoothctl info` の Paired / Connected で判定してから失敗にする。LCD の SPEAKER 行は同じ `/api/fleet` の `speaker.connection` / `device` /
    `reconnect` / `pairing` を読む(ジョイスティックで Connect / Re-pair。`speaker.bluetooth` が
    false か無い(古い Conductor)なら行ごと出ない)。
 

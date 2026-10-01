@@ -4506,6 +4506,7 @@ def serve(workspace, port: int = 8765, open_browser: bool = False,
                          # The Bluetooth speaker's address, when fleet.json
                          # names it; else the paired Audio Sink is found.
                          speaker_mac=config.fleet_option("speaker_mac"),
+                         save_mac=lambda m: ws.set_fleet_option("speaker_mac", m),
                          session_factory=speaker_session_factory)
         player.start()
         server.RequestHandlerClass.speaker = player

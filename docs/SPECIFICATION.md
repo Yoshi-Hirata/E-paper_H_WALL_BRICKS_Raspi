@@ -1278,22 +1278,36 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   ― speaker_mac / ペアリング済み Audio Sink / bluez の既定 sink ― ときだけ true。有線なら false で
   ページ・LCD は行を出さない)、**`device`** `{mac, name, paired, trusted, connected, sink_present,
   last_connected_at(epoch 秒 | null), last_error}` | null、**`connection`** `connected | disconnected |
-  connecting | pairing | no_device`、**`reconnect`** `{attempts, next_in_s, last_error}`、**`pairing`**
+  connecting | pairing | no_device | no_sink`(LCD / ページは connected・connecting・pairing 以外を
+  「失った」扱い)、**`reconnect`** `{attempts, next_in_s, last_error}`、**`pairing`**
   `{phase: scanning|pairing|connecting|done|failed, note, started_at}` | null(done / failed の
   60 秒後に null)。`disconnected` なら **5 秒後に `bluetoothctl connect`、以後 30 秒ごと**、
   `org.bluez.Error.Failed` / `Permission denied` 系の拒否が 3 回続いたら **120 秒ごと**(bluetoothd の
   `Permission denied (13)` = 別の音源についている / ペアリングを忘れた。bluetoothctl からは電源断と
-  区別できない)。つながったら `pactl set-default-sink <bluez sink>`(既定でなければ)、**sink-input を
-  すべて `pactl move-sink-input` で bluez sink へ**(sink が消えた間 module-rescue-streams が mpg123
-  のストリームを予備 sink へ移す。ヘッドレス機で鳴っているのは mpg123 だけ)、音量スレッドを起こして
-  AVRCP 音量を新しい transport に当て、`speaker: <name> reconnected after N s` を 1 行。
+  区別できない)。**`no_sink`** = `Connected: yes` なのに 20 秒(NO_SINK_S)たっても pulse に
+  `bluez_sink.<MAC_>.a2dp_sink` が無い: `last_error "connected, no PulseAudio sink"`、
+  `bluetoothctl disconnect` → `connect` を 1 回、以後は通常の間隔。つながったら `pactl set-default-sink
+  <bluez sink>`(既定でなければ)、**sink-input をすべて `pactl move-sink-input` で bluez sink へ**(sink が
+  消えた間 module-rescue-streams が mpg123 のストリームを予備 sink へ移す。ヘッドレス機で鳴っているのは
+  mpg123 だけ)、音量スレッドを起こして AVRCP 音量を新しい transport に当て、`speaker: <name>
+  reconnected after N s` を 1 行。経路の記憶は **(sink 名, pulse の index)**: 2 回の確認の間に落ちて
+  BlueZ が自分でつなぎ直した(`Connected: yes` が揺れない)場合も index が変わるので経路を引き直し、
+  sink が無い確認のたびに記憶を捨てる; つながっている確認ごとに `pactl list short sink-inputs` 1 回で
+  ストリームの居場所を検証し、外れていれば戻す。**ログは変化したときだけ**(connect 失敗は理由 +
+  間隔が変わったとき、経路の失敗は文面が変わったとき、ほかに REMIND_S = 1 時間ごとの 1 行)。
   `POST /api/speaker/connect {}` → いますぐ 1 回(非同期、即 `{"ok": true, "connection":
   "connecting", "error": null}`。ラン中でも 409 にしない。ペアリング中だけ 409 "re-pairing is in
   progress - wait for it"。知っている機器が無ければ 400)。`POST /api/speaker/pair {"mac"?, "force"?}`
   → 接続スレッドで **1 回の対話 bluetoothctl セッション**(`remove` → `scan on`、`[NEW] Device <MAC>`
   か `bluetoothctl devices` に出るまで最長 60 秒 ― クラシックの MAC はペアリングモードのときだけ、
   BlueZ は未ペアのスキャン結果を 30 秒ほどで忘れる ― → `pair`(最長 15 秒)→ `trust` → `connect`
-  (最長 15 秒)→ `scan off` → `quit`。各段は必ず終わり、失敗は `phase: failed` + 理由)。ラン中は
+  (最長 15 秒)→ `scan off` → `quit`。各段は必ず終わり(どんな例外でも failed、session は quit か
+  terminate のあと wait してパイプを閉じる)、失敗は `phase: failed` + 理由。`remove` の結果を見る:
+  BlueZ がまだ機器を列挙するなら `bluetoothctl devices` の一致は数えず、セッションの `[NEW]` / `[CHG]`
+  行(本当に電波が見えた)だけで `pair` へ進む(note にそう書く); `pair` / `connect` が黙っていれば
+  `bluetoothctl info` の Paired / Connected で確かめてから失敗にする; `devices` の問い合わせは
+  bluetoothctl が死んでも 2 秒に 1 回まで(死んだら failed "exited during the scan"); 成功した MAC は
+  fleet.json `"speaker_mac"` に保存)。ラン中は
   409 "show running - pairing drops the audio; send {\"force\": true} to pair anyway"、進行中は
   409 "re-pairing is already in progress"、MAC が無ければ 400(最後に Re-pair した MAC は覚えて
   いて、ペアリングが消えても `device` に出し続ける)。どちらも他の POST と同じ関門、答えは

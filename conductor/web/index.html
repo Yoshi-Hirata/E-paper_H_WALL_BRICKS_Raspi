@@ -2642,8 +2642,13 @@ function speakerConnectionText(sp) {
     const why = (dev && dev.last_error) || "no paired Bluetooth speaker";
     return { text: `${name} · ${why}`, tone: "err" };
   }
-  // disconnected
+  // disconnected, or no_sink (connected for 20 s but PulseAudio never made
+  // the A2DP sink - as good as lost; the host cycles the link)
   const rc = sp.reconnect || {};
+  if (sp.connection === "no_sink") {
+    const next = typeof rc.next_in_s === "number" ? ` · reconnecting in ${Math.ceil(rc.next_in_s)} s` : "";
+    return { text: `${name} · connected but no PulseAudio sink${next}`, tone: "err" };
+  }
   let why = rc.last_error ? ` (${rc.last_error}${/Failed|denied/i.test(rc.last_error) ? " - another phone? off?" : ""})` : "";
   if (pairing && pairing.phase === "failed") why = ` (re-pair failed: ${pairing.note})`;
   const next = typeof rc.next_in_s === "number" ? ` · retry in ${Math.ceil(rc.next_in_s)} s` : "";
