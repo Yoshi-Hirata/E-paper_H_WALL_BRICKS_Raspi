@@ -359,6 +359,7 @@ def test_the_next_start_cleans_up_after_a_power_cut(tmp_path):
     # never heard of (renamed, then the power went before the index).
     (folder / f".20261001-120000-edit-1234{backups_mod.TEMP_SUFFIX}").write_bytes(b"half")
     (folder / f".{INDEX_NAME}.1-2{backups_mod.TEMP_SUFFIX}").write_bytes(b"{")
+    (folder / f".{INDEX_NAME}.0123456789ab.tmp").write_bytes(b"{")   # durable.py's temp
     good = (folder / kept).read_bytes()
     (folder / "20261001-120001-edit-deadbeef.tar").write_bytes(good[:3000])
     ws.set_label("Look23", "LOOK 23", "after")

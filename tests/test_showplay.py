@@ -1013,6 +1013,7 @@ def test_a_cue_that_could_not_be_confirmed_survives_a_restart(tmp_path):
         # that record, whichever cue it names, that has to come back.
         player.hold()
         time.sleep(0.3)
+        assert player.flush(timeout=5)              # the disk thread's record
         red = json.loads((tmp_path / "show-run.json")
                          .read_text(encoding="utf-8"))["verify"]
         assert red["landed"] == "idle-after-resend" and red["resent"] is True
@@ -1084,6 +1085,7 @@ def test_a_second_preset_is_checked_like_the_first(rig):
     gen = session.glass_gen
     player.preset()
     assert session.glass_gen > gen                  # a new generation...
+    assert player.flush(timeout=5)                  # (the disk thread's record)
     assert json.loads((store / "show-run.json")
                       .read_text(encoding="utf-8"))["verify"] is None
     assert wait_until(lambda: len(verdicts(bus)) == 2)   # ...and checked
@@ -1149,6 +1151,7 @@ def test_a_restart_after_the_burn_finished_comes_back_burned(tmp_path):
     show = make_show()
     player.load(show)
     assert wait_burned(player)
+    assert player.flush(timeout=5)          # written by the player's disk thread
     record = json.loads((tmp_path / BURN_FILE).read_text(encoding="utf-8"))
     assert record["burned"] == show["id"] and record["state"] == "burned"
     assert record["total"] == 6 and record["failed"] == []
@@ -1347,6 +1350,7 @@ def test_the_dark_garment_sentence_is_dropped_once_the_boards_answer(tmp_path):
         assert wait_burn_settled(player)
         assert player.status()["burn"]["reason"] == "none of its 2 boards answered"
         # ...and it survives a restart, from the record on disk.
+        assert player.flush(timeout=5)      # written by the player's disk thread
         record = json.loads((tmp_path / BURN_FILE).read_text(encoding="utf-8"))
         assert record["reason"] == "none of its 2 boards answered"
         bus.silent = set()
@@ -1405,6 +1409,8 @@ def test_a_burn_record_the_disk_refuses_is_said_in_the_burn_not_retried(tmp_path
         player._write = refuse
         player.load(make_show())
         assert wait_burned(player)
+        player.status()             # hands the record to the disk thread...
+        assert player.flush(timeout=5)      # ...which refuses it, off the lock
         burn = player.status()["burn"]
         assert burn["state"] == "burned"
         assert burn["record"] == "unsaved: no space left on device"
@@ -1420,6 +1426,7 @@ def test_a_burn_record_the_disk_refuses_is_said_in_the_burn_not_retried(tmp_path
         player.load(dict(make_show(), id="abc7654321"))
         assert wait_burned(player)
         assert "record" not in player.status()["burn"]
+        assert player.flush(timeout=5)
         assert (tmp_path / BURN_FILE).exists()
     finally:
         player.close()
@@ -1981,8 +1988,10 @@ def test_a_cleared_show_comes_back_cleared_after_a_restart(tmp_path):
         player.run(time.monotonic() - 3.0)
         assert wait_until(lambda: player.state == ENDED, timeout=5)
         assert wait_cleared(session)
-        # Reading the status is what records it on disk.
+        # Reading the status is what records it on disk (by the player's
+        # disk thread - flushed here).
         assert player.status()["burn"]["state"] == "cleared"
+        assert player.flush(timeout=5)
         record = json.loads((tmp_path / BURN_FILE).read_text(encoding="utf-8"))
         assert record["state"] == "cleared" and record["burned"] == show["id"]
     finally:

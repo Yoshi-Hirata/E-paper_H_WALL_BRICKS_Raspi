@@ -478,9 +478,11 @@ class FirmwareUpdater:
             if not ok:
                 raise RuntimeError("board did not come back; replug USB")
             self.board_state = "updated"
-            self.phase = DONE
             self.emit(f"board {addr:02d} updated")
+            # The record is on the card (fsynced) BEFORE the screen says
+            # DONE: DONE is when the operator unplugs.
             self._record(serial_no, addr, image)
+            self.phase = DONE
         except serial.SerialTimeoutException:
             self.error = "port wedged: replug USB / power-cycle board"
             self.emit(ota.WEDGE_MSG, error=True)

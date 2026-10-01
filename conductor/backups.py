@@ -72,6 +72,8 @@ import threading
 import time
 from pathlib import Path
 
+from . import durable
+
 MIN_FREE_BYTES = 200 * 1024 * 1024   # what a generation must leave free on the disk
 BACKUP_KEEP = 5
 BACKUP_KEEP_RANGE = (1, 50)
@@ -142,43 +144,12 @@ def clean_keep(value, default: int = BACKUP_KEEP) -> int:
     return value if low <= value <= high else default
 
 
-# ---- writing so that a power cut leaves the old file or the new one ----
-# TODO(conductor/durable.py): Coder AE's atomic_write_bytes() / fsync helpers
-# do exactly this for every persistent write; swap these three for them once
-# that module is on main.
-
-def _fsync_dir(folder) -> None:
-    """The rename itself is only durable once the folder is (POSIX). A
-    folder cannot be opened on Windows - and NTFS needs no such step."""
-    if os.name == "nt":
-        return
-    fd = os.open(str(folder), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def _durable_write(path, data: bytes) -> None:
-    """`data` at `path`, whole or not at all: a temp file beside it,
-    flushed and fsync'ed, os.replace()d over the old one, the folder
-    fsync'ed."""
-    path = Path(path)
-    scratch = path.with_name(f".{path.name}.{os.getpid()}-"
-                             f"{threading.get_ident()}{TEMP_SUFFIX}")
-    try:
-        with open(scratch, "wb") as out:
-            out.write(data)
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(str(scratch), str(path))
-    except BaseException:
-        try:
-            scratch.unlink()
-        except OSError:
-            pass
-        raise
-    _fsync_dir(path.parent)
+# Writing so that a power cut leaves the old file or the new one is
+# conductor/durable.py's (index.json: atomic_write_json; the tar: its own
+# .part file, durable.fsync_file, the read-back, os.replace, durable.fsync_dir).
+# A temp file either leaves behind - `.<name>.part` (the tar's) or
+# `.<name>.<hex>.tmp` (durable's) - is deleted at the next start.
+_TEMP_ENDINGS = (TEMP_SUFFIX, ".tmp")
 
 
 # ---- what a generation holds ----
@@ -555,7 +526,7 @@ class Backups:
             on_disk = {}
             if self.folder.is_dir():
                 for path in self.folder.iterdir():
-                    if path.name.endswith(TEMP_SUFFIX) and path.name.startswith("."):
+                    if path.name.endswith(_TEMP_ENDINGS) and path.name.startswith("."):
                         try:
                             path.unlink()
                             self._log(f"deleted {path.name} (left by an interrupted write)")
@@ -631,8 +602,7 @@ class Backups:
 
     def _write_index(self) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
-        _durable_write(self._index_path(),
-                       json.dumps(self._index, indent=1).encode("utf-8"))
+        durable.atomic_write_json(self._index_path(), self._index, indent=1)
 
     def _newest(self) -> "dict | None":
         generations = self._loaded()["generations"]
@@ -722,8 +692,7 @@ class Backups:
         try:
             with open(scratch, "wb") as out:
                 self.ws.export_tar(out)
-                out.flush()
-                os.fsync(out.fileno())
+                durable.fsync_file(out)
             found = inspect_tar(scratch)
             rev_after = self.ws.revision()
             if newest is not None and newest["revision"] == found["revision"]:
@@ -736,7 +705,7 @@ class Backups:
                 return dict(newest, skipped=True)
             name = self._free_name(stamp, reason, found["revision"])
             os.replace(str(scratch), str(self.folder / name))
-            _fsync_dir(self.folder)
+            durable.fsync_dir(self.folder)
         except BaseException:
             try:
                 scratch.unlink()

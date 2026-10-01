@@ -18,13 +18,20 @@ import json
 import time
 from pathlib import Path
 
+from conductor import durable      # standard library only, nothing else of the Conductor
+
 DEFAULT_PATH = Path.home() / ".epaper" / "flash-log.json"
 
 
 def load(path: Path = DEFAULT_PATH) -> dict[str, dict]:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except ValueError as exc:
+        # Empty or torn (a power cut under a version before
+        # conductor/durable.py): no record, said once.
+        durable.note_unreadable(path, exc)
+        return {}
+    except OSError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -38,8 +45,9 @@ def record(serial: str, addr: int, image: str, size: int, crc: int,
     data[serial] = entry
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1, sort_keys=True),
-                    encoding="utf-8")
+    # Whole or not at all, fsynced: a power cut right after a flash must
+    # not take every other board's record with it.
+    durable.atomic_write_json(path, data, indent=1, sort_keys=True)
     return entry
 
 
