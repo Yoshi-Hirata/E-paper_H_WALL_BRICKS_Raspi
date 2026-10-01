@@ -313,11 +313,17 @@ journalctl -u epaper-conductor -n 20 --no-pager   # speaker: loaded xxx.mp3, unp
 sudo nmcli con add type wifi ifname wlan0 con-name AZ-Epaper ssid AZ-Epaper \
   wifi-sec.key-mgmt wpa-psk wifi-sec.psk <2.2 で決めたパスワード> \
   ipv4.method manual ipv4.addresses 10.42.0.1NN/24 ipv6.method ignore \
-  connection.autoconnect yes connection.autoconnect-priority -10
+  connection.autoconnect yes connection.autoconnect-priority -10 \
+  connection.autoconnect-retries 0
 ```
 
 例: radxa-03 なら `ipv4.addresses 10.42.0.103/24`。radxa-05 には**作らない**
 (自分がホットスポット)。
+
+`connection.autoconnect-retries 0` は「つながるまで無限に試す」。既定(4 回)のままだと、
+停電などで radxa-05 の起動が遅れたとき、機体が 4 回失敗した時点で**最大 5 分ほど
+再試行をやめ**、ホットスポットが戻っても機体が来ない(2026-10-01 に設定)。すでに
+作ったプロファイルには `sudo nmcli con modify AZ-Epaper connection.autoconnect-retries 0`。
 
 確認:
 
