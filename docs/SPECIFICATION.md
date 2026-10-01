@@ -1153,10 +1153,20 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   (ループバックか、パスコード付き)で、送り先が **`/api/fleet` に fleet として答える
   Conductor** のときだけ送る
 - **Loop**(THE SHOW の `Loop: next run after [45] s`): `show.json` の `loop_wait_s`(秒、
-  **40〜600**、0.1 秒単位。**キーが無ければ off**、off にするとキーを消す)。40 秒未満に
-  しない理由: 最後のキュー L のあと機体の待機 STOP は max(L+15, ガード床 L+30..41) に出て、
-  次のトリガまで 5 秒空ける必要がある ― 短いとラン間で親基板が 60 秒以上 STOP 無しになり
-  得る(4.6)。undo / redo、ショーの書き出し(常に入る。off は `null`)・読み込み(**`null` は
+  **0〜600**、0.1 秒単位。**キーが無ければ off**、off にするとキーを消す)。**下限はタイムライン
+  が決める**(2026-10-01、依頼者「LOOP はゼロ秒で再開」): 最後のキュー L のあと機体の待機
+  STOP は max(L+15, ガード床 L+30..41) に出て次のトリガまで 5 秒要るので、最後のキューと
+  次のランの最初のトリガの間に `LOOP_SEAM_S` = 40 秒が要る(4.6)― ショー自身の尻尾
+  (長さ − 最後のキューの時刻)がその一部なので `min_wait = max(0, 40 − tail)`、秒に切り上げ
+  (`loop_floor_of`)。展示のショー(最後のキュー 9:37、終わり 10:54、尻尾 77 秒)は **0**
+  = 終わった直後に再開(START のカウントダウン ≥ 3 秒は別に付く)、最後のキューが終わりの
+  10 秒前なら 30。`POST /api/loop` / `set_loop` は床未満を **400**(数値と理由つき:
+  `loop_wait_s: 30 to 600 seconds here (the last cue is 10 s before the end, 40 s are needed …)`)。
+  編集で尻尾が縮んで床が保存値を超えたら保存値はそのまま、Timeline の warnings に
+  `Loop: the wait of 0 s is below the 30 s this timeline needs … - the loop waits 30 s`、
+  再開は `max(保存値, 床)`(`loop_effective_wait`)。`/api/state.show` に `loop_min_wait_s` /
+  `loop_tail_s` / `loop_min_why`、`/api/fleet.loop` に `min_wait_s`、ページの欄は `min` と
+  ツールチップ `min 0 s - the last cue is 77 s before the end`。LCD は変更なし。undo / redo、ショーの書き出し(常に入る。off は `null`)・読み込み(**`null` は
   off にする**、キーの無いファイルは今の値を変えない ― null に意味があるのは off を
   radxa-05 へ運べなくてはならないため)。`_REVISION_IGNORES` に入り、機体のショーファイルにも
   id にも入らない(Upload を求めない)。

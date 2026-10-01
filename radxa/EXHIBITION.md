@@ -367,8 +367,15 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
    後に切り替わる。ショー中の機体は断る。radxa-05 は最後に伝える)
 4. **① Upload** → 全タイルが `written` になるまで待つ → **② Show preset**
    (再起動後で機体が同じショーを持っていれば Upload は要らない ― 1 章)
-5. **Loop: next run after [45] s** にチェック(待ち時間は 40〜600 秒。ショーと一緒に
-   保存されるので、PC で入れて送ってあれば入ったまま)
+5. **Loop: next run after [45] s** にチェック(待ち時間は 0〜600 秒。ショーと一緒に
+   保存されるので、PC で入れて送ってあれば入ったまま)。**下限はタイムラインで決まる**:
+   最後のキューから次のランの最初のトリガまで 40 秒空ける必要があり、ショー自身の
+   尻尾(最後のキューから終わりまで)がその一部 ― 今の展示ショー(最後のキュー 9:37、
+   終わり 10:54、尻尾 77 秒)は **0 秒 = 終わった直後に再開**できる(START のカウントダウン
+   は別に付く)。欄のツールチップに `min 0 s - the last cue is 77 s before the end` と出る。
+   最後のキューが終わりの 10 秒前のショーなら下限 30 秒(下限未満は断られる)。あとで
+   タイムラインを編集して尻尾が縮んだら、保存した値は残るが Timeline に警告が出て、
+   再開は下限の方の秒数で待つ
 6. **③ START**。カウントダウン(既定 11 秒)のあと 0:00 で曲と絵が始まる。ショーが
    終わると大きな時計が `ENDED · NEXT RUN IN 0:45 (run 2)` と数え、0 で ③ START を
    Conductor が押す。NOW → NEXT ボード(ステージモニターも)も同じカウントを出す
@@ -414,7 +421,7 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
 | 機体が offline | その機体の電源。`AZ-Epaper` に入っているか(LCD の上部バーの IP が 10.42.0.1NN か)。3 章のプロファイルが無い・番号違い。2.2 の予約に MAC が無い機体はスマホと番地がぶつかることがある |
 | 音が出ない | MUSIC 行のメッセージ。`mpg123 not found` → 2.1。`mpg123 exited` → スピーカーの抜き差し、`sudo systemctl restart epaper-conductor`。曲が radxa-05 に無い(`no track loaded there yet`)→ 4 章で送り直す。Bluetooth: `pactl list short sinks` に `bluez_sink.…a2dp_sink` が無ければ 2.1b の b〜c(スピーカーの電源、スマホの Bluetooth を切る)、sink はあるのに無音なら `bluetoothctl disconnect` → `connect`(2.1b d)。音量はページの MUSIC 行のスライダー(= fleet.json `speaker_volume`)。本体のボタンは効かない(2.1b c) |
 | 音が絵より遅れる / 早い | `--speaker-lead-ms`(既定 50 = 測ったパイプ往復 + 50 ms 早くアンパウズ。**50 は当て推量**、Bluetooth(A2DP)は 100〜200 ms 余計に遅れる: クリック音源で一度測って決める)を service の ExecStart で変えて `daemon-reload` + `restart` |
-| Loop が回らない | `Loop` のチェック、待ち時間が 40〜600 か。Units タブの `Corrected automatically:` の行に `Loop: …` の理由 |
+| Loop が回らない | `Loop` のチェック、待ち時間が下限〜600 か(欄のツールチップ)。Units タブの `Corrected automatically:` の行に `Loop: …` の理由 |
 | 再起動後に START が `Upload again` / `Upload first` | 機体が持っているショーが今のタイムラインと違う(送り直した・編集した)。① Upload |
 | ショーを差し替えたい | 会場でも PC を `AZ-Epaper` に入れれば 4 章の手順で送れる(先に STOP) |
 

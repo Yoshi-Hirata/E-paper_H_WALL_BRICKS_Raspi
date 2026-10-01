@@ -170,20 +170,92 @@ def test_reachable_urls_name_every_address_when_bound_to_all():
 
 # ------------------------------------------------------------ 2. the Loop
 
-def test_loop_wait_is_ten_to_six_hundred_seconds_or_off():
+def test_loop_wait_is_zero_to_six_hundred_seconds_or_off_above_the_timelines_floor():
     assert check_loop_wait(None) is None
     assert check_loop_wait(40) == 40.0
+    assert check_loop_wait(0) == 0.0
     assert check_loop_wait("６０") == 60.0             # NFKC, like the countdown
     assert check_loop_wait("42.34") == 42.3
     assert LOOP_WAIT_S == 45.0
-    # Below 40 s the seam between two runs can leave the master without a
-    # STOP for over 60 s (its idle STOP comes at L+15..41 and needs 5 s).
-    for bad in (39.9, 30, 600.1, True, "abc", "", [], {}, "0x10", float("nan")):
-        with pytest.raises(ValueError, match="40 to 600"):
+    for bad in (-0.1, 600.1, True, "abc", "", [], {}, "0x10", float("nan")):
+        with pytest.raises(ValueError, match="0 to 600"):
             check_loop_wait(bad)
+    # The floor is the timeline's (loop_floor_of): named with the reason.
+    with pytest.raises(ValueError, match="30 to 600 seconds here \\(tail\\)"):
+        check_loop_wait(20, floor=30, why="tail")
+    assert check_loop_wait(30, floor=30) == 30.0
     assert loop_wait_of({}) is None
     assert loop_wait_of({"loop_wait_s": "junk"}) is None
     assert loop_wait_of({"loop_wait_s": 45}) == 45.0
+
+
+def _show_with_tail(duration, last_cue_at):
+    return {"duration": duration, "cues": [
+        {"id": "p", "item": "Look23", "at": 0, "design": "Look23_color_ivory_grid.csv"},
+        {"id": "l", "item": "Look23", "at": last_cue_at,
+         "design": "Look23_color_scarlet_grid.csv"}]}
+
+
+def test_the_loop_floor_is_the_seam_minus_the_timelines_tail():
+    from conductor.server import LOOP_SEAM_S, loop_effective_wait, loop_floor_of
+
+    assert LOOP_SEAM_S == 40.0
+    # The exhibition show: last cue 9:37, music end 10:54 - a 77 s tail.
+    floor, tail, why = loop_floor_of(_show_with_tail(654.0, 577.0))
+    assert (floor, tail) == (0.0, 77.0) and "77 s before the end" in why
+    # A show whose last cue is 10 s before its end needs 30 s.
+    floor, tail, why = loop_floor_of(_show_with_tail(120.0, 110.0))
+    assert (floor, tail) == (30.0, 10.0) and "40 s are needed" in why
+    # Rounded UP to a second; a cue at the very end needs the whole seam.
+    assert loop_floor_of(_show_with_tail(120.0, 110.5))[0] == 31.0
+    assert loop_floor_of(_show_with_tail(120.0, 120.0))[0] == 40.0
+    # No cue: nothing to keep away from.
+    assert loop_floor_of({"duration": 60.0, "cues": []})[0] == 0.0
+    # The restart uses the stored wait, or the floor when it is higher.
+    assert loop_effective_wait(dict(_show_with_tail(120.0, 110.0), loop_wait_s=10)) == 30.0
+    assert loop_effective_wait(dict(_show_with_tail(120.0, 110.0), loop_wait_s=50)) == 50.0
+    assert loop_effective_wait(_show_with_tail(120.0, 110.0)) is None
+
+
+def test_the_loop_wait_is_validated_against_this_timelines_floor(tmp_path):
+    ws = _workspace(tmp_path / "ws", music=False)       # 120 s, last cue at 60: tail 60
+    assert ws.loop_floor()[0] == 0.0
+    ws.set_loop(0)                                        # "LOOP はゼロ秒で再開"
+    assert ws.loop_wait() == 0.0 and ws.loop_settings() == (0.0, 11.0)
+    assert ws.state()["show"]["loop_min_wait_s"] == 0.0
+    assert ws.state()["show"]["loop_tail_s"] == 60.0
+    # The last cue moves to 10 s before the end: the floor is 30 now. The
+    # stored 0 is KEPT, the Timeline warns, the restart waits the floor.
+    ws.set_timeline(120, _show_with_tail(120.0, 110.0)["cues"])
+    assert ws.loop_floor()[0] == 30.0
+    assert ws.loop_wait() == 0.0
+    assert ws.loop_settings() == (30.0, 11.0)
+    state = ws.state()
+    assert state["show"]["loop_min_wait_s"] == 30.0
+    assert any("Loop: the wait of 0 s is below the 30 s" in w for w in state["show"]["warnings"])
+    # ...and a new wait below the floor is refused with the number and why.
+    with pytest.raises(ValueError) as refused:
+        ws.set_loop(20)
+    assert "30 to 600 seconds here" in str(refused.value)
+    assert "10 s before the end" in str(refused.value)
+    ws.set_loop(30)
+    assert ws.loop_wait() == 30.0
+    assert not any("Loop: the wait" in w for w in ws.state()["show"]["warnings"])
+    # /api/fleet's loop carries the floor; a plain "on" lifts the default to it.
+    ws.set_loop(None)
+    ws.set_timeline(120, _show_with_tail(120.0, 119.0)["cues"])      # floor 39 < default 45
+    server = make_server(ws.root, port=0, fleet=Fleet({}))
+    port = _serve(server)
+    try:
+        loop = json.loads(_get(port, "/api/fleet")[1])["loop"]
+        assert loop["min_wait_s"] == 39 and loop["on"] is False
+        status, loop = _post(port, "/api/loop", {"on": True})
+        assert status == 200 and loop["wait_s"] == 45
+        status, answer = _post(port, "/api/loop", {"on": True, "wait_s": 20})
+        assert status == 400 and "39 to 600" in answer["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_loop_is_stored_with_the_show_off_as_no_key_and_undoable(tmp_path):
@@ -202,7 +274,8 @@ def test_loop_is_stored_with_the_show_off_as_no_key_and_undoable(tmp_path):
     assert ws.undo() and ws.loop_wait() == 45.0
     assert ws.redo() and ws.loop_wait() is None
     with pytest.raises(ValueError):
-        ws.set_loop(5)
+        ws.set_loop(-1)
+
     # Not a step when nothing changes.
     before = ws.state()["history"]
     ws.set_loop(None)
@@ -234,7 +307,7 @@ def test_loop_travels_in_the_show_file_and_null_means_off(tmp_path):
     b.import_show(without)
     assert b.loop_wait() == 50.0
     with pytest.raises(ValueError):
-        b.import_show(dict(exported, loop_wait_s=2))
+        b.import_show(dict(exported, loop_wait_s=-2))
 
 
 def test_post_api_loop_answers_the_fleet_loop_object(tmp_path):
@@ -246,20 +319,20 @@ def test_post_api_loop_answers_the_fleet_loop_object(tmp_path):
         status, before, _ = _get(port, "/api/fleet")
         assert json.loads(before)["loop"] == {"on": False, "wait_s": 45,
                                               "next_in_s": None, "runs": 0,
-                                              "problem": None}
+                                              "problem": None, "min_wait_s": 0}
         status, loop = _post(port, "/api/loop", {"on": True})
         assert status == 200 and loop["on"] and loop["wait_s"] == 45
         status, loop = _post(port, "/api/loop", {"on": True, "wait_s": 45})
         assert status == 200 and loop == {"on": True, "wait_s": 45,
                                           "next_in_s": None, "runs": 0,
-                                          "problem": None}
+                                          "problem": None, "min_wait_s": 0}
         assert ws.loop_wait() == 45.0
         assert json.loads(_get(port, "/api/fleet")[1])["loop"]["on"] is True
         status, loop = _post(port, "/api/loop", {"on": False, "wait_s": 45})
         assert status == 200 and loop["on"] is False and loop["wait_s"] == 45
         assert ws.loop_wait() is None
-        for bad in ({}, {"on": "yes"}, {"on": True, "wait_s": 3},
-                    {"on": True, "wait_s": "x"}, {"on": True, "wait_s": 39}):
+        for bad in ({}, {"on": "yes"}, {"on": True, "wait_s": 601},
+                    {"on": True, "wait_s": "x"}, {"on": True, "wait_s": -1}):
             status, answer = _post(port, "/api/loop", bad)
             assert status == 400, bad
         # The old body shape the page used first is not an endpoint.
@@ -862,7 +935,7 @@ def test_serve_wires_the_speaker_to_the_workspace_music(tmp_path, monkeypatch):
     assert speaker["available"] and speaker["track"] == "show.mp3"
     assert speaker["state"] == "loaded" and speaker["error"] is None
     assert made["fleet"]["loop"] == {"on": False, "wait_s": 45, "next_in_s": None,
-                                     "runs": 0, "problem": None}
+                                     "runs": 0, "problem": None, "min_wait_s": 0}
     assert fake.since()[1] == f"LP {ws.music / 'show.mp3'}"
     assert fake.since()[-1] == "Q"                  # stopped with the server
 

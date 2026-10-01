@@ -3975,20 +3975,35 @@ function startCountdown() {
 // presses itself, countdown included. Like the countdown it never reaches a
 // unit and asks for no Upload. Off by default: a rehearsal that loops on its
 // own would be a surprise, an exhibition that does not would be a fault.
-const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 40, LOOP_WAIT_MAX_S = 600;
+// The floor is the TIMELINE's (2026-10-01, 「LOOP はゼロ秒で再開」): the
+// server computes min_wait = max(0, 40 s - the tail after the last cue),
+// so a show whose last cue is well before its end may restart at 0 s (the
+// START countdown still applies). The field's min and tooltip say so.
+const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 0, LOOP_WAIT_MAX_S = 600;
 const LOOP_TITLE = "Loop(展示モード): ショーが終わったら、ここに書いた秒数待って "
   + "③ START をもう一度(カウントダウン込み。0:00 のキューが最初の絵に戻す)。"
-  + "STOP で止まる。ショーと一緒に保存、Upload 不要。"
+  + "STOP で止まる。ショーと一緒に保存、Upload 不要。下限は最後のキューから終わりまでの"
+  + "長さで決まる(40 秒の間を空ける)。"
   + "\n\nLoop (EXHIBITION mode): when a run reaches its end the Conductor waits "
   + "this long and presses ③ START again itself - countdown included, so the "
-  + "0:00 cue puts the first look back. STOP cancels the pending run. 40 to 600 s (shorter "
-  + "and the master can go over 60 s without a STOP between two runs), "
+  + "0:00 cue puts the first look back. STOP cancels the pending run. The least wait "
+  + "is this timeline's: 40 s between the last cue and the next run, minus the show's "
+  + "own tail after that cue (0 when the tail is 40 s or more). Up to 600 s, "
   + "stored with the show, no Upload needed. With \"Clear pictures after the show\" "
   + "on, the clear happens on STOP, never between runs.";
 function loopWait() {            // the wait the show holds, or null (off)
   const s = Number(state && state.show && state.show.loop_wait_s);
   return state && state.show && state.show.loop_wait_s !== null && state.show.loop_wait_s !== undefined
     && Number.isFinite(s) && s >= LOOP_WAIT_MIN_S && s <= LOOP_WAIT_MAX_S ? s : null;
+}
+// The least wait THIS timeline allows (state.show.loop_min_wait_s), and why.
+function loopMinWait() {
+  const m = Number(state && state.show && state.show.loop_min_wait_s);
+  return Number.isFinite(m) && m >= 0 ? m : LOOP_WAIT_MIN_S;
+}
+function loopMinTitle() {
+  const why = state && state.show && state.show.loop_min_why;
+  return `min ${loopMinWait()} s` + (why ? ` - ${why}` : "");
 }
 // What the wait field shows: the show's wait while the Loop is on, else the
 // last value typed in this page (so unticking and ticking again keeps it), else 30.
@@ -4967,7 +4982,7 @@ function renderFleet() {
         <label class="meta" title="${esc(LOOP_TITLE)}"><input type="checkbox"
           id="show-loop" ${loopWait() !== null ? "checked" : ""}>
           Loop: next run after <input type="text" id="show-loop-wait"
-          value="${loopWaitShown()}" style="width:46px"> s</label>
+          value="${loopWaitShown()}" min="${loopMinWait()}" title="${esc(loopMinTitle())}" style="width:46px"> s</label>
         <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
           id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
           Clear pictures after the show
@@ -6247,9 +6262,9 @@ document.addEventListener("change", async e => {
   // show (show.json's loop_wait_s), like the countdown.
   if (id === "show-loop" || id === "show-loop-wait") {
     const field = $("#show-loop-wait");
-    const seconds = parseSeconds(field ? field.value : "", LOOP_WAIT_MIN_S, LOOP_WAIT_MAX_S);
+    const seconds = parseSeconds(field ? field.value : "", loopMinWait(), LOOP_WAIT_MAX_S);
     if (seconds === null) {
-      toast(`Enter ${LOOP_WAIT_MIN_S} to ${LOOP_WAIT_MAX_S} seconds`);
+      toast(`Enter ${loopMinWait()} to ${LOOP_WAIT_MAX_S} seconds (${loopMinTitle()})`);
       if (field) field.value = loopWaitShown();
       if (id === "show-loop") e.target.checked = loopWait() !== null;
       return;

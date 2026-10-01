@@ -183,13 +183,19 @@ def start_countdown_of(show: dict) -> float:
 # every show written before it existed is off); on is the wait in seconds.
 # Like the countdown it never reaches a unit (_REVISION_IGNORES).
 #
-# Not shorter than 40 s (PM, 2026-09-30): after its last cue L a unit sends
-# its idle STOP at max(L + 15, the guard floor L + 30..41) and needs 5 s clear
-# before the next trigger; a shorter seam between two runs can leave the
-# master without a STOP for over 60 s (§4.6), which is what brings its
-# autoplay back.
+# The floor is the TIMELINE's (2026-10-01, the owner: 「LOOP はゼロ秒で
+# 再開」): after its last cue L a unit sends its idle STOP at max(L + 15, the
+# guard floor L + 30..41) and needs 5 s clear before the next trigger - a
+# seam of LOOP_SEAM_S between the last cue and the next run's first trigger
+# keeps the master from going 60 s without a STOP (§4.6). The show's own
+# tail (its length minus the last cue's time) is part of that seam, so
+#     min_wait = max(0, LOOP_SEAM_S - tail), rounded up to a second
+# - 0 for the exhibition show (last cue 9:37, end 10:54: a 77 s tail), 30
+# for a show whose last cue is 10 s before its end. The START countdown
+# (3 s or more) comes on top either way.
 LOOP_WAIT_S = 45.0
-LOOP_WAIT_RANGE_S = (40.0, 600.0)
+LOOP_WAIT_RANGE_S = (0.0, 600.0)
+LOOP_SEAM_S = 40.0
 WORKSPACE_TAR_MEMBERS = 5000
 # The exhibition workspace travels between two Conductors as one .tar
 # (GET /api/workspace/export -> POST /api/workspace/import): show.json,
@@ -209,14 +215,16 @@ _TAR_TOP = ("show.json", "history.json")
 _TAR_DIRS = ("files", "music")
 
 
-def check_loop_wait(value) -> "float | None":
-    """The Loop's wait in seconds (40 to 600, to a tenth), None for off,
-    or ValueError naming the range. Read exactly as the countdown is
+def check_loop_wait(value, floor: float = 0.0, why: str = "") -> "float | None":
+    """The Loop's wait in seconds (`floor` to 600, to a tenth), None for
+    off, or ValueError naming the range - and `why` the floor is what it
+    is (loop_floor_of). Read exactly as the countdown is
     (check_start_countdown): NFKC, a plain decimal, no bool."""
     if value is None:
         return None
-    low, high = LOOP_WAIT_RANGE_S
-    message = f"loop_wait_s: {low:.0f} to {high:.0f} seconds, or null for off"
+    low, high = max(LOOP_WAIT_RANGE_S[0], float(floor)), LOOP_WAIT_RANGE_S[1]
+    message = (f"loop_wait_s: {low:.0f} to {high:.0f} seconds here"
+               + (f" ({why})" if why else "") + ", or null for off")
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise ValueError(message)
     if isinstance(value, str):
@@ -233,12 +241,41 @@ def check_loop_wait(value) -> "float | None":
 
 
 def loop_wait_of(show: dict) -> "float | None":
-    """show.json's Loop wait, or None when the Loop is off (no key, or a
-    key nothing can read)."""
+    """show.json's Loop wait AS STORED, or None when the Loop is off (no
+    key, or a key nothing can read). Not held to the current floor: an
+    edit that shortened the tail after the wait was set keeps the stored
+    number, the Timeline warns, and the restart uses the floor instead
+    (loop_effective_wait)."""
     try:
         return check_loop_wait(show.get("loop_wait_s"))
     except ValueError:
         return None
+
+
+def loop_floor_of(show: dict) -> "tuple[float, float, str]":
+    """(the least wait this timeline allows, its tail, why) - see
+    LOOP_SEAM_S. The tail is the show's length minus the last cue's time;
+    a timeline with no cue has nothing to keep away from and a floor of 0."""
+    duration = float(show.get("duration", timeline.DEFAULT_DURATION_S))
+    cues = timeline.clean(show.get("cues"))
+    if not cues:
+        return 0.0, duration, "no cue on the timeline"
+    last = max(float(c["at"]) for c in cues)
+    tail = max(0.0, duration - last)
+    floor = float(math.ceil(max(0.0, LOOP_SEAM_S - tail) - 1e-9))
+    why = (f"the last cue is {tail:.0f} s before the end"
+           + (f", {LOOP_SEAM_S:.0f} s are needed between it and the next run"
+              if floor > 0 else ""))
+    return floor, tail, why
+
+
+def loop_effective_wait(show: dict) -> "float | None":
+    """The wait a restart really uses: the stored one, or the floor when
+    an edit since has pulled the floor above it. None while off."""
+    wait = loop_wait_of(show)
+    if wait is None:
+        return None
+    return max(wait, loop_floor_of(show)[0])
 # A CSV's name is conductor/look.py's business now (normalize_name /
 # name_problem, the same rule the designers' simulator applies): this one
 # is only for the MUSIC blob, which is a file on disk and nothing else -
@@ -1067,9 +1104,10 @@ class Workspace:
         countdown: it is how this exhibition runs, and it has to survive a
         reload and the trip to the Conductor on radxa-05. Never part of
         what reaches a unit (_REVISION_IGNORES)."""
-        wait_s = check_loop_wait(wait_s)
         with self._lock:
             before = self._load_show()
+            floor, _tail, why = loop_floor_of(before)
+            wait_s = check_loop_wait(wait_s, floor, why)
             # _commit() drops the key again when it is None, and makes no
             # step when nothing changed.
             self._commit(before, dict(before, loop_wait_s=wait_s))
@@ -1085,8 +1123,13 @@ class Workspace:
         down), or None while the Loop is off."""
         with self._lock:
             show = self._load_show()
-        wait = loop_wait_of(show)
+        wait = loop_effective_wait(show)
         return None if wait is None else (wait, start_countdown_of(show))
+
+    def loop_floor(self) -> "tuple[float, float, str]":
+        """(min wait, tail, why) for this timeline - loop_floor_of."""
+        with self._lock:
+            return loop_floor_of(self._load_show())
 
     def set_transition(self, design: str, sequence_id, span_s) -> None:
         """A design's own transition (show.json, undoable): every cue that
@@ -2526,6 +2569,15 @@ class Workspace:
         # reads it beside the Upload button and sets another ID by hand if
         # there is time (the operator, 2026-09-27).
         warnings = warnings + dip_warnings
+        # A Loop wait set before an edit pulled the floor above it: kept
+        # as stored, said here, and the restart waits the floor instead.
+        loop_floor, loop_tail, loop_why = loop_floor_of(show)
+        stored_wait = loop_wait_of(show)
+        if stored_wait is not None and stored_wait < loop_floor:
+            warnings = warnings + [
+                f"Loop: the wait of {stored_wait:.0f} s is below the "
+                f"{loop_floor:.0f} s this timeline needs ({loop_why}) - the "
+                f"loop waits {loop_floor:.0f} s"]
         cue_ends = timeline.ends(cues, refresh, duration)
         for cue in cues:
             cue["sent"], cue["complete"] = timeline.times(cue, refresh)
@@ -2564,6 +2616,11 @@ class Workspace:
                          # for off (Workspace.set_loop).
                          "loop_wait_s": loop_wait_of(show),
                          "loop_default_s": LOOP_WAIT_S,
+                         # The least wait THIS timeline allows, and why
+                         # (loop_floor_of): the field's min and tooltip.
+                         "loop_min_wait_s": loop_floor,
+                         "loop_tail_s": round(loop_tail, 1),
+                         "loop_min_why": loop_why,
                          # The current default, so the page never has a
                          # refresh number of its own: it labels the "show
                          # default" choice with refresh_s and offers the
@@ -3000,16 +3057,19 @@ class Handler(BaseHTTPRequestHandler):
              "wait_s": int,         the wait (the default while off)
              "next_in_s": float|null,  seconds to the next run, when one is pending
              "runs": int,           the Loop's restarts so far this show
-             "problem": str|null}   why the pending restart has not gone out
+             "problem": str|null,   why the pending restart has not gone out
+             "min_wait_s": int}     the least wait this timeline allows
 
         `pending` is Fleet.loop_state() - None when nothing is pending."""
         wait = self.workspace.loop_wait()
+        floor = self.workspace.loop_floor()[0]
         pending = pending or {}
         return {"on": wait is not None,
                 "wait_s": int(round(wait if wait is not None else LOOP_WAIT_S)),
                 "next_in_s": pending.get("next_in_s"),
                 "runs": int(pending.get("runs") or 0),
-                "problem": pending.get("problem")}
+                "problem": pending.get("problem"),
+                "min_wait_s": int(floor)}
 
     def _set_loop(self, body: dict) -> None:
         """POST /api/loop {"on": true|false, "wait_s": 30} - the wait is
@@ -3024,7 +3084,11 @@ class Handler(BaseHTTPRequestHandler):
             wait = body.get("wait_s")
             if wait is None:
                 wait = self.workspace.loop_wait()
-            self.workspace.set_loop(LOOP_WAIT_S if wait is None else wait)
+            if wait is None:
+                # Turned on with no number: the default, lifted to the
+                # floor this timeline has (never a 400 for a plain "on").
+                wait = max(LOOP_WAIT_S, self.workspace.loop_floor()[0])
+            self.workspace.set_loop(wait)
         pending = self.fleet.loop_state() if self.fleet is not None else None
         return self._json(self._loop_object(pending))
 

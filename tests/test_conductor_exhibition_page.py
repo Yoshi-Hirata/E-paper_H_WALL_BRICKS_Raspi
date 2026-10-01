@@ -44,9 +44,11 @@ def test_the_loop_control_sits_with_the_countdown_and_posts_api_loop():
     assert "localStorage" not in body, "the Loop is the show's, not the browser's"
     handler = PAGE[PAGE.index('if (id === "show-loop" || id === "show-loop-wait")'):]
     handler = handler[:handler.index("return;\n  }\n") + 20]
-    assert "parseSeconds(field ? field.value : \"\", LOOP_WAIT_MIN_S, LOOP_WAIT_MAX_S)" in handler
-    assert "const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 40, LOOP_WAIT_MAX_S = 600;" in PAGE
-    for fine in (40, 600, 45):
+    assert "parseSeconds(field ? field.value : \"\", loopMinWait(), LOOP_WAIT_MAX_S)" in handler
+    assert "const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 0, LOOP_WAIT_MAX_S = 600;" in PAGE
+    assert "parseSeconds(field ? field.value : \"\", loopMinWait(), LOOP_WAIT_MAX_S)" in PAGE
+    assert 'min="${loopMinWait()}" title="${esc(loopMinTitle())}"' in PAGE
+    for fine in (0, 600, 45):
         assert check_loop_wait(fine) == fine
     assert "state.show.loop_wait_s" in _function_body("loopWait")
 
@@ -391,7 +393,7 @@ _PAGE_PROBE = """
       type("show-loop-wait", "60");
       await wait(1200);
       out.loopWait = { field: $q("#show-loop-wait").value, state: state.show.loop_wait_s };
-      type("show-loop-wait", "30");
+      type("show-loop-wait", "-5");
       await wait(600);
       out.loopBad = { field: $q("#show-loop-wait").value, toast: $q("#toast").textContent };
       tick("show-loop", false);
@@ -523,7 +525,8 @@ def test_the_loop_control_talks_to_api_loop(page):
     assert page["loopOffAtStart"] == {"checked": False, "wait": "45"}
     assert page["loopOn"] == {"checked": True, "state": 45}
     assert page["loopWait"] == {"field": "60", "state": 60}
-    assert page["loopBad"]["field"] == "60" and "40 to 600" in page["loopBad"]["toast"]
+    assert page["loopBad"]["field"] == "60" and "0 to 600" in page["loopBad"]["toast"]
+    assert "120 s before the end" in page["loopBad"]["toast"]       # the stand's 180 s show, last cue 1:00
     assert page["loopOff"] == {"checked": False, "state": None, "field": "60"}
     assert page["loopSent"][:3] == [["loop", {"on": True, "wait_s": 45}],
                                     ["loop", {"on": True, "wait_s": 60}],
