@@ -758,7 +758,7 @@ def test_a_load_writes_burn_delete_then_run_record_then_show_whatever_was_queued
 
     def spy(batch):
         order.append([(name, "DELETE" if p is _DELETE else p.get("v"))
-                      for name, p in batch.items()])
+                      for name, p in batch])
         return real_batch(batch)
     writer._write_batch = spy
     try:
@@ -845,3 +845,147 @@ def test_a_write_error_is_said_once_and_never_raised_into_the_player(tmp_path,
     finally:
         player.close()
         runner.stop()
+
+
+# ---- final review of 669979b: never burn over a burn record still on disk ----
+
+def _loaded_and_burned(tmp_path):
+    from tests.test_showplay import make_show, wait_burned
+    from ui.showplay import BURN_FILE
+    player, runner = _player(tmp_path)
+    player.load(make_show(duration=60))
+    assert wait_burned(player) and player.flush(timeout=5)
+    assert (tmp_path / BURN_FILE).exists()
+    burns = []
+    real_burn = player.session.burn
+
+    def spy(*args, **kwargs):
+        burns.append(args)
+        return real_burn(*args, **kwargs)
+    player.session.burn = spy
+    return player, runner, burns
+
+
+def test_a_load_the_card_does_not_take_in_time_starts_no_burn(tmp_path,
+                                                              monkeypatch):
+    from tests.test_showplay import make_show
+    from ui import showplay
+    from ui.remote import RemoteError
+    monkeypatch.setattr(showplay, "LOAD_WRITE_WAIT_S", 0.2)
+    player, runner, burns = _loaded_and_burned(tmp_path)
+    try:
+        player._write = Slow(player._write, 1.0)           # a stalled card
+        with pytest.raises(RemoteError, match="SD card did not take the show"):
+            player.load(dict(make_show(duration=60), id="second0001"))
+        assert burns == []                               # nothing onto the slots
+        assert "Upload again" in player.note
+        burn = player.status()["burn"]
+        assert burn["state"] == "none", burn
+        with pytest.raises(RemoteError, match="SD card did not take the show"):
+            player.run(time.monotonic() + 5)             # START is refused too
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_burn_record_that_cannot_be_deleted_starts_no_burn(tmp_path):
+    from tests.test_showplay import make_show
+    from ui.remote import RemoteError
+    from ui.showplay import BURN_FILE
+    player, runner, burns = _loaded_and_burned(tmp_path)
+    try:
+        # A record the disk thread cannot unlink (a folder in its place).
+        (tmp_path / BURN_FILE).unlink()
+        (tmp_path / BURN_FILE).mkdir()
+        (tmp_path / BURN_FILE / "keep").write_text("x", encoding="utf-8")
+        with pytest.raises(RemoteError, match="cannot clear the burn record"):
+            player.load(dict(make_show(duration=60), id="second0001"))
+        assert burns == [] and "cannot clear the burn record" in player.note
+    finally:
+        player.close()
+        runner.stop()
+
+
+def test_a_burn_record_never_replaces_a_queued_delete(tmp_path):
+    import threading
+    from ui.showplay import BURN_FILE, _DELETE, _DiskWriter
+    gate = threading.Event()
+    order = []
+
+    def write(name, payload):
+        gate.wait(5)
+
+    writer = _DiskWriter(tmp_path, write, lambda *a: None)
+    real_batch = writer._write_batch
+
+    def spy(batch):
+        order.append([(name, "DELETE" if p is _DELETE else p.get("v"))
+                      for name, p in batch])
+        return real_batch(batch)
+    writer._write_batch = spy
+    try:
+        writer.submit([("busy.json", {"v": 0})])
+        assert wait_for(lambda: order)
+        writer.submit([(BURN_FILE, _DELETE), ("show-run.json", {"v": "A"})],
+                      to_end=True)                      # load()'s delete...
+        writer.submit([(BURN_FILE, {"v": "W1"})], to_end=True)   # ...a poll's record
+        writer.submit([(BURN_FILE, {"v": "W2"})])                # ...and another
+        gate.set()
+        assert writer.wait(timeout=5)
+        assert order[1] == [(BURN_FILE, "DELETE"), ("show-run.json", "A"),
+                            (BURN_FILE, "W2")]
+    finally:
+        writer.close(timeout=5)
+
+
+def test_the_disk_thread_never_dies(tmp_path, monkeypatch):
+    from ui.showplay import _DiskWriter
+    written = []
+    writer = _DiskWriter(tmp_path, lambda name, payload: written.append(name),
+                         lambda *a: (_ for _ in ()).throw(RuntimeError("cb")))
+    try:
+        real_batch = writer._write_batch
+        calls = {"n": 0}
+
+        def broken_once(batch):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("a bug in the writer")
+            return real_batch(batch)
+        writer._write_batch = broken_once
+        writer.submit([("a.json", {})])
+        assert writer.wait(timeout=5)                    # not hung
+        writer._write_batch = real_batch
+
+        def failing(name, payload):
+            raise OSError("EIO")
+        writer._write = failing
+        writer._log = lambda *a: (_ for _ in ()).throw(ValueError("stderr closed"))
+        writer.submit([("b.json", {})])                  # log AND callback raise
+        assert writer.wait(timeout=5)
+        writer._write = lambda name, payload: written.append(name)
+        writer.submit([("c.json", {})])
+        assert writer.wait(timeout=5) and written == ["c.json"]
+        assert writer._thread.is_alive()
+    finally:
+        writer.close(timeout=5)
+
+
+def test_sigterm_unwinds_as_an_exception_so_the_player_is_closed():
+    import signal
+    from ui import main as ui_main
+    previous = ui_main.install_sigterm_exit()
+    try:
+        assert signal.getsignal(signal.SIGTERM) is ui_main._exit_on_sigterm
+        with pytest.raises(SystemExit):
+            ui_main._exit_on_sigterm(signal.SIGTERM, None)
+        closed = []
+        with pytest.raises(ui_main.Terminated):
+            try:
+                ui_main._exit_on_sigterm(signal.SIGTERM, None)  # inside app.run
+            finally:
+                closed.append(True)                             # main()'s finally
+        assert closed == [True]
+    finally:
+        signal.signal(signal.SIGTERM, previous if previous is not None
+                      else signal.SIG_DFL)

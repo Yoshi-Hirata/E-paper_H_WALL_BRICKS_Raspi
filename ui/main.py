@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import socket
 import sys
 from pathlib import Path
@@ -624,6 +626,11 @@ def main() -> int:
             # No demo asked for, so put the panels into the agreed idle
             # state: factory autoplay stopped, every sector white.
             app.enter_standby()
+        # `systemctl stop` / a reboot sends SIGTERM, which by default kills
+        # the process where it stands - with the player's disk thread
+        # maybe holding the last run record. As SystemExit it unwinds
+        # through the finally below (and the display's own exit).
+        install_sigterm_exit()
         try:
             app.run(max_ticks=args.max_ticks)
         finally:
@@ -634,5 +641,31 @@ def main() -> int:
     return 0
 
 
+class Terminated(SystemExit):
+    """SIGTERM, turned into an exception (install_sigterm_exit())."""
+
+
+def _exit_on_sigterm(signum, frame) -> None:
+    raise Terminated(0)
+
+
+def install_sigterm_exit():
+    """SIGTERM raises Terminated in the main thread. Nothing else in the
+    UI handles a signal; returns the handler it replaced (None when it
+    cannot be installed - not the main thread)."""
+    try:
+        return signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Terminated:
+        # Cleaned up already (the finally in main()). Exit NOW, as the
+        # default SIGTERM did: a non-daemon thread somewhere must not keep
+        # the service in "deactivating" until systemd's SIGKILL.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)

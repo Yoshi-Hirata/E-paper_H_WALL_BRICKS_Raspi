@@ -233,18 +233,24 @@ class _DiskWriter:
     behind a slow write is replaced, not written twice. Order is kept as
     submitted - a replaced item keeps its place (so a state change never
     overtakes a show.json queued after its run record), and `to_end`
-    moves a batch behind everything still queued (a load: old burn record
-    deleted, run record, show.json, in that order). A run record that
-    cannot be written is deleted and the show.json behind it in the same
-    batch skipped (the old _persist()'s rule). Errors go to `on_error`
-    and are logged once each, never raised into the player."""
+    moves a write behind everything still queued (a load: old burn record
+    deleted, run record, show.json, in that order). A DELETE supersedes
+    every queued write of its file, and a write that comes after a queued
+    DELETE is queued BEHIND it, never in its place (a status poll's burn
+    record must not undo load()'s delete of the old one - final review of
+    669979b). A run record that cannot be written is deleted and the
+    show.json behind it in the same batch skipped (the old _persist()'s
+    rule). Errors go to `on_error` and are logged once each, never raised
+    into the player; the thread itself never dies of one."""
 
     def __init__(self, store: Path, write, on_error):
         self.store = store
         self._write = write                 # (name, payload) -> None
         self._on_error = on_error           # (name, exc, payload) -> None
         self._cond = threading.Condition()
-        self._pending: "dict[str, object]" = {}
+        # [name, payload] in write order; at most one write per file, or
+        # one DELETE followed by one write.
+        self._pending: "list[list]" = []
         self._submitted = 0                 # tickets handed out
         self._done = 0                      # every ticket up to here written
         self._quit = False
@@ -255,14 +261,28 @@ class _DiskWriter:
 
     def submit(self, items, to_end: bool = False) -> int:
         with self._cond:
-            if to_end:
-                for name, _ in items:
-                    self._pending.pop(name, None)
             for name, payload in items:
-                self._pending[name] = payload
+                self._queue(name, payload, to_end)
             self._submitted += 1
             self._cond.notify_all()
             return self._submitted
+
+    def _queue(self, name: str, payload, to_end: bool) -> None:
+        pending = self._pending
+        if payload is _DELETE:
+            pending[:] = [entry for entry in pending if entry[0] != name]
+            pending.append([name, _DELETE])
+            return
+        last = None
+        for index, entry in enumerate(pending):
+            if entry[0] == name:
+                last = index
+        if last is not None and pending[last][1] is not _DELETE:
+            if not to_end:
+                pending[last][1] = payload          # in place: keeps its order
+                return
+            del pending[last]
+        pending.append([name, payload])             # behind a queued DELETE too
 
     def wait(self, ticket: "int | None" = None,
              timeout: "float | None" = None) -> bool:
@@ -292,16 +312,24 @@ class _DiskWriter:
                     self._cond.wait()
                 if not self._pending:
                     return
-                batch, self._pending = self._pending, {}
+                batch, self._pending = self._pending, []
                 ticket = self._submitted
-            self._write_batch(batch)
-            with self._cond:
-                self._done = ticket
-                self._cond.notify_all()
+            try:
+                self._write_batch(batch)
+            except Exception as exc:        # noqa: BLE001 - the thread never dies
+                try:
+                    print(f"showplay: disk thread: {exc!r}", file=sys.stderr,
+                          flush=True)
+                except Exception:           # noqa: BLE001
+                    pass
+            finally:
+                with self._cond:
+                    self._done = ticket
+                    self._cond.notify_all()
 
-    def _write_batch(self, batch: dict) -> None:
+    def _write_batch(self, batch: list) -> None:
         skip_show = False
-        for name, payload in batch.items():
+        for name, payload in batch:
             if name == "show.json" and skip_show:
                 continue
             try:
@@ -324,7 +352,10 @@ class _DiskWriter:
                         (self.store / name).unlink()
                     except OSError:
                         pass
-                self._log(name, exc)
+                try:
+                    self._log(name, exc)
+                except Exception:           # noqa: BLE001 - stderr gone, say
+                    pass
                 try:
                     self._on_error(name, exc, payload)
                 except Exception:           # noqa: BLE001
@@ -409,6 +440,9 @@ class ShowPlayer:
         # it a poll late or not at all (review round 2, 2026-09-25). Not
         # retried on every poll - the next load() tries again.
         self._burn_record_error: "str | None" = None
+        # The disk thread could not delete the old burn record during the
+        # last load(): that load refuses to burn (see load()).
+        self._burn_delete_error: "str | None" = None
         self._burn_none_why = "(the burn never started)"
         # The show asked for its pictures to be deleted once it is over
         # (show.json's `clear_after_show`, carried in the show file):
@@ -519,6 +553,7 @@ class ShowPlayer:
             self.session.forget_verify()     # the previous show's, not this one's
             self._verify_seen = None
             self.note = ""
+            self._burn_delete_error = None
             # One batch, in this order: the old burn record goes, then the
             # run record, then show.json (see _persist()).
             written = self._persist(with_show=True, forget_burn=True)
@@ -526,7 +561,26 @@ class ShowPlayer:
         # show path: an Upload, minutes before START) - waited for outside
         # the lock, so /status keeps answering meanwhile. A disk that does
         # not take them is said in `note` by then (_disk_error()).
-        self._settle(written, LOAD_WRITE_WAIT_S)
+        #
+        # And the burn below starts ONLY once the old burn record is gone
+        # from the card (final review of 669979b): burning over the slots
+        # while the previous show's "burned" is still on disk would let a
+        # power cut restore that OLD show as burned, on slots already
+        # partly overwritten - the wrong pictures. A card that does not
+        # take the batch in time, or will not delete the record, refuses
+        # the load: burn "none", the PC uploads again.
+        landed = (not written
+                  or self._disk.wait(written, LOAD_WRITE_WAIT_S))
+        with self._lock:
+            why = (None if landed else
+                   f"the SD card did not take the show within "
+                   f"{LOAD_WRITE_WAIT_S:g} s") or self._burn_delete_error
+            if why and self.show is show:
+                self._burn_none_why = "(the SD card did not take the show)"
+                self.note = f"{why} - Upload again"
+        if why:
+            self.session.cancel_burn()       # nothing more onto those slots
+            raise RemoteError(f"{why} - Upload again")
         # Which sockets this garment has, before anything is written and
         # whatever the burn below turns out to be: a burn every pair of
         # which the cache already holds writes nothing, and a demo's own
@@ -993,6 +1047,10 @@ class ShowPlayer:
             if name == BURN_FILE:
                 if payload is _DELETE:
                     self.note = f"cannot clear the burn record: {exc}"
+                    # load() refuses to burn over a record it could not
+                    # delete (final review of 669979b, L3).
+                    self._burn_delete_error = (f"cannot clear the burn "
+                                               f"record: {exc}")
                 elif (self.show is not None
                       and payload.get("burned") == self.show.get("id")):
                     self._burn_record_error = f"unsaved: {exc}"

@@ -1469,15 +1469,24 @@ radxa-05(Debian 11、SD/eMMC 上の ext4 `rw,relatime`)は 2026-10-01 に 2 回�
   上書きされ、2 回は書かない)。順序は保つ ― load は「古い burn record の削除 →
   `show-run.json` → `show.json`」を 1 まとまりで、それより前に並んでいたものの後ろに置き、
   あとから来た run record は**並んでいた位置のまま**差し替える(show.json を追い越さない)。
+  ファイルの**削除はそれより前に並んだ同じファイルの書き込みをすべて取り消し**、削除の
+  あとに来た書き込みは削除の**後ろ**に並ぶ(status のポーリングが書く burn record が
+  load の「古い burn record の削除」を消すことはない)。
   run record が書けなければ消し、同じまとまりの show.json は書かない(従来の規則)。
   書き込みの失敗はプレーヤーに例外として返さず、stderr に 1 回だけ出して `note`
   (`cannot save the show: …`)か burn の `record: unsaved: …` で言う。
   **load と STOP の返事は自分の記録を待つ**(錠の外で): load は 3 ファイルが載るまで
-  (最大 10 秒、ショーの最中ではない Upload)、STOP は最大 2 秒(電源を抜く前に押すもの。
-  LCD の KEY2 もここを通るので、カードが詰まれば最大 2 秒 LCD が待つ)。run / SEEK /
-  hold / preset は待たない(発火と返事をカードの後ろに置かない)。終了時(`ShowPlayer.close()`、`ui/main.py` の終わり)は
-  並んでいる分を書いてから閉じる(最大 5 秒。SIGTERM で即死したときは並んでいた
-  ミリ秒分だけ失いうる)
+  (最大 10 秒、ショーの最中ではない Upload)。**10 秒で載らない、または古い burn record を
+  消せなかった load は焼き込みを始めない** ― 古いショーの「burned」がカードに残ったまま
+  スロットを書き換えると、停電後に古いショーが burned として戻り、半分書き換わった
+  スロットで走る。burn は `none`(`pictures not written (the SD card did not take the show)`)、
+  `note` に理由、PC には `… - Upload again` の RemoteError。STOP は最大 2 秒(電源を抜く前に
+  押すもの。LCD の KEY2 もここを通るので、カードが詰まれば最大 2 秒 LCD が待つ)。run / SEEK /
+  hold / preset は待たない(発火と返事をカードの後ろに置かない)。終了時(`ShowPlayer.close()`、
+  `ui/main.py` の終わり)は並んでいる分を書いてから閉じる(最大 5 秒)。`systemctl stop` や
+  再起動の SIGTERM は `ui/main.py` が例外(`Terminated`)に変えるので同じ後始末を通り、
+  そのあと即座に終了する(UI でほかにシグナルを扱うものは無い)。書き込みスレッドは
+  例外で死なない(ログに 1 行出して次へ)
 - **電源断で何が残るか**: 書いている最中のファイルは**古いか新しいかのどちらか**で、
   空や途中までにはならない。fsync が返ったあとの書き込みは失われない。
   2 ファイルにまたがる更新(`show-run.json` → `show.json`、show.json → 音源)は
