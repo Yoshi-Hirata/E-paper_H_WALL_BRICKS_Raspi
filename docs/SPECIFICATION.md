@@ -1179,8 +1179,17 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   countdown)を読み、on なら `next_in_s = wait` をアームする。待ちが尽きたらもう一度読み
   (**待ちの間に off にしたら再開しない**)、`start_show(lead = countdown, at = 0,
   loop=True, expect_gen=そのときの世代)` ― ③ START を押したのと同じ(カウントダウン込み、
-  0:00 のキューが最初の絵を戻す)。**`force` は使わない**(基板の書き込み失敗を押し切るのは
-  人の ③ START だけ)。ランの `loops` が 1, 2, … と増え、③ START を押すと 0 に戻る。
+  0:00 のキューが最初の絵を戻す)。**艦隊全体の `force` は使わない**が、**人の ③ START が
+  押し切った機体はその機体だけ引き継ぐ**(2026-10-01、radxa-10 の 1 枚死んだ基板で Loop が
+  run 1 で止まった): forced START のとき機体ごとの焼き込み失敗(失敗した (board, slot)、理由、
+  total)を覚え(`_waved`)、再開時に**同じまま**の機体だけ `forced_units` として関門を通し
+  `/show/run` に `force: true`(`run["forced"]`)、corrections に 1 回
+  `radxa-10: started again with the operator's 'start anyway' (same N boards)`。失敗が変わった
+  (基板が増えた、理由が違う)機体は押し切らず、通常の 60 秒猶予 / `started without X` へ。
+  素の START のあとは何も引き継がない。再開が断られて再試行している間は `loop.next_in_s` は
+  **null**、`retrying: true`(`retry_in_s` は診断用)― 5 秒の再試行をカウントダウンとして
+  出すと LCD とページが「next run in 0:03」を繰り返す。ページは
+  `Loop: waiting - radxa-10 not ready (retrying)`、ボードは `LOOP WAITING`。ランの `loops` が 1, 2, … と増え、③ START を押すと 0 に戻る。
   **STOP と、どの T0 移動(HOLD / RESUME / SEEK / NEXT / START)も**保留中の再開を取り消す
   (`_t0_moved`)。再開の窓の中で STOP されたときは `start_show` がロック下で世代と
   `_stopped` を見て断る(STOP が勝つ)。再開が断られたとき(機体が落ちている、絵が

@@ -479,6 +479,9 @@ class Fleet:
         self._offered: "dict[str, dict]" = {}
         self._offer_said: "set[str]" = set()
         self._on_adopt = None
+        # {unit: its burn failure at the operator's forced START} - what the
+        # Loop's restarts may wave through again (see _still_waved).
+        self._waved: "dict[str, tuple]" = {}
         # The two windows the clear after the show waits out: after a STOP
         # (the director's mid-show abort), and after any T0 move (so a seek
         # in the last seconds cannot delete the show). Knobs so the tests
@@ -624,9 +627,13 @@ class Fleet:
         anything, and both cancel a wait already armed (_t0_moved).
 
         The restart goes through start_show() with the show's countdown
-        as its lead and NEVER with `force` (a failed board is the
-        operator's call, once, at the START press - a restart at 3 a.m.
-        does not make it again). A refusal - a unit not answering, its
+        as its lead and never with a fleet-wide `force` - a failed board
+        is the operator's call at the START press. That call IS carried,
+        per unit: a unit the operator waved through whose failure is still
+        exactly the same (the same failed boards, the same reason) is waved
+        through again (`forced_units`, _still_waved), so one dead board does
+        not stop the loop after run 1 (seen on radxa-10, 2026-10-01); a unit
+        whose failure changed is not. A refusal - a unit not answering, its
         pictures cleared - is the same answer a ③ START press would get:
         written to the corrections once per distinct reason and tried
         again every loop_retry_s. For LOOP_WAIT_READY_S past the wait,
@@ -686,12 +693,19 @@ class Fleet:
         # grace per fault, not one per run - while a new fault (or a new
         # unit) gets the full grace; after it, everyone not ready is left
         # out by name and the rest go on.
-        not_ready = self._not_ready(self._targets())
+        # The operator's 'start anyway' is carried PER UNIT: a unit whose
+        # burn failure is exactly what it was at the forced START (the same
+        # failed boards, the same reason) is waved through again; one whose
+        # failure changed (more boards gone) is not, and takes the ordinary
+        # grace / "started without X" path. Every other unit: never forced.
+        waved = self._still_waved()
+        not_ready = self._not_ready(self._targets(), forced=waved)
         skip = {name for name, why in not_ready.items()
                 if overdue or self._loop_skipped.get(name) == why}
         try:
             results = self.start_show(float(lead_s), 0.0, loop=True,
-                                      skip=skip, expect_gen=gen)
+                                      skip=skip, expect_gen=gen,
+                                      forced_units=waved)
         except ValueError as exc:
             reason = str(exc)
             with self._run_lock:
@@ -714,6 +728,13 @@ class Fleet:
         with self._run_lock:
             self._loop_problem = problem
             self._loop_skipped = {name: not_ready[name] for name in left_out}
+        for name in sorted(waved):
+            boards = {pair[0] for pair in self._waved[name][0]}
+            self._note(f"{name}: started again with the operator's 'start anyway' "
+                       f"(same {len(boards)} board{'' if len(boards) == 1 else 's'})"
+                       if boards else
+                       f"{name}: started again with the operator's 'start anyway' "
+                       "(same failure)")
         self._note(f"Loop: run {self._loop_runs} started"
                    + (f" without {', '.join(left_out)} (not ready: "
                       f"{'; '.join(not_ready[n] for n in left_out)})" if left_out else "")
@@ -724,14 +745,36 @@ class Fleet:
         self.corrections.append(f"{time.strftime('%H:%M:%S')} {text}")
         del self.corrections[:-20]
 
-    def _not_ready(self, names) -> "dict[str, str]":
+    def _failure_signature(self, name: str):
+        """What exactly is wrong with this unit's burn, when it FAILED on
+        some boards (the one state `force` waves through): the failed
+        (board, slot) pairs, the reason, the total. None for anything
+        else - a clean burn, a unit offline or on another show."""
+        found = self._burn(name)
+        if found is None:
+            return None
+        _show, burn = found
+        if not isinstance(burn, dict) or burn.get("state") != "failed":
+            return None
+        failed = tuple(sorted(tuple(pair) for pair in (burn.get("failed") or [])
+                              if isinstance(pair, (list, tuple))))
+        return (failed, burn.get("reason"), burn.get("total"))
+
+    def _still_waved(self) -> "set[str]":
+        """The units the operator's forced START waved through whose
+        failure is still exactly the same - the Loop's restart forces
+        those and only those."""
+        return {name for name, signature in self._waved.items()
+                if self._failure_signature(name) == signature}
+
+    def _not_ready(self, names, forced=()) -> "dict[str, str]":
         """{unit: why} for the units of `names` a START would refuse on
         right now (offline, not holding the show, still writing, pictures
         cleared) - each message from _burn_problems starts with the unit's
         name. A unit left out of a run this way is not forgotten: it holds
         the show, so supervision puts it INTO the running show the moment
         it answers with it ("started late"), not only at the next restart."""
-        problems = self._burn_problems(names, force=False)
+        problems = self._burn_problems(names, force=False, forced=forced)
         out: "dict[str, str]" = {}
         for name in names:
             mine = [p for p in problems if p.startswith(f"{name}:")]
@@ -743,7 +786,14 @@ class Fleet:
         """What /api/fleet says about a pending loop restart: seconds until
         the next run (`next_in_s`), the wait and lead it was armed with,
         how many restarts this show has had, and the refusal the restart
-        is waiting out, if any. None while no restart is pending."""
+        is waiting out, if any. None while no restart is pending.
+
+        While a restart is being REFUSED (`problem` set, retried every
+        loop_retry_s) `next_in_s` is null and `retrying` true: the 5 s
+        retry is not a countdown to anything, and published as one it read
+        "next run in 0:03" over and over on the LCD and the page (seen on
+        radxa-05, 2026-10-01). `retry_in_s` carries the number for
+        diagnostics only - nothing counts it."""
         self._forget_joined()
         with self._run_lock:
             if self.run is None:
@@ -754,11 +804,16 @@ class Fleet:
                 # or the next end.
                 return ({"next_in_s": None, "wait_s": self._loop_wait,
                          "lead_s": self._loop_lead, "runs": self._loop_runs,
-                         "problem": self._loop_problem}
+                         "problem": self._loop_problem, "retrying": False,
+                         "retry_in_s": None}
                         if self._loop_problem else None)
-            return {"next_in_s": max(0.0, round(self._loop_at - self._clock(), 2)),
+            left = max(0.0, round(self._loop_at - self._clock(), 2))
+            retrying = self._loop_problem is not None
+            return {"next_in_s": None if retrying else left,
                     "wait_s": self._loop_wait, "lead_s": self._loop_lead,
-                    "runs": self._loop_runs, "problem": self._loop_problem}
+                    "runs": self._loop_runs, "problem": self._loop_problem,
+                    "retrying": retrying,
+                    "retry_in_s": left if retrying else None}
 
     def _forget_joined(self) -> None:
         """The "started without X" hint goes once every X left out of the
@@ -1115,7 +1170,8 @@ class Fleet:
             return None
         return show, (show.get("burn") if "burn" in show else _NO_BURN_KEY)
 
-    def _burn_problems(self, names, force: bool = False) -> "list[str]":
+    def _burn_problems(self, names, force: bool = False,
+                       forced=()) -> "list[str]":
         """One message per unit (of `names`) START/PRESET must wait on:
         offline or not yet holding this show (always blocking), still
         burning or playing its own demo while burning (always blocking),
@@ -1167,8 +1223,8 @@ class Fleet:
                     f"{name}: pictures were cleared after the last show"
                     f"{' (' + str(why) + ')' if why else ''} - Upload again")
             elif state == "failed":
-                if force:
-                    continue
+                if force or name in forced:
+                    continue            # waved through (`forced`: this unit only)
                 problems.append(f"{name}: {pictures_not_written(burn)}")
             elif state == "cancelled":
                 # The unit says WHY it gave up (no boards answering, the
@@ -1619,7 +1675,8 @@ class Fleet:
     def start_show(self, lead_s: float = DEFAULT_LEAD_S,
                    at: float = 0.0, force: bool = False,
                    loop: bool = False, skip=(),
-                   expect_gen: "int | None" = None) -> "dict[str, dict]":
+                   expect_gen: "int | None" = None,
+                   forced_units=()) -> "dict[str, dict]":
         """Begin the show `lead_s` from now, `at` seconds into it (0.0 for
         the top). The caller resolves `at` itself - normally
         `fleet.start_at`, where a SEEK made before the show started (or
@@ -1664,9 +1721,16 @@ class Fleet:
         # refuses while any unit is still writing them, offline, not yet
         # holding this show, or (unless `force`) failed to write some
         # boards (2026-09-24, the pre-burn design - see timeline.py).
-        burning = self._burn_problems(targets, force=force)
+        burning = self._burn_problems(targets, force=force, forced=forced_units)
         if burning:
             raise ValueError("; ".join(burning))
+        if not loop:
+            # What the operator waved through with this START, per unit
+            # (nothing on a plain START): the Loop's restarts force exactly
+            # these units for as long as their failure stays the same.
+            self._waved = ({name: sig for name in targets
+                            for sig in [self._failure_signature(name)]
+                            if sig is not None} if force else {})
         with self._run_lock:
             if expect_gen is not None and (self._run_gen != expect_gen
                                            or self._stopped):
@@ -1682,7 +1746,11 @@ class Fleet:
                         # timeline is edited to meanwhile.
                         "clear_after_show": self.clear_wanted(),
                         # Which run of the Loop this is (0: the START press).
-                        "loops": self._loop_runs}
+                        "loops": self._loop_runs,
+                        # ...and the units this run forces on their own
+                        # (the Loop's carried 'start anyway'; a rescue
+                        # Upload adds to it) - posted with every /show/run.
+                        "forced": sorted(forced_units)}
             self.start_at = 0.0
             # A new run: nobody has been asked to clear anything yet, and
             # a unit that was too old last time may have been updated.

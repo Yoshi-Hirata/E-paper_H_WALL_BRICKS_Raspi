@@ -201,6 +201,7 @@ class _Stand:
         page = INDEX_HTML.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1)
         self.run = "none"
         self.loop_next = None                # next_in_s the stand-in reports
+        self.loop_retrying = False           # a refused restart being retried
         self.speaker = None
         self.passcode = None                 # set: POSTs need X-Passcode
         self.sent = []                       # [command, body] as they arrived
@@ -232,8 +233,11 @@ class _Stand:
             def _loop(self):
                 wait = stand.ws.loop_wait()
                 return {"on": wait is not None, "wait_s": int(wait or 45),
-                        "next_in_s": stand.loop_next, "runs": 0,
-                        "problem": None}
+                        "next_in_s": None if stand.loop_retrying else stand.loop_next,
+                        "runs": 0, "retrying": stand.loop_retrying,
+                        "retry_in_s": stand.loop_next if stand.loop_retrying else None,
+                        "problem": ("radxa-10: none of its 16 boards answered"
+                                    if stand.loop_retrying else None), "min_wait_s": 0}
 
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
@@ -320,6 +324,8 @@ class _Stand:
                     if "loop_next" in args:
                         stand.loop_next = (None if args["loop_next"] == "null"
                                            else float(args["loop_next"]))
+                    if "retrying" in args:
+                        stand.loop_retrying = args["retrying"] == "1"
                     if "passcode" in args:
                         stand.passcode = None if args["passcode"] == "null" else args["passcode"]
                     if "speaker" in args:
@@ -415,6 +421,14 @@ _PAGE_PROBE = """
       $q("#nn-stage-btn").click();
       await wait(400);
       out.stopQuestion = stopQuestion();
+      // A refused restart being retried: words, never a countdown.
+      await fetch("/test/fleet?run=ended&loop_next=3&retrying=1");
+      await refreshFleetNow();
+      out.retryClock = clockNow();
+      out.retryHead = { cap: head("[data-cap]"), count: head("[data-count]"), note: head("[data-note]") };
+      out.retryHint = $q("#show-hint").textContent;
+      await fetch("/test/fleet?retrying=0&loop_next=25");
+      await refreshFleetNow();
       // (3) START during the wait: the next run, asked about like a first
       // one, sent WITHOUT force (M5).
       out.overDuringWait = runIsOver();
@@ -567,6 +581,14 @@ def test_the_passcode_is_asked_once_and_sent_ever_after(page):
     # The next request carries it without asking.
     assert [s[0] for s in page["passcodeNext"]] == ["loop"], page["passcodeNext"]
     assert page["passcodePromptsAfter"] == 2
+
+
+def test_a_refused_restart_shows_words_not_a_countdown(page):
+    assert page["retryClock"]["word"] == "Loop: waiting - radxa-10 not ready (retrying)", page["retryClock"]
+    head = page["retryHead"]
+    assert head["cap"] == "LOOP WAITING" and head["count"] in ("", None), head
+    assert head["note"] == "Loop: waiting - radxa-10 not ready (retrying)"
+    assert "Retrying every few seconds (no countdown until it can)" in page["retryHint"]
 
 
 def test_a_speaker_conductor_mutes_the_page_once_and_the_operator_wins(page):

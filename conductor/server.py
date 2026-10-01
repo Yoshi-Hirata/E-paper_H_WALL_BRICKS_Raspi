@@ -3066,7 +3066,11 @@ class Handler(BaseHTTPRequestHandler):
         pending = pending or {}
         return {"on": wait is not None,
                 "wait_s": int(round(wait if wait is not None else LOOP_WAIT_S)),
+                # null while a refused restart is being retried: the LCD
+                # counts next_in_s down, and a 5 s retry is not a countdown.
                 "next_in_s": pending.get("next_in_s"),
+                "retrying": bool(pending.get("retrying")),
+                "retry_in_s": pending.get("retry_in_s"),
                 "runs": int(pending.get("runs") or 0),
                 "problem": pending.get("problem"),
                 "min_wait_s": int(floor)}

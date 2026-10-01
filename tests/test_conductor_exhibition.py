@@ -319,13 +319,15 @@ def test_post_api_loop_answers_the_fleet_loop_object(tmp_path):
         status, before, _ = _get(port, "/api/fleet")
         assert json.loads(before)["loop"] == {"on": False, "wait_s": 45,
                                               "next_in_s": None, "runs": 0,
-                                              "problem": None, "min_wait_s": 0}
+                                              "problem": None, "min_wait_s": 0,
+                                              "retrying": False, "retry_in_s": None}
         status, loop = _post(port, "/api/loop", {"on": True})
         assert status == 200 and loop["on"] and loop["wait_s"] == 45
         status, loop = _post(port, "/api/loop", {"on": True, "wait_s": 45})
         assert status == 200 and loop == {"on": True, "wait_s": 45,
                                           "next_in_s": None, "runs": 0,
-                                          "problem": None, "min_wait_s": 0}
+                                          "problem": None, "min_wait_s": 0,
+                                          "retrying": False, "retry_in_s": None}
         assert ws.loop_wait() == 45.0
         assert json.loads(_get(port, "/api/fleet")[1])["loop"]["on"] is True
         status, loop = _post(port, "/api/loop", {"on": False, "wait_s": 45})
@@ -462,13 +464,17 @@ def test_a_refused_restart_is_said_once_and_retried_until_it_lands():
     fleet._loop_tick()
     assert fleet.run["loops"] == 0
     pending = fleet.loop_state()
-    assert pending["next_in_s"] == 5.0
+    # Refused and retried: NO countdown (a 5 s retry published as one read
+    # "next run in 0:03" over and over on the LCD), the retry for diagnostics.
+    assert pending["next_in_s"] is None and pending["retrying"] is True
+    assert pending["retry_in_s"] == 5.0
     assert "radxa-02: not answering" in pending["problem"]
     said = [line for line in fleet.corrections if "cannot start again" in line]
     assert len(said) == 1
     clock.now += 5.0
     fleet._loop_tick()
-    assert fleet.run["loops"] == 0 and fleet.loop_state()["next_in_s"] == 5.0
+    assert fleet.run["loops"] == 0 and fleet.loop_state()["next_in_s"] is None
+    assert fleet.loop_state()["retrying"] and fleet.loop_state()["retry_in_s"] == 5.0
     assert len([l for l in fleet.corrections if "cannot start again" in l]) == 1
     fleet.links["radxa-02"].online = True
     clock.now += 5.0
@@ -935,7 +941,8 @@ def test_serve_wires_the_speaker_to_the_workspace_music(tmp_path, monkeypatch):
     assert speaker["available"] and speaker["track"] == "show.mp3"
     assert speaker["state"] == "loaded" and speaker["error"] is None
     assert made["fleet"]["loop"] == {"on": False, "wait_s": 45, "next_in_s": None,
-                                     "runs": 0, "problem": None, "min_wait_s": 0}
+                                     "runs": 0, "problem": None, "min_wait_s": 0,
+                                     "retrying": False, "retry_in_s": None}
     assert fake.since()[1] == f"LP {ws.music / 'show.mp3'}"
     assert fake.since()[-1] == "Q"                  # stopped with the server
 
@@ -2609,3 +2616,101 @@ def test_the_conductor_service_waits_for_the_user_manager():
     after = conductor.split("\nAfter=")[1].split("\n")[0]
     wants = conductor.split("\nWants=")[1].split("\n")[0]
     assert "user@1000.service" in after and "user@1000.service" in wants
+
+
+# ------------------------------------------------------------ the operator's 'start anyway', carried per unit
+
+def _failed_burn(pairs, total=16, reason=None):
+    burn = {"state": "failed", "failed": [list(p) for p in pairs], "total": total}
+    if reason:
+        burn["reason"] = reason
+    return burn
+
+
+def test_a_forced_start_is_carried_into_the_restart_for_the_same_failure():
+    """radxa-10, 2026-10-01: one dead board the operator waved through must
+    not stop the loop after run 1 - the restart forces THAT unit again
+    while its failure is unchanged, and nobody else."""
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1), (7, 2)])
+    with pytest.raises(ValueError, match="radxa-02: 2 of 16 pictures not written"):
+        fleet.start_show(lead_s=1.0)
+    fleet.start_show(lead_s=1.0, force=True)              # the operator's 'start anyway'
+    assert fleet._waved == {"radxa-02": (((7, 1), (7, 2)), None, 16)}
+    assert all(body["force"] for _, body in _posted(fleet, "/show/run"))
+    # The run ends; the loop restarts: radxa-02 forced, radxa-01 not.
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    for link in fleet.links.values():
+        link.posted.clear()
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 1 and fleet.run["force"] is False
+    assert fleet.run["forced"] == ["radxa-02"]
+    forces = {name: body["force"] for name, body in _posted(fleet, "/show/run")}
+    assert forces == {"radxa-01": False, "radxa-02": True}
+    assert fleet.loop_state() is None
+    said = [l for l in fleet.corrections if "started again with the operator's 'start anyway'" in l]
+    assert len(said) == 1 and "radxa-02" in said[0] and "same 1 board" in said[0]
+    # ...and again at the next end, as long as nothing changed.
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 2 and fleet.run["forced"] == ["radxa-02"]
+
+
+def test_a_failure_that_changed_is_not_forced_and_takes_the_grace_path():
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1)])
+    fleet.start_show(lead_s=1.0, force=True)
+    # A second board dies during the run: more failed pairs than waved.
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(7, 1), (9, 1)])
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 0
+    assert "radxa-02: 2 of 16 pictures not written" in fleet.loop_state()["problem"]
+    clock.now += 60.0
+    for link in fleet.links.values():
+        link.posted.clear()
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 1 and fleet.run["forced"] == []
+    assert [name for name, _ in _posted(fleet, "/show/run")] == ["radxa-01"]
+    assert fleet.loop_state()["problem"].startswith("started without radxa-02")
+    assert not any("start anyway" in l for l in fleet.corrections)
+    # A reason that changed counts as changed too.
+    fleet2 = _fleet(clock, lambda: (40.0, 2.0))
+    fleet2.links["radxa-02"].status["show"]["burn"] = _failed_burn(
+        [], reason="none of its 16 boards answered")
+    fleet2.start_show(lead_s=1.0, force=True)
+    assert fleet2._waved == {"radxa-02": ((), "none of its 16 boards answered", 16)}
+    fleet2.links["radxa-02"].status["show"]["burn"] = _failed_burn(
+        [], reason="the port was taken")
+    assert fleet2._still_waved() == set()
+    fleet2.links["radxa-02"].status["show"]["burn"] = _failed_burn(
+        [], reason="none of its 16 boards answered")
+    assert fleet2._still_waved() == {"radxa-02"}
+
+
+def test_a_plain_start_never_lets_the_loop_force():
+    clock = Clock()
+    fleet = _fleet(clock, lambda: (40.0, 2.0), loop_retry_s=5.0)
+    fleet.start_show(lead_s=1.0)
+    assert fleet._waved == {}
+    # A board fails after the START: the restart does not force it.
+    fleet.links["radxa-02"].status["show"]["burn"] = _failed_burn([(3, 1)])
+    clock.now = fleet.run["t0"] + 100.0
+    fleet._loop_tick()
+    clock.now += 40.0
+    fleet._loop_tick()
+    assert fleet.run["loops"] == 0 and "radxa-02" in fleet.loop_state()["problem"]
+    # A forced START, then a plain one: the plain one forgets the waving.
+    fleet.start_show(lead_s=1.0, force=True)
+    assert fleet._waved == {"radxa-02": (((3, 1),), None, 16)}
+    fleet.links["radxa-02"].status["show"]["burn"] = {"state": "burned"}
+    fleet.start_show(lead_s=1.0)
+    assert fleet._waved == {}

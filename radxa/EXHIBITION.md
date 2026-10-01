@@ -405,8 +405,11 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
   show`)。その機体は監視されたままで、**ショーを持って答えた瞬間に走行中のランへ入る**
   (`started late`)― 次のランを待たない。同じ理由のままなら次の再スタートでは 60 秒待たずに
   すぐ外す(理由が変われば、また 60 秒待つ)。1 着のために展示全体は止めない。Loop の
-  再スタートは `force` を使わない(基板の書き込み失敗を「それでも始める」と決めるのは人が
-  ③ START を押すときだけ)
+  再スタートは艦隊全体には `force` を使わないが、**③ START で「それでも始める」と押し切った
+  機体は、その失敗が同じままなら再スタートでも押し切る**(`radxa-10: started again with the
+  operator's 'start anyway' (same 1 board)`)― 1 枚死んだ基板で Loop が止まらない。失敗が増えた
+  機体は押し切らず上の 60 秒の扱いになる。再スタートが断られて再試行している間、画面は
+  `Loop: waiting - radxa-10 not ready (retrying)` と出てカウントダウンはしない
 - **会場で停電したら**: 機体は再起動すると絵を `none` と報告する(Conductor が引き取れるのは
   Conductor だけの再起動のとき)。Units タブで **① Upload** → `written` → ③ START(Loop は
   入ったまま)
