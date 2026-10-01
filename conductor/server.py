@@ -204,6 +204,7 @@ WORKSPACE_TAR_CHUNK = 256 * 1024
 # bigger one gets `Connection: close` instead of 200 MB of draining.
 EARLY_DRAIN_MAX = 2 * 1024 * 1024
 EARLY_DRAIN_S = 2.0        # ...and how long a bigger one is still read after the answer
+EARLY_IDLE_S = 10.0        # a drain's per-recv timeout: an idle client holds no thread
 _TAR_TOP = ("show.json", "history.json")
 _TAR_DIRS = ("files", "music")
 
@@ -2889,21 +2890,32 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(given.encode("utf-8", "replace"),
                                    str(code).encode("utf-8", "replace"))
 
-    def _refuse_early(self, payload: dict, status: int) -> None:
+    def _refuse_early(self, payload: dict, status: int,
+                      drain_all: bool = False) -> None:
         """An answer given BEFORE the request body was read (401, 409,
         413...). Windows resets the connection under a client whose body
         is still on the wire, and the client then sees a connection
-        error instead of the status. So the body is drained first, up to
+        error instead of the status. So the body is drained first - up to
         EARLY_DRAIN_MAX (a passcode or token refusal is not worth 200 MB
-        of reading); a bigger one is answered with `Connection: close`
-        after the headers, which is the most a server can do to get the
-        status through before the reset."""
+        of reading), or WHOLE with `drain_all` (the 409 to an
+        authenticated client whose 5-30 MB Send over the hotspot takes
+        longer than any short grace: it must read the 409's text, not a
+        reset). A bigger body without `drain_all` is answered with
+        `Connection: close` after the headers and still read for
+        EARLY_DRAIN_S, which is the most a server can do to get the status
+        through before the reset. Every read here has a socket timeout
+        (EARLY_IDLE_S per recv): an idle client never holds a thread for
+        good, and a timeout is the end of the drain, not a traceback."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
-        if 0 < length <= EARLY_DRAIN_MAX:
-            self._drain(length)
+        if 0 < length <= EARLY_DRAIN_MAX or (drain_all and length > 0):
+            try:
+                self.connection.settimeout(EARLY_IDLE_S)
+                self._drain(length)
+            except (OSError, ValueError):
+                self.close_connection = True       # the client went quiet
             return self._json(payload, status=status)
         self._json(payload, status=status, close=length > 0)
         if length > 0:
@@ -2913,14 +2925,19 @@ class Handler(BaseHTTPRequestHandler):
             # socket is what makes Windows send the reset. A client that
             # is still sending after EARLY_DRAIN_S (a 200 MB body on a
             # slow link) loses the status to the reset; nothing more can
-            # be done for it from here.
+            # be done for it from here. read1(), one recv at a time, and
+            # the socket timeout shrunk to what is left of the deadline,
+            # so the bound is a bound.
             try:
                 self.wfile.flush()
-                self.connection.settimeout(EARLY_DRAIN_S)
                 deadline = time.monotonic() + EARLY_DRAIN_S
                 remaining = length
-                while remaining > 0 and time.monotonic() < deadline:
-                    chunk = self.rfile.read(min(WORKSPACE_TAR_CHUNK, remaining))
+                while remaining > 0:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        break
+                    self.connection.settimeout(max(0.05, left))
+                    chunk = self.rfile.read1(min(WORKSPACE_TAR_CHUNK, remaining))
                     if not chunk:
                         break
                     remaining -= len(chunk)
@@ -3248,8 +3265,11 @@ class Handler(BaseHTTPRequestHandler):
                                        f"{WORKSPACE_TAR_MAX // (1024 * 1024)} MB"},
                                       413)
         if self.fleet is not None and self.fleet.run is not None:
+            # Drained WHOLE: this client passed the token and is sending a
+            # real workspace; it must read "STOP it first", not a reset.
             return self._refuse_early({"error": "a run is active on this Conductor "
-                                                "- STOP it first"}, 409)
+                                                "- STOP it first"}, 409,
+                                      drain_all=True)
         # To a temp file beside the workspace (the same disk the swap
         # renames on), streamed in chunks: never the whole tar in memory.
         # The spool is named BEFORE the body is read and removed in the one

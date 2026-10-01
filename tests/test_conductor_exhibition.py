@@ -1070,25 +1070,39 @@ def test_the_fleet_token_gates_both_workspace_endpoints(tmp_path):
 def test_an_early_refusal_drains_a_small_body_and_closes_on_a_big_one(tmp_path):
     import http.client
 
-    server = make_server(tmp_path / "b", port=0, fleet=Fleet({}), token="s3cret")
+    fleet = Fleet({})
+    server = make_server(tmp_path / "b", port=0, fleet=fleet, token="s3cret")
     port = _serve(server)
     try:
-        # Small: the whole body is read, the 401 arrives, the connection
-        # stays usable (keep-alive) - a second request on it works.
+        # Small: the whole body is read, the 401 arrives cleanly. (The
+        # server speaks HTTP/1.0 and closes after every answer - there is
+        # no keep-alive here; http.client simply reconnects for the GET.)
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         conn.request("POST", "/api/workspace/import", body=b"x" * 100000,
                      headers={"Content-Type": "application/x-tar"})
         response = conn.getresponse()
-        assert response.status == 401
+        assert response.status == 401 and response.version == 10
         response.read()
         conn.request("GET", "/api/state")
         assert conn.getresponse().status == 200
         conn.close()
-        # Big (past EARLY_DRAIN_MAX): the status still comes, with
-        # Connection: close, because the server goes on reading for a
-        # bounded while after answering - a client that finishes sending
-        # reads it instead of a reset. Twice, the way the flake showed.
+        # The 409 to an AUTHENTICATED client drains the whole body however
+        # big (a 5-30 MB Send over the hotspot takes longer than any short
+        # grace): the client reads the 409's text, never a reset.
         from conductor.server import EARLY_DRAIN_MAX
+        fleet.run = {"t0": 0.0, "state": "running", "held_at": None}
+        try:
+            for _ in range(2):
+                status, answer = _post(port, "/api/workspace/import",
+                                       b"x" * (EARLY_DRAIN_MAX * 3),
+                                       {"X-Show-Token": "s3cret"})
+                assert status == 409 and "STOP it first" in answer["error"]
+        finally:
+            fleet.run = None
+        # Big (past EARLY_DRAIN_MAX), NOT authenticated: the status still
+        # comes, with Connection: close, because the server goes on reading
+        # for a bounded while after answering - a client that finishes
+        # sending reads it instead of a reset. Twice, the way the flake showed.
         for _ in range(2):
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             conn.request("POST", "/api/workspace/import",
