@@ -5135,11 +5135,15 @@ function showClockText() {
   let now = null, word = "NOT STARTED", big = null, tone = "";
   if (run && run.state === "preset") {
     // PRESET -> countdown -> 0:00: the 0:00 look is going up, with how
-    // many garments have painted it so far (fleet.preset).
+    // many garments have painted it so far (fleet.preset). N is the units
+    // waited for: one that refused the preset is counted out, and said.
     const p = run.preset || fleet.preset || {};
-    const painted = (p.painted || []).length, total = (p.targets || []).length;
+    const refused = Object.keys(p.refused || {});
+    const waited = (p.targets || []).filter(n => !refused.includes(n));
+    const painted = (p.painted || []).filter(n => waited.includes(n)).length, total = waited.length;
     now = 0;
-    word = `PRESET… ${painted}/${total} painted` + (p.loop ? " (Loop)" : "");
+    word = `PRESET… ${painted}/${total} painted`
+      + (refused.length ? ` (${refused.length} refused)` : "") + (p.loop ? " (Loop)" : "");
   } else if (run) {
     now = run.state === "holding" ? run.now : run.now + (performance.now() - fleet.at) / 1000;
     word = run.state === "holding" ? "ON HOLD" : "RUNNING" + (run.adopted ? " (RECOVERED FROM THE UNITS)" : "");

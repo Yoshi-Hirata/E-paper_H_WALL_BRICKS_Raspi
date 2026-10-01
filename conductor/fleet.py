@@ -123,6 +123,15 @@ PRESET_PAINT_FALLBACK_S = 10.0
 # reported the fire yet: a second /show/preset would forget the garment and
 # paint the same look twice, visibly (review of d64e6e0, HIGH-2).
 PRESET_INFLIGHT_S = 5.0
+# A unit that refuses a stage's /show/preset with one of these (its last run
+# not ENDED yet - with a Loop wait of 0 the restart lands within moments of
+# the end - or busy for a moment) is asked again every PRESET_RETRY_S for
+# PRESET_RETRY_FOR_S, and waited for meanwhile, before it counts as refused
+# (PM, after the review of d64e6e0: otherwise it starts without its 0:00
+# look painted - the very start the operator complained about).
+PRESET_RETRY_ON = ("the show is running", "unit is busy")
+PRESET_RETRY_S = 0.5
+PRESET_RETRY_FOR_S = 10.0
 # What a second START during the PRESET stage is told (the server's own
 # check, and the check-and-set under the run lock behind it).
 STAGING_BUSY = "The show is starting (preset first) - wait for the countdown, or STOP."
@@ -1962,48 +1971,115 @@ class Fleet:
                                    if found[0] == "painted"},
                        "already": sorted(standing),
                        "refused": {},       # {unit: why} - not waited for
+                       # {unit: {"why", "next", "until"}} - refused for a
+                       # reason that passes in moments ("the show is
+                       # running" just before ENDED): asked again every
+                       # PRESET_RETRY_S, waited for meanwhile.
+                       "retry": {},
                        "skip_why": {},      # the Loop's reasons for `skip`
                        "duration": float(duration)}
             self._staging = staging
-        forced = set(forced_units)
-
-        def action(link):
-            excuse = self._demo_excuse(link)
-            if excuse:
-                raise RuntimeError(excuse)
-            body = {"force": bool(force) or link.name in forced}
-            phase = link.post("/show/preset", body).get("phase")
-            replied = self._clock()
-            self._preset_at[link.name] = replied
-            with self._run_lock:
-                staging["replied"][link.name] = replied
-            return {"phase": phase, "preset": True}
-
         send = [name for name in targets if name not in standing]
-        results = self._each(send, action)
-        refused = {name: r.get("error") or "refused"
-                   for name, r in results.items() if not r.get("ok")}
-        for name in refused:
+        results = self._each(send, lambda link: {
+            "phase": self._post_preset(link, staging), "preset": True})
+        failed = {name: r.get("error") or "refused"
+                  for name, r in results.items() if not r.get("ok")}
+        for name in failed:
             results[name]["preset"] = True
         for name in standing:
             results[name] = {"ok": True, "preset": True, "already": True}
+        # A unit that refuses only because its show has not flipped to
+        # ENDED yet (Loop wait 0: the restart lands within moments of the
+        # end) or is momentarily busy is asked again, not left without
+        # its 0:00 look (_retry_presets); the rest are refused outright.
+        now = self._clock()
+        retry = {name: {"why": why, "next": now + PRESET_RETRY_S,
+                        "until": now + PRESET_RETRY_FOR_S}
+                 for name, why in failed.items() if self._retryable(why)}
+        refused = {name: why for name, why in failed.items() if name not in retry}
         with self._run_lock:
             current = self._staging is staging
             if current:
                 staging["refused"].update(refused)
+                staging["retry"].update(retry)
         if not current:
             return results                  # a STOP (or a move) beat the posts
-        sent = [name for name in send if name not in refused]
+        sent = [name for name in send if name not in failed]
         self._note("START: preset first - the 0:00 look goes up on "
                    + (", ".join(sent) if sent else "no unit")
                    + (f" ({', '.join(sorted(standing))} already show"
                       f"{'s' if len(standing) == 1 else ''} it)" if standing else "")
+                   + (f" ({', '.join(sorted(retry))} not yet - asked again "
+                      f"every {PRESET_RETRY_S:g} s)" if retry else "")
                    + ", the countdown follows")
+        self._say_refused(refused)
+        return results
+
+    def _post_preset(self, link, staging: dict):
+        """One /show/preset for a stage, with the stage's force; the answer
+        is remembered (_preset_at, the stage's `replied`). Raises what the
+        unit (or its own demo) refuses with."""
+        excuse = self._demo_excuse(link)
+        if excuse:
+            raise RuntimeError(excuse)
+        body = {"force": staging["force"] or link.name in staging["forced"]}
+        phase = link.post("/show/preset", body).get("phase")
+        replied = self._clock()
+        self._preset_at[link.name] = replied
+        with self._run_lock:
+            staging["replied"][link.name] = replied
+        return phase
+
+    @staticmethod
+    def _retryable(why: str) -> bool:
+        """A preset refusal that passes by itself within moments: the unit's
+        last run is still RUNNING (it turns ENDED on its next tick past the
+        end - ui/showplay.py), or it is busy for a moment."""
+        return any(text in str(why) for text in PRESET_RETRY_ON)
+
+    def _say_refused(self, refused: dict) -> None:
         if refused:
             self._note("START: " + "; ".join(f"{name} refused the preset ({why})"
                                             for name, why in sorted(refused.items()))
                        + " - not waited for, sent the start all the same")
-        return results
+
+    def _retry_presets(self, staging: dict, now: float) -> None:
+        """Ask again the units whose preset was refused for a passing reason
+        (_retryable), every PRESET_RETRY_S for PRESET_RETRY_FOR_S. Taken:
+        waited for like any other. Still refused after that (or refused
+        for another reason now): refused - named, not waited for, sent the
+        start all the same."""
+        with self._run_lock:
+            if self._staging is not staging:
+                return
+            due = [name for name, r in staging["retry"].items() if now >= r["next"]]
+        if not due:
+            return
+        results = self._each(due, lambda link: {
+            "phase": self._post_preset(link, staging)})
+        now = self._clock()
+        refused = {}
+        with self._run_lock:
+            if self._staging is not staging:
+                return
+            for name in due:
+                entry = staging["retry"].get(name)
+                if entry is None:
+                    continue
+                result = results.get(name) or {}
+                if result.get("ok"):
+                    del staging["retry"][name]
+                    continue
+                why = result.get("error") or "refused"
+                if self._retryable(why) and now < entry["until"]:
+                    entry.update(why=why, next=now + PRESET_RETRY_S)
+                    continue
+                del staging["retry"][name]
+                staging["refused"][name] = (
+                    f"{why}, still after {PRESET_RETRY_FOR_S:g} s"
+                    if self._retryable(why) else why)
+                refused[name] = staging["refused"][name]
+        self._say_refused(refused)
 
     def _status_after(self, link, since: float) -> bool:
         """Was this unit's current status asked for at or after `since`
@@ -2079,6 +2155,10 @@ class Fleet:
                 return
             if self._run_gen != staging["gen"]:
                 self._staging = None        # a move (said by _t0_moved)
+                return
+        self._retry_presets(staging, self._clock())
+        with self._run_lock:
+            if self._staging is not staging:
                 return
             painted = dict(staging["painted"])
             replied = dict(staging["replied"])
@@ -2163,6 +2243,8 @@ class Fleet:
                     "waiting_for": [n for n in staging["targets"]
                                     if n not in painted and n not in refused],
                     "refused": refused,
+                    # asked again (refused for a passing reason), waited for
+                    "retrying": sorted(staging["retry"]),
                     "already": list(staging["already"]),
                     "elapsed_s": round(now - staging["since"], 1),
                     "cap_s": PRESET_WAIT_MAX_S, "lead_s": staging["lead_s"],

@@ -1256,8 +1256,12 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   描画時間 + 0.5 + 5 秒(`PRESET_INFLIGHT_S`)より若く、まだ発火の報告が無い機体(② の直後の ③)
   も送らずに待つ。それ以外は送る。**数えるのは返答より後の status だけ**(`UnitLink.status_sent`
   ― 飛行中のポーリングが前の絵を報告しても数えない)。
-  **断った機体**: `/show/preset` が ok でない機体(「the show is running」「unit is busy」、応答
-  なし)は待たない ― corrections に名指しし、`preset.refused` に出し、開始はいつも通り送る。
+  **断った機体**: 「the show is running」(前の run がまだ ENDED になっていない ― Loop の待ち 0 で
+  終わりの直後に再スタートが来たとき)と「unit is busy」は一時的なので、**0.5 秒おきに最長 10 秒**
+  (`PRESET_RETRY_S` / `PRESET_RETRY_FOR_S`)もう一度プリセットを送り、その間は待つ(`preset.retrying`)。
+  受け付けたら他の機体と同じく描き終わりを待つ。10 秒過ぎても断る機体と、それ以外の理由(応答なし
+  など)で断った機体は待たない ― corrections に名指しし、`preset.refused` に出し、開始はいつも通り
+  送る。ページの `PRESET… n/N painted` の N は待つ機体の数(断った機体は数えず「(1 refused)」)。
   **走っている(holding の)ショーに force の START** はステージを作らず、カウントダウン付きで
   即開始(機体は走行中のプリセットを断るため)。終わった run(ENDED、Loop の待ち)はステージ。
   **ステージの終わり**で、ステージ中に用意できなくなった機体(オフライン、絵の消去)は開始の

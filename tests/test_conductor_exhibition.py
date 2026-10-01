@@ -3069,6 +3069,9 @@ def test_the_page_shows_the_preset_stage():
     assert 'if (run.state === "preset") return 0;' in PAGE_TEXT
     assert 'if (run.state === "preset") return "loaded";' in PAGE_TEXT
     assert 'word = `PRESET… ${painted}/${total} painted`' in PAGE_TEXT
+    # N is the units waited for: a refused one is counted out, and said.
+    assert "const waited = (p.targets || []).filter(n => !refused.includes(n));" in PAGE_TEXT
+    assert '(refused.length ? ` (${refused.length} refused)` : "")' in PAGE_TEXT
     assert 'fleet.run.state !== "preset" && !runIsOver()' in PAGE_TEXT
 
 
@@ -3197,15 +3200,15 @@ def test_a_refused_preset_is_not_waited_for_but_gets_the_start():
     # sent /show/run - the others start after their paint, not at 45 s.
     clock = Clock()
     fleet = _preset_fleet(clock)
-    fleet.links["radxa-02"] = RefusingPresetLink("radxa-02", "loaded", "unit is busy")
+    fleet.links["radxa-02"] = RefusingPresetLink("radxa-02", "loaded", "timed out")
     fleet.links["radxa-02"].status["show"].update(id="showA", burn={"state": "burned"},
                                                   applied=None, dirty=False)
     results = fleet.start_show(lead_s=3.0, preset_first=True)
-    assert results["radxa-02"] == {"ok": False, "error": "unit is busy", "preset": True}
+    assert results["radxa-02"] == {"ok": False, "error": "timed out", "preset": True}
     state = fleet.preset_state()
-    assert state["refused"] == {"radxa-02": "unit is busy"}
+    assert state["refused"] == {"radxa-02": "timed out"} and state["retrying"] == []
     assert state["waiting_for"] == ["radxa-01"]
-    assert any("radxa-02 refused the preset (unit is busy) - not waited for" in c
+    assert any("radxa-02 refused the preset (timed out) - not waited for" in c
                for c in fleet.corrections)
     _start_after_paint(fleet, clock, "radxa-01")
     assert fleet.run is not None and fleet.run["t0"] == clock.now + 3.0
@@ -3349,3 +3352,76 @@ def test_server_gates_refuse_during_the_stage(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+class StillRunningLink(StubLink):
+    """A unit whose last run has not flipped to ENDED yet: it refuses
+    /show/preset with "the show is running" `refusals` times, then takes it
+    (None: for ever)."""
+
+    def __init__(self, name, refusals):
+        super().__init__(name, "running")
+        self.refusals = refusals
+
+    def post(self, path, body, learn=True, timeout=None):
+        if path == "/show/preset":
+            self.posted.append((path, body))
+            if self.refusals is None or self.refusals > 0:
+                if self.refusals:
+                    self.refusals -= 1
+                raise RuntimeError("the show is running")
+            self.status["show"]["state"] = "ended"
+            return {}
+        return super().post(path, body, learn, timeout)
+
+
+def _still_running_fleet(clock, refusals):
+    fleet = _preset_fleet(clock, settings=lambda: (0.0, 3.0, True))
+    link = StillRunningLink("radxa-02", refusals)
+    link.status["show"].update(id="showA", burn={"state": "burned"},
+                               applied="q09", dirty=False)
+    fleet.links["radxa-02"] = link
+    return fleet
+
+
+def test_a_unit_not_ended_yet_is_asked_again_and_waited_for():
+    # Loop wait 0: the restart's preset lands before radxa-02 has turned
+    # ENDED. It is asked again every 0.5 s - not started without its look.
+    clock = Clock()
+    fleet = _still_running_fleet(clock, refusals=2)
+    fleet.start_show(lead_s=3.0, preset_first=True)
+    state = fleet.preset_state()
+    assert state["refused"] == {} and state["retrying"] == ["radxa-02"]
+    assert "radxa-02" in state["waiting_for"]
+    _paint(fleet, "radxa-01")
+    for _ in range(4):                                   # 0.5 s, 1.0 s, ...
+        clock.now += 0.5
+        fleet._staging_tick()
+    presets = [n for n, _ in _posted(fleet, "/show/preset")]
+    assert presets.count("radxa-02") == 3                # 2 refused, then taken
+    assert fleet.preset_state()["retrying"] == [] and fleet.preset_state()["refused"] == {}
+    clock.now += 9.0                                     # 01 long painted, 02 not yet
+    fleet._staging_tick()
+    assert fleet.run is None and fleet.preset_state()["waiting_for"] == ["radxa-02"]
+    _start_after_paint(fleet, clock, "radxa-02")
+    assert fleet.run is not None and fleet.run["t0"] == clock.now + 3.0
+    assert not any("refused the preset" in c for c in fleet.corrections)
+
+
+def test_a_unit_that_keeps_refusing_is_left_out_of_the_wait_after_10_s():
+    clock = Clock()
+    fleet = _still_running_fleet(clock, refusals=None)
+    fleet.start_show(lead_s=3.0, preset_first=True)
+    _paint(fleet, "radxa-01")
+    for _ in range(19):                                  # 9.5 s: still asking
+        clock.now += 0.5
+        fleet._staging_tick()
+    assert fleet.preset_state()["retrying"] == ["radxa-02"] and fleet.run is None
+    clock.now += 0.6                                     # past 10 s
+    fleet._staging_tick()
+    # Refused now - counted out of the wait, so the start goes in this tick
+    # (radxa-01 painted long ago).
+    assert fleet.preset_state() is None and fleet.run is not None
+    assert any("radxa-02 refused the preset (the show is running, still after 10 s)"
+               " - not waited for" in c for c in fleet.corrections)
+    assert "radxa-02" in [n for n, _ in _posted(fleet, "/show/run")]
