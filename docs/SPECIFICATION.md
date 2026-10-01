@@ -1159,14 +1159,27 @@ SSID がスキャンに見えている間は最長 10 分待ってから ― `nm
   次のランの最初のトリガの間に `LOOP_SEAM_S` = 40 秒が要る(4.6)― ショー自身の尻尾
   (長さ − 最後のキューの時刻)がその一部なので `min_wait = max(0, 40 − tail)`、秒に切り上げ
   (`loop_floor_of`)。展示のショー(最後のキュー 9:37、終わり 10:54、尻尾 77 秒)は **0**
-  = 終わった直後に再開(START のカウントダウン ≥ 3 秒は別に付く)、最後のキューが終わりの
-  10 秒前なら 30。`POST /api/loop` / `set_loop` は床未満を **400**(数値と理由つき:
+  = 終わった直後に再開、最後のキューが終わりの 10 秒前なら 30。次のランの最初のトリガ
+  (0:00 のプリセット)は T0 の complete_s 前 ≈ カウントダウンの長さぶん前に出るので、間は
+  尻尾 + 待ち ≈ 最後のキューから**再開そのもの**まで 40 秒(0:00 までではない)。尻尾の中で
+  遅れて合流した機体(`started late`)は次のプリセット時にまだ最後のキューを描いていることが
+  ある(まれ、その機体だけ)。`POST /api/loop` / `set_loop` は床未満を **400**(数値と理由つき:
   `loop_wait_s: 30 to 600 seconds here (the last cue is 10 s before the end, 40 s are needed …)`)。
   編集で尻尾が縮んで床が保存値を超えたら保存値はそのまま、Timeline の warnings に
   `Loop: the wait of 0 s is below the 30 s this timeline needs … - the loop waits 30 s`、
   再開は `max(保存値, 床)`(`loop_effective_wait`)。`/api/state.show` に `loop_min_wait_s` /
-  `loop_tail_s` / `loop_min_why`、`/api/fleet.loop` に `min_wait_s`、ページの欄は `min` と
-  ツールチップ `min 0 s - the last cue is 77 s before the end`。LCD は変更なし。undo / redo、ショーの書き出し(常に入る。off は `null`)・読み込み(**`null` は
+  `loop_tail_s` / `loop_min_why`、`/api/fleet.loop` に `min_wait_s` と `stored_wait_s`
+  (`wait_s` は再開が使う実効値)、ページの欄は実効値を表示しツールチップ
+  `min 0 s - the last cue is 77 s before the end`;Loop のチェックを外すのは欄を読まずに保存
+  (床未満の保存値でも外せる)。素の `{"on": true}` は max(保存値 or 45, 床)。LCD は変更なし。
+  **Loop + Clear pictures after the show**: Loop が on のとき機体に送るショーファイルの
+  `clear_after_show` は **false**(機体が自分の ENDED で消すと再開が `cleared` に当たって
+  止まる)、操作者のフラグは `conductor_clear_after_show` に持ち Conductor が **STOP で**消す
+  (どちらも id の digest の後に付くので id も「changed since」も変わらない)。Loop を入れる前に
+  Upload していた機体は自分で消すコピーを持っているので、`POST /api/loop` on は `note`
+  (`the units hold a show that clears its own pictures … Upload again before START`)と
+  corrections で言う。**古い radxa-05**(40 秒床の版)は 40 未満の `loop_wait_s` を読めず
+  Loop が黙って off になる ― 40 未満のワークスペースを送る前に radxa-05 を更新。undo / redo、ショーの書き出し(常に入る。off は `null`)・読み込み(**`null` は
   off にする**、キーの無いファイルは今の値を変えない ― null に意味があるのは off を
   radxa-05 へ運べなくてはならないため)。`_REVISION_IGNORES` に入り、機体のショーファイルにも
   id にも入らない(Upload を求めない)。

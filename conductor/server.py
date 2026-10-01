@@ -191,8 +191,12 @@ def start_countdown_of(show: dict) -> float:
 # tail (its length minus the last cue's time) is part of that seam, so
 #     min_wait = max(0, LOOP_SEAM_S - tail), rounded up to a second
 # - 0 for the exhibition show (last cue 9:37, end 10:54: a 77 s tail), 30
-# for a show whose last cue is 10 s before its end. The START countdown
-# (3 s or more) comes on top either way.
+# for a show whose last cue is 10 s before its end. The next run's first
+# trigger (the 0:00 preset) goes out complete_s BEFORE its T0 - about the
+# length of the START countdown - so the seam is tail + wait, ~40 s from
+# the last cue to the restart itself, not to the show's 0:00. A unit that
+# joined a run late in the tail (supervision's "started late") can still
+# be repainting its last cue at the next preset; rare, and only that unit.
 LOOP_WAIT_S = 45.0
 LOOP_WAIT_RANGE_S = (0.0, 600.0)
 LOOP_SEAM_S = 40.0
@@ -1130,6 +1134,18 @@ class Workspace:
         """(min wait, tail, why) for this timeline - loop_floor_of."""
         with self._lock:
             return loop_floor_of(self._load_show())
+
+    def loop_view(self) -> dict:
+        """Everything /api/fleet's `loop` object needs, from ONE read of
+        show.json (it is asked once a second): the stored wait, the wait a
+        restart really uses, the floor and why."""
+        with self._lock:
+            show = self._load_show()
+        floor, tail, why = loop_floor_of(show)
+        stored = loop_wait_of(show)
+        return {"stored": stored,
+                "effective": None if stored is None else max(stored, floor),
+                "floor": floor, "tail": tail, "why": why}
 
     def set_transition(self, design: str, sequence_id, span_s) -> None:
         """A design's own transition (show.json, undoable): every cue that
@@ -2397,12 +2413,23 @@ class Workspace:
             # say which unit it would have been on. Blocking, `only` or
             # not - it is a repair, not a write.
             return {}, broken, []
-        return showfile.build(maps, assigned, lambda name: designs[name],
-                              cues, refresh, duration, cue_problems,
-                              name=self.root.name, only=only,
-                              dips=show.get("dips"),
-                              clear_after_show=bool(
-                                  show.get("clear_after_show")))
+        clear = bool(show.get("clear_after_show"))
+        loop_on = loop_wait_of(show) is not None
+        # With the Loop on, the UNIT's copy of the show must not clear
+        # itself at its own ENDED (it would, from the show file's flag,
+        # whatever the conductor's loop guard says - and the restart would
+        # then meet "cleared" and die). The conductor keeps the operator's
+        # flag under its own key and performs the clear itself, on STOP.
+        # Both keys are added after the show id's digest (showfile.build),
+        # so neither changes the id nor asks for a "changed since" Upload.
+        shows, problems, warnings = showfile.build(
+            maps, assigned, lambda name: designs[name], cues, refresh,
+            duration, cue_problems, name=self.root.name, only=only,
+            dips=show.get("dips"), clear_after_show=clear and not loop_on)
+        if clear and loop_on:
+            for unit_show in shows.values():
+                unit_show["conductor_clear_after_show"] = True
+        return shows, problems, warnings
 
     # ---- the state the page draws ----
 
@@ -3058,14 +3085,19 @@ class Handler(BaseHTTPRequestHandler):
              "next_in_s": float|null,  seconds to the next run, when one is pending
              "runs": int,           the Loop's restarts so far this show
              "problem": str|null,   why the pending restart has not gone out
-             "min_wait_s": int}     the least wait this timeline allows
+             "min_wait_s": int,     the least wait this timeline allows
+             "stored_wait_s": int|null}  the wait as stored (wait_s is the effective one)
 
         `pending` is Fleet.loop_state() - None when nothing is pending."""
-        wait = self.workspace.loop_wait()
-        floor = self.workspace.loop_floor()[0]
+        view = self.workspace.loop_view()
+        wait, floor = view["effective"], view["floor"]
         pending = pending or {}
         return {"on": wait is not None,
-                "wait_s": int(round(wait if wait is not None else LOOP_WAIT_S)),
+                # The wait a restart really uses (the floor when an edit
+                # pulled it above the stored value); `stored_wait_s` is raw.
+                "wait_s": int(round(wait if wait is not None else max(LOOP_WAIT_S, floor))),
+                "stored_wait_s": (None if view["stored"] is None
+                                  else int(round(view["stored"]))),
                 # null while a refused restart is being retried: the LCD
                 # counts next_in_s down, and a 5 s retry is not a countdown.
                 "next_in_s": pending.get("next_in_s"),
@@ -3087,14 +3119,28 @@ class Handler(BaseHTTPRequestHandler):
         else:
             wait = body.get("wait_s")
             if wait is None:
-                wait = self.workspace.loop_wait()
-            if wait is None:
-                # Turned on with no number: the default, lifted to the
-                # floor this timeline has (never a 400 for a plain "on").
-                wait = max(LOOP_WAIT_S, self.workspace.loop_floor()[0])
+                # Turned on with no number: the stored wait (or the 45 s
+                # default), lifted to the floor this timeline has - never
+                # a 400 for a plain "on".
+                view = self.workspace.loop_view()
+                wait = max(view["stored"] if view["stored"] is not None else LOOP_WAIT_S,
+                           view["floor"])
             self.workspace.set_loop(wait)
         pending = self.fleet.loop_state() if self.fleet is not None else None
-        return self._json(self._loop_object(pending))
+        answer = self._loop_object(pending)
+        if on and self.fleet is not None and any(
+                bool(unit_show.get("clear_after_show"))
+                for unit_show in self.fleet.shows.values()):
+            # The units hold a copy that clears ITSELF at its end (uploaded
+            # before the Loop was on): the restart would meet "cleared".
+            # Said here and in the corrections; an Upload writes the copy
+            # that leaves the clear to the conductor (same id, no pictures
+            # rewritten).
+            answer["note"] = ("the units hold a show that clears its own pictures "
+                              "at its end - Upload again before START, or the "
+                              "Loop stops after run 1")
+            self.fleet._note("Loop on: " + answer["note"])
+        return self._json(answer)
 
     def _own_units(self) -> "list[str]":
         """The units that are THIS host - reached at a loopback address, or

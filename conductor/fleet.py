@@ -1257,8 +1257,12 @@ class Fleet:
     def clear_wanted(self) -> bool:
         """Does the uploaded timeline ask for its pictures to be cleared
         when the show is over? (Any of the shows saying so is enough -
-        one Upload writes them all from one timeline.)"""
-        return any(bool(show.get("clear_after_show"))
+        one Upload writes them all from one timeline.) With the Loop on
+        the unit's own flag is off and the operator's lives under
+        `conductor_clear_after_show` - the conductor clears, on STOP
+        (conductor/server.py _compile_show)."""
+        return any(bool(show.get("conductor_clear_after_show",
+                                 show.get("clear_after_show")))
                    for show in self.shows.values())
 
     def clear_pictures(self, only: "list[str] | None" = None

@@ -371,8 +371,11 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
    保存されるので、PC で入れて送ってあれば入ったまま)。**下限はタイムラインで決まる**:
    最後のキューから次のランの最初のトリガまで 40 秒空ける必要があり、ショー自身の
    尻尾(最後のキューから終わりまで)がその一部 ― 今の展示ショー(最後のキュー 9:37、
-   終わり 10:54、尻尾 77 秒)は **0 秒 = 終わった直後に再開**できる(START のカウントダウン
-   は別に付く)。欄のツールチップに `min 0 s - the last cue is 77 s before the end` と出る。
+   終わり 10:54、尻尾 77 秒)は **0 秒 = 終わった直後に再開**できる(次のランの 0:00 の
+   プリセットはカウントダウンの間に送られるので、最後のキューから再開まで 40 秒空けば足りる)。
+   欄のツールチップに `min 0 s - the last cue is 77 s before the end` と出る。
+   **40 秒未満の待ちを入れたワークスペースを送る前に radxa-05 を `git pull` して更新する**
+   (古い版は 40 未満を読めず Loop が黙って off になる)。
    最後のキューが終わりの 10 秒前のショーなら下限 30 秒(下限未満は断られる)。あとで
    タイムラインを編集して尻尾が縮んだら、保存した値は残るが Timeline に警告が出て、
    再開は下限の方の秒数で待つ
@@ -397,7 +400,10 @@ curl --data-binary @ws.tar -H "Content-Type: application/x-tar" -H "X-Passcode: 
   受け取らない**(off に戻して `Corrected automatically:` に 1 行)。Loop を持てるのは
   `--adopt` の展示 Conductor だけ
 - **Clear pictures after the show** と Loop を両方入れたときは、消去は **STOP のとき**
-  だけ(ラン間では消さない ― 次のランが同じ絵を使う)
+  だけ(ラン間では消さない ― 次のランが同じ絵を使う)。**Loop を入れてから ① Upload**:
+  Loop が on だと機体に送るショーは「自分で消さない」コピーになり、Conductor が STOP で消す。
+  Loop を入れる前に Upload してあると機体が自分の終わりで消してしまい Loop が run 1 で
+  止まる(チェックを入れたときにその旨のトーストが出る → ① Upload をやり直す。絵は書き直さない)
 - **1 台が準備できないとき**(電源が落ちた、絵が消えた): Loop は ③ START と同じ理由で
   `Loop: the next run could not start yet — radxa-03: not answering` と出して 5 秒ごとに
   やり直し、**60 秒たっても揃わなければ揃った機体だけで次のランを始める**

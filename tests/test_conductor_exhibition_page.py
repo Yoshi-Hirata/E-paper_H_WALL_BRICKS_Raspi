@@ -47,7 +47,10 @@ def test_the_loop_control_sits_with_the_countdown_and_posts_api_loop():
     assert "parseSeconds(field ? field.value : \"\", loopMinWait(), LOOP_WAIT_MAX_S)" in handler
     assert "const LOOP_WAIT_DEFAULT_S = 45, LOOP_WAIT_MIN_S = 0, LOOP_WAIT_MAX_S = 600;" in PAGE
     assert "parseSeconds(field ? field.value : \"\", loopMinWait(), LOOP_WAIT_MAX_S)" in PAGE
-    assert 'min="${loopMinWait()}" title="${esc(loopMinTitle())}"' in PAGE
+    assert 'title="${esc(loopMinTitle())}"' in PAGE
+    # Unticking saves off without reading the field (a stored wait below
+    # the floor must not make the box un-untickable).
+    assert 'if (id === "show-loop" && !e.target.checked) { if (loopWait() !== null) await saveLoop(null); return; }' in PAGE
     for fine in (0, 600, 45):
         assert check_loop_wait(fine) == fine
     assert "state.show.loop_wait_s" in _function_body("loopWait")

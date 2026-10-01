@@ -4008,11 +4008,17 @@ function loopMinTitle() {
 // What the wait field shows: the show's wait while the Loop is on, else the
 // last value typed in this page (so unticking and ticking again keeps it), else 30.
 let loopWaitTyped = null;
-function loopWaitShown() { return loopWait() ?? loopWaitTyped ?? LOOP_WAIT_DEFAULT_S; }
+// While on, what the restart really waits: the stored value lifted to
+// the floor an edit may have raised since (the server does the same).
+function loopWaitShown() {
+  const stored = loopWait();
+  return stored !== null ? Math.max(stored, loopMinWait()) : (loopWaitTyped ?? LOOP_WAIT_DEFAULT_S);
+}
 async function saveLoop(waitS) {      // null = off; POST /api/loop answers the fleet's `loop` object
   try {
     const answer = await api("/api/loop", waitS === null ? { on: false } : { on: true, wait_s: waitS });
     if (answer && answer.error) toast(`Could not save it: ${answer.error}`);
+    else if (answer && answer.note) toast(`Loop: ${answer.note}`, "warn");
   } catch (err) {
     toast(`Could not save it: ${err.message}`);
   }
@@ -5001,7 +5007,7 @@ function renderFleet() {
         <label class="meta" title="${esc(LOOP_TITLE)}"><input type="checkbox"
           id="show-loop" ${loopWait() !== null ? "checked" : ""}>
           Loop: next run after <input type="text" id="show-loop-wait"
-          value="${loopWaitShown()}" min="${loopMinWait()}" title="${esc(loopMinTitle())}" style="width:46px"> s</label>
+          value="${loopWaitShown()}" title="${esc(loopMinTitle())}" style="width:46px"> s</label>
         <label class="meta" title="${esc(CLEAR_AFTER_TITLE)}"><input type="checkbox"
           id="show-clear-after" ${state.show.clear_after_show ? "checked" : ""}>
           Clear pictures after the show
@@ -6283,6 +6289,9 @@ document.addEventListener("change", async e => {
   // show (show.json's loop_wait_s), like the countdown.
   if (id === "show-loop" || id === "show-loop-wait") {
     const field = $("#show-loop-wait");
+    // Unticking saves off without reading the field: a stored wait an
+    // edit has pulled below the floor must never make the box un-untickable.
+    if (id === "show-loop" && !e.target.checked) { if (loopWait() !== null) await saveLoop(null); return; }
     const seconds = parseSeconds(field ? field.value : "", loopMinWait(), LOOP_WAIT_MAX_S);
     if (seconds === null) {
       toast(`Enter ${loopMinWait()} to ${LOOP_WAIT_MAX_S} seconds (${loopMinTitle()})`);

@@ -320,14 +320,16 @@ def test_post_api_loop_answers_the_fleet_loop_object(tmp_path):
         assert json.loads(before)["loop"] == {"on": False, "wait_s": 45,
                                               "next_in_s": None, "runs": 0,
                                               "problem": None, "min_wait_s": 0,
-                                              "retrying": False, "retry_in_s": None}
+                                              "retrying": False, "retry_in_s": None,
+                                              "stored_wait_s": None}
         status, loop = _post(port, "/api/loop", {"on": True})
         assert status == 200 and loop["on"] and loop["wait_s"] == 45
         status, loop = _post(port, "/api/loop", {"on": True, "wait_s": 45})
         assert status == 200 and loop == {"on": True, "wait_s": 45,
                                           "next_in_s": None, "runs": 0,
                                           "problem": None, "min_wait_s": 0,
-                                          "retrying": False, "retry_in_s": None}
+                                          "retrying": False, "retry_in_s": None,
+                                          "stored_wait_s": 45}
         assert ws.loop_wait() == 45.0
         assert json.loads(_get(port, "/api/fleet")[1])["loop"]["on"] is True
         status, loop = _post(port, "/api/loop", {"on": False, "wait_s": 45})
@@ -942,7 +944,8 @@ def test_serve_wires_the_speaker_to_the_workspace_music(tmp_path, monkeypatch):
     assert speaker["state"] == "loaded" and speaker["error"] is None
     assert made["fleet"]["loop"] == {"on": False, "wait_s": 45, "next_in_s": None,
                                      "runs": 0, "problem": None, "min_wait_s": 0,
-                                     "retrying": False, "retry_in_s": None}
+                                     "retrying": False, "retry_in_s": None,
+                                     "stored_wait_s": None}
     assert fake.since()[1] == f"LP {ws.music / 'show.mp3'}"
     assert fake.since()[-1] == "Q"                  # stopped with the server
 
@@ -2714,3 +2717,75 @@ def test_a_plain_start_never_lets_the_loop_force():
     fleet.links["radxa-02"].status["show"]["burn"] = {"state": "burned"}
     fleet.start_show(lead_s=1.0)
     assert fleet._waved == {}
+
+
+# ------------------------------------------------------------ review of a9898aa
+
+def test_with_the_loop_on_the_units_copy_does_not_clear_itself_but_stop_still_clears(tmp_path):
+    ws = _workspace(tmp_path / "ws", music=False)
+    ws.set_clear_after_show(True)
+    plain, _ = ws.compile_show()
+    assert plain["radxa-01"]["clear_after_show"] is True
+    assert "conductor_clear_after_show" not in plain["radxa-01"]
+    rev = ws.revision()
+    ws.set_loop(0)
+    looped, _ = ws.compile_show()
+    unit_copy = looped["radxa-01"]
+    assert "clear_after_show" not in unit_copy, "the unit would clear at its own ENDED"
+    assert unit_copy["conductor_clear_after_show"] is True
+    # Same id, same revision: no picture rewritten, no "changed since".
+    assert unit_copy["id"] == plain["radxa-01"]["id"] and ws.revision() == rev
+    # The fleet still knows the operator wants the clear - on STOP.
+    clock = Clock()
+    fleet = Fleet({}, clock=clock, loop_settings=ws.loop_settings)
+    fleet.links = {"radxa-01": StubLink("radxa-01", "loaded")}
+    fleet.links["radxa-01"].status["show"].update(id=unit_copy["id"], burn={"state": "burned"})
+    fleet.upload(looped)
+    assert fleet.clear_wanted() is True
+    fleet.start_show(lead_s=1.0)
+    assert fleet.run["clear_after_show"] is True
+    fleet.stop_show()
+    assert fleet.clear_armed_in_s() is not None
+
+
+def test_turning_the_loop_on_warns_when_the_units_hold_a_self_clearing_copy(tmp_path):
+    ws = _workspace(tmp_path / "ws", music=False)
+    ws.set_clear_after_show(True)
+    shows, _ = ws.compile_show()                      # uploaded BEFORE the Loop
+    fleet = Fleet({})
+    fleet.shows = dict(shows)
+    server = make_server(ws.root, port=0, fleet=fleet)
+    port = _serve(server)
+    try:
+        status, loop = _post(port, "/api/loop", {"on": True, "wait_s": 0})
+        assert status == 200 and loop["on"]
+        assert "clears its own pictures" in loop["note"]
+        assert any("Loop on:" in c for c in fleet.corrections)
+        # After an Upload of the looped compile, no note.
+        fleet.shows = dict(ws.compile_show()[0])
+        status, loop = _post(port, "/api/loop", {"on": True, "wait_s": 0})
+        assert status == 200 and "note" not in loop
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_plain_on_lifts_a_stored_wait_below_the_floor_and_wait_s_is_effective(tmp_path):
+    """MED-2."""
+    ws = _workspace(tmp_path / "ws", music=False)
+    ws.set_loop(0)
+    ws.set_timeline(120, _show_with_tail(120.0, 110.0)["cues"])     # floor 30 now
+    server = make_server(ws.root, port=0, fleet=Fleet({}))
+    port = _serve(server)
+    try:
+        loop = json.loads(_get(port, "/api/fleet")[1])["loop"]
+        assert loop["wait_s"] == 30 and loop["stored_wait_s"] == 0 and loop["min_wait_s"] == 30
+        status, loop = _post(port, "/api/loop", {"on": True})      # no 400
+        assert status == 200 and loop["wait_s"] == 30 and loop["stored_wait_s"] == 30
+        assert ws.loop_wait() == 30.0
+        status, loop = _post(port, "/api/loop", {"on": False})
+        assert status == 200 and loop["on"] is False and loop["stored_wait_s"] is None
+        assert loop["wait_s"] == 45                                   # the default, above the floor
+    finally:
+        server.shutdown()
+        server.server_close()
