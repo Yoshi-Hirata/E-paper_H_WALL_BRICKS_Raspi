@@ -1,0 +1,295 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AZ-Epaper 運用マニュアル</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --ground:#F4F6F8; --surface:#FFFFFF; --ink:#16212B; --ink-soft:#4A5866; --rule:#D3DBE2;
+  --accent:#B86E00; --accent-soft:#FFF3DF; --ok:#1C7F47; --ok-soft:#E3F4EA; --bad:#B8332A; --bad-soft:#FBE7E4;
+  --lcd-bg:#0D1317; --lcd-ink:#E6ECEF; --lcd-dim:#7E8C96; --lcd-amber:#FFB020; --lcd-green:#3FD07A; --lcd-red:#FF5A4E;
+  --key-bg:#EEF2F5; --key-edge:#B9C4CE;
+  --sans:"BIZ UDPGothic","Hiragino Sans","Yu Gothic UI","Meiryo",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;padding-inline:16px;padding-block:0 64px}
+.wrap{max-width:780px;margin:0 auto}
+header.top{padding-block:40px 20px;border-bottom:2px solid var(--ink)}
+.eyebrow{font-size:12px;letter-spacing:.14em;color:var(--ink-soft);text-transform:uppercase;font-family:var(--mono)}
+h1{font-size:30px;line-height:1.3;margin:6px 0 10px;text-wrap:balance}
+.lead{color:var(--ink-soft);margin:0}
+nav.toc{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--ground);border-bottom:1px solid var(--rule);overflow-x:auto;white-space:nowrap;padding-block:10px;margin-bottom:8px}
+nav.toc a{display:inline-block;color:var(--ink);text-decoration:none;font-size:13px;padding:4px 10px;border:1px solid var(--rule);border-radius:999px;margin-right:6px;background:var(--surface)}
+nav.toc a:hover,nav.toc a:focus-visible{border-color:var(--accent);outline:none}
+section{padding-block:28px 8px;border-bottom:1px solid var(--rule)}
+section:last-of-type{border-bottom:0}
+h2{font-size:22px;margin:0 0 14px;text-wrap:balance;display:flex;gap:10px;align-items:baseline}
+h2 .tag{font-family:var(--mono);font-size:12px;color:var(--accent);letter-spacing:.08em}
+h3{font-size:17px;margin:22px 0 8px}
+p{margin:0 0 12px;max-width:68ch}
+ul,ol{margin:0 0 12px;padding-left:1.4em}
+li{margin-bottom:6px}
+strong{font-weight:700}
+.note{font-size:14px;color:var(--ink-soft)}
+.callout{border:1px solid var(--rule);border-left:4px solid var(--accent);background:var(--accent-soft);padding:12px 14px;border-radius:6px;margin:12px 0 16px}
+.callout.bad{border-left-color:var(--bad);background:var(--bad-soft)}
+.callout.ok{border-left-color:var(--ok);background:var(--ok-soft)}
+.callout p:last-child,.callout ul:last-child{margin-bottom:0}
+kbd.key{display:inline-block;font-family:var(--mono);font-size:13px;font-weight:600;line-height:1;padding:5px 7px 4px;border:1px solid var(--key-edge);border-bottom-width:3px;border-radius:5px;background:var(--key-bg);color:var(--ink);white-space:nowrap;vertical-align:1px}
+.hold{font-size:12px;color:var(--accent);font-weight:700;margin-left:3px;white-space:nowrap}
+code,.lcdtxt{font-family:var(--mono);font-size:13.5px;background:var(--lcd-bg);color:var(--lcd-ink);padding:2px 6px;border-radius:4px;white-space:nowrap}
+.lcdtxt.amber{color:var(--lcd-amber)} .lcdtxt.green{color:var(--lcd-green)} .lcdtxt.red{color:var(--lcd-red)}
+.tbl{overflow-x:auto;margin:8px 0 16px;border:1px solid var(--rule);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-size:12px;letter-spacing:.06em;color:var(--ink-soft);font-weight:700;background:var(--ground)}
+tr:last-child td{border-bottom:0}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid var(--rule);white-space:nowrap}
+.pill.ctrl{border-color:var(--accent);color:var(--accent)}
+.pill.off{color:var(--ink-soft)}
+ol.steps{list-style:none;padding:0;counter-reset:s;margin:0 0 12px}
+ol.steps>li{counter-increment:s;position:relative;padding:12px 14px 12px 52px;background:var(--surface);border:1px solid var(--rule);border-radius:8px;margin-bottom:8px}
+ol.steps>li::before{content:counter(s);position:absolute;left:14px;top:12px;width:26px;height:26px;border-radius:50%;background:var(--ink);color:var(--surface);font-family:var(--mono);font-size:13px;font-weight:600;display:grid;place-items:center}
+ol.steps>li p{margin-bottom:6px}
+.lcd{background:var(--lcd-bg);color:var(--lcd-ink);font-family:var(--mono);font-size:13px;line-height:1.55;border-radius:10px;padding:12px 14px;max-width:340px;border:6px solid #2A3238;box-shadow:0 1px 0 var(--rule)}
+.lcd .hd{display:flex;justify-content:space-between;color:var(--lcd-dim);border-bottom:1px solid #26313A;padding-bottom:4px;margin-bottom:6px;font-size:12px}
+.lcd .big{font-size:17px;font-weight:600;color:var(--lcd-ink)}
+.lcd .a{color:var(--lcd-amber)} .lcd .g{color:var(--lcd-green)} .lcd .r{color:var(--lcd-red)} .lcd .d{color:var(--lcd-dim)}
+.lcd .ft{border-top:1px solid #26313A;margin-top:6px;padding-top:4px;color:var(--lcd-dim);font-size:12px}
+.lcdrow{display:grid;grid-template-columns:minmax(0,340px) minmax(0,1fr);gap:18px;align-items:start;margin:10px 0 16px}
+.lcdrow dl{margin:0}
+.lcdrow dt{font-weight:700;margin-top:6px}
+.lcdrow dd{margin:0 0 4px;color:var(--ink-soft);font-size:14.5px}
+.keys{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:8px 0 14px}
+.keys>div{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:10px 12px}
+.keys>div p{margin:6px 0 0;font-size:14.5px;color:var(--ink-soft)}
+.blank{display:inline-block;min-width:9em;border-bottom:1.5px dashed var(--ink-soft);color:var(--ink-soft);font-size:13px;padding:0 4px}
+footer{padding-block:28px 0;color:var(--ink-soft);font-size:13px}
+@media (max-width:640px){
+  h1{font-size:25px}
+  .lcdrow{grid-template-columns:1fr}
+  ol.steps>li{padding-left:46px}
+}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+html{scroll-behavior:smooth}
+</style>
+<style>
+@page{size:A4;margin:14mm 13mm 16mm}
+html{scroll-behavior:auto}
+:root,:root[data-theme]{color-scheme:light}
+body{padding-inline:0;padding-block:0;font-size:10.5pt;line-height:1.65;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.wrap{max-width:none}
+nav.toc{display:none}
+header.top{padding-block:0 10px}
+h1{font-size:20pt}
+section{padding-block:14px 4px;break-inside:auto}
+h2{font-size:14pt;break-after:avoid}
+h3{break-after:avoid}
+ol.steps>li,.callout,.keys>div,tr,.lcdrow,.lcd{break-inside:avoid}
+.tbl{overflow:visible}
+a{color:inherit;text-decoration:none}
+footer{padding-block:12px 0}
+</style>
+</head><body>
+
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">AZ 27SS · E-paper Garments · Exhibition</div>
+  <h1>AZ-Epaper 展示 運用マニュアル</h1>
+  <p class="lead">現場スタッフ向け。PC もルーターも無い会場で、radxa（衣装の後ろの小さなコンピュータ）だけで展示ショーを回すための手順です。操作はすべて <strong>radxa-05 の小さな画面とボタン</strong>で行います。</p>
+</header>
+
+<nav class="toc" aria-label="目次">
+  <a href="#overview">しくみ</a><a href="#units">機体と衣装</a><a href="#buttons">ボタン</a><a href="#open">開場</a><a href="#during">運用中</a><a href="#close">閉場</a><a href="#power">停電・ブレーカー</a><a href="#trouble">困ったとき</a><a href="#backup">データを戻す</a><a href="#phone">スマホ操作</a><a href="#dont">禁止事項</a>
+</nav>
+
+<section id="overview">
+  <h2>全体のしくみ</h2>
+  <ul>
+    <li><strong>radxa-05 が親機</strong>。Wi-Fi「<code>AZ-Epaper</code>」を自分で出し、ショーの進行（いつどの絵に切り替えるか）と音楽（Bose スピーカー）を受け持ちます。<strong>衣装はつながっていません。</strong></li>
+    <li><strong>ほかの 7 台が子機</strong>。それぞれ 1 着の衣装につながり、親機の合図で絵を切り替えます。電源が入ると自動で <code>AZ-Epaper</code> に入ります。</li>
+    <li><strong>衣装の基板と radxa は全部同じ電源</strong>。ブレーカー（根元のコンセント）ひとつで一斉に入り、一斉に切れます。</li>
+    <li><strong>Bose スピーカーは radxa-05 の USB-C から給電</strong>されています。ただし Bose は自分の電池を持っているので、<strong>電源の入／切は Bose 本体の電源ボタン</strong>で行います（ブレーカーを切っても電池で動き続けます）。</li>
+    <li>ショーの絵は<strong>あらかじめ各衣装に書き込み済み</strong>です。電源が落ちても消えません。</li>
+    <li>ショーは約 11 分。<strong>LOOP</strong> が入っていると、終わるたびにすぐ最初から繰り返します（最初の絵 → 3 秒カウントダウン → 音楽と本編）。</li>
+  </ul>
+  <div class="callout ok"><p>電源が何度落ちても、ショーのデータは消えません。電源が戻ったら、親機の画面から <strong>START</strong> するだけで再開できます。</p></div>
+</section>
+
+<section id="units">
+  <h2>機体と衣装の対応</h2>
+  <p>各 radxa には番号のラベルが付いています。<strong>どの radxa をどの衣装につなぐかは決まっています。</strong>差し違えると、衣装の一部に違う衣装の絵が出ます（展示テストで実際に起きました）。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>radxa</th><th>LOOK</th><th>衣装（品番）</th><th>役割</th></tr></thead>
+    <tbody>
+      <tr><td class="num">radxa-05</td><td>—</td><td>（衣装なし）</td><td><span class="pill ctrl">親機・Wi-Fi・音楽</span></td></tr>
+      <tr><td class="num">radxa-01</td><td class="num">23</td><td>AZ271SD1305</td><td>子機</td></tr>
+      <tr><td class="num">radxa-02</td><td class="num">24</td><td>AZ271SD1305（2 着目）</td><td>子機</td></tr>
+      <tr><td class="num">radxa-03</td><td class="num">25</td><td>AZ271SD1301</td><td>子機</td></tr>
+      <tr><td class="num">radxa-04</td><td class="num">26</td><td>AZ271SC6302（トップス）</td><td>子機</td></tr>
+      <tr><td class="num">radxa-10</td><td class="num">26</td><td>AZ271SB2303（スカート）</td><td>子機</td></tr>
+      <tr><td class="num">radxa-07</td><td class="num">27</td><td>AZ271SD1306</td><td>子機</td></tr>
+      <tr><td class="num">radxa-09</td><td class="num">28</td><td>AZ271SD1307</td><td>子機</td></tr>
+      <tr><td class="num">radxa-06 / 08</td><td>—</td><td>—</td><td><span class="pill off">展示では使わない</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout bad"><p><strong>radxa を付け替えたり、衣装を入れ替えたりしたら、必ず責任者に連絡してください。</strong>書き込み直し（Upload）が必要です。</p></div>
+</section>
+
+<section id="buttons">
+  <h2>ボタンの基本</h2>
+  <p>各 radxa の画面の横にボタンがあります。</p>
+  <div class="keys">
+    <div><kbd class="key">▲▼◀▶</kbd> ジョイスティック<p>上下で項目を選ぶ。EXHIBITION 画面では左右で音量。</p></div>
+    <div><kbd class="key">KEY1</kbd> 決定 / 実行<p>メニューの項目に入る。<strong>START・STOP などは長押し</strong>（約 1 秒）。</p></div>
+    <div><kbd class="key">KEY2</kbd> 戻る<p>前の画面・メニューに戻る。</p></div>
+    <div><kbd class="key">KEY3</kbd> 画面を消す<p>EXHIBITION 画面では長押しで LOOP の入／切。</p></div>
+  </div>
+  <ul>
+    <li><strong>「長押し」は約 1 秒押し続ける</strong>こと。大事な操作（START、STOP、Wi-Fi 切替、データを戻す）は、ぶつかっても起きないよう全部長押しです。</li>
+    <li>画面が暗いとき、最初の一押しは<strong>画面を点けるだけ</strong>で、何も実行されません。</li>
+    <li>画面に <span class="lcdtxt">buttons locked</span> と出たら、<kbd class="key">KEY2</kbd> → <kbd class="key">KEY3</kbd> → <kbd class="key">KEY2</kbd> を 5 秒以内に押すと一時的に解除されます（1 分さわらないと元に戻ります）。</li>
+  </ul>
+</section>
+
+<section id="open">
+  <h2>開場の手順 <span class="tag">毎朝</span></h2>
+  <p>会場では、衣装の基板と radxa（radxa-05 を含む全台）が<strong>同じ電源</strong>につながっています。ブレーカー（または根元のコンセント）を入れると、すべてに同時に電気が入ります。</p>
+  <ol class="steps">
+    <li><p><strong>ブレーカー（根元のコンセント）を入れる。</strong>衣装と radxa が一斉に起動し、Bose への給電（充電）も始まります。</p></li>
+    <li><p><strong>Bose の電源ボタンを押して電源を入れる</strong>（すでに点いていればそのまま）。</p></li>
+    <li><p><strong>何もさわらずに 3 分待つ。</strong>radxa-05 が Wi-Fi <code>AZ-Epaper</code> を出すまで約 2 分、子機はそれが出るまで自動で待ち続け、出たら順に入ってきます。スピーカーも自動でつながります。</p></li>
+    <li>
+      <p><strong>radxa-05 の画面で確認する。</strong>メニューで <code>EXHIBITION</code> を選んで <kbd class="key">KEY1</kbd>。</p>
+      <ul>
+        <li><span class="lcdtxt">units 8/10 online</span> … 親機と子機 7 台、計 8 台がそろっている（radxa-06・08 は使わないので 10 台中 8 台が正常）。そろうまで少し待つ</li>
+        <li><span class="lcdtxt green">speaker ok · vol 70% (bluez)</span> … スピーカーにつながっている</li>
+        <li><span class="lcdtxt">LOOP on</span> … 繰り返し再生が入っている（<span class="lcdtxt">LOOP off</span> なら <kbd class="key">KEY3</kbd><span class="hold">長押し</span>）</li>
+      </ul>
+    </li>
+    <li><p><kbd class="key">KEY1</kbd><span class="hold">長押し</span> で <strong>START</strong>。<span class="lcdtxt amber">preset… 5/7 painted</span>（全衣装に最初の絵を描いている）→ カウントダウン 3 秒 → 0:00 で音楽と本編が始まります。</p></li>
+  </ol>
+  <p class="note">自動では始まりません。電気が入ったあと、必ず START を押してください。8 台そろわない、スピーカーがつながらない場合は <a href="#trouble">困ったとき</a> へ。</p>
+</section>
+
+<section id="during">
+  <h2>運用中 — EXHIBITION 画面の見方</h2>
+  <div class="lcdrow">
+    <div class="lcd" role="img" aria-label="radxa-05 の EXHIBITION 画面の例">
+      <div class="hd"><span>EXHIBITION</span><span>radxa-05 · READY</span></div>
+      <div>exhibition</div>
+      <div class="d">35 cues · 10:54</div>
+      <div class="big" style="margin:6px 0">3:20 / 10:54 running</div>
+      <div>units 8/10 online</div>
+      <div>LOOP on</div>
+      <div class="g">speaker ok · vol 70% (bluez)</div>
+      <div class="d">hold KEY3 = LOOP   &lt; &gt; volume</div>
+      <div class="ft">hold KEY1 = STOP  KEY2 back</div>
+    </div>
+    <dl>
+      <dt>大きい行（いまの状態）</dt>
+      <dd><span class="lcdtxt">idle</span> 止まっている ／ <span class="lcdtxt amber">preset… 5/7 painted</span> 最初の絵を準備中 ／ <span class="lcdtxt">countdown -0:03</span> まもなく開始 ／ <span class="lcdtxt">3:20 / 10:54 running</span> 上演中 ／ <span class="lcdtxt">next run in 0:00</span> 次の回へ ／ <span class="lcdtxt amber">loop waiting</span> 準備できていない衣装を待っている</dd>
+      <dt>units</dt>
+      <dd>つながっている radxa の数。<strong>8/10 が正常</strong>（親機 + 子機 7 台。使わない radxa-06・08 の 2 台は数えない）。</dd>
+      <dt>speaker</dt>
+      <dd>音の状態と音量。<span class="lcdtxt red">speaker LOST - see SPEAKER</span> はスピーカーが切れている。</dd>
+    </dl>
+  </div>
+  <h3>この画面でできること</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>やりたいこと</th><th>操作</th></tr></thead>
+    <tbody>
+      <tr><td>ショーを始める</td><td><kbd class="key">KEY1</kbd><span class="hold">長押し</span>（止まっているとき）</td></tr>
+      <tr><td>ショーを止める</td><td><kbd class="key">KEY1</kbd><span class="hold">長押し</span>（上演中・準備中・待機中）。LOOP も止まり、次に START するまで再開しません。</td></tr>
+      <tr><td>繰り返し（LOOP）を入れる／切る</td><td><kbd class="key">KEY3</kbd><span class="hold">長押し</span></td></tr>
+      <tr><td>音量を上げる／下げる</td><td><kbd class="key">▶</kbd> で +5%、<kbd class="key">◀</kbd> で −5%（Bose 本体のボタンは効きません）</td></tr>
+      <tr><td>メニューに戻る</td><td><kbd class="key">KEY2</kbd>（ショーは止まりません）</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="close">
+  <h2>閉場の手順 <span class="tag">毎晩</span></h2>
+  <ol class="steps">
+    <li><p>radxa-05 の EXHIBITION 画面で <kbd class="key">KEY1</kbd><span class="hold">長押し</span> → <strong>STOP</strong>。大きい行が <span class="lcdtxt">idle</span> になるのを確認。</p></li>
+    <li><p><strong>10 秒ほど待ってから、ブレーカー（根元のコンセント）を切る。</strong>衣装と radxa が一斉に止まります。衣装の絵は最後の状態のまま残ります。</p></li>
+    <li><p><strong>Bose の電源ボタンを押して切る。</strong>ブレーカーを切っても Bose は電池で点いたままなので、必ず本体で切ってください（翌朝の電池切れ防止）。</p></li>
+  </ol>
+  <p class="note">STOP せずにブレーカーを切ってもデータは壊れませんが、STOP してから切ると翌朝の確認が確実です。</p>
+</section>
+
+<section id="power">
+  <h2>停電・ブレーカーが落ちたとき</h2>
+  <p>全部が同じ電源なので、停電すると衣装も radxa も一斉に止まり、電気が戻ると一斉に起動します。<strong>開場と同じ流れ</strong>です。データは消えません。</p>
+  <ol class="steps">
+    <li><p>電気が戻ったら、<strong>何もさわらずに 3 分待つ。</strong>radxa-05 の Wi-Fi が出て、子機が自動で戻ってきます。Bose は停電中も電池で点いたままなので、radxa-05 が起動すると自動でつなぎ直します（Bose が消えていたら電源ボタンで入れる）。</p></li>
+    <li><p>radxa-05 の EXHIBITION 画面で <span class="lcdtxt">units 8/10 online</span> と <span class="lcdtxt green">speaker ok</span> を確認。</p></li>
+    <li><p>大きい行が <span class="lcdtxt">idle</span> なら <kbd class="key">KEY1</kbd><span class="hold">長押し</span> で <strong>START</strong>。自動では再開しません。</p></li>
+  </ol>
+  <div class="callout"><p>停電の直後にまた停電しても問題ありません。電気が戻るたびにこの 3 つを繰り返してください。START で <span class="lcdtxt red">ERROR … Upload …</span> と出たときは、衣装の絵の書き込み直しが必要です。<a href="#phone">スマホ操作</a> の「書き込み直し」を行うか、責任者に連絡してください。</p></div>
+</section>
+
+<section id="trouble">
+  <h2>困ったとき</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>こんなとき</th><th>まずこれ</th></tr></thead>
+    <tbody>
+      <tr><td><span class="lcdtxt">units 7/10 online</span> など、8 台そろわない</td><td>そろっていない衣装の radxa の電源ケーブル（抜けていないか）を確認。その radxa の画面上部に <code>10.42.0.1NN</code> の番号が出ていなければ、その radxa のメニューで <code>WIFI</code> → <code>AZ-Epaper</code> を選んで <kbd class="key">KEY1</kbd><span class="hold">長押し</span>。1 台そろわなくても、60 秒後には残りの衣装だけで次の回が始まり、戻ってきた衣装は途中から加わります。</td></tr>
+      <tr><td><span class="lcdtxt red">speaker LOST - see SPEAKER</span>／音が出ない</td><td>Bose が点いているか確認（消えていれば電源ボタン。電池切れのときもブレーカーが入っていれば radxa-05 から充電されます）→ 近くのスマホ・PC の Bluetooth を切る → radxa-05 のメニューで <code>SPEAKER</code> に入り <kbd class="key">KEY1</kbd><span class="hold">長押し</span>（接続）。自動でも 30 秒ごとにつなぎ直しています。</td></tr>
+      <tr><td>SPEAKER 画面に <span class="lcdtxt red">Permission denied - another phone?</span> が出続ける</td><td>Bose がほかの機器につながっているか、登録を忘れています。Bose の Bluetooth ボタンを「Ready to connect」と聞こえるまで長押し → SPEAKER 画面で <kbd class="key">KEY3</kbd><span class="hold">長押し</span> を 2 回（再登録）。上演中は音が一度切れます。</td></tr>
+      <tr><td>音が大きすぎる・小さすぎる</td><td>EXHIBITION 画面で <kbd class="key">◀</kbd> <kbd class="key">▶</kbd>。値は保存され、再起動しても同じ音量に戻ります。</td></tr>
+      <tr><td><span class="lcdtxt amber">loop waiting</span> のまま進まない</td><td>準備できていない衣装があります。1 分ほどで、残りの衣装だけで始まります。進まなければ <kbd class="key">KEY1</kbd><span class="hold">長押し</span> で STOP → もう一度 START。</td></tr>
+      <tr><td>一部のペーパーだけ色が変わらない・途中の色で止まる</td><td>その衣装の電源ケーブルと、ペーパーの基板のコネクタ（抜けかけ）を確認。radxa と衣装の組み合わせが <a href="#units">表</a> どおりか確認。直らなければ責任者へ（どの衣装の、どの辺りかを伝えてください）。</td></tr>
+      <tr><td>Wi-Fi <code>AZ-Epaper</code> が見えない</td><td>ブレーカーが入っているか。電気が入ってから 3 分待つ。それでも出なければ radxa-05 のメニューで <code>WIFI</code> → <code>AZ-Epaper</code> → <kbd class="key">KEY1</kbd><span class="hold">長押し</span>。</td></tr>
+      <tr><td>ショーの中身がおかしい・前の状態に戻したい</td><td><a href="#backup">ショーのデータを戻す</a></td></tr>
+      <tr><td>子機の画面に <span class="lcdtxt amber">PC show running - WIFI locked</span></td><td>ショー中は Wi-Fi を変えられない安全装置です。会場では通常 Wi-Fi の操作は不要です。必要なら親機で STOP してから。</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="backup">
+  <h2>ショーのデータを前の状態に戻す</h2>
+  <p>radxa-05 はショーのデータを自動で控えています（最新 5 つ ＋ 衣装に書き込まれている版）。停電でデータが壊れた、間違えて変えてしまった、というときにその場で戻せます。<strong>PC は要りません。</strong></p>
+  <ol class="steps">
+    <li><p>EXHIBITION 画面で、上演中なら <kbd class="key">KEY1</kbd><span class="hold">長押し</span> で STOP。</p></li>
+    <li><p><kbd class="key">▼</kbd> を押すと <code>BACKUPS</code> ページ。<span class="lcdtxt">10-01 15:20 upload *</span> のように並び、<code>*</code>（緑）が衣装に書き込まれている版です。最初からこの行が選ばれています。</p></li>
+    <li><p><kbd class="key">▲</kbd><kbd class="key">▼</kbd> で選び、<kbd class="key">KEY1</kbd><span class="hold">長押し</span>。<span class="lcdtxt amber">hold KEY1 again to restore …</span> と出たら、5 秒以内にもう一度 <kbd class="key">KEY1</kbd><span class="hold">長押し</span>。</p></li>
+    <li>
+      <p>結果を見る:</p>
+      <ul>
+        <li><span class="lcdtxt">restored - units already hold it</span> … そのまま START してよい</li>
+        <li><span class="lcdtxt amber">restored - Upload needed</span> … 衣装の書き込み直しが必要（<a href="#phone">スマホ操作</a> または責任者へ）</li>
+        <li><span class="lcdtxt">already the workspace - nothing restored</span> … すでにその状態（何も変わらない）</li>
+      </ul>
+    </li>
+    <li><p><kbd class="key">KEY2</kbd> で EXHIBITION 画面に戻る。</p></li>
+  </ol>
+  <p class="note">パスワード・音量などの設定は戻りません（変わりません）。</p>
+</section>
+
+<section id="phone">
+  <h2>スマホから操作する <span class="tag">責任者向け</span></h2>
+  <p>書き込み直し（Upload）など、radxa の画面だけではできない操作に使います。</p>
+  <ol class="steps">
+    <li><p>スマホの Wi-Fi を <code>AZ-Epaper</code> につなぐ（パスワード: <span class="blank">別紙参照</span>）。</p></li>
+    <li><p>ブラウザで <code>http://10.42.0.1:8765</code> を開く。最初の操作でパスコードを聞かれます（<span class="blank">別紙参照</span>。一度入れれば覚えます）。</p></li>
+    <li><p><strong>書き込み直し</strong>: radxa-05 の画面で STOP → スマホの <code>THE SHOW</code> タブで <strong>① Upload</strong> → 全衣装が書き込み済みになるまで待つ（1〜2 分）→ radxa-05 の画面で START。</p></li>
+  </ol>
+  <div class="callout bad"><p><strong>Wi-Fi のパスワードとパスコードは来場者に教えないでください。</strong>つないだ人なら誰でもショーを止められます。</p></div>
+</section>
+
+<section id="dont">
+  <h2>やってはいけないこと</h2>
+  <ul>
+    <li><strong>子機（衣装側の radxa）の画面で KEY2 を押さない。</strong>上演中の子機は <code>REMOTE</code> 画面になっており、KEY2 を押すとその衣装だけショーから外れて止まります。</li>
+    <li><strong>radxa と衣装の組み合わせを変えない。</strong>変えたら必ず責任者へ。</li>
+    <li><strong>Bose を来場者や別のスマホとペアリングしない。</strong>音が radxa-05 から出なくなります。</li>
+    <li>radxa-05 に衣装をつながない（親機は衣装なし）。</li>
+    <li>PC やもう一台のパソコンから同時に操作しない（会場では PC は使いません）。</li>
+  </ul>
+</section>
+
+<footer>AZ-Epaper 展示システム · radxa-05 親機（Wi-Fi AZ-Epaper / 10.42.0.1）· 子機 radxa-01〜04・07・09・10</footer>
+</div>
+</body></html>
